@@ -24,7 +24,7 @@ repos:
     hooks:
       - id: pyright
         name: pyright
-        entry: pyright --verifytypes docket --ignoreexternal
+        entry: uv run pyright --verifytypes docket --ignoreexternal
         language: system
         types: [python]
         pass_filenames: false
