@@ -17,12 +17,14 @@ repos:
     rev: v0.9.7
     hooks:
       - id: ruff
-        args: [--fix]
+        args: [--fix, --exit-non-zero-on-fix, --show-fixes]
       - id: ruff-format
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.1
+  - repo: local
     hooks:
-      - id: mypy
-        additional_dependencies: [types-redis]
-        exclude: ^tests/
+      - id: pyright
+        name: pyright
+        entry: pyright --verifytypes docket --ignoreexternal
+        language: system
+        types: [python]
+        pass_filenames: false

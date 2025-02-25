@@ -3,6 +3,28 @@ on the scheduling of future work as seamlessly and efficiency as immediate work.
 
 docket is built in Python and uses Redis as the message broker and storage system.
 
+docket integrates two modes of task execution:
+
+1. Immediate tasks are pushed onto a Redis stream and are available to be
+   picked up by any worker.
+2. Scheduled tasks are pushed onto a Redis sorted set with a schedule time.
+   A loop within each worker moves scheduled tasks onto the stream when their
+   schedule time has arrived. This move is performed as a Lua script to ensure
+   atomicity. Once a scheduled task is moved onto the stream, it is now an
+   immediate task and can't be rescheduled.
+
+docket inherently understands self-perpetuating chains of tasks, where a task
+will repeatedly reschedule itself until it is no longer needed. This is supported
+directly in the developer API so that devs don't need to worry about the mechanics.
+
+Tasks have unique identifiers that may be set by the caller in order to guarantee
+idempotency of an execution.
+
+A docket worker should be as easily usable in code as it is from the command line,
+and should be a breeze to use with test suites.
+
+# Code style
+
 When generating production code, always use full parameter and return type hints
 for every function. Never generate useless inline comments that just reiterate
 what the code is doing. It's okay to include comments in the rare case there is
@@ -16,4 +38,4 @@ When generating tests, favor smaller, focused tests that use fixtures for reuse.
 Don't include extraneous comments in the test code unless something needs more
 clarity. Always generate a docstring using "should" language to describe the
 aspect of the system the test is checking. Use simple direct language and avoid
-sounding stuffy.
+sounding stuffy, but make these complete sentences.

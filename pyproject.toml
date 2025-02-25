@@ -25,9 +25,11 @@ dev = [
     "codespell>=2.4.1",
     "mypy>=1.14.1",
     "pre-commit>=4.1.0",
+    "pyright>=1.1.394",
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.3",
     "pytest-cov>=6.0.0",
+    "pytest-xdist>=3.6.1",
     "ruff>=0.9.7",
 ]
 
@@ -46,4 +48,11 @@ packages = ["src/docket"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=src/docket --cov=tests --cov-report=term-missing"
+asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"

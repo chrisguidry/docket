@@ -1,15 +1,8 @@
-import pytest
 from packaging.version import Version
 from typer.testing import CliRunner
 
 from docket import __version__
 from docket.cli import app
-
-
-@pytest.fixture
-def runner() -> CliRunner:
-    """Provides a CLI runner for testing commands."""
-    return CliRunner()
 
 
 def test_version_command(runner: CliRunner):

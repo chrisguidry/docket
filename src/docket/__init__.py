@@ -8,5 +8,7 @@ from importlib.metadata import version
 
 __version__ = version("docket")
 
-# Export public API
-# Add your public classes and functions here
+from .docket import Docket
+from .worker import Worker
+
+__all__ = ["Docket", "Worker", "__version__"]
