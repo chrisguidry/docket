@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "docket"
+dynamic = ["version"]
+description = "A distributed background task system for Python functions"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "Chris Guidry", email = "guid@omg.lol" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = ["redis>=5.2.1", "typer>=0.15.1"]
+
+[dependency-groups]
+dev = [
+    "codespell>=2.4.1",
+    "mypy>=1.14.1",
+    "pre-commit>=4.1.0",
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.3",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.9.7",
+]
+
+[project.scripts]
+docket = "docket.__main__:app"
+
+[project.urls]
+"Homepage" = "https://github.com/chrisguidry/docket"
+"Bug Tracker" = "https://github.com/chrisguidry/docket/issues"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/docket"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=src/docket --cov=tests --cov-report=term-missing"
+asyncio_default_fixture_loop_scope = "session"
