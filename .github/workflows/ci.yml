@@ -39,7 +39,12 @@ jobs:
         run: uv sync --dev
 
       - name: Run tests
-        run: uv run pytest tests/
+        run: uv run pytest --cov-branch --cov-report=xml
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   pre-commit:
     name: Pre-commit checks
