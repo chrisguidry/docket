@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
     Any,
@@ -28,12 +28,24 @@ class Execution:
         kwargs: dict[str, Any],
         when: datetime,
         key: str,
+        attempt: int,
     ) -> None:
         self.function = function
         self.args = args
         self.kwargs = kwargs
         self.when = when
         self.key = key
+        self.attempt = attempt
+
+    def as_message(self) -> dict[bytes, bytes]:
+        return {
+            b"key": self.key.encode(),
+            b"when": self.when.isoformat().encode(),
+            b"function": self.function.__name__.encode(),
+            b"args": cloudpickle.dumps(self.args),
+            b"kwargs": cloudpickle.dumps(self.kwargs),
+            b"attempt": self.attempt,
+        }
 
 
 class Docket:
@@ -116,21 +128,15 @@ class Docket:
         self.register(function)
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
-            execution = Execution(function, args, kwargs, when, key)
-            serialized: dict[bytes, bytes] = {
-                b"key": key.encode(),
-                b"when": when.isoformat().encode(),
-                b"function": function.__name__.encode(),
-                b"args": cloudpickle.dumps(args),
-                b"kwargs": cloudpickle.dumps(kwargs),
-            }
+            execution = Execution(function, args, kwargs, when, key, attempt=1)
+            message: dict[bytes, bytes] = execution.as_message()
 
             async with self.redis() as redis:
                 if when <= datetime.now(timezone.utc):
-                    await redis.xadd(f"{self.name}:stream", serialized)
+                    await redis.xadd(f"{self.name}:stream", message)
                 else:
                     async with redis.pipeline() as pipe:
-                        pipe.hset(f"{self.name}:{key}", mapping=serialized)
+                        pipe.hset(f"{self.name}:{key}", mapping=message)
                         pipe.zadd(f"{self.name}:queue", {key: when.timestamp()})
                         await pipe.execute()
 
@@ -144,3 +150,10 @@ class Docket:
                 pipe.delete(f"{self.name}:{key}")
                 pipe.zrem(f"{self.name}:queue", key)
                 await pipe.execute()
+
+
+class Retry:
+    def __init__(self, attempts: int = 0, delay: timedelta = timedelta(0)) -> None:
+        self.attempts = attempts
+        self.delay = delay
+        self.attempt = 1

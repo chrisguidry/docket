@@ -1,14 +1,15 @@
+import inspect
 import logging
 import sys
 from datetime import datetime, timezone
 from types import TracebackType
-from typing import Protocol, Self, Sequence, cast
+from typing import Any, Awaitable, Callable, Protocol, Self, Sequence, cast
 from uuid import uuid4
 
 import cloudpickle
 from redis import RedisError
 
-from .docket import Docket
+from .docket import Docket, Execution, Retry
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -158,4 +159,33 @@ class Worker:
                             },
                         )
 
+                        kwargs.update(
+                            self._get_special_arguments(function, args, kwargs)
+                        )
+
                         await function(*args, **kwargs)
+
+    def _get_special_arguments(
+        self,
+        function: Callable[..., Awaitable[Any]],
+        execution: Execution,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+
+        signature = inspect.signature(function)
+
+        for param_name, param in signature.parameters.items():
+            if isinstance(param.default, Retry):
+                if execution.kwargs.get(param_name) is not None:
+                    continue
+
+                retry_definition = param.default
+                retry = Retry(
+                    attempts=retry_definition.attempts,
+                    delay=retry_definition.delay,
+                )
+                retry.attempt = execution.attempt
+
+                kwargs[param_name] = retry
+
+        return kwargs
