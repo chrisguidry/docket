@@ -73,7 +73,7 @@ class Docket:
         function: Callable[P, Awaitable[R]],
         when: datetime | None = None,
         key: str | None = None,
-    ) -> Callable[P, Awaitable[Execution]]: ...
+    ) -> Callable[P, Awaitable[Execution]]: ...  # pragma: no cover
 
     @overload
     def add(
@@ -81,7 +81,7 @@ class Docket:
         function: str,
         when: datetime | None = None,
         key: str | None = None,
-    ) -> Callable[..., Awaitable[Execution]]: ...
+    ) -> Callable[..., Awaitable[Execution]]: ...  # pragma: no cover
 
     def add(
         self,
@@ -113,7 +113,7 @@ class Docket:
         function: Callable[P, Awaitable[R]],
         when: datetime,
         key: str,
-    ) -> Callable[P, Awaitable[Execution]]: ...
+    ) -> Callable[P, Awaitable[Execution]]: ...  # pragma: no cover
 
     @overload
     def replace(
@@ -121,7 +121,7 @@ class Docket:
         function: str,
         when: datetime,
         key: str,
-    ) -> Callable[..., Awaitable[Execution]]: ...
+    ) -> Callable[..., Awaitable[Execution]]: ...  # pragma: no cover
 
     def replace(
         self,

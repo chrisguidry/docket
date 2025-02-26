@@ -22,7 +22,7 @@ RedisReadGroupResponse = Sequence[RedisStream]
 class _stream_due_tasks(Protocol):
     async def __call__(
         self, keys: list[str], args: list[str | float]
-    ) -> tuple[int, int]: ...
+    ) -> tuple[int, int]: ...  # pragma: no cover
 
 
 class Worker:
@@ -194,7 +194,7 @@ class Worker:
             if not isinstance(param.default, Modifier):
                 continue
 
-            if isinstance(param.default, Retry):
+            if isinstance(param.default, Retry):  # pragma: no branch
                 retry_definition = param.default
                 retry = Retry(
                     attempts=retry_definition.attempts,
