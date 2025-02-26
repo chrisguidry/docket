@@ -73,7 +73,7 @@ class Docket:
         function: Callable[P, Awaitable[R]],
         when: datetime | None = None,
         key: str | None = None,
-    ) -> Callable[P, Awaitable[Execution]]: ...
+    ) -> Callable[P, Awaitable[Execution]]: ...  # pragma: no cover
 
     @overload
     def add(
@@ -81,7 +81,7 @@ class Docket:
         function: str,
         when: datetime | None = None,
         key: str | None = None,
-    ) -> Callable[..., Awaitable[Execution]]: ...
+    ) -> Callable[..., Awaitable[Execution]]: ...  # pragma: no cover
 
     def add(
         self,
@@ -91,6 +91,8 @@ class Docket:
     ) -> Callable[..., Awaitable[Execution]]:
         if isinstance(function, str):
             function = self.tasks[function]
+        else:
+            self.register(function)
 
         if when is None:
             when = datetime.now(timezone.utc)
@@ -98,10 +100,41 @@ class Docket:
         if key is None:
             key = f"{function.__name__}:{uuid4()}"
 
-        self.register(function)
+        async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
+            execution = Execution(function, args, kwargs, when, key, attempt=1)
+            await self.schedule(execution)
+            return execution
+
+        return scheduler
+
+    @overload
+    def replace(
+        self,
+        function: Callable[P, Awaitable[R]],
+        when: datetime,
+        key: str,
+    ) -> Callable[P, Awaitable[Execution]]: ...  # pragma: no cover
+
+    @overload
+    def replace(
+        self,
+        function: str,
+        when: datetime,
+        key: str,
+    ) -> Callable[..., Awaitable[Execution]]: ...  # pragma: no cover
+
+    def replace(
+        self,
+        function: Callable[P, Awaitable[R]] | str,
+        when: datetime,
+        key: str,
+    ) -> Callable[..., Awaitable[Execution]]:
+        if isinstance(function, str):
+            function = self.tasks[function]
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
             execution = Execution(function, args, kwargs, when, key, attempt=1)
+            await self.cancel(key)
             await self.schedule(execution)
             return execution
 
@@ -124,6 +157,10 @@ class Docket:
         when = execution.when
 
         async with self.redis() as redis:
+            # if the task is already in the queue, retain it
+            if await redis.zscore(self.queue_key, key) is not None:
+                return
+
             if when <= datetime.now(timezone.utc):
                 await redis.xadd(self.stream_key, message)
             else:

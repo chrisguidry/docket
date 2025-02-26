@@ -18,7 +18,9 @@ from docket.docket import Retry
 
 @pytest.fixture
 def the_task() -> AsyncMock:
-    return AsyncMock()
+    task = AsyncMock()
+    task.__name__ = "the_task"
+    return task
 
 
 async def test_immediate_task_execution(
@@ -37,8 +39,6 @@ async def test_immedate_task_execution_by_name(
     docket: Docket, worker: Worker, the_task: AsyncMock
 ):
     """docket should execute a task immediately by name."""
-
-    the_task.__name__ = "the_task"
 
     docket.register(the_task)
 
@@ -64,6 +64,26 @@ async def test_scheduled_execution(
     assert when <= now()
 
 
+async def test_adding_is_itempotent(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """docket should allow for rescheduling a task for later"""
+
+    key = f"my-cool-task:{uuid4()}"
+
+    soon = now() + timedelta(milliseconds=10)
+    await docket.add(the_task, soon, key=key)("a", "b", c="c")
+
+    later = now() + timedelta(milliseconds=500)
+    await docket.add(the_task, later, key=key)("b", "c", c="d")
+
+    await worker.run_until_current()
+
+    the_task.assert_called_once_with("a", "b", c="c")
+
+    assert soon <= now() < later
+
+
 async def test_rescheduling_later(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
 ):
@@ -71,17 +91,17 @@ async def test_rescheduling_later(
 
     key = f"my-cool-task:{uuid4()}"
 
-    when = now() + timedelta(milliseconds=10)
-    await docket.add(the_task, when, key=key)("a", "b", c="c")
+    soon = now() + timedelta(milliseconds=10)
+    await docket.add(the_task, soon, key=key)("a", "b", c="c")
 
-    when = now() + timedelta(milliseconds=100)
-    await docket.add(the_task, when, key=key)("b", "c", c="d")
+    later = now() + timedelta(milliseconds=100)
+    await docket.replace(the_task, later, key=key)("b", "c", c="d")
 
     await worker.run_until_current()
 
     the_task.assert_called_once_with("b", "c", c="d")
 
-    assert when <= now()
+    assert later <= now()
 
 
 async def test_rescheduling_earlier(
@@ -91,17 +111,37 @@ async def test_rescheduling_earlier(
 
     key = f"my-cool-task:{uuid4()}"
 
-    when = now() + timedelta(milliseconds=100)
-    await docket.add(the_task, when, key=key)("a", "b", c="c")
+    soon = now() + timedelta(milliseconds=100)
+    await docket.add(the_task, soon, key)("a", "b", c="c")
 
-    when = now() + timedelta(milliseconds=10)
-    await docket.add(the_task, when, key=key)("b", "c", c="d")
+    earlier = now() + timedelta(milliseconds=10)
+    await docket.replace(the_task, earlier, key)("b", "c", c="d")
 
     await worker.run_until_current()
 
     the_task.assert_called_once_with("b", "c", c="d")
 
-    assert when <= now()
+    assert earlier <= now()
+
+
+async def test_rescheduling_by_name(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """docket should allow for rescheduling a task for later"""
+
+    key = f"my-cool-task:{uuid4()}"
+
+    soon = now() + timedelta(milliseconds=10)
+    await docket.add(the_task, soon, key=key)("a", "b", c="c")
+
+    later = now() + timedelta(milliseconds=100)
+    await docket.replace("the_task", later, key=key)("b", "c", c="d")
+
+    await worker.run_until_current()
+
+    the_task.assert_called_once_with("b", "c", c="d")
+
+    assert later <= now()
 
 
 async def test_cancelling_future_task(
