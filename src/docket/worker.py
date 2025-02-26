@@ -3,10 +3,9 @@ import logging
 import sys
 from datetime import datetime, timezone
 from types import TracebackType
-from typing import Any, Awaitable, Callable, Protocol, Self, Sequence, cast
+from typing import Any, Protocol, Self, Sequence, cast
 from uuid import uuid4
 
-import cloudpickle
 from redis import RedisError
 
 from .docket import Docket, Execution, Retry
@@ -98,7 +97,8 @@ class Worker:
                             'when', task['when'],
                             'function', task['function'],
                             'args', task['args'],
-                            'kwargs', task['kwargs']
+                            'kwargs', task['kwargs'],
+                            'attempt', task['attempt']
                         )
                         redis.call('DEL', hash_key)
                         moved = moved + 1
@@ -141,44 +141,54 @@ class Worker:
 
                 for _, messages in response:
                     for _, message in messages:
-                        key = message[b"key"].decode("utf-8")
-                        function_name = message[b"function"].decode("utf-8")
-
-                        function = self.docket.tasks[function_name]
-                        args = cloudpickle.loads(message[b"args"])
-                        kwargs = cloudpickle.loads(message[b"kwargs"])
+                        execution = Execution.from_message(
+                            self.docket.tasks[message[b"function"].decode()],
+                            message,
+                        )
 
                         logger.info(
                             "Executing task %s with args %s and kwargs %s",
-                            key,
-                            args,
-                            kwargs,
+                            execution.key,
+                            execution.args,
+                            execution.kwargs,
                             extra={
                                 **log_context,
-                                "function": function_name,
+                                "function": execution.function.__name__,
                             },
                         )
 
-                        kwargs.update(
-                            self._get_special_arguments(function, args, kwargs)
-                        )
+                        special_arguments = self._get_special_arguments(execution)
 
-                        await function(*args, **kwargs)
+                        try:
+                            await execution.function(
+                                *execution.args,
+                                **execution.kwargs,
+                                **special_arguments,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Error executing task %s",
+                                execution.key,
+                                extra=log_context,
+                            )
+                            await self._retry_if_requested(execution, special_arguments)
+                            total += 1  # TODO: hacky, this tells us we might have more
 
     def _get_special_arguments(
         self,
-        function: Callable[..., Awaitable[Any]],
         execution: Execution,
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
 
-        signature = inspect.signature(function)
+        signature = inspect.signature(execution.function)
 
         for param_name, param in signature.parameters.items():
-            if isinstance(param.default, Retry):
-                if execution.kwargs.get(param_name) is not None:
-                    continue
+            # If the argument is already provided, skip it, which allows users to call
+            # the function directly with the arguments they want.
+            if param_name in execution.kwargs:
+                continue
 
+            if isinstance(param.default, Retry):
                 retry_definition = param.default
                 retry = Retry(
                     attempts=retry_definition.attempts,
@@ -189,3 +199,21 @@ class Worker:
                 kwargs[param_name] = retry
 
         return kwargs
+
+    async def _retry_if_requested(
+        self,
+        execution: Execution,
+        special_arguments: dict[str, Any],
+    ) -> None:
+        for retry in special_arguments.values():
+            if isinstance(retry, Retry):
+                if execution.attempt < retry.attempts:
+                    execution.when += retry.delay
+                    execution.attempt += 1
+                    await self.docket.schedule(execution)
+                else:
+                    logger.error(
+                        "Task %s failed after %d attempts",
+                        execution.key,
+                        retry.attempts,
+                    )

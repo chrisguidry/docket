@@ -13,39 +13,12 @@ from typing import (
 )
 from uuid import uuid4
 
-import cloudpickle
 from redis.asyncio import Redis
+
+from .execution import Execution
 
 P = ParamSpec("P")
 R = TypeVar("R")
-
-
-class Execution:
-    def __init__(
-        self,
-        function: Callable[..., Awaitable[Any]],
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-        when: datetime,
-        key: str,
-        attempt: int,
-    ) -> None:
-        self.function = function
-        self.args = args
-        self.kwargs = kwargs
-        self.when = when
-        self.key = key
-        self.attempt = attempt
-
-    def as_message(self) -> dict[bytes, bytes]:
-        return {
-            b"key": self.key.encode(),
-            b"when": self.when.isoformat().encode(),
-            b"function": self.function.__name__.encode(),
-            b"args": cloudpickle.dumps(self.args),
-            b"kwargs": cloudpickle.dumps(self.kwargs),
-            b"attempt": self.attempt,
-        }
 
 
 class Docket:
@@ -129,17 +102,7 @@ class Docket:
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
             execution = Execution(function, args, kwargs, when, key, attempt=1)
-            message: dict[bytes, bytes] = execution.as_message()
-
-            async with self.redis() as redis:
-                if when <= datetime.now(timezone.utc):
-                    await redis.xadd(f"{self.name}:stream", message)
-                else:
-                    async with redis.pipeline() as pipe:
-                        pipe.hset(f"{self.name}:{key}", mapping=message)
-                        pipe.zadd(f"{self.name}:queue", {key: when.timestamp()})
-                        await pipe.execute()
-
+            await self.schedule(execution)
             return execution
 
         return scheduler
@@ -150,6 +113,20 @@ class Docket:
                 pipe.delete(f"{self.name}:{key}")
                 pipe.zrem(f"{self.name}:queue", key)
                 await pipe.execute()
+
+    async def schedule(self, execution: Execution) -> None:
+        message: dict[bytes, bytes] = execution.as_message()
+        key = execution.key
+        when = execution.when
+
+        async with self.redis() as redis:
+            if when <= datetime.now(timezone.utc):
+                await redis.xadd(f"{self.name}:stream", message)
+            else:
+                async with redis.pipeline() as pipe:
+                    pipe.hset(f"{self.name}:{key}", mapping=message)
+                    pipe.zadd(f"{self.name}:queue", {key: when.timestamp()})
+                    await pipe.execute()
 
 
 class Retry:
