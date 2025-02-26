@@ -6,25 +6,13 @@ as possible to aid with understanding docket.
 """
 
 from datetime import datetime, timedelta
-from typing import AsyncGenerator, Callable
+from typing import Callable
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
 from docket import Docket, Worker
-
-
-@pytest.fixture
-async def docket() -> AsyncGenerator[Docket, None]:
-    async with Docket() as docket:
-        yield docket
-
-
-@pytest.fixture
-async def worker(docket: Docket) -> AsyncGenerator[Worker, None]:
-    async with Worker(docket) as worker:
-        yield worker
 
 
 @pytest.fixture
@@ -80,7 +68,7 @@ async def test_rescheduling_later(
 ):
     """docket should allow for rescheduling a task for later"""
 
-    key = f"my-cool-task-{uuid4()}"
+    key = f"my-cool-task:{uuid4()}"
 
     when = now() + timedelta(milliseconds=10)
     await docket.add(the_task, when, key=key)("a", "b", c="c")
@@ -100,7 +88,7 @@ async def test_rescheduling_earlier(
 ):
     """docket should allow for rescheduling a task for earlier"""
 
-    key = f"my-cool-task-{uuid4()}"
+    key = f"my-cool-task:{uuid4()}"
 
     when = now() + timedelta(milliseconds=100)
     await docket.add(the_task, when, key=key)("a", "b", c="c")
@@ -115,15 +103,30 @@ async def test_rescheduling_earlier(
     assert when <= now()
 
 
-async def test_cancelling_task(
+async def test_cancelling_future_task(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
 ):
     """docket should allow for cancelling a task"""
 
-    execution = await docket.add(the_task)("a", "b", c="c")
+    soon = now() + timedelta(milliseconds=100)
+    execution = await docket.add(the_task, soon)("a", "b", c="c")
 
     await docket.cancel(execution.key)
 
     await worker.run_until_current()
 
     the_task.assert_not_called()
+
+
+async def test_cancelling_current_task_not_supported(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """docket does not allow cancelling a task that is schedule now"""
+
+    execution = await docket.add(the_task, now())("a", "b", c="c")
+
+    await docket.cancel(execution.key)
+
+    await worker.run_until_current()
+
+    the_task.assert_called_once_with("a", "b", c="c")
