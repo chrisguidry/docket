@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 
 from docket import Docket, Worker
+from docket.docket import Retry
 
 
 @pytest.fixture
@@ -130,3 +131,78 @@ async def test_cancelling_current_task_not_supported(
     await worker.run_until_current()
 
     the_task.assert_called_once_with("a", "b", c="c")
+
+
+async def test_supports_simple_linear_retries(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """docket should support simple linear retries"""
+
+    calls = 0
+    last_call: datetime = now()
+
+    async def the_task(
+        a: str,
+        b: str = "b",
+        retry: Retry = Retry(attempts=3),
+    ) -> None:
+        assert a == "a"
+        assert b == "c"
+
+        assert retry is not None
+
+        nonlocal calls
+        calls += 1
+
+        assert retry.attempts == 3
+        assert retry.attempt == calls
+
+        nonlocal last_call
+        observed_delay = now() - last_call
+        assert timedelta(milliseconds=0) <= observed_delay <= timedelta(milliseconds=20)
+        last_call = now()
+
+        raise Exception("Failed")
+
+    await docket.add(the_task)("a", b="c")
+
+    await worker.run_until_current()
+
+    assert calls == 3
+
+
+async def test_supports_simple_linear_retries_with_delay(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """docket should support simple linear retries with a delay"""
+
+    calls = 0
+
+    async def the_task(
+        a: str,
+        b: str = "b",
+        retry: Retry = Retry(attempts=3, delay=timedelta(milliseconds=100)),
+    ) -> None:
+        assert a == "a"
+        assert b == "c"
+
+        assert retry is not None
+
+        nonlocal calls
+        calls += 1
+
+        assert retry.attempts == 3
+        assert retry.attempt == calls
+
+        raise Exception("Failed")
+
+    await docket.add(the_task)("a", b="c")
+
+    start = now()
+
+    await worker.run_until_current()
+
+    total_delay = now() - start
+    assert total_delay >= timedelta(milliseconds=300)
+
+    assert calls == 3

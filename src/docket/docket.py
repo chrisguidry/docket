@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
     Any,
@@ -13,27 +13,12 @@ from typing import (
 )
 from uuid import uuid4
 
-import cloudpickle
 from redis.asyncio import Redis
+
+from .execution import Execution
 
 P = ParamSpec("P")
 R = TypeVar("R")
-
-
-class Execution:
-    def __init__(
-        self,
-        function: Callable[..., Awaitable[Any]],
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-        when: datetime,
-        key: str,
-    ) -> None:
-        self.function = function
-        self.args = args
-        self.kwargs = kwargs
-        self.when = when
-        self.key = key
 
 
 class Docket:
@@ -116,31 +101,51 @@ class Docket:
         self.register(function)
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
-            execution = Execution(function, args, kwargs, when, key)
-            serialized: dict[bytes, bytes] = {
-                b"key": key.encode(),
-                b"when": when.isoformat().encode(),
-                b"function": function.__name__.encode(),
-                b"args": cloudpickle.dumps(args),
-                b"kwargs": cloudpickle.dumps(kwargs),
-            }
-
-            async with self.redis() as redis:
-                if when <= datetime.now(timezone.utc):
-                    await redis.xadd(f"{self.name}:stream", serialized)
-                else:
-                    async with redis.pipeline() as pipe:
-                        pipe.hset(f"{self.name}:{key}", mapping=serialized)
-                        pipe.zadd(f"{self.name}:queue", {key: when.timestamp()})
-                        await pipe.execute()
-
+            execution = Execution(function, args, kwargs, when, key, attempt=1)
+            await self.schedule(execution)
             return execution
 
         return scheduler
 
+    @property
+    def queue_key(self) -> str:
+        return f"{self.name}:queue"
+
+    @property
+    def stream_key(self) -> str:
+        return f"{self.name}:stream"
+
+    def parked_task_key(self, key: str) -> str:
+        return f"{self.name}:{key}"
+
+    async def schedule(self, execution: Execution) -> None:
+        message: dict[bytes, bytes] = execution.as_message()
+        key = execution.key
+        when = execution.when
+
+        async with self.redis() as redis:
+            if when <= datetime.now(timezone.utc):
+                await redis.xadd(self.stream_key, message)
+            else:
+                async with redis.pipeline() as pipe:
+                    pipe.hset(self.parked_task_key(key), mapping=message)
+                    pipe.zadd(self.queue_key, {key: when.timestamp()})
+                    await pipe.execute()
+
     async def cancel(self, key: str) -> None:
         async with self.redis() as redis:
             async with redis.pipeline() as pipe:
-                pipe.delete(f"{self.name}:{key}")
-                pipe.zrem(f"{self.name}:queue", key)
+                pipe.delete(self.parked_task_key(key))
+                pipe.zrem(self.queue_key, key)
                 await pipe.execute()
+
+
+class Modifier:
+    pass
+
+
+class Retry(Modifier):
+    def __init__(self, attempts: int = 1, delay: timedelta = timedelta(0)) -> None:
+        self.attempts = attempts
+        self.delay = delay
+        self.attempt = 1
