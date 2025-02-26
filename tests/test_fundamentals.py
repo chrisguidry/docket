@@ -8,6 +8,7 @@ as possible to aid with understanding docket.
 from datetime import datetime, timedelta
 from typing import AsyncGenerator, Callable
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
@@ -26,27 +27,33 @@ async def worker(docket: Docket) -> AsyncGenerator[Worker, None]:
         yield worker
 
 
-async def test_immediate_task_execution(docket: Docket, worker: Worker):
+@pytest.fixture
+def the_task() -> AsyncMock:
+    return AsyncMock()
+
+
+async def test_immediate_task_execution(
+    docket: Docket, worker: Worker, the_task: AsyncMock
+):
     """docket should execute a task immediately."""
 
-    the_task = AsyncMock()
-
-    await docket.run(the_task)("a", "b", c="c")
+    await docket.add(the_task)("a", "b", c="c")
 
     await worker.run_until_current()
 
     the_task.assert_called_once_with("a", "b", c="c")
 
 
-async def test_immedate_task_execution_by_name(docket: Docket, worker: Worker):
+async def test_immedate_task_execution_by_name(
+    docket: Docket, worker: Worker, the_task: AsyncMock
+):
     """docket should execute a task immediately by name."""
 
-    the_task = AsyncMock()
     the_task.__name__ = "the_task"
 
-    docket.add(the_task)
+    docket.register(the_task)
 
-    await docket.run("the_task")("a", "b", c="c")
+    await docket.add("the_task")("a", "b", c="c")
 
     await worker.run_until_current()
 
@@ -54,17 +61,69 @@ async def test_immedate_task_execution_by_name(docket: Docket, worker: Worker):
 
 
 async def test_scheduled_execution(
-    docket: Docket, worker: Worker, now: Callable[[], datetime]
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
 ):
     """docket should execute a task at a specific time."""
 
-    the_task = AsyncMock()
-
     when = now() + timedelta(milliseconds=100)
-    await docket.schedule(the_task, when)("a", "b", c="c")
+    await docket.add(the_task, when)("a", "b", c="c")
 
     await worker.run_until_current()
 
-    assert now() >= when
-
     the_task.assert_called_once_with("a", "b", c="c")
+
+    assert when <= now()
+
+
+async def test_rescheduling_later(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """docket should allow for rescheduling a task for later"""
+
+    key = f"my-cool-task-{uuid4()}"
+
+    when = now() + timedelta(milliseconds=10)
+    await docket.add(the_task, when, key=key)("a", "b", c="c")
+
+    when = now() + timedelta(milliseconds=100)
+    await docket.add(the_task, when, key=key)("b", "c", c="d")
+
+    await worker.run_until_current()
+
+    the_task.assert_called_once_with("b", "c", c="d")
+
+    assert when <= now()
+
+
+async def test_rescheduling_earlier(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """docket should allow for rescheduling a task for earlier"""
+
+    key = f"my-cool-task-{uuid4()}"
+
+    when = now() + timedelta(milliseconds=100)
+    await docket.add(the_task, when, key=key)("a", "b", c="c")
+
+    when = now() + timedelta(milliseconds=10)
+    await docket.add(the_task, when, key=key)("b", "c", c="d")
+
+    await worker.run_until_current()
+
+    the_task.assert_called_once_with("b", "c", c="d")
+
+    assert when <= now()
+
+
+async def test_cancelling_task(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """docket should allow for cancelling a task"""
+
+    execution = await docket.add(the_task)("a", "b", c="c")
+
+    await docket.cancel(execution.key)
+
+    await worker.run_until_current()
+
+    the_task.assert_not_called()

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from types import TracebackType
 from typing import Self
@@ -24,5 +25,7 @@ class Worker:
         while self.docket.executions:
             for task in self.docket.executions:
                 if task.when <= datetime.now(timezone.utc):
-                    await task.function(*task.args, **task.kwargs)
                     self.docket.executions.remove(task)
+                    await task.function(*task.args, **task.kwargs)
+
+            await asyncio.sleep(0)
