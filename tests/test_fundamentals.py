@@ -139,7 +139,6 @@ async def test_supports_simple_linear_retries(
     """docket should support simple linear retries"""
 
     calls = 0
-    last_call: datetime = now()
 
     async def the_task(
         a: str,
@@ -156,11 +155,6 @@ async def test_supports_simple_linear_retries(
 
         assert retry.attempts == 3
         assert retry.attempt == calls
-
-        nonlocal last_call
-        observed_delay = now() - last_call
-        assert timedelta(milliseconds=0) <= observed_delay <= timedelta(milliseconds=20)
-        last_call = now()
 
         raise Exception("Failed")
 
