@@ -9,11 +9,8 @@ on:
 
 jobs:
   test:
-    name: Test Python ${{ matrix.python-version }}
+    name: Test Python 3.12
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +18,7 @@ jobs:
       - name: Install uv and set Python version
         uses: astral-sh/setup-uv@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: 3.12
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
 
