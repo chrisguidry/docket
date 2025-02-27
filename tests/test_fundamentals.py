@@ -12,7 +12,16 @@ from uuid import uuid4
 
 import pytest
 
-from docket import CurrentDocket, CurrentWorker, Docket, Retry, Worker
+from docket import (
+    CurrentDocket,
+    CurrentExecution,
+    CurrentWorker,
+    Docket,
+    Execution,
+    Retry,
+    TaskKey,
+    Worker,
+)
 
 
 @pytest.fixture
@@ -331,6 +340,52 @@ async def test_supports_requesting_current_worker(
         called = True
 
     await docket.add(the_task)("a", b="c")
+
+    await worker.run_until_current()
+
+    assert called
+
+
+async def test_supports_requesting_current_execution(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """docket should support providing the current execution to a task"""
+
+    called = False
+
+    async def the_task(a: str, b: str, this_execution: Execution = CurrentExecution()):
+        assert a == "a"
+        assert b == "c"
+
+        assert isinstance(this_execution, Execution)
+        assert this_execution.key == "my-cool-task:123"
+
+        nonlocal called
+        called = True
+
+    await docket.add(the_task, key="my-cool-task:123")("a", b="c")
+
+    await worker.run_until_current()
+
+    assert called
+
+
+async def test_supports_requesting_current_task_key(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """docket should support providing the current task key to a task"""
+
+    called = False
+
+    async def the_task(a: str, b: str, this_key: str = TaskKey()):
+        assert a == "a"
+        assert b == "c"
+        assert this_key == "my-cool-task:123"
+
+        nonlocal called
+        called = True
+
+    await docket.add(the_task, key="my-cool-task:123")("a", b="c")
 
     await worker.run_until_current()
 

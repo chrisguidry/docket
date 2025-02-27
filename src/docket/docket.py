@@ -57,7 +57,6 @@ class Docket:
             port=self.port,
             db=self.db,
             password=self.password,
-            single_connection_client=True,
         ) as redis:
             yield redis
 

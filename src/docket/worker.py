@@ -1,10 +1,12 @@
+import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Protocol, Self, Sequence, TypeVar, cast
 from uuid import uuid4
 
+import redis.exceptions
 from redis import RedisError
 
 from .docket import Docket, Execution
@@ -33,11 +35,18 @@ class Worker:
     name: str
     docket: Docket
 
-    prefetch_count: int = 10
-
-    def __init__(self, docket: Docket) -> None:
+    def __init__(
+        self,
+        docket: Docket,
+        prefetch_count: int = 10,
+        redelivery_timeout: timedelta = timedelta(minutes=5),
+        reconnection_delay: timedelta = timedelta(seconds=5),
+    ) -> None:
         self.name = f"worker:{uuid4()}"
         self.docket = docket
+        self.prefetch_count = prefetch_count
+        self.redelivery_timeout = redelivery_timeout
+        self.reconnection_delay = reconnection_delay
 
     async def __aenter__(self) -> Self:
         async with self.docket.redis() as redis:
@@ -49,7 +58,8 @@ class Worker:
                     mkstream=True,
                 )
             except RedisError as e:
-                assert "BUSYGROUP" in repr(e)
+                if "BUSYGROUP" not in repr(e):
+                    raise
 
         return self
 
@@ -73,6 +83,26 @@ class Worker:
         }
 
     async def run_until_current(self) -> None:
+        """Run the worker until there are no more tasks to process."""
+        return await self._run(forever=False)
+
+    async def run_forever(self) -> None:
+        """Run the worker indefinitely."""
+        return await self._run(forever=True)  # pragma: no cover
+
+    async def _run(self, forever: bool = False) -> None:
+        while True:
+            try:
+                return await self._worker_loop(forever=forever)
+            except redis.exceptions.ConnectionError:
+                logger.warning(
+                    "Error connecting to redis, retrying in %s...",
+                    self.reconnection_delay,
+                    exc_info=True,
+                )
+                await asyncio.sleep(self.reconnection_delay.total_seconds())
+
+    async def _worker_loop(self, forever: bool = False):
         async with self.docket.redis() as redis:
             stream_due_tasks: _stream_due_tasks = cast(
                 _stream_due_tasks,
@@ -120,7 +150,7 @@ class Worker:
             )
 
             total_work, due_work = sys.maxsize, 0
-            while total_work:
+            while forever or total_work:
                 now = datetime.now(timezone.utc)
                 total_work, due_work = await stream_due_tasks(
                     keys=[self.docket.queue_key, self.docket.stream_key],
@@ -135,33 +165,44 @@ class Worker:
                     extra=self._log_context,
                 )
 
-                response: RedisReadGroupResponse = await redis.xreadgroup(
+                _, redeliveries, _ = await redis.xautoclaim(
+                    name=self.docket.stream_key,
+                    groupname=self.consumer_group_name,
+                    consumername=self.name,
+                    min_idle_time=int(self.redelivery_timeout.total_seconds() * 1000),
+                    start_id="0-0",
+                    count=self.prefetch_count,
+                )
+
+                new_deliveries: RedisReadGroupResponse = await redis.xreadgroup(
                     groupname=self.consumer_group_name,
                     consumername=self.name,
                     streams={self.docket.stream_key: ">"},
                     count=self.prefetch_count,
                     block=10,
                 )
-                for _, messages in response:
-                    for message_id, message in messages:
-                        await self._execute(message)
 
-                        # When executing a task, there's always a chance that it was
-                        # either retried or it scheduled another task, so let's give
-                        # ourselves one more iteration of the loop to handle that.
-                        total_work += 1
+                for source in [[(b"redeliveries", redeliveries)], new_deliveries]:
+                    for _, messages in source:
+                        for message_id, message in messages:
+                            await self._execute(message)
 
-                        async with redis.pipeline() as pipe:
-                            pipe.xack(
-                                self.docket.stream_key,
-                                self.consumer_group_name,
-                                message_id,
-                            )
-                            pipe.xdel(
-                                self.docket.stream_key,
-                                message_id,
-                            )
-                            await pipe.execute()
+                            async with redis.pipeline() as pipeline:
+                                pipeline.xack(
+                                    self.docket.stream_key,
+                                    self.consumer_group_name,
+                                    message_id,
+                                )
+                                pipeline.xdel(
+                                    self.docket.stream_key,
+                                    message_id,
+                                )
+                                await pipeline.execute()
+
+                            # When executing a task, there's always a chance that it was
+                            # either retried or it scheduled another task, so let's give
+                            # ourselves one more iteration of the loop to handle that.
+                            total_work += 1
 
     async def _execute(self, message: RedisMessage) -> None:
         execution = Execution.from_message(

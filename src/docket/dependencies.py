@@ -35,6 +35,26 @@ def CurrentDocket() -> Docket:
     return cast(Docket, _CurrentDocket())
 
 
+class _CurrentExecution(Dependency):
+    def __call__(
+        self, docket: Docket, worker: Worker, execution: Execution
+    ) -> Execution:
+        return execution
+
+
+def CurrentExecution() -> Execution:
+    return cast(Execution, _CurrentExecution())
+
+
+class _TaskKey(Dependency):
+    def __call__(self, docket: Docket, worker: Worker, execution: Execution) -> str:
+        return execution.key
+
+
+def TaskKey() -> str:
+    return cast(str, _TaskKey())
+
+
 class Retry(Dependency):
     single: bool = True
 
