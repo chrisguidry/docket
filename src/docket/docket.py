@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import TracebackType
 from typing import (
     Any,
@@ -22,7 +22,6 @@ R = TypeVar("R")
 
 
 class Docket:
-    executions: list[Execution]
     tasks: dict[str, Callable[..., Awaitable[Any]]]
 
     def __init__(
@@ -40,9 +39,7 @@ class Docket:
         self.password = password
 
     async def __aenter__(self) -> Self:
-        self.executions = []
         self.tasks = {}
-
         return self
 
     async def __aexit__(
@@ -65,6 +62,10 @@ class Docket:
             yield redis
 
     def register(self, function: Callable[..., Awaitable[Any]]) -> None:
+        from .dependencies import validate_dependencies
+
+        validate_dependencies(function)
+
         self.tasks[function.__name__] = function
 
     @overload
@@ -175,14 +176,3 @@ class Docket:
                 pipe.delete(self.parked_task_key(key))
                 pipe.zrem(self.queue_key, key)
                 await pipe.execute()
-
-
-class Modifier:
-    pass
-
-
-class Retry(Modifier):
-    def __init__(self, attempts: int = 1, delay: timedelta = timedelta(0)) -> None:
-        self.attempts = attempts
-        self.delay = delay
-        self.attempt = 1

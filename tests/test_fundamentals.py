@@ -12,8 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from docket import Docket, Worker
-from docket.docket import Retry
+from docket import CurrentDocket, CurrentWorker, Docket, Retry, Worker
 
 
 @pytest.fixture
@@ -32,7 +31,7 @@ async def test_immediate_task_execution(
 
     await worker.run_until_current()
 
-    the_task.assert_called_once_with("a", "b", c="c")
+    the_task.assert_awaited_once_with("a", "b", c="c")
 
 
 async def test_immedate_task_execution_by_name(
@@ -46,7 +45,7 @@ async def test_immedate_task_execution_by_name(
 
     await worker.run_until_current()
 
-    the_task.assert_called_once_with("a", "b", c="c")
+    the_task.assert_awaited_once_with("a", "b", c="c")
 
 
 async def test_scheduled_execution(
@@ -59,7 +58,7 @@ async def test_scheduled_execution(
 
     await worker.run_until_current()
 
-    the_task.assert_called_once_with("a", "b", c="c")
+    the_task.assert_awaited_once_with("a", "b", c="c")
 
     assert when <= now()
 
@@ -79,7 +78,7 @@ async def test_adding_is_itempotent(
 
     await worker.run_until_current()
 
-    the_task.assert_called_once_with("a", "b", c="c")
+    the_task.assert_awaited_once_with("a", "b", c="c")
 
     assert soon <= now() < later
 
@@ -99,7 +98,7 @@ async def test_rescheduling_later(
 
     await worker.run_until_current()
 
-    the_task.assert_called_once_with("b", "c", c="d")
+    the_task.assert_awaited_once_with("b", "c", c="d")
 
     assert later <= now()
 
@@ -119,7 +118,7 @@ async def test_rescheduling_earlier(
 
     await worker.run_until_current()
 
-    the_task.assert_called_once_with("b", "c", c="d")
+    the_task.assert_awaited_once_with("b", "c", c="d")
 
     assert earlier <= now()
 
@@ -139,7 +138,7 @@ async def test_rescheduling_by_name(
 
     await worker.run_until_current()
 
-    the_task.assert_called_once_with("b", "c", c="d")
+    the_task.assert_awaited_once_with("b", "c", c="d")
 
     assert later <= now()
 
@@ -170,7 +169,26 @@ async def test_cancelling_current_task_not_supported(
 
     await worker.run_until_current()
 
-    the_task.assert_called_once_with("a", "b", c="c")
+    the_task.assert_awaited_once_with("a", "b", c="c")
+
+
+async def test_errors_are_logged(
+    docket: Docket,
+    worker: Worker,
+    the_task: AsyncMock,
+    now: Callable[[], datetime],
+    caplog: pytest.LogCaptureFixture,
+):
+    """docket should log errors when a task fails"""
+
+    the_task.side_effect = Exception("Faily McFailerson")
+    await docket.add(the_task, now())("a", "b", c="c")
+
+    await worker.run_until_current()
+
+    the_task.assert_awaited_once_with("a", "b", c="c")
+
+    assert "Faily McFailerson" in caplog.text
 
 
 async def test_supports_simple_linear_retries(
@@ -240,3 +258,47 @@ async def test_supports_simple_linear_retries_with_delay(
     assert total_delay >= timedelta(milliseconds=300)
 
     assert calls == 3
+
+
+async def test_supports_requesting_current_docket(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """docket should support providing the current docket to a task"""
+
+    called = False
+
+    async def the_task(a: str, b: str, this_docket: Docket = CurrentDocket()):
+        assert a == "a"
+        assert b == "c"
+        assert this_docket is docket
+
+        nonlocal called
+        called = True
+
+    await docket.add(the_task)("a", b="c")
+
+    await worker.run_until_current()
+
+    assert called
+
+
+async def test_supports_requesting_current_worker(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """docket should support providing the current worker to a task"""
+
+    called = False
+
+    async def the_task(a: str, b: str, this_worker: Worker = CurrentWorker()):
+        assert a == "a"
+        assert b == "c"
+        assert this_worker is worker
+
+        nonlocal called
+        called = True
+
+    await docket.add(the_task)("a", b="c")
+
+    await worker.run_until_current()
+
+    assert called

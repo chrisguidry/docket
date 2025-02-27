@@ -8,7 +8,17 @@ from importlib.metadata import version
 
 __version__ = version("docket")
 
+from .dependencies import CurrentDocket, CurrentWorker, Retry
 from .docket import Docket
+from .execution import Execution
 from .worker import Worker
 
-__all__ = ["Docket", "Worker", "__version__"]
+__all__ = [
+    "Docket",
+    "Worker",
+    "Execution",
+    "CurrentDocket",
+    "CurrentWorker",
+    "Retry",
+    "__version__",
+]
