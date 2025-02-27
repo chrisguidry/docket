@@ -232,7 +232,7 @@ class Worker:
 
         retry = retries[0]
 
-        if execution.attempt < retry.attempts:
+        if retry.attempts is None or execution.attempt < retry.attempts:
             execution.when = datetime.now(timezone.utc) + retry.delay
             execution.attempt += 1
             await self.docket.schedule(execution)
