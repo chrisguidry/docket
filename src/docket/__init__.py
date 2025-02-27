@@ -6,7 +6,7 @@ docket focuses on scheduling future work as seamlessly and efficiently as immedi
 
 from importlib.metadata import version
 
-__version__ = version("docket")
+__version__ = version("pydocket")
 
 from .dependencies import CurrentDocket, CurrentWorker, Retry
 from .docket import Docket

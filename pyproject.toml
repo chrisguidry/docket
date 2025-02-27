@@ -3,7 +3,7 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "docket"
+name = "pydocket"
 dynamic = ["version"]
 description = "A distributed background task system for Python functions"
 readme = "README.md"
