@@ -260,6 +260,39 @@ async def test_supports_simple_linear_retries_with_delay(
     assert calls == 3
 
 
+async def test_supports_infinite_retries(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """docket should support infinite retries (None for attempts)"""
+
+    calls = 0
+
+    async def the_task(
+        a: str,
+        b: str = "b",
+        retry: Retry = Retry(attempts=None),
+    ) -> None:
+        assert a == "a"
+        assert b == "c"
+
+        assert retry is not None
+        assert retry.attempts is None
+
+        nonlocal calls
+        calls += 1
+
+        assert retry.attempt == calls
+
+        if calls < 3:
+            raise Exception("Failed")
+
+    await docket.add(the_task)("a", b="c")
+
+    await worker.run_until_current()
+
+    assert calls == 3
+
+
 async def test_supports_requesting_current_docket(
     docket: Docket, worker: Worker, now: Callable[[], datetime]
 ):

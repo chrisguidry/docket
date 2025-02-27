@@ -38,7 +38,9 @@ def CurrentDocket() -> Docket:
 class Retry(Dependency):
     single: bool = True
 
-    def __init__(self, attempts: int = 1, delay: timedelta = timedelta(0)) -> None:
+    def __init__(
+        self, attempts: int | None = 1, delay: timedelta = timedelta(0)
+    ) -> None:
         self.attempts = attempts
         self.delay = delay
         self.attempt = 1
