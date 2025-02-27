@@ -68,11 +68,3 @@ jobs:
       - uses: pre-commit/action@v3.0.1
         with:
           extra_args: --all-files
-
-  ci-success:
-    name: CI Success
-    needs: [test, pre-commit]
-    runs-on: ubuntu-latest
-    steps:
-      - name: CI Success
-        run: echo "All CI checks completed successfully!"
