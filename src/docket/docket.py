@@ -17,9 +17,16 @@ from opentelemetry import propagate, trace
 from redis.asyncio import Redis
 
 from .execution import Execution
-from .instrumentation import message_setter
+from .instrumentation import (
+    TASKS_ADDED,
+    TASKS_CANCELLED,
+    TASKS_REPLACED,
+    TASKS_SCHEDULED,
+    message_setter,
+)
 
 tracer: trace.Tracer = trace.get_tracer(__name__)
+
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -107,6 +114,9 @@ class Docket:
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
             execution = Execution(function, args, kwargs, when, key, attempt=1)
             await self.schedule(execution)
+
+            TASKS_ADDED.add(1, {"docket": self.name, "task": function.__name__})
+
             return execution
 
         return scheduler
@@ -140,6 +150,9 @@ class Docket:
             execution = Execution(function, args, kwargs, when, key, attempt=1)
             await self.cancel(key)
             await self.schedule(execution)
+
+            TASKS_REPLACED.add(1, {"docket": self.name, "task": function.__name__})
+
             return execution
 
         return scheduler
@@ -185,6 +198,10 @@ class Docket:
                         pipe.zadd(self.queue_key, {key: when.timestamp()})
                         await pipe.execute()
 
+        TASKS_SCHEDULED.add(
+            1, {"docket": self.name, "task": execution.function.__name__}
+        )
+
     async def cancel(self, key: str) -> None:
         with tracer.start_as_current_span(
             "docket.cancel",
@@ -198,3 +215,5 @@ class Docket:
                     pipe.delete(self.parked_task_key(key))
                     pipe.zrem(self.queue_key, key)
                     await pipe.execute()
+
+        TASKS_CANCELLED.add(1, {"docket": self.name})

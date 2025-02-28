@@ -1,4 +1,5 @@
 version = 1
+revision = 1
 requires-python = ">=3.12"
 
 [[package]]
@@ -415,6 +416,20 @@ wheels = [
 ]
 
 [[package]]
+name = "opentelemetry-exporter-prometheus"
+version = "0.51b0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+    { name = "prometheus-client" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/36/6d/2a56355c00a8e225b0bbb85f2ca2e8fe963270d4314f9dee4576e49492fa/opentelemetry_exporter_prometheus-0.51b0.tar.gz", hash = "sha256:25673d79d3b0b864133ee8df789fc6fb408c51e64b3cb775c20526c10bb93d05", size = 14613 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/83/e2f5b986641cc13bae727598480d463140a2e1930c1bedb23ab60aea250c/opentelemetry_exporter_prometheus-0.51b0-py3-none-any.whl", hash = "sha256:5c5c45b254e08c19564ab033f44a941a07fb6a33ea441b75ad203c70997a8f25", size = 12920 },
+]
+
+[[package]]
 name = "opentelemetry-instrumentation"
 version = "0.51b0"
 source = { registry = "https://pypi.org/simple" }
@@ -568,6 +583,7 @@ source = { editable = "." }
 dependencies = [
     { name = "cloudpickle" },
     { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-prometheus" },
     { name = "prometheus-client" },
     { name = "redis" },
     { name = "typer" },
@@ -597,6 +613,7 @@ dev = [
 requires-dist = [
     { name = "cloudpickle", specifier = ">=3.1.1" },
     { name = "opentelemetry-api", specifier = ">=1.30.0" },
+    { name = "opentelemetry-exporter-prometheus", specifier = ">=0.51b0" },
     { name = "prometheus-client", specifier = ">=0.21.1" },
     { name = "redis", specifier = ">=5.2.1" },
     { name = "typer", specifier = ">=0.15.1" },

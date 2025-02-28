@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Protocol, Self, Sequence, TypeVar, cast
@@ -12,7 +13,17 @@ from opentelemetry.trace import Tracer
 from redis import RedisError
 
 from .docket import Docket, Execution
-from .instrumentation import message_getter
+from .instrumentation import (
+    TASK_DURATION,
+    TASK_PUNCTUALITY,
+    TASKS_COMPLETED,
+    TASKS_FAILED,
+    TASKS_RETRIED,
+    TASKS_RUNNING,
+    TASKS_STARTED,
+    TASKS_SUCCEEDED,
+    message_getter,
+)
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
@@ -228,6 +239,12 @@ class Worker:
 
         dependencies = self._get_dependencies(execution)
 
+        counter_labels = {
+            "docket": self.docket.name,
+            "worker": self.name,
+            "task": execution.function.__name__,
+        }
+
         # Extract traceparent from message and create span link
         context = propagate.extract(message, getter=message_getter)
         span_context = trace.get_current_span(context).get_span_context()
@@ -235,7 +252,15 @@ class Worker:
         if span_context.is_valid:
             links = [trace.Link(span_context)]
 
+        TASK_PUNCTUALITY.record(
+            (datetime.now(timezone.utc) - execution.when).total_seconds(),
+            counter_labels,
+        )
+
         try:
+            TASKS_STARTED.add(1, counter_labels)
+            TASKS_RUNNING.add(1, counter_labels)
+
             with tracer.start_as_current_span(
                 execution.function.__name__,
                 kind=trace.SpanKind.CONSUMER,
@@ -248,6 +273,7 @@ class Worker:
                 },
                 links=links,
             ):
+                start = time.time_ns()
                 await execution.function(
                     *execution.args,
                     **{
@@ -255,13 +281,24 @@ class Worker:
                         **dependencies,
                     },
                 )
+                TASK_DURATION.record(
+                    (time.time_ns() - start) / 1_000_000_000,
+                    counter_labels,
+                )
+
+            TASKS_SUCCEEDED.add(1, counter_labels)
+
         except Exception:
+            TASKS_FAILED.add(1, counter_labels)
             logger.exception(
                 "Error executing task %s",
                 execution.key,
                 extra=self._log_context,
             )
             await self._retry_if_requested(execution, dependencies)
+        finally:
+            TASKS_RUNNING.add(-1, counter_labels)
+            TASKS_COMPLETED.add(1, counter_labels)
 
     def _get_dependencies(
         self,
@@ -301,6 +338,13 @@ class Worker:
             execution.when = datetime.now(timezone.utc) + retry.delay
             execution.attempt += 1
             await self.docket.schedule(execution)
+
+            counter_labels = {
+                "docket": self.docket.name,
+                "worker": self.name,
+                "task": execution.function.__name__,
+            }
+            TASKS_RETRIED.add(1, counter_labels)
         else:
             logger.error(
                 "Task %s failed after %d attempts",
