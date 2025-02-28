@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from functools import partial
 from typing import AsyncGenerator, Callable
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -39,3 +40,10 @@ async def docket(redis_server: RedisContainer) -> AsyncGenerator[Docket, None]:
 async def worker(docket: Docket) -> AsyncGenerator[Worker, None]:
     async with Worker(docket) as worker:
         yield worker
+
+
+@pytest.fixture
+def the_task() -> AsyncMock:
+    task = AsyncMock()
+    task.__name__ = "the_task"
+    return task

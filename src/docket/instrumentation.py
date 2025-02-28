@@ -1,4 +1,79 @@
+from opentelemetry import metrics
 from opentelemetry.propagators.textmap import Getter, Setter
+
+meter: metrics.Meter = metrics.get_meter("docket")
+
+TASKS_ADDED = meter.create_counter(
+    "docket_tasks_added",
+    description="How many tasks added to the docket",
+    unit="1",
+)
+
+TASKS_REPLACED = meter.create_counter(
+    "docket_tasks_replaced",
+    description="How many tasks replaced on the docket",
+    unit="1",
+)
+
+TASKS_SCHEDULED = meter.create_counter(
+    "docket_tasks_scheduled",
+    description="How many tasks added or replaced on the docket",
+    unit="1",
+)
+
+TASKS_CANCELLED = meter.create_counter(
+    "docket_tasks_cancelled",
+    description="How many tasks cancelled from the docket",
+    unit="1",
+)
+
+TASKS_STARTED = meter.create_counter(
+    "docket_tasks_started",
+    description="How many tasks started",
+    unit="1",
+)
+
+TASKS_COMPLETED = meter.create_counter(
+    "docket_tasks_completed",
+    description="How many tasks that have completed in any state",
+    unit="1",
+)
+
+TASKS_FAILED = meter.create_counter(
+    "docket_tasks_failed",
+    description="How many tasks that have failed",
+    unit="1",
+)
+
+TASKS_SUCCEEDED = meter.create_counter(
+    "docket_tasks_succeeded",
+    description="How many tasks that have succeeded",
+    unit="1",
+)
+
+TASKS_RETRIED = meter.create_counter(
+    "docket_tasks_retried",
+    description="How many tasks that have been retried",
+    unit="1",
+)
+
+TASK_DURATION = meter.create_histogram(
+    "docket_task_duration",
+    description="How long tasks take to complete",
+    unit="s",
+)
+
+TASK_PUNCTUALITY = meter.create_histogram(
+    "docket_task_punctuality",
+    description="How close a task was to its scheduled time",
+    unit="s",
+)
+
+TASKS_RUNNING = meter.create_up_down_counter(
+    "docket_tasks_running",
+    description="How many tasks that are currently running",
+    unit="1",
+)
 
 Message = dict[bytes, bytes]
 

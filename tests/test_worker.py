@@ -18,13 +18,6 @@ async def test_worker_aenter_propagates_connection_errors():
         await worker.__aenter__()
 
 
-@pytest.fixture
-def the_task() -> AsyncMock:
-    task = AsyncMock()
-    task.__name__ = "the_task"
-    return task
-
-
 async def test_worker_acknowledges_messages(
     docket: Docket, worker: Worker, the_task: AsyncMock
 ):

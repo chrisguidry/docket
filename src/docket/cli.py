@@ -13,7 +13,7 @@ app: typer.Typer = typer.Typer(
     help="Start a worker to process tasks",
 )
 def worker() -> None:
-    print("TODO: start the worker")
+    print("TODO: Configure and start a worker")
 
 
 @app.command(
