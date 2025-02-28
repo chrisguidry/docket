@@ -1,10 +1,13 @@
 import asyncio
+import logging
 import os
 from datetime import timedelta
 
 from docket import Docket, Worker
 
 from .tasks import hello, toxic
+
+logging.getLogger().setLevel(logging.INFO)
 
 
 async def main():

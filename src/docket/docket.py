@@ -13,9 +13,13 @@ from typing import (
 )
 from uuid import uuid4
 
+from opentelemetry import propagate, trace
 from redis.asyncio import Redis
 
 from .execution import Execution
+from .instrumentation import message_setter
+
+tracer: trace.Tracer = trace.get_tracer(__name__)
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -153,25 +157,44 @@ class Docket:
 
     async def schedule(self, execution: Execution) -> None:
         message: dict[bytes, bytes] = execution.as_message()
-        key = execution.key
-        when = execution.when
+        propagate.inject(message, setter=message_setter)
 
-        async with self.redis() as redis:
-            # if the task is already in the queue, retain it
-            if await redis.zscore(self.queue_key, key) is not None:
-                return
+        with tracer.start_as_current_span(
+            "docket.schedule",
+            attributes={
+                "docket.name": self.name,
+                "docket.execution.when": execution.when.isoformat(),
+                "docket.execution.key": execution.key,
+                "docket.execution.attempt": execution.attempt,
+                "code.function.name": execution.function.__name__,
+            },
+        ):
+            key = execution.key
+            when = execution.when
 
-            if when <= datetime.now(timezone.utc):
-                await redis.xadd(self.stream_key, message)
-            else:
-                async with redis.pipeline() as pipe:
-                    pipe.hset(self.parked_task_key(key), mapping=message)
-                    pipe.zadd(self.queue_key, {key: when.timestamp()})
-                    await pipe.execute()
+            async with self.redis() as redis:
+                # if the task is already in the queue, retain it
+                if await redis.zscore(self.queue_key, key) is not None:
+                    return
+
+                if when <= datetime.now(timezone.utc):
+                    await redis.xadd(self.stream_key, message)
+                else:
+                    async with redis.pipeline() as pipe:
+                        pipe.hset(self.parked_task_key(key), mapping=message)
+                        pipe.zadd(self.queue_key, {key: when.timestamp()})
+                        await pipe.execute()
 
     async def cancel(self, key: str) -> None:
-        async with self.redis() as redis:
-            async with redis.pipeline() as pipe:
-                pipe.delete(self.parked_task_key(key))
-                pipe.zrem(self.queue_key, key)
-                await pipe.execute()
+        with tracer.start_as_current_span(
+            "docket.cancel",
+            attributes={
+                "docket.name": self.name,
+                "docket.execution.key": key,
+            },
+        ):
+            async with self.redis() as redis:
+                async with redis.pipeline() as pipe:
+                    pipe.delete(self.parked_task_key(key))
+                    pipe.zrem(self.queue_key, key)
+                    await pipe.execute()

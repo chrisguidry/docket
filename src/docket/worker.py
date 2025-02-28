@@ -7,11 +7,16 @@ from typing import TYPE_CHECKING, Any, Protocol, Self, Sequence, TypeVar, cast
 from uuid import uuid4
 
 import redis.exceptions
+from opentelemetry import propagate, trace
+from opentelemetry.trace import Tracer
 from redis import RedisError
 
 from .docket import Docket, Execution
+from .instrumentation import message_getter
 
 logger: logging.Logger = logging.getLogger(__name__)
+tracer: Tracer = trace.get_tracer(__name__)
+
 
 RedisStreamID = bytes
 RedisMessageID = bytes
@@ -223,14 +228,33 @@ class Worker:
 
         dependencies = self._get_dependencies(execution)
 
+        # Extract traceparent from message and create span link
+        context = propagate.extract(message, getter=message_getter)
+        span_context = trace.get_current_span(context).get_span_context()
+        links = []
+        if span_context.is_valid:
+            links = [trace.Link(span_context)]
+
         try:
-            await execution.function(
-                *execution.args,
-                **{
-                    **execution.kwargs,
-                    **dependencies,
+            with tracer.start_as_current_span(
+                execution.function.__name__,
+                kind=trace.SpanKind.CONSUMER,
+                attributes={
+                    "docket.name": self.docket.name,
+                    "docket.execution.when": execution.when.isoformat(),
+                    "docket.execution.key": execution.key,
+                    "docket.execution.attempt": execution.attempt,
+                    "code.function.name": execution.function.__name__,
                 },
-            )
+                links=links,
+            ):
+                await execution.function(
+                    *execution.args,
+                    **{
+                        **execution.kwargs,
+                        **dependencies,
+                    },
+                )
         except Exception:
             logger.exception(
                 "Error executing task %s",

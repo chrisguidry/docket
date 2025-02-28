@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import sys
 import time
@@ -8,6 +9,9 @@ import redis.exceptions
 from docket import Docket
 
 from .tasks import hello
+
+logging.getLogger().setLevel(logging.INFO)
+logger = logging.getLogger("chaos.producer")
 
 
 async def main(tasks_to_produce: int):
@@ -25,9 +29,10 @@ async def main(tasks_to_produce: int):
                     for _ in range(tasks_sent, tasks_to_produce):
                         execution = await docket.add(hello)()
                         await r.zadd("hello:sent", {execution.key: time.time()})
+                        logger.info("Added task %s", execution.key)
                         tasks_sent += 1
         except redis.exceptions.ConnectionError:
-            print(
+            logger.warning(
                 "producer: Redis connection error, retrying in 5s... "
                 f"({tasks_sent}/{tasks_to_produce} tasks sent)"
             )

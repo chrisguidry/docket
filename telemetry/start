@@ -1,0 +1,9 @@
+#!/bin/bash
+
+TELEMETRY_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+git clone https://github.com/SigNoz/signoz.git $TELEMETRY_DIR/signoz
+
+cd $TELEMETRY_DIR/signoz/deploy/docker
+
+docker compose up -d

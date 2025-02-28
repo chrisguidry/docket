@@ -1,0 +1,8 @@
+#!/bin/bash
+
+TELEMETRY_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+if [ -d "$TELEMETRY_DIR/signoz" ]; then
+    cd $TELEMETRY_DIR/signoz/deploy/docker
+    docker compose down
+fi
