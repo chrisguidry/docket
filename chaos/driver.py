@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import os
 import random
 import sys
 from asyncio import subprocess
@@ -8,18 +10,43 @@ from typing import Any, Literal, Sequence
 from uuid import uuid4
 
 import redis.exceptions
+from opentelemetry import trace
 from testcontainers.redis import RedisContainer
 
 from docket import Docket
 
 from .tasks import toxic
 
+logging.getLogger().setLevel(logging.INFO)
+
+# Quiets down the testcontainers logger
+testcontainers_logger = logging.getLogger("testcontainers.core.container")
+testcontainers_logger.setLevel(logging.ERROR)
+testcontainers_logger = logging.getLogger("testcontainers.core.waiting_utils")
+testcontainers_logger.setLevel(logging.ERROR)
+
+console = logging.StreamHandler(stream=sys.stdout)
+console.setFormatter(
+    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+)
+logging.getLogger().addHandler(console)
+
+
+logger = logging.getLogger("chaos.driver")
+tracer = trace.get_tracer("chaos.driver")
+
+
+def python_entrypoint() -> list[str]:
+    if os.environ.get("OTEL_DISTRO"):
+        return ["opentelemetry-instrument", sys.executable]
+    return [sys.executable]
+
 
 async def main(
     mode: Literal["chaos", "performance"] = "chaos",
-    tasks: int = 10000,
-    producers: int = 5,
-    workers: int = 10,
+    tasks: int = 2000,
+    producers: int = 2,
+    workers: int = 4,
 ):
     with RedisContainer("redis:7.4.2") as redis_server:
         docket = Docket(
@@ -29,6 +56,7 @@ async def main(
             db=0,
         )
         environment = {
+            **os.environ,
             "CHAOS_DOCKET_NAME": docket.name,
             "CHAOS_REDIS_HOST": docket.host,
             "CHAOS_REDIS_PORT": str(docket.port),
@@ -40,15 +68,17 @@ async def main(
 
         tasks_per_producer = tasks // producers
 
-        print(f"Spawning {producers} producers with {tasks_per_producer} tasks each...")
+        logger.info(
+            "Spawning %d producers with %d tasks each...", producers, tasks_per_producer
+        )
 
         async def spawn_producer() -> Process:
             return await asyncio.create_subprocess_exec(
-                sys.executable,
+                *python_entrypoint(),
                 "-m",
                 "chaos.producer",
                 str(tasks_per_producer),
-                env=environment,
+                env=environment | {"OTEL_SERVICE_NAME": "chaos-producer"},
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -57,14 +87,14 @@ async def main(
         for _ in range(producers):
             producer_processes.append(await spawn_producer())
 
-        print(f"Spawning {workers} workers...")
+        logger.info("Spawning %d workers...", workers)
 
         async def spawn_worker() -> Process:
             return await asyncio.create_subprocess_exec(
-                sys.executable,
+                *python_entrypoint(),
                 "-m",
                 "chaos.worker",
-                env=environment,
+                env=environment | {"OTEL_SERVICE_NAME": "chaos-worker"},
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -82,15 +112,18 @@ async def main(
                     sent_tasks = await r.zcard("hello:sent")
                     received_tasks = await r.zcard("hello:received")
 
-                    print(
-                        f"sent: {sent_tasks}, "
-                        f"received: {received_tasks}, "
-                        f"clients: {connected_clients}"
+                    logger.info(
+                        "sent: %d, received: %d, clients: %d",
+                        sent_tasks,
+                        received_tasks,
+                        connected_clients,
                     )
                     if sent_tasks >= tasks:
                         break
             except redis.exceptions.ConnectionError as e:
-                print(f"driver: Redis connection error ({e}), retrying in 5s...")
+                logger.error(
+                    "driver: Redis connection error (%s), retrying in 5s...", e
+                )
                 await asyncio.sleep(5)
 
             # Now apply some chaos to the system:
@@ -98,34 +131,34 @@ async def main(
             if mode == "chaos":
                 chaos_chance = random.random()
                 if chaos_chance < 0.01:
-                    print("CHAOS: Killing redis server...")
+                    logger.warning("CHAOS: Killing redis server...")
                     redis_server.stop()
 
                     await asyncio.sleep(5)
 
-                    print("CHAOS: Starting redis server...")
+                    logger.warning("CHAOS: Starting redis server...")
                     while True:
                         try:
                             redis_server.start()
                             break
                         except Exception:
-                            print("  Redis server failed, retrying in 5s...")
+                            logger.warning("  Redis server failed, retrying in 5s...")
                             await asyncio.sleep(5)
 
                 elif chaos_chance < 0.10:
                     worker_index = random.randrange(len(worker_processes))
                     worker_to_kill = worker_processes.pop(worker_index)
 
-                    print(f"CHAOS: Killing worker {worker_index}...")
+                    logger.warning("CHAOS: Killing worker %d...", worker_index)
                     try:
                         worker_to_kill.terminate()
                     except ProcessLookupError:
-                        print("  What is dead may never die!")
+                        logger.warning("  What is dead may never die!")
 
-                    print(f"CHAOS: Replacing worker {worker_index}...")
+                    logger.warning("CHAOS: Replacing worker %d...", worker_index)
                     worker_processes.append(await spawn_worker())
                 elif chaos_chance < 0.15:
-                    print("CHAOS: Queuing a toxic task...")
+                    logger.warning("CHAOS: Queuing a toxic task...")
                     try:
                         async with docket:
                             await docket.add(toxic)()
@@ -146,9 +179,11 @@ async def main(
             _, max_score = last_entries[0]
             total_time = timedelta(seconds=max_score - min_score)
 
-            print(
-                f"Processed {tasks} tasks in {total_time}, "
-                f"averaging {tasks / total_time.total_seconds():.2f}/s"
+            logger.info(
+                "Processed %d tasks in %s, averaging %.2f/s",
+                tasks,
+                total_time,
+                tasks / total_time.total_seconds(),
             )
 
         for process in producer_processes + worker_processes:
