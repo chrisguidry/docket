@@ -12,7 +12,7 @@ from docket import CurrentWorker, Docket, Worker
 async def test_worker_aenter_propagates_connection_errors():
     """The worker should propagate Redis connection errors"""
 
-    docket = Docket(name="test-docket", host="nonexistent-host", port=12345)
+    docket = Docket(name="test-docket", url="redis://nonexistent-host:12345/0")
     worker = Worker(docket)
     with pytest.raises(RedisError):
         await worker.__aenter__()
@@ -25,7 +25,7 @@ async def test_worker_acknowledges_messages(
 
     await docket.add(the_task)()
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     async with docket.redis() as redis:
         pending_info = await redis.xpending(
@@ -55,7 +55,7 @@ async def test_two_workers_split_work(docket: Docket):
         await docket.add(the_task)()
 
     async with worker1, worker2:
-        await asyncio.gather(worker1.run_until_current(), worker2.run_until_current())
+        await asyncio.gather(worker1.run_until_finished(), worker2.run_until_finished())
 
     assert call_counts[worker1] + call_counts[worker2] == 100
     assert call_counts[worker1] > 40
@@ -84,7 +84,7 @@ async def test_worker_reconnects_when_connection_is_lost(
     await docket.add(the_task)()
 
     async with worker:
-        await worker.run_until_current()
+        await worker.run_until_finished()
 
     assert call_count == 2
 

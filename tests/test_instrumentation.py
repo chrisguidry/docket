@@ -32,7 +32,7 @@ async def test_executing_a_task_is_wrapped_in_a_span(docket: Docket, worker: Wor
 
     execution = await docket.add(the_task)()
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert len(captured) == 1
     (task_span,) = captured
@@ -66,7 +66,7 @@ async def test_task_spans_are_linked_to_the_originating_span(
     assert isinstance(originating_span, Span)
     assert originating_span.context
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert len(captured) == 1
     (task_span,) = captured
@@ -282,7 +282,7 @@ async def test_worker_execution_increments_task_counters(
     """Should increment the appropriate task counters when a worker executes a task."""
     await docket.add(the_task)()
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     TASKS_STARTED.assert_called_once_with(1, worker_labels)
     TASKS_COMPLETED.assert_called_once_with(1, worker_labels)
@@ -307,7 +307,7 @@ async def test_failed_task_increments_failure_counter(
 
     await docket.add(the_task)()
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     TASKS_STARTED.assert_called_once_with(1, worker_labels)
     TASKS_COMPLETED.assert_called_once_with(1, worker_labels)
@@ -333,7 +333,7 @@ async def test_retried_task_increments_retry_counter(
 
     await docket.add(the_task)()
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert TASKS_STARTED.call_count == 2
     assert TASKS_COMPLETED.call_count == 2
@@ -359,7 +359,7 @@ async def test_exhausted_retried_task_increments_retry_counter(
 
     await docket.add(the_task)()
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     TASKS_STARTED.assert_called_once_with(1, worker_labels)
     TASKS_COMPLETED.assert_called_once_with(1, worker_labels)
@@ -385,7 +385,7 @@ async def test_task_duration_is_measured(
         await asyncio.sleep(0.1)
 
     await docket.add(the_task)()
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     # We can't check the exact value since it depends on actual execution time
     TASK_DURATION.assert_called_once_with(mock.ANY, worker_labels)
@@ -413,7 +413,7 @@ async def test_task_punctuality_is_measured(
     when = datetime.now(timezone.utc) + timedelta(seconds=0.1)
     await docket.add(the_task, when=when)()
     await asyncio.sleep(0.4)
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     # We can't check the exact value since it depends on actual timing
     TASK_PUNCTUALITY.assert_called_once_with(mock.ANY, worker_labels)
@@ -444,7 +444,7 @@ async def test_task_running_gauge_is_incremented(
 
     await docket.add(the_task)()
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert inside_task is True
 

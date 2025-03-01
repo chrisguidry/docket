@@ -5,6 +5,7 @@ don't need to cover detailed edge cases.  Keep these tests as straightforward an
 as possible to aid with understanding docket.
 """
 
+import logging
 from datetime import datetime, timedelta
 from typing import Callable
 from unittest.mock import AsyncMock
@@ -21,6 +22,7 @@ from docket import (
     Retry,
     TaskKey,
     Worker,
+    tasks,
 )
 
 
@@ -38,7 +40,7 @@ async def test_immediate_task_execution(
 
     await docket.add(the_task)("a", "b", c="c")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("a", "b", c="c")
 
@@ -52,7 +54,7 @@ async def test_immedate_task_execution_by_name(
 
     await docket.add("the_task")("a", "b", c="c")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("a", "b", c="c")
 
@@ -65,7 +67,7 @@ async def test_scheduled_execution(
     when = now() + timedelta(milliseconds=100)
     await docket.add(the_task, when)("a", "b", c="c")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("a", "b", c="c")
 
@@ -85,7 +87,7 @@ async def test_adding_is_itempotent(
     later = now() + timedelta(milliseconds=500)
     await docket.add(the_task, later, key=key)("b", "c", c="d")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("a", "b", c="c")
 
@@ -105,7 +107,7 @@ async def test_rescheduling_later(
     later = now() + timedelta(milliseconds=100)
     await docket.replace(the_task, later, key=key)("b", "c", c="d")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("b", "c", c="d")
 
@@ -125,7 +127,7 @@ async def test_rescheduling_earlier(
     earlier = now() + timedelta(milliseconds=10)
     await docket.replace(the_task, earlier, key)("b", "c", c="d")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("b", "c", c="d")
 
@@ -145,7 +147,7 @@ async def test_rescheduling_by_name(
     later = now() + timedelta(milliseconds=100)
     await docket.replace("the_task", later, key=key)("b", "c", c="d")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("b", "c", c="d")
 
@@ -162,7 +164,7 @@ async def test_cancelling_future_task(
 
     await docket.cancel(execution.key)
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     the_task.assert_not_called()
 
@@ -176,7 +178,7 @@ async def test_cancelling_current_task_not_supported(
 
     await docket.cancel(execution.key)
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("a", "b", c="c")
 
@@ -193,7 +195,7 @@ async def test_errors_are_logged(
     the_task.side_effect = Exception("Faily McFailerson")
     await docket.add(the_task, now())("a", "b", c="c")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("a", "b", c="c")
 
@@ -227,7 +229,7 @@ async def test_supports_simple_linear_retries(
 
     await docket.add(the_task)("a", b="c")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert calls == 3
 
@@ -261,7 +263,7 @@ async def test_supports_simple_linear_retries_with_delay(
 
     start = now()
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     total_delay = now() - start
     assert total_delay >= timedelta(milliseconds=300)
@@ -297,7 +299,7 @@ async def test_supports_infinite_retries(
 
     await docket.add(the_task)("a", b="c")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert calls == 3
 
@@ -319,7 +321,7 @@ async def test_supports_requesting_current_docket(
 
     await docket.add(the_task)("a", b="c")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert called
 
@@ -341,7 +343,7 @@ async def test_supports_requesting_current_worker(
 
     await docket.add(the_task)("a", b="c")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert called
 
@@ -365,7 +367,7 @@ async def test_supports_requesting_current_execution(
 
     await docket.add(the_task, key="my-cool-task:123")("a", b="c")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert called
 
@@ -387,6 +389,19 @@ async def test_supports_requesting_current_task_key(
 
     await docket.add(the_task, key="my-cool-task:123")("a", b="c")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert called
+
+
+async def test_all_dockets_have_a_trace_task(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """All dockets should have a trace task"""
+
+    await docket.add(tasks.trace)("Hello, world!")
+
+    with caplog.at_level(logging.INFO):
+        await worker.run_until_finished()
+
+        assert "Hello, world!" in caplog.text

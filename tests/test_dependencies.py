@@ -27,7 +27,7 @@ async def test_dependencies_may_be_duplicated(docket: Docket, worker: Worker):
 
     await docket.add(the_task)("a", "b")
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert called
 
@@ -64,7 +64,7 @@ async def test_users_can_provide_dependencies_directly(docket: Docket, worker: W
 
     await docket.add(the_task)("a", "b", retry=Retry(attempts=42))
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert called
 
@@ -88,6 +88,6 @@ async def test_user_provide_retries_are_used(docket: Docket, worker: Worker):
 
     await docket.add(the_task)("a", "b", retry=Retry(attempts=2))
 
-    await worker.run_until_current()
+    await worker.run_until_finished()
 
     assert calls == 2

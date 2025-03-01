@@ -20,3 +20,6 @@ async def hello(
 
 async def toxic():
     sys.exit(42)
+
+
+chaos_tasks = [hello, toxic]

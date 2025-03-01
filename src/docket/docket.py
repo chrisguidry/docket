@@ -1,3 +1,4 @@
+import importlib
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import TracebackType
@@ -6,6 +7,7 @@ from typing import (
     AsyncGenerator,
     Awaitable,
     Callable,
+    Iterable,
     ParamSpec,
     Self,
     TypeVar,
@@ -31,6 +33,8 @@ tracer: trace.Tracer = trace.get_tracer(__name__)
 P = ParamSpec("P")
 R = TypeVar("R")
 
+TaskCollection = Iterable[Callable[..., Awaitable[Any]]]
+
 
 class Docket:
     tasks: dict[str, Callable[..., Awaitable[Any]]]
@@ -38,19 +42,26 @@ class Docket:
     def __init__(
         self,
         name: str = "docket",
-        host: str = "localhost",
-        port: int = 6379,
-        db: int = 0,
-        password: str | None = None,
+        url: str = "redis://localhost:6379/0",
     ) -> None:
+        """
+        Args:
+            name: The name of the docket.
+            url: The URL of the Redis server.  For example:
+                - "redis://localhost:6379/0"
+                - "redis://user:password@localhost:6379/0"
+                - "redis://user:password@localhost:6379/0?ssl=true"
+                - "rediss://localhost:6379/0"
+                - "unix:///path/to/redis.sock"
+        """
         self.name = name
-        self.host = host
-        self.port = port
-        self.db = db
-        self.password = password
+        self.url = url
 
     async def __aenter__(self) -> Self:
-        self.tasks = {}
+        from .tasks import standard_tasks
+
+        self.tasks = {fn.__name__: fn for fn in standard_tasks}
+
         return self
 
     async def __aexit__(
@@ -63,12 +74,7 @@ class Docket:
 
     @asynccontextmanager
     async def redis(self) -> AsyncGenerator[Redis, None]:
-        async with Redis(
-            host=self.host,
-            port=self.port,
-            db=self.db,
-            password=self.password,
-        ) as redis:
+        async with Redis.from_url(self.url) as redis:
             yield redis
 
     def register(self, function: Callable[..., Awaitable[Any]]) -> None:
@@ -77,6 +83,19 @@ class Docket:
         validate_dependencies(function)
 
         self.tasks[function.__name__] = function
+
+    def register_collection(self, collection_path: str) -> None:
+        """
+        Register a collection of tasks.
+
+        Args:
+            collection_path: A path in the format "module:collection".
+        """
+        module_name, _, member_name = collection_path.rpartition(":")
+        module = importlib.import_module(module_name)
+        collection = getattr(module, member_name)
+        for function in collection:
+            self.register(function)
 
     @overload
     def add(

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 import sys
 import time
@@ -48,18 +49,19 @@ class _stream_due_tasks(Protocol):
 
 
 class Worker:
-    name: str
     docket: Docket
+    name: str
 
     def __init__(
         self,
         docket: Docket,
+        name: str | None = None,
         prefetch_count: int = 10,
         redelivery_timeout: timedelta = timedelta(minutes=5),
         reconnection_delay: timedelta = timedelta(seconds=5),
     ) -> None:
-        self.name = f"worker:{uuid4()}"
         self.docket = docket
+        self.name = name or f"worker:{uuid4()}"
         self.prefetch_count = prefetch_count
         self.redelivery_timeout = redelivery_timeout
         self.reconnection_delay = reconnection_delay
@@ -98,7 +100,35 @@ class Worker:
             "stream_key": self.docket.stream_key,
         }
 
-    async def run_until_current(self) -> None:
+    @classmethod
+    async def run(
+        cls,
+        docket_name: str = "docket",
+        url: str = "redis://localhost:6379/0",
+        name: str | None = None,
+        prefetch_count: int = 10,
+        redelivery_timeout: timedelta = timedelta(minutes=5),
+        reconnection_delay: timedelta = timedelta(seconds=5),
+        until_finished: bool = False,
+        tasks: list[str] = ["docket.tasks:standard_tasks"],
+    ) -> None:
+        async with Docket(name=docket_name, url=url) as docket:
+            for task_path in tasks:
+                docket.register_collection(task_path)
+
+            async with Worker(
+                docket=docket,
+                name=name,
+                prefetch_count=prefetch_count,
+                redelivery_timeout=redelivery_timeout,
+                reconnection_delay=reconnection_delay,
+            ) as worker:
+                if until_finished:
+                    await worker.run_until_finished()
+                else:
+                    await worker.run_forever()  # pragma: no cover
+
+    async def run_until_finished(self) -> None:
         """Run the worker until there are no more tasks to process."""
         return await self._run(forever=False)
 
@@ -107,6 +137,11 @@ class Worker:
         return await self._run(forever=True)  # pragma: no cover
 
     async def _run(self, forever: bool = False) -> None:
+        logger.info("Starting worker %r with the following tasks:", self.name)
+        for task_name, task in self.docket.tasks.items():
+            signature = inspect.signature(task)
+            logger.info("* %s%s", task_name, signature)
+
         while True:
             try:
                 return await self._worker_loop(forever=forever)
@@ -172,7 +207,7 @@ class Worker:
                     keys=[self.docket.queue_key, self.docket.stream_key],
                     args=[now.timestamp(), self.docket.name],
                 )
-                logger.info(
+                logger.debug(
                     "Moved %d/%d due tasks from %s to %s",
                     due_work,
                     total_work,
