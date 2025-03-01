@@ -25,14 +25,16 @@ async def redis_server() -> AsyncGenerator[RedisContainer, None]:
         container.stop()
 
 
+@pytest.fixture(scope="session")
+def redis_url(redis_server: RedisContainer) -> str:
+    host = redis_server.get_container_host_ip()
+    port = redis_server.get_exposed_port(6379)
+    return f"redis://{host}:{port}/0"
+
+
 @pytest.fixture
-async def docket(redis_server: RedisContainer) -> AsyncGenerator[Docket, None]:
-    async with Docket(
-        name=f"test-docket-{uuid4()}",
-        host=redis_server.get_container_host_ip(),
-        port=redis_server.get_exposed_port(6379),
-        db=0,
-    ) as docket:
+async def docket(redis_url: str) -> AsyncGenerator[Docket, None]:
+    async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
         yield docket
 
 
