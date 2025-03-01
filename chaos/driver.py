@@ -49,18 +49,15 @@ async def main(
     workers: int = 4,
 ):
     with RedisContainer("redis:7.4.2") as redis_server:
+        redis_url = f"redis://{redis_server.get_container_host_ip()}:{redis_server.get_exposed_port(6379)}"
         docket = Docket(
             name=f"test-docket-{uuid4()}",
-            host=redis_server.get_container_host_ip(),
-            port=redis_server.get_exposed_port(6379),
-            db=0,
+            url=redis_url,
         )
         environment = {
             **os.environ,
-            "CHAOS_DOCKET_NAME": docket.name,
-            "CHAOS_REDIS_HOST": docket.host,
-            "CHAOS_REDIS_PORT": str(docket.port),
-            "CHAOS_REDIS_DB": str(docket.db),
+            "DOCKET_NAME": docket.name,
+            "DOCKET_URL": redis_url,
         }
 
         if tasks % producers != 0:
@@ -93,8 +90,19 @@ async def main(
             return await asyncio.create_subprocess_exec(
                 *python_entrypoint(),
                 "-m",
-                "chaos.worker",
-                env=environment | {"OTEL_SERVICE_NAME": "chaos-worker"},
+                "docket",
+                "worker",
+                "--docket",
+                docket.name,
+                "--url",
+                redis_url,
+                "--tasks",
+                "chaos.tasks:chaos_tasks",
+                env=environment
+                | {
+                    "OTEL_SERVICE_NAME": "chaos-worker",
+                    "DOCKET_WORKER_REDELIVERY_TIMEOUT": "5s",
+                },
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
