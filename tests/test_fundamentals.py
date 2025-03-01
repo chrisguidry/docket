@@ -408,7 +408,6 @@ async def test_logging_inside_of_task(
         assert a == "a"
         assert b == "c"
 
-        # Use the logger and verify message is captured
         logger.info("Task is running")
 
         nonlocal called
