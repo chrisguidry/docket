@@ -100,6 +100,34 @@ class Worker:
             "stream_key": self.docket.stream_key,
         }
 
+    @classmethod
+    async def run(
+        cls,
+        docket_name: str = "docket",
+        url: str = "redis://localhost:6379/0",
+        name: str | None = None,
+        prefetch_count: int = 10,
+        redelivery_timeout: timedelta = timedelta(minutes=5),
+        reconnection_delay: timedelta = timedelta(seconds=5),
+        until_finished: bool = False,
+        tasks: list[str] = ["docket.tasks:standard_tasks"],
+    ) -> None:
+        async with Docket(name=docket_name, url=url) as docket:
+            for task_path in tasks:
+                docket.register_collection(task_path)
+
+            async with Worker(
+                docket=docket,
+                name=name,
+                prefetch_count=prefetch_count,
+                redelivery_timeout=redelivery_timeout,
+                reconnection_delay=reconnection_delay,
+            ) as worker:
+                if until_finished:
+                    await worker.run_until_finished()
+                else:
+                    await worker.run_forever()  # pragma: no cover
+
     async def run_until_finished(self) -> None:
         """Run the worker until there are no more tasks to process."""
         return await self._run(forever=False)

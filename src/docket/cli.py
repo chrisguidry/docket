@@ -140,25 +140,18 @@ def worker(
     ] = False,
 ) -> None:
     logging.basicConfig(level=logging_level)
-
-    async def run() -> None:
-        async with Docket(name=docket_, url=url) as docket:
-            for task_path in tasks:
-                docket.register_collection(task_path)
-
-            async with Worker(
-                docket=docket,
-                name=name,
-                prefetch_count=prefetch_count,
-                redelivery_timeout=redelivery_timeout,
-                reconnection_delay=reconnection_delay,
-            ) as worker:
-                if until_finished:
-                    await worker.run_until_finished()
-                else:
-                    await worker.run_forever()  # pragma: no cover
-
-    asyncio.run(run())
+    asyncio.run(
+        Worker.run(
+            docket_name=docket_,
+            url=url,
+            name=name,
+            prefetch_count=prefetch_count,
+            redelivery_timeout=redelivery_timeout,
+            reconnection_delay=reconnection_delay,
+            until_finished=until_finished,
+            tasks=tasks,
+        )
+    )
 
 
 @app.command(help="Adds a trace task to the Docket")

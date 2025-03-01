@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 
 import pytest
@@ -31,6 +32,42 @@ def test_worker_command(
 
     assert "Starting worker" in caplog.text
     assert "trace" in caplog.text
+
+
+def test_worker_command_exposes_all_the_options_of_worker():
+    """Should expose all the options of Worker.run in the CLI command"""
+    from docket.cli import worker as worker_cli_command
+
+    cli_signature = inspect.signature(worker_cli_command)
+    worker_run_signature = inspect.signature(Worker.run)
+
+    cli_params = {
+        name: (param.default, param.annotation)
+        for name, param in cli_signature.parameters.items()
+    }
+
+    # Remove CLI-only parameters
+    cli_params.pop("logging_level")
+
+    worker_params = {
+        name: (param.default, param.annotation)
+        for name, param in worker_run_signature.parameters.items()
+    }
+
+    for name, (default, _) in worker_params.items():
+        cli_name = name if name != "docket_name" else "docket_"
+
+        assert cli_name in cli_params, f"Parameter {name} missing from CLI"
+
+        cli_default, _ = cli_params[cli_name]
+
+        if name == "name":
+            # Skip hostname check for the 'name' parameter as it's machine-specific
+            continue
+
+        assert cli_default == default, (
+            f"Default for {name} doesn't match: CLI={cli_default}, Worker.run={default}"
+        )
 
 
 def test_trace_command(
