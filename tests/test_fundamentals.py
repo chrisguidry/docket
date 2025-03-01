@@ -5,7 +5,9 @@ don't need to cover detailed edge cases.  Keep these tests as straightforward an
 as possible to aid with understanding docket.
 """
 
+import logging
 from datetime import datetime, timedelta
+from logging import Logger
 from typing import Callable
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -20,6 +22,7 @@ from docket import (
     Execution,
     Retry,
     TaskKey,
+    TaskLogger,
     Worker,
 )
 
@@ -390,3 +393,33 @@ async def test_supports_requesting_current_task_key(
     await worker.run_until_current()
 
     assert called
+
+
+async def test_logging_inside_of_task(
+    docket: Docket,
+    worker: Worker,
+    now: Callable[[], datetime],
+    caplog: pytest.LogCaptureFixture,
+):
+    """docket should support providing a logger with task context to a task"""
+    called = False
+
+    async def the_task(a: str, b: str, logger: Logger = TaskLogger()):
+        assert a == "a"
+        assert b == "c"
+
+        # Use the logger and verify message is captured
+        logger.info("Task is running")
+
+        nonlocal called
+        called = True
+
+    await docket.add(the_task, key="my-cool-task:123")("a", b="c")
+
+    with caplog.at_level(logging.INFO):
+        await worker.run_until_current()
+
+    assert called
+    assert "Task is running" in caplog.text
+
+    assert "docket.task.my-cool-task:123" in caplog.text

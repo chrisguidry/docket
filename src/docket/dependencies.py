@@ -1,5 +1,6 @@
 import abc
 import inspect
+import logging
 from datetime import timedelta
 from typing import Any, Awaitable, Callable, Counter, cast
 
@@ -53,6 +54,26 @@ class _TaskKey(Dependency):
 
 def TaskKey() -> str:
     return cast(str, _TaskKey())
+
+
+class _TaskLogger(Dependency):
+    def __call__(
+        self, docket: Docket, worker: Worker, execution: Execution
+    ) -> logging.LoggerAdapter:
+        logger = logging.getLogger(f"docket.task.{execution.key}")
+
+        extra = {
+            "task.key": execution.key,
+            "task.attempt": execution.attempt,
+            "worker.name": worker.name,
+            "docket.name": docket.name,
+        }
+
+        return logging.LoggerAdapter(logger, extra)
+
+
+def TaskLogger() -> logging.Logger:
+    return cast(logging.Logger, _TaskLogger())
 
 
 class Retry(Dependency):
