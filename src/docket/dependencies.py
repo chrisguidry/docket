@@ -72,8 +72,8 @@ class _TaskLogger(Dependency):
         return logging.LoggerAdapter(logger, extra)
 
 
-def TaskLogger() -> logging.Logger:
-    return cast(logging.Logger, _TaskLogger())
+def TaskLogger() -> logging.LoggerAdapter[logging.Logger]:
+    return cast(logging.LoggerAdapter[logging.Logger], _TaskLogger())
 
 
 class Retry(Dependency):

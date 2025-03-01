@@ -7,7 +7,7 @@ as possible to aid with understanding docket.
 
 import logging
 from datetime import datetime, timedelta
-from logging import Logger
+from logging import LoggerAdapter
 from typing import Callable
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -401,10 +401,10 @@ async def test_logging_inside_of_task(
     now: Callable[[], datetime],
     caplog: pytest.LogCaptureFixture,
 ):
-    """docket should support providing a logger with task context to a task"""
+    """docket should support providing a logger with task context"""
     called = False
 
-    async def the_task(a: str, b: str, logger: Logger = TaskLogger()):
+    async def the_task(a: str, b: str, logger: LoggerAdapter = TaskLogger()):
         assert a == "a"
         assert b == "c"
 
@@ -420,5 +420,5 @@ async def test_logging_inside_of_task(
 
     assert called
     assert "Task is running" in caplog.text
-
     assert "docket.task.my-cool-task:123" in caplog.text
+    print(caplog.text)
