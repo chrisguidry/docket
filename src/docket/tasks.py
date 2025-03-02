@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone
 
-from .dependencies import CurrentDocket, CurrentExecution, CurrentWorker
+from .dependencies import CurrentDocket, CurrentExecution, CurrentWorker, Retry
 from .docket import Docket, TaskCollection
 from .execution import Execution
 from .worker import Worker
@@ -16,11 +16,11 @@ async def trace(
     execution: Execution = CurrentExecution(),
 ) -> None:
     logger.info(
-        "%s: %r added to docket %r %ss ago now running on worker %r",
+        "%s: %r added to docket %r %s ago now running on worker %r",
         message,
         execution.key,
         docket.name,
-        (datetime.now(timezone.utc) - execution.when).total_seconds(),
+        (datetime.now(timezone.utc) - execution.when),
         worker.name,
         extra={
             "docket.name": docket.name,
@@ -30,6 +30,21 @@ async def trace(
     )
 
 
+async def fail(
+    message: str,
+    docket: Docket = CurrentDocket(),
+    worker: Worker = CurrentWorker(),
+    execution: Execution = CurrentExecution(),
+    retry: Retry = Retry(attempts=2),
+) -> None:
+    raise Exception(
+        f"{message}: {execution.key} added to docket "
+        f"{docket.name} {datetime.now(timezone.utc) - execution.when} "
+        f"ago now running on worker {worker.name}"
+    )
+
+
 standard_tasks: TaskCollection = [
     trace,
+    fail,
 ]

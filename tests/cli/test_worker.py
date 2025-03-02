@@ -1,12 +1,15 @@
 import asyncio
 import inspect
+import json
 import logging
+import sys
 
 import pytest
 from typer.testing import CliRunner
 
 from docket.cli import app
 from docket.docket import Docket
+from docket.tasks import fail, trace
 from docket.worker import Worker
 
 
@@ -70,28 +73,105 @@ def test_worker_command_exposes_all_the_options_of_worker():
         )
 
 
-def test_trace_command(
-    runner: CliRunner,
+async def test_rich_logging_format(
     docket: Docket,
-    worker: Worker,
-    caplog: pytest.LogCaptureFixture,
 ):
-    """Should add a trace task to the docket"""
-    result = runner.invoke(
-        app,
-        [
-            "trace",
-            "hiya!",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-        ],
+    """Should log in rich format"""
+    await docket.add(trace)("hiya!")
+    await docket.add(fail)("womp womp")
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "docket",
+        "worker",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "--logging-format",
+        "rich",
+        "--until-finished",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    assert result.exit_code == 0
-    assert "Added trace task" in result.stdout.strip()
+    await process.wait()
 
-    with caplog.at_level(logging.INFO):
-        asyncio.run(worker.run_until_finished())
+    assert process.returncode == 0
 
-    assert "hiya!" in caplog.text
+    assert process.stdout
+    output = await process.stdout.read()
+
+    assert "INFO" in output.decode()
+    assert "hiya!" in output.decode()
+
+
+async def test_plain_logging_format(
+    docket: Docket,
+):
+    """Should log in plain format"""
+    await docket.add(trace)("hiya!")
+    await docket.add(fail)("womp womp")
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "docket",
+        "worker",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "--logging-format",
+        "plain",
+        "--until-finished",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    await process.wait()
+
+    assert process.returncode == 0
+
+    assert process.stdout
+    output = await process.stdout.read()
+
+    assert "INFO" in output.decode()
+    assert "hiya!" in output.decode()
+
+
+async def test_json_logging_format(
+    docket: Docket,
+):
+    """Should log in JSON format"""
+    await docket.add(trace)("hiya!")
+    await docket.add(fail)("womp womp")
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "docket",
+        "worker",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "--logging-format",
+        "json",
+        "--until-finished",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    await process.wait()
+
+    assert process.returncode == 0
+
+    assert process.stdout
+    output = await process.stdout.read()
+
+    for line in output.decode().splitlines():
+        log = json.loads(line)
+        assert "levelname" in log
+        assert "asctime" in log
+        assert "message" in log
+        assert "exc_info" in log
