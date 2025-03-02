@@ -1,7 +1,10 @@
+import inspect
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Self
 
 import cloudpickle
+
+from docket.annotations import Logged
 
 Message = dict[bytes, bytes]
 
@@ -45,3 +48,27 @@ class Execution:
             key=message[b"key"].decode(),
             attempt=int(message[b"attempt"].decode()),
         )
+
+    def call_repr(self) -> str:
+        arguments: list[str] = []
+        signature = inspect.signature(self.function)
+        function_name = self.function.__name__
+
+        logged_parameters = Logged.annotated_parameters(signature)
+
+        parameter_names = list(signature.parameters.keys())
+
+        for i, argument in enumerate(self.args[: len(parameter_names)]):
+            parameter_name = parameter_names[i]
+            if parameter_name in logged_parameters:
+                arguments.append(repr(argument))
+            else:
+                arguments.append("...")
+
+        for parameter_name, argument in self.kwargs.items():
+            if parameter_name in logged_parameters:
+                arguments.append(f"{parameter_name}={repr(argument)}")
+            else:
+                arguments.append(f"{parameter_name}=...")
+
+        return f"{function_name}({', '.join(arguments)}){{{self.key}}}"

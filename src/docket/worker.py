@@ -4,7 +4,15 @@ import logging
 import sys
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Protocol, Self, Sequence, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Protocol,
+    Self,
+    Sequence,
+    TypeVar,
+    cast,
+)
 from uuid import uuid4
 
 import redis.exceptions
@@ -289,9 +297,9 @@ class Worker:
         TASKS_RUNNING.add(1, counter_labels)
         TASK_PUNCTUALITY.record(punctuality.total_seconds(), counter_labels)
 
-        log_line = "%s [%s] %s{%r}"
         arrow = "↬" if execution.attempt > 1 else "↪"
-        logger.info(log_line, arrow, punctuality, name, key, extra=log_context)
+        call = execution.call_repr()
+        logger.info("%s [%s] %s", arrow, punctuality, call, extra=log_context)
 
         try:
             with tracer.start_as_current_span(
@@ -318,14 +326,14 @@ class Worker:
             TASKS_SUCCEEDED.add(1, counter_labels)
             duration = datetime.now(timezone.utc) - start
             log_context["duration"] = duration.total_seconds()
-            logger.info(log_line, "↩", duration, name, key, extra=log_context)
+            logger.info("%s [%s] %s", "↩", duration, call, extra=log_context)
         except Exception:
             TASKS_FAILED.add(1, counter_labels)
             duration = datetime.now(timezone.utc) - start
             log_context["duration"] = duration.total_seconds()
             retried = await self._retry_if_requested(execution, dependencies)
             arrow = "↫" if retried else "↩"
-            logger.exception(log_line, arrow, duration, name, key, extra=log_context)
+            logger.exception("%s [%s] %s", arrow, duration, call, extra=log_context)
         finally:
             TASKS_RUNNING.add(-1, counter_labels)
             TASKS_COMPLETED.add(1, counter_labels)
@@ -341,14 +349,14 @@ class Worker:
 
         dependencies: dict[str, Any] = {}
 
-        for param_name, dependency in parameters.items():
+        for parameter_name, dependency in parameters.items():
             # If the argument is already provided, skip it, which allows users to call
             # the function directly with the arguments they want.
-            if param_name in execution.kwargs:
-                dependencies[param_name] = execution.kwargs[param_name]
+            if parameter_name in execution.kwargs:
+                dependencies[parameter_name] = execution.kwargs[parameter_name]
                 continue
 
-            dependencies[param_name] = dependency(self.docket, self, execution)
+            dependencies[parameter_name] = dependency(self.docket, self, execution)
 
         return dependencies
 
