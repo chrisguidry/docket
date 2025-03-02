@@ -2,6 +2,7 @@ import asyncio
 import enum
 import logging
 import socket
+import sys
 from datetime import timedelta
 from typing import Annotated
 
@@ -24,6 +25,12 @@ class LogLevel(enum.StrEnum):
     WARNING = "WARNING"
     ERROR = "ERROR"
     CRITICAL = "CRITICAL"
+
+
+class LogFormat(enum.StrEnum):
+    RICH = "rich"
+    PLAIN = "plain"
+    JSON = "json"
 
 
 def duration(duration_str: str | timedelta) -> timedelta:
@@ -59,6 +66,38 @@ def duration(duration_str: str | timedelta) -> timedelta:
         return timedelta(hours=int(duration_str[:-1]))
     else:
         return timedelta(seconds=int(duration_str))
+
+
+def set_logging_format(format: LogFormat) -> None:
+    root_logger = logging.getLogger()
+    if format == LogFormat.JSON:
+        from pythonjsonlogger.json import JsonFormatter
+
+        formatter = JsonFormatter(
+            "{name}{asctime}{levelname}{message}{exc_info}", style="{"
+        )
+        handler = logging.StreamHandler(stream=sys.stdout)
+        handler.setFormatter(formatter)
+        root_logger.addHandler(handler)
+    elif format == LogFormat.PLAIN:
+        handler = logging.StreamHandler(stream=sys.stdout)
+        formatter = logging.Formatter(
+            "[%(asctime)s] %(levelname)s - %(name)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        handler.setFormatter(formatter)
+        root_logger.addHandler(handler)
+    else:
+        from rich.logging import RichHandler
+
+        handler = RichHandler()
+        formatter = logging.Formatter("%(message)s", datefmt="[%X]")
+        handler.setFormatter(formatter)
+        root_logger.addHandler(handler)
+
+
+def set_logging_level(level: LogLevel) -> None:
+    logging.getLogger().setLevel(level)
 
 
 @app.command(
@@ -103,8 +142,17 @@ def worker(
         typer.Option(
             help="The logging level",
             envvar="DOCKET_LOGGING_LEVEL",
+            callback=set_logging_level,
         ),
     ] = LogLevel.INFO,
+    logging_format: Annotated[
+        LogFormat,
+        typer.Option(
+            help="The logging format",
+            envvar="DOCKET_LOGGING_FORMAT",
+            callback=set_logging_format,
+        ),
+    ] = LogFormat.RICH if sys.stdout.isatty() else LogFormat.PLAIN,
     prefetch_count: Annotated[
         int,
         typer.Option(
@@ -139,7 +187,6 @@ def worker(
         ),
     ] = False,
 ) -> None:
-    logging.basicConfig(level=logging_level)
     asyncio.run(
         Worker.run(
             docket_name=docket_,
@@ -177,11 +224,25 @@ def trace(
             help="The message to print",
         ),
     ] = "Howdy!",
+    error: Annotated[
+        bool,
+        typer.Option(
+            "--error",
+            help="Intentionally raise an error",
+        ),
+    ] = False,
 ) -> None:
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
-            execution = await docket.add(tasks.trace)(message)
-            print(f"Added trace task {execution.key!r} to the docket {docket.name!r}")
+            if error:
+                execution = await docket.add(tasks.fail)(message)
+            else:
+                execution = await docket.add(tasks.trace)(message)
+
+            print(
+                f"Added {execution.function.__name__} task {execution.key!r} to "
+                f"the docket {docket.name!r}"
+            )
 
     asyncio.run(run())
 
