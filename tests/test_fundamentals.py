@@ -7,7 +7,7 @@ as possible to aid with understanding docket.
 
 import logging
 from datetime import datetime, timedelta
-from typing import Callable
+from typing import Annotated, Callable
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -19,6 +19,7 @@ from docket import (
     CurrentWorker,
     Docket,
     Execution,
+    Logged,
     Retry,
     TaskKey,
     Worker,
@@ -405,3 +406,40 @@ async def test_all_dockets_have_a_trace_task(
         await worker.run_until_finished()
 
         assert "Hello, world!" in caplog.text
+
+
+async def test_all_dockets_have_a_fail_task(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """All dockets should have a fail task"""
+
+    await docket.add(tasks.fail)("Hello, world!")
+
+    with caplog.at_level(logging.ERROR):
+        await worker.run_until_finished()
+
+        assert "Hello, world!" in caplog.text
+
+
+async def test_tasks_can_opt_into_argument_logging(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """Tasks can opt into argument logging for specific arguments"""
+
+    async def the_task(
+        a: Annotated[str, Logged],
+        b: str,
+        c: Annotated[str, Logged()] = "c",
+        d: Annotated[str, "nah chief"] = "d",
+        docket: Docket = CurrentDocket(),
+    ):
+        pass
+
+    await docket.add(the_task)("value-a", b="value-b", c="value-c", d="value-d")
+
+    with caplog.at_level(logging.INFO):
+        await worker.run_until_finished()
+
+        assert "the_task('value-a', b=..., c='value-c', d=...)" in caplog.text
+        assert "value-b" not in caplog.text
+        assert "value-d" not in caplog.text
