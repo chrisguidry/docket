@@ -8,6 +8,7 @@ as possible to aid with understanding docket.
 import logging
 from datetime import datetime, timedelta
 from typing import Annotated, Callable
+from logging import LoggerAdapter
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from docket import (
     Logged,
     Retry,
     TaskKey,
+    TaskLogger,
     Worker,
     tasks,
 )
@@ -443,3 +445,31 @@ async def test_tasks_can_opt_into_argument_logging(
         assert "the_task('value-a', b=..., c='value-c', d=...)" in caplog.text
         assert "value-b" not in caplog.text
         assert "value-d" not in caplog.text
+
+
+async def test_logging_inside_of_task(
+    docket: Docket,
+    worker: Worker,
+    now: Callable[[], datetime],
+    caplog: pytest.LogCaptureFixture,
+):
+    """docket should support providing a logger with task context"""
+    called = False
+
+    async def the_task(a: str, b: str, logger: LoggerAdapter = TaskLogger()):
+        assert a == "a"
+        assert b == "c"
+
+        logger.info("Task is running")
+
+        nonlocal called
+        called = True
+
+    await docket.add(the_task, key="my-cool-task:123")("a", b="c")
+
+    with caplog.at_level(logging.INFO):
+        await worker.run_until_finished()
+
+    assert called
+    assert "Task is running" in caplog.text
+    assert "docket.task.the_task" in caplog.text

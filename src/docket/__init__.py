@@ -9,7 +9,14 @@ from importlib.metadata import version
 __version__ = version("pydocket")
 
 from .annotations import Logged
-from .dependencies import CurrentDocket, CurrentExecution, CurrentWorker, Retry, TaskKey
+from .dependencies import (
+    CurrentDocket,
+    CurrentExecution,
+    CurrentWorker,
+    Retry,
+    TaskKey,
+    TaskLogger,
+)
 from .docket import Docket
 from .execution import Execution
 from .worker import Worker
@@ -22,6 +29,7 @@ __all__ = [
     "CurrentWorker",
     "CurrentExecution",
     "TaskKey",
+    "TaskLogger",
     "Retry",
     "Logged",
     "__version__",
