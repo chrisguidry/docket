@@ -124,8 +124,6 @@ class ExponentialRetry(Retry):
             else:
                 retry.delay = calculated_delay
 
-            print("delay", retry.delay)
-
         return retry
 
 
