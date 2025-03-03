@@ -420,5 +420,4 @@ async def test_logging_inside_of_task(
 
     assert called
     assert "Task is running" in caplog.text
-    assert "docket.task.my-cool-task:123" in caplog.text
-    print(caplog.text)
+    assert "docket.task.the_task" in caplog.text

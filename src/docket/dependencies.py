@@ -60,11 +60,11 @@ class _TaskLogger(Dependency):
     def __call__(
         self, docket: Docket, worker: Worker, execution: Execution
     ) -> logging.LoggerAdapter:
-        logger = logging.getLogger(f"docket.task.{execution.key}")
+        logger = logging.getLogger(f"docket.task.{execution.function.__name__}")
 
         extra = {
-            "task.key": execution.key,
-            "task.attempt": execution.attempt,
+            "execution.key": execution.key,
+            "execution.attempt": execution.attempt,
             "worker.name": worker.name,
             "docket.name": docket.name,
         }
