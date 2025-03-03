@@ -92,6 +92,43 @@ class Retry(Dependency):
         return retry
 
 
+class ExponentialRetry(Retry):
+    attempts: int
+
+    def __init__(
+        self,
+        attempts: int = 1,
+        minimum_delay: timedelta = timedelta(seconds=1),
+        maximum_delay: timedelta = timedelta(seconds=64),
+    ) -> None:
+        super().__init__(attempts=attempts, delay=minimum_delay)
+        self.minimum_delay = minimum_delay
+        self.maximum_delay = maximum_delay
+
+    def __call__(
+        self, docket: Docket, worker: Worker, execution: Execution
+    ) -> "ExponentialRetry":
+        retry = ExponentialRetry(
+            attempts=self.attempts,
+            minimum_delay=self.minimum_delay,
+            maximum_delay=self.maximum_delay,
+        )
+        retry.attempt = execution.attempt
+
+        if execution.attempt > 1:
+            backoff_factor = 2 ** (execution.attempt - 1)
+            calculated_delay = self.minimum_delay * backoff_factor
+
+            if calculated_delay > self.maximum_delay:
+                retry.delay = self.maximum_delay
+            else:
+                retry.delay = calculated_delay
+
+            print("delay", retry.delay)
+
+        return retry
+
+
 def get_dependency_parameters(
     function: Callable[..., Awaitable[Any]],
 ) -> dict[str, Dependency]:
