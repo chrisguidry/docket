@@ -43,7 +43,7 @@ def python_entrypoint() -> list[str]:
 
 
 async def main(
-    mode: Literal["chaos", "performance"] = "chaos",
+    mode: Literal["performance", "chaos", "hard"] = "chaos",
     tasks: int = 2000,
     producers: int = 2,
     workers: int = 4,
@@ -136,9 +136,9 @@ async def main(
 
             # Now apply some chaos to the system:
 
-            if mode == "chaos":
+            if mode in ("chaos", "hard"):
                 chaos_chance = random.random()
-                if chaos_chance < 0.01:
+                if chaos_chance < 0.01 and mode == "hard":
                     logger.warning("CHAOS: Killing redis server...")
                     redis_server.stop()
 
@@ -203,7 +203,6 @@ async def main(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "performance":
-        asyncio.run(main(mode="performance"))
-    else:
-        asyncio.run(main())
+    mode = sys.argv[1] if len(sys.argv) > 1 else "chaos"
+    assert mode in ("performance", "chaos", "hard")
+    asyncio.run(main(mode=mode))
