@@ -9,7 +9,6 @@ from typing import (
     Any,
     Protocol,
     Self,
-    Sequence,
     TypeVar,
     cast,
 )
@@ -20,7 +19,7 @@ from opentelemetry import propagate, trace
 from opentelemetry.trace import Tracer
 from redis import RedisError
 
-from .docket import Docket, Execution
+from .docket import Docket, Execution, RedisMessage, RedisReadGroupResponse
 from .instrumentation import (
     TASK_DURATION,
     TASK_PUNCTUALITY,
@@ -36,12 +35,6 @@ from .instrumentation import (
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
 
-
-RedisStreamID = bytes
-RedisMessageID = bytes
-RedisMessage = dict[bytes, bytes]
-RedisStream = tuple[RedisStreamID, Sequence[tuple[RedisMessageID, RedisMessage]]]
-RedisReadGroupResponse = Sequence[RedisStream]
 
 if TYPE_CHECKING:  # pragma: no cover
     from .dependencies import Dependency
@@ -282,6 +275,14 @@ class Worker:
             "task": name,
         }
 
+        arrow = "↬" if execution.attempt > 1 else "↪"
+        call = execution.call_repr()
+
+        if self.docket.strike_list.is_stricken(execution):
+            arrow = "🗙"
+            logger.warning("%s %s", arrow, call, extra=log_context)
+            return
+
         dependencies = self._get_dependencies(execution)
 
         context = propagate.extract(message, getter=message_getter)
@@ -297,8 +298,6 @@ class Worker:
         TASKS_RUNNING.add(1, counter_labels)
         TASK_PUNCTUALITY.record(punctuality.total_seconds(), counter_labels)
 
-        arrow = "↬" if execution.attempt > 1 else "↪"
-        call = execution.call_repr()
         logger.info("%s [%s] %s", arrow, punctuality, call, extra=log_context)
 
         try:

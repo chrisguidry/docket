@@ -49,3 +49,10 @@ def the_task() -> AsyncMock:
     task = AsyncMock()
     task.__name__ = "the_task"
     return task
+
+
+@pytest.fixture
+def another_task() -> AsyncMock:
+    task = AsyncMock()
+    task.__name__ = "another_task"
+    return task
