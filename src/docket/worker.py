@@ -1,10 +1,18 @@
 import asyncio
+import inspect
 import logging
 import sys
-import time
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Protocol, Self, Sequence, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Protocol,
+    Self,
+    Sequence,
+    TypeVar,
+    cast,
+)
 from uuid import uuid4
 
 import redis.exceptions
@@ -48,18 +56,19 @@ class _stream_due_tasks(Protocol):
 
 
 class Worker:
-    name: str
     docket: Docket
+    name: str
 
     def __init__(
         self,
         docket: Docket,
+        name: str | None = None,
         prefetch_count: int = 10,
         redelivery_timeout: timedelta = timedelta(minutes=5),
         reconnection_delay: timedelta = timedelta(seconds=5),
     ) -> None:
-        self.name = f"worker:{uuid4()}"
         self.docket = docket
+        self.name = name or f"worker:{uuid4()}"
         self.prefetch_count = prefetch_count
         self.redelivery_timeout = redelivery_timeout
         self.reconnection_delay = reconnection_delay
@@ -98,7 +107,35 @@ class Worker:
             "stream_key": self.docket.stream_key,
         }
 
-    async def run_until_current(self) -> None:
+    @classmethod
+    async def run(
+        cls,
+        docket_name: str = "docket",
+        url: str = "redis://localhost:6379/0",
+        name: str | None = None,
+        prefetch_count: int = 10,
+        redelivery_timeout: timedelta = timedelta(minutes=5),
+        reconnection_delay: timedelta = timedelta(seconds=5),
+        until_finished: bool = False,
+        tasks: list[str] = ["docket.tasks:standard_tasks"],
+    ) -> None:
+        async with Docket(name=docket_name, url=url) as docket:
+            for task_path in tasks:
+                docket.register_collection(task_path)
+
+            async with Worker(
+                docket=docket,
+                name=name,
+                prefetch_count=prefetch_count,
+                redelivery_timeout=redelivery_timeout,
+                reconnection_delay=reconnection_delay,
+            ) as worker:
+                if until_finished:
+                    await worker.run_until_finished()
+                else:
+                    await worker.run_forever()  # pragma: no cover
+
+    async def run_until_finished(self) -> None:
         """Run the worker until there are no more tasks to process."""
         return await self._run(forever=False)
 
@@ -107,6 +144,11 @@ class Worker:
         return await self._run(forever=True)  # pragma: no cover
 
     async def _run(self, forever: bool = False) -> None:
+        logger.info("Starting worker %r with the following tasks:", self.name)
+        for task_name, task in self.docket.tasks.items():
+            signature = inspect.signature(task)
+            logger.info("* %s%s", task_name, signature)
+
         while True:
             try:
                 return await self._worker_loop(forever=forever)
@@ -172,14 +214,15 @@ class Worker:
                     keys=[self.docket.queue_key, self.docket.stream_key],
                     args=[now.timestamp(), self.docket.name],
                 )
-                logger.info(
-                    "Moved %d/%d due tasks from %s to %s",
-                    due_work,
-                    total_work,
-                    self.docket.queue_key,
-                    self.docket.stream_key,
-                    extra=self._log_context,
-                )
+                if due_work > 0:
+                    logger.debug(
+                        "Moved %d/%d due tasks from %s to %s",
+                        due_work,
+                        total_work,
+                        self.docket.queue_key,
+                        self.docket.stream_key,
+                        extra=self._log_context,
+                    )
 
                 _, redeliveries, _ = await redis.xautoclaim(
                     name=self.docket.stream_key,
@@ -225,42 +268,40 @@ class Worker:
             self.docket.tasks[message[b"function"].decode()],
             message,
         )
+        name = execution.function.__name__
+        key = execution.key
 
-        logger.info(
-            "Executing task %s with args %s and kwargs %s",
-            execution.key,
-            execution.args,
-            execution.kwargs,
-            extra={
-                **self._log_context,
-                "function": execution.function.__name__,
-            },
-        )
-
-        dependencies = self._get_dependencies(execution)
-
+        log_context: dict[str, str | float] = {
+            **self._log_context,
+            "task": name,
+            "key": key,
+        }
         counter_labels = {
             "docket": self.docket.name,
             "worker": self.name,
-            "task": execution.function.__name__,
+            "task": name,
         }
 
-        # Extract traceparent from message and create span link
-        context = propagate.extract(message, getter=message_getter)
-        span_context = trace.get_current_span(context).get_span_context()
-        links = []
-        if span_context.is_valid:
-            links = [trace.Link(span_context)]
+        dependencies = self._get_dependencies(execution)
 
-        TASK_PUNCTUALITY.record(
-            (datetime.now(timezone.utc) - execution.when).total_seconds(),
-            counter_labels,
-        )
+        context = propagate.extract(message, getter=message_getter)
+        initiating_context = trace.get_current_span(context).get_span_context()
+        links = [trace.Link(initiating_context)] if initiating_context.is_valid else []
+
+        start = datetime.now(timezone.utc)
+        punctuality = start - execution.when
+        log_context["punctuality"] = punctuality.total_seconds()
+        duration = timedelta(0)
+
+        TASKS_STARTED.add(1, counter_labels)
+        TASKS_RUNNING.add(1, counter_labels)
+        TASK_PUNCTUALITY.record(punctuality.total_seconds(), counter_labels)
+
+        arrow = "↬" if execution.attempt > 1 else "↪"
+        call = execution.call_repr()
+        logger.info("%s [%s] %s", arrow, punctuality, call, extra=log_context)
 
         try:
-            TASKS_STARTED.add(1, counter_labels)
-            TASKS_RUNNING.add(1, counter_labels)
-
             with tracer.start_as_current_span(
                 execution.function.__name__,
                 kind=trace.SpanKind.CONSUMER,
@@ -269,11 +310,11 @@ class Worker:
                     "docket.execution.when": execution.when.isoformat(),
                     "docket.execution.key": execution.key,
                     "docket.execution.attempt": execution.attempt,
+                    "docket.execution.punctuality": punctuality.total_seconds(),
                     "code.function.name": execution.function.__name__,
                 },
                 links=links,
             ):
-                start = time.time_ns()
                 await execution.function(
                     *execution.args,
                     **{
@@ -281,24 +322,22 @@ class Worker:
                         **dependencies,
                     },
                 )
-                TASK_DURATION.record(
-                    (time.time_ns() - start) / 1_000_000_000,
-                    counter_labels,
-                )
 
             TASKS_SUCCEEDED.add(1, counter_labels)
-
+            duration = datetime.now(timezone.utc) - start
+            log_context["duration"] = duration.total_seconds()
+            logger.info("%s [%s] %s", "↩", duration, call, extra=log_context)
         except Exception:
             TASKS_FAILED.add(1, counter_labels)
-            logger.exception(
-                "Error executing task %s",
-                execution.key,
-                extra=self._log_context,
-            )
-            await self._retry_if_requested(execution, dependencies)
+            duration = datetime.now(timezone.utc) - start
+            log_context["duration"] = duration.total_seconds()
+            retried = await self._retry_if_requested(execution, dependencies)
+            arrow = "↫" if retried else "↩"
+            logger.exception("%s [%s] %s", arrow, duration, call, extra=log_context)
         finally:
             TASKS_RUNNING.add(-1, counter_labels)
             TASKS_COMPLETED.add(1, counter_labels)
+            TASK_DURATION.record(duration.total_seconds(), counter_labels)
 
     def _get_dependencies(
         self,
@@ -310,14 +349,14 @@ class Worker:
 
         dependencies: dict[str, Any] = {}
 
-        for param_name, dependency in parameters.items():
+        for parameter_name, dependency in parameters.items():
             # If the argument is already provided, skip it, which allows users to call
             # the function directly with the arguments they want.
-            if param_name in execution.kwargs:
-                dependencies[param_name] = execution.kwargs[param_name]
+            if parameter_name in execution.kwargs:
+                dependencies[parameter_name] = execution.kwargs[parameter_name]
                 continue
 
-            dependencies[param_name] = dependency(self.docket, self, execution)
+            dependencies[parameter_name] = dependency(self.docket, self, execution)
 
         return dependencies
 
@@ -325,12 +364,12 @@ class Worker:
         self,
         execution: Execution,
         dependencies: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         from .dependencies import Retry
 
         retries = [retry for retry in dependencies.values() if isinstance(retry, Retry)]
         if not retries:
-            return
+            return False
 
         retry = retries[0]
 
@@ -345,9 +384,6 @@ class Worker:
                 "task": execution.function.__name__,
             }
             TASKS_RETRIED.add(1, counter_labels)
-        else:
-            logger.error(
-                "Task %s failed after %d attempts",
-                execution.key,
-                retry.attempts,
-            )
+            return True
+
+        return False

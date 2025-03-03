@@ -8,6 +8,7 @@ from importlib.metadata import version
 
 __version__ = version("pydocket")
 
+from .annotations import Logged
 from .dependencies import (
     CurrentDocket,
     CurrentExecution,
@@ -30,5 +31,6 @@ __all__ = [
     "TaskKey",
     "TaskLogger",
     "Retry",
+    "Logged",
     "__version__",
 ]

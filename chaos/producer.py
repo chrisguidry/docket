@@ -16,10 +16,8 @@ logger = logging.getLogger("chaos.producer")
 
 async def main(tasks_to_produce: int):
     docket = Docket(
-        name=os.environ["CHAOS_DOCKET_NAME"],
-        host=os.environ["CHAOS_REDIS_HOST"],
-        port=int(os.environ["CHAOS_REDIS_PORT"]),
-        db=int(os.environ["CHAOS_REDIS_DB"]),
+        name=os.environ["DOCKET_NAME"],
+        url=os.environ["DOCKET_URL"],
     )
     tasks_sent = 0
     while tasks_sent < tasks_to_produce:
