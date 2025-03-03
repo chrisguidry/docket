@@ -13,6 +13,7 @@ from .dependencies import (
     CurrentDocket,
     CurrentExecution,
     CurrentWorker,
+    ExponentialRetry,
     Retry,
     TaskKey,
     TaskLogger,
@@ -31,6 +32,7 @@ __all__ = [
     "TaskKey",
     "TaskLogger",
     "Retry",
+    "ExponentialRetry",
     "Logged",
     "__version__",
 ]

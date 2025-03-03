@@ -20,6 +20,7 @@ from docket import (
     CurrentWorker,
     Docket,
     Execution,
+    ExponentialRetry,
     Logged,
     Retry,
     TaskKey,
@@ -305,6 +306,88 @@ async def test_supports_infinite_retries(
     await worker.run_until_finished()
 
     assert calls == 3
+
+
+async def test_supports_exponential_backoff_retries(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """docket should support exponential backoff retries"""
+
+    calls = 0
+
+    async def the_task(
+        a: str,
+        b: str = "b",
+        retry: Retry = ExponentialRetry(
+            attempts=5,
+            minimum_delay=timedelta(milliseconds=25),
+            maximum_delay=timedelta(milliseconds=1000),
+        ),
+    ) -> None:
+        assert a == "a"
+        assert b == "c"
+
+        assert isinstance(retry, ExponentialRetry)
+
+        nonlocal calls
+        calls += 1
+
+        assert retry.attempts == 5
+        assert retry.attempt == calls
+
+        raise Exception("Failed")
+
+    await docket.add(the_task)("a", b="c")
+
+    start = now()
+
+    await worker.run_until_finished()
+
+    total_delay = now() - start
+    assert total_delay >= timedelta(milliseconds=25 + 50 + 100 + 200)
+
+    assert calls == 5
+
+
+async def test_supports_exponential_backoff_retries_under_maximum_delay(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """docket should support exponential backoff retries"""
+
+    calls = 0
+
+    async def the_task(
+        a: str,
+        b: str = "b",
+        retry: Retry = ExponentialRetry(
+            attempts=5,
+            minimum_delay=timedelta(milliseconds=25),
+            maximum_delay=timedelta(milliseconds=100),
+        ),
+    ) -> None:
+        assert a == "a"
+        assert b == "c"
+
+        assert isinstance(retry, ExponentialRetry)
+
+        nonlocal calls
+        calls += 1
+
+        assert retry.attempts == 5
+        assert retry.attempt == calls
+
+        raise Exception("Failed")
+
+    await docket.add(the_task)("a", b="c")
+
+    start = now()
+
+    await worker.run_until_finished()
+
+    total_delay = now() - start
+    assert total_delay >= timedelta(milliseconds=25 + 50 + 100 + 100)
+
+    assert calls == 5
 
 
 async def test_supports_requesting_current_docket(
