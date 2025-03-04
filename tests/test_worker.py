@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import timedelta
 from unittest.mock import AsyncMock
 
@@ -202,3 +203,21 @@ async def test_redeliveries_abide_by_concurrency_limits(docket: Docket, worker: 
     assert task_results == set(range(50))
 
     assert 1 < max_concurrency_observed <= 5
+
+
+async def test_worker_handles_unregistered_task_execution(
+    docket: Docket,
+    worker: Worker,
+    caplog: pytest.LogCaptureFixture,
+    the_task: AsyncMock,
+):
+    """worker should handle the case when an unregistered task is executed"""
+
+    await docket.add(the_task)()
+
+    docket.tasks.pop("the_task")
+
+    with caplog.at_level(logging.WARNING):
+        await worker.run_until_finished()
+
+    assert "Task function 'the_task' not found" in caplog.text
