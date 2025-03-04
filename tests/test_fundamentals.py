@@ -539,7 +539,9 @@ async def test_logging_inside_of_task(
     """docket should support providing a logger with task context"""
     called = False
 
-    async def the_task(a: str, b: str, logger: LoggerAdapter = TaskLogger()):
+    async def the_task(
+        a: str, b: str, logger: LoggerAdapter[logging.Logger] = TaskLogger()
+    ):
         assert a == "a"
         assert b == "c"
 

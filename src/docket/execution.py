@@ -11,7 +11,7 @@ from typing import (
     cast,
 )
 
-import cloudpickle
+import cloudpickle  # type: ignore[import]
 
 from .annotations import Logged
 
@@ -40,8 +40,8 @@ class Execution:
             b"key": self.key.encode(),
             b"when": self.when.isoformat().encode(),
             b"function": self.function.__name__.encode(),
-            b"args": cloudpickle.dumps(self.args),
-            b"kwargs": cloudpickle.dumps(self.kwargs),
+            b"args": cloudpickle.dumps(self.args),  # type: ignore[arg-type]
+            b"kwargs": cloudpickle.dumps(self.kwargs),  # type: ignore[arg-type]
             b"attempt": str(self.attempt).encode(),
         }
 
@@ -109,7 +109,7 @@ class StrikeInstruction(abc.ABC):
         if self.parameter:
             message[b"parameter"] = self.parameter.encode()
         message[b"operator"] = self.operator.encode()
-        message[b"value"] = cloudpickle.dumps(self.value)
+        message[b"value"] = cloudpickle.dumps(self.value)  # type: ignore[arg-type]
         return message
 
     @classmethod
@@ -225,10 +225,10 @@ class StrikeList:
             case "<=":
                 return value <= strike_value
             case "between":  # pragma: no branch
-                if isinstance(strike_value, tuple) and len(strike_value) == 2:
+                try:
                     lower, upper = strike_value
                     return lower <= value <= upper
-                else:
+                except TypeError:
                     return False
 
     def update(self, instruction: StrikeInstruction) -> None:

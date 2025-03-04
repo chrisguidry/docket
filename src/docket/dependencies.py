@@ -59,7 +59,7 @@ def TaskKey() -> str:
 class _TaskLogger(Dependency):
     def __call__(
         self, docket: Docket, worker: Worker, execution: Execution
-    ) -> logging.LoggerAdapter:
+    ) -> logging.LoggerAdapter[logging.Logger]:
         logger = logging.getLogger(f"docket.task.{execution.function.__name__}")
 
         extra = {

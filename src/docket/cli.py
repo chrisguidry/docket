@@ -4,9 +4,11 @@ import logging
 import socket
 import sys
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
+
+from docket.execution import Operator
 
 from . import __version__, tasks
 from .docket import Docket
@@ -245,7 +247,8 @@ def strike(
 ) -> None:
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
-            await docket.strike(function, parameter, operator, value)
+            assert operator in {"==", "!=", ">", ">=", "<", "<=", "between"}
+            await docket.strike(function, parameter, cast(Operator, operator), value)
 
     asyncio.run(run())
 
@@ -294,7 +297,8 @@ def restore(
 ) -> None:
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
-            await docket.restore(function, parameter, operator, value)
+            assert operator in {"==", "!=", ">", ">=", "<", "<=", "between"}
+            await docket.restore(function, parameter, cast(Operator, operator), value)
 
     asyncio.run(run())
 
