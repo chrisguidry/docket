@@ -33,6 +33,12 @@ TASKS_STARTED = meter.create_counter(
     unit="1",
 )
 
+TASKS_STRICKEN = meter.create_counter(
+    "docket_tasks_stricken",
+    description="How many tasks have been stricken from executing",
+    unit="1",
+)
+
 TASKS_COMPLETED = meter.create_counter(
     "docket_tasks_completed",
     description="How many tasks that have completed in any state",
@@ -78,6 +84,12 @@ TASKS_RUNNING = meter.create_up_down_counter(
 REDIS_DISRUPTIONS = meter.create_counter(
     "docket_redis_disruptions",
     description="How many times the Redis connection has been disrupted",
+    unit="1",
+)
+
+STRIKES_IN_EFFECT = meter.create_up_down_counter(
+    "docket_strikes_in_effect",
+    description="How many strikes are currently in effect",
     unit="1",
 )
 

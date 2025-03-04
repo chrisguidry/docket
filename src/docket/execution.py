@@ -2,17 +2,10 @@ import abc
 import inspect
 import logging
 from datetime import datetime
-from typing import (
-    Any,
-    Awaitable,
-    Callable,
-    Hashable,
-    Literal,
-    Self,
-    cast,
-)
+from typing import Any, Awaitable, Callable, Hashable, Literal, Self, cast
 
 import cloudpickle  # type: ignore[import]
+
 
 from .annotations import Logged
 

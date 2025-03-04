@@ -35,6 +35,7 @@ from .instrumentation import (
     TASKS_RETRIED,
     TASKS_RUNNING,
     TASKS_STARTED,
+    TASKS_STRICKEN,
     TASKS_SUCCEEDED,
     message_getter,
 )
@@ -340,6 +341,7 @@ class Worker:
         if self.docket.strike_list.is_stricken(execution):
             arrow = "🗙"
             logger.warning("%s %s", arrow, call, extra=log_context)
+            TASKS_STRICKEN.add(1, counter_labels | {"where": "worker"})
             return
 
         dependencies = self._get_dependencies(execution)
