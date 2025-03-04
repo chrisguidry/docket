@@ -14,6 +14,7 @@ from typing import (
     Literal,
     NoReturn,
     ParamSpec,
+    Protocol,
     Self,
     Sequence,
     TypeVar,
@@ -48,6 +49,15 @@ RedisMessageID = bytes
 RedisMessage = dict[bytes, bytes]
 RedisStream = tuple[RedisStreamID, Sequence[tuple[RedisMessageID, RedisMessage]]]
 RedisReadGroupResponse = Sequence[RedisStream]
+
+
+class Comparable(Protocol):
+    """Protocol for types that support comparison operations."""
+
+    def __lt__(self, other: Any) -> bool: ...
+    def __le__(self, other: Any) -> bool: ...
+    def __gt__(self, other: Any) -> bool: ...
+    def __ge__(self, other: Any) -> bool: ...
 
 
 class Docket:
@@ -274,12 +284,45 @@ class Docket:
     def strike_key(self) -> str:
         return f"{self.name}:strikes"
 
+    @overload
+    async def strike(
+        self,
+        function: Callable[P, Awaitable[R]] | str | None = None,
+    ) -> None: ...  # pragma: no cover
+
+    @overload
+    async def strike(
+        self,
+        function: Callable[P, Awaitable[R]] | str | None = None,
+        parameter: str | None = None,
+        operator: Literal["==", "!="] = "==",
+        value: Hashable | None = None,
+    ) -> None: ...  # pragma: no cover
+
+    @overload
+    async def strike(
+        self,
+        function: Callable[P, Awaitable[R]] | str | None = None,
+        parameter: str | None = None,
+        operator: Literal[">", ">=", "<", "<="] = "<",
+        value: Comparable | None = None,
+    ) -> None: ...  # pragma: no cover
+
+    @overload
+    async def strike(
+        self,
+        function: Callable[P, Awaitable[R]] | str | None = None,
+        parameter: str | None = None,
+        operator: Literal["between"] = "between",
+        value: tuple[Comparable, Comparable] | None = None,
+    ) -> None: ...  # pragma: no cover
+
     async def strike(
         self,
         function: Callable[P, Awaitable[R]] | str | None = None,
         parameter: str | None = None,
         operator: Literal["==", "!=", ">", ">=", "<", "<=", "between"] = "==",
-        value: Hashable = None,
+        value: Hashable | None = None,
     ) -> None:
         if not isinstance(function, (str, type(None))):
             function = function.__name__
@@ -287,12 +330,45 @@ class Docket:
         strike = Strike(function, parameter, operator, value)
         return await self._send_strike_instruction(strike)
 
+    @overload
+    async def restore(
+        self,
+        function: Callable[P, Awaitable[R]] | str | None = None,
+    ) -> None: ...  # pragma: no cover
+
+    @overload
+    async def restore(
+        self,
+        function: Callable[P, Awaitable[R]] | str | None = None,
+        parameter: str | None = None,
+        operator: Literal["==", "!="] = "==",
+        value: Hashable | None = None,
+    ) -> None: ...  # pragma: no cover
+
+    @overload
+    async def restore(
+        self,
+        function: Callable[P, Awaitable[R]] | str | None = None,
+        parameter: str | None = None,
+        operator: Literal[">", ">=", "<", "<="] = "<",
+        value: Comparable | None = None,
+    ) -> None: ...  # pragma: no cover
+
+    @overload
+    async def restore(
+        self,
+        function: Callable[P, Awaitable[R]] | str | None = None,
+        parameter: str | None = None,
+        operator: Literal["between"] = "between",
+        value: tuple[Comparable, Comparable] | None = None,
+    ) -> None: ...  # pragma: no cover
+
     async def restore(
         self,
         function: Callable[P, Awaitable[R]] | str | None = None,
         parameter: str | None = None,
         operator: Literal["==", "!=", ">", ">=", "<", "<=", "between"] = "==",
-        value: Hashable = None,
+        value: Hashable | None = None,
     ) -> None:
         if not isinstance(function, (str, type(None))):
             function = function.__name__
