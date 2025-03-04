@@ -1,4 +1,5 @@
 import abc
+import enum
 import inspect
 import logging
 from datetime import datetime
@@ -79,7 +80,17 @@ class Execution:
         return f"{function_name}({', '.join(arguments)}){{{self.key}}}"
 
 
-Operator = Literal["==", "!=", ">", ">=", "<", "<=", "between"]
+class Operator(enum.StrEnum):
+    EQUAL = "=="
+    NOT_EQUAL = "!="
+    GREATER_THAN = ">"
+    GREATER_THAN_OR_EQUAL = ">="
+    LESS_THAN = "<"
+    LESS_THAN_OR_EQUAL = "<="
+    BETWEEN = "between"
+
+
+LiteralOperator = Literal["==", "!=", ">", ">=", "<", "<=", "between"]
 
 
 class StrikeInstruction(abc.ABC):
