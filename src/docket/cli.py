@@ -201,6 +201,104 @@ def worker(
     )
 
 
+@app.command(help="Strikes a task or parameters from the Docket")
+def strike(
+    function: Annotated[
+        str,
+        typer.Argument(
+            help="The function to strike",
+        ),
+    ] = "*",
+    parameter: Annotated[
+        str,
+        typer.Argument(
+            help="The parameter to strike",
+        ),
+    ] = "*",
+    operator: Annotated[
+        str,
+        typer.Argument(
+            help="The operator to use for the strike",
+        ),
+    ] = "==",
+    value: Annotated[
+        str | None,
+        typer.Argument(
+            help="The value to strike against",
+        ),
+    ] = None,
+    docket_: Annotated[
+        str,
+        typer.Option(
+            "--docket",
+            help="The name of the docket",
+            envvar="DOCKET_NAME",
+        ),
+    ] = "docket",
+    url: Annotated[
+        str,
+        typer.Option(
+            help="The URL of the Redis server",
+            envvar="DOCKET_URL",
+        ),
+    ] = "redis://localhost:6379/0",
+) -> None:
+    async def run() -> None:
+        async with Docket(name=docket_, url=url) as docket:
+            await docket.strike(function, parameter, operator, value)
+
+    asyncio.run(run())
+
+
+@app.command(help="Restores a task or parameters to the Docket")
+def restore(
+    function: Annotated[
+        str,
+        typer.Argument(
+            help="The function to strike",
+        ),
+    ] = "*",
+    parameter: Annotated[
+        str,
+        typer.Argument(
+            help="The parameter to strike",
+        ),
+    ] = "*",
+    operator: Annotated[
+        str,
+        typer.Argument(
+            help="The operator to use for the strike",
+        ),
+    ] = "==",
+    value: Annotated[
+        str | None,
+        typer.Argument(
+            help="The value to strike against",
+        ),
+    ] = None,
+    docket_: Annotated[
+        str,
+        typer.Option(
+            "--docket",
+            help="The name of the docket",
+            envvar="DOCKET_NAME",
+        ),
+    ] = "docket",
+    url: Annotated[
+        str,
+        typer.Option(
+            help="The URL of the Redis server",
+            envvar="DOCKET_URL",
+        ),
+    ] = "redis://localhost:6379/0",
+) -> None:
+    async def run() -> None:
+        async with Docket(name=docket_, url=url) as docket:
+            await docket.restore(function, parameter, operator, value)
+
+    asyncio.run(run())
+
+
 @app.command(help="Adds a trace task to the Docket")
 def trace(
     docket_: Annotated[

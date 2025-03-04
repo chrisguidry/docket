@@ -14,6 +14,7 @@ from opentelemetry import trace
 from testcontainers.redis import RedisContainer
 
 from docket import Docket
+from docket.execution import Operator
 
 from .tasks import toxic
 
@@ -59,6 +60,16 @@ async def main(
             "DOCKET_NAME": docket.name,
             "DOCKET_URL": redis_url,
         }
+
+        # Add in some random strikes to performance test
+        async with docket:
+            for _ in range(100):
+                parameter = f"param_{random.randint(1, 100)}"
+                operator: Operator = random.choice(
+                    ["==", "!=", ">", ">=", "<", "<=", "between"]
+                )
+                value = f"val_{random.randint(1, 1000)}"
+                await docket.strike("rando", parameter, operator, value)
 
         if tasks % producers != 0:
             raise ValueError("total_tasks must be divisible by total_producers")
