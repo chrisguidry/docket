@@ -153,11 +153,11 @@ def worker(
             callback=set_logging_format,
         ),
     ] = LogFormat.RICH if sys.stdout.isatty() else LogFormat.PLAIN,
-    prefetch_count: Annotated[
+    concurrency: Annotated[
         int,
         typer.Option(
-            help="The number of tasks to request from the docket at a time",
-            envvar="DOCKET_WORKER_PREFETCH_COUNT",
+            help="The maximum number of tasks to process concurrently",
+            envvar="DOCKET_WORKER_CONCURRENCY",
         ),
     ] = 10,
     redelivery_timeout: Annotated[
@@ -192,7 +192,7 @@ def worker(
             docket_name=docket_,
             url=url,
             name=name,
-            prefetch_count=prefetch_count,
+            concurrency=concurrency,
             redelivery_timeout=redelivery_timeout,
             reconnection_delay=reconnection_delay,
             until_finished=until_finished,

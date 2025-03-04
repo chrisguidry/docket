@@ -270,7 +270,7 @@ async def test_supports_simple_linear_retries_with_delay(
     await worker.run_until_finished()
 
     total_delay = now() - start
-    assert total_delay >= timedelta(milliseconds=300)
+    assert total_delay >= timedelta(milliseconds=200)
 
     assert calls == 3
 

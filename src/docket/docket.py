@@ -26,7 +26,14 @@ import redis.exceptions
 from opentelemetry import propagate, trace
 from redis.asyncio import Redis
 
-from .execution import Execution, Restore, Strike, StrikeInstruction, StrikeList
+from .execution import (
+    Execution,
+    Operator,
+    Restore,
+    Strike,
+    StrikeInstruction,
+    StrikeList,
+)
 from .instrumentation import (
     TASKS_ADDED,
     TASKS_CANCELLED,
@@ -47,7 +54,8 @@ TaskCollection = Iterable[Callable[..., Awaitable[Any]]]
 RedisStreamID = bytes
 RedisMessageID = bytes
 RedisMessage = dict[bytes, bytes]
-RedisStream = tuple[RedisStreamID, Sequence[tuple[RedisMessageID, RedisMessage]]]
+RedisMessages = Sequence[tuple[RedisMessageID, RedisMessage]]
+RedisStream = tuple[RedisStreamID, RedisMessages]
 RedisReadGroupResponse = Sequence[RedisStream]
 
 
@@ -321,7 +329,7 @@ class Docket:
         self,
         function: Callable[P, Awaitable[R]] | str | None = None,
         parameter: str | None = None,
-        operator: Literal["==", "!=", ">", ">=", "<", "<=", "between"] = "==",
+        operator: Operator = "==",
         value: Hashable | None = None,
     ) -> None:
         if not isinstance(function, (str, type(None))):
