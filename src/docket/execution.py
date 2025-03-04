@@ -228,7 +228,7 @@ class StrikeList:
                 try:
                     lower, upper = strike_value
                     return lower <= value <= upper
-                except TypeError:
+                except (ValueError, TypeError):
                     return False
 
     def update(self, instruction: StrikeInstruction) -> None:
