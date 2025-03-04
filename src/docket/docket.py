@@ -35,10 +35,12 @@ from .execution import (
 )
 from .instrumentation import (
     REDIS_DISRUPTIONS,
+    STRIKES_IN_EFFECT,
     TASKS_ADDED,
     TASKS_CANCELLED,
     TASKS_REPLACED,
     TASKS_SCHEDULED,
+    TASKS_STRICKEN,
     message_setter,
 )
 
@@ -228,6 +230,14 @@ class Docket:
                 execution.function.__name__,
                 execution.key,
             )
+            TASKS_STRICKEN.add(
+                1,
+                {
+                    "docket": self.name,
+                    "task": execution.function.__name__,
+                    "where": "docket",
+                },
+            )
             return
 
         message: dict[bytes, bytes] = execution.as_message()
@@ -348,6 +358,18 @@ class Docket:
                                     instruction.call_repr(),
                                     extra={"docket": self.name},
                                 )
+
+                                counter_labels = {"docket": self.name}
+                                if instruction.function:
+                                    counter_labels["task"] = instruction.function
+                                if instruction.parameter:
+                                    counter_labels["parameter"] = instruction.parameter
+
+                                STRIKES_IN_EFFECT.add(
+                                    1 if instruction.direction == "strike" else -1,
+                                    counter_labels,
+                                )
+
             except redis.exceptions.ConnectionError:  # pragma: no cover
                 REDIS_DISRUPTIONS.add(1, {"docket": self.name})
                 logger.warning("Connection error, sleeping for 1 second...")
