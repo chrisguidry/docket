@@ -1,11 +1,14 @@
 import asyncio
 import logging
-from datetime import timedelta
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from typing import AsyncGenerator
 from unittest.mock import AsyncMock
 
 import pytest
-from redis import RedisError
-from redis.exceptions import ConnectionError
+import redis.connection
+import redis.exceptions
+from redis.asyncio import Redis
 
 from docket import CurrentWorker, Docket, Worker
 from docket.docket import RedisMessage
@@ -16,7 +19,7 @@ async def test_worker_aenter_propagates_connection_errors():
 
     docket = Docket(name="test-docket", url="redis://nonexistent-host:12345/0")
     worker = Worker(docket)
-    with pytest.raises(RedisError):
+    with pytest.raises(redis.exceptions.RedisError):
         await worker.__aenter__()
 
 
@@ -78,7 +81,7 @@ async def test_worker_reconnects_when_connection_is_lost(
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise ConnectionError("Simulated connection error")
+            raise redis.exceptions.ConnectionError("Simulated connection error")
         return await original_worker_loop(forever=forever)
 
     worker._worker_loop = mock_worker_loop  # type: ignore[protected-access]
@@ -221,3 +224,142 @@ async def test_worker_handles_unregistered_task_execution(
         await worker.run_until_finished()
 
     assert "Task function 'the_task' not found" in caplog.text
+
+
+async def test_worker_announcements(
+    docket: Docket, the_task: AsyncMock, another_task: AsyncMock
+):
+    heartbeat = timedelta(milliseconds=20)
+    docket.heartbeat_interval = heartbeat
+    docket.missed_heartbeats = 3
+
+    docket.register(the_task)
+    docket.register(another_task)
+
+    async with Worker(docket) as worker_a:
+        await asyncio.sleep(heartbeat.total_seconds() * 5)
+
+        workers = await docket.workers()
+        assert len(workers) == 1
+        assert worker_a.name in {w.name for w in workers}
+
+        async with Worker(docket) as worker_b:
+            await asyncio.sleep(heartbeat.total_seconds() * 5)
+
+            workers = await docket.workers()
+            assert len(workers) == 2
+            assert {w.name for w in workers} == {worker_a.name, worker_b.name}
+
+            for worker in workers:
+                assert worker.last_seen > datetime.now(timezone.utc) - (heartbeat * 3)
+                assert worker.tasks == {"trace", "fail", "the_task", "another_task"}
+
+        await asyncio.sleep(heartbeat.total_seconds() * 10)
+
+        workers = await docket.workers()
+        assert len(workers) == 1
+        assert worker_a.name in {w.name for w in workers}
+        assert worker_b.name not in {w.name for w in workers}
+
+    await asyncio.sleep(heartbeat.total_seconds() * 10)
+
+    workers = await docket.workers()
+    assert len(workers) == 0
+
+
+async def test_task_announcements(
+    docket: Docket, the_task: AsyncMock, another_task: AsyncMock
+):
+    """Test that we can ask about which workers are available for a task"""
+
+    heartbeat = timedelta(milliseconds=20)
+    docket.heartbeat_interval = heartbeat
+    docket.missed_heartbeats = 3
+
+    docket.register(the_task)
+    docket.register(another_task)
+    async with Worker(docket) as worker_a:
+        await asyncio.sleep(heartbeat.total_seconds() * 5)
+
+        workers = await docket.task_workers("the_task")
+        assert len(workers) == 1
+        assert worker_a.name in {w.name for w in workers}
+
+        async with Worker(docket) as worker_b:
+            await asyncio.sleep(heartbeat.total_seconds() * 5)
+
+            workers = await docket.task_workers("the_task")
+            assert len(workers) == 2
+            assert {w.name for w in workers} == {worker_a.name, worker_b.name}
+
+            for worker in workers:
+                assert worker.last_seen > datetime.now(timezone.utc) - (heartbeat * 3)
+                assert worker.tasks == {"trace", "fail", "the_task", "another_task"}
+
+        await asyncio.sleep(heartbeat.total_seconds() * 10)
+
+        workers = await docket.task_workers("the_task")
+        assert len(workers) == 1
+        assert worker_a.name in {w.name for w in workers}
+        assert worker_b.name not in {w.name for w in workers}
+
+    await asyncio.sleep(heartbeat.total_seconds() * 10)
+
+    workers = await docket.task_workers("the_task")
+    assert len(workers) == 0
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        redis.exceptions.ConnectionError("oof"),
+        ValueError("woops"),
+    ],
+)
+async def test_worker_recovers_from_redis_errors(
+    docket: Docket,
+    the_task: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+):
+    """Should recover from errors and continue sending heartbeats"""
+
+    heartbeat = timedelta(milliseconds=20)
+    docket.heartbeat_interval = heartbeat
+    docket.missed_heartbeats = 3
+
+    docket.register(the_task)
+
+    original_redis = docket.redis
+    error_time = None
+    redis_calls = 0
+
+    @asynccontextmanager
+    async def mock_redis() -> AsyncGenerator[Redis, None]:
+        nonlocal redis_calls, error_time
+        redis_calls += 1
+
+        if redis_calls == 2:
+            error_time = datetime.now(timezone.utc)
+            raise error
+
+        async with original_redis() as r:
+            yield r
+
+    monkeypatch.setattr(docket, "redis", mock_redis)
+
+    async with Worker(docket) as worker:
+        await asyncio.sleep(heartbeat.total_seconds() * 1.5)
+
+        await asyncio.sleep(heartbeat.total_seconds() * 5)
+
+        workers = await docket.workers()
+        assert len(workers) == 1
+        assert worker.name in {w.name for w in workers}
+
+        # Verify that the last_seen timestamp is after our error
+        worker_info = next(w for w in workers if w.name == worker.name)
+        assert error_time
+        assert worker_info.last_seen > error_time, (
+            "Worker should have sent heartbeats after the Redis error"
+        )

@@ -2,15 +2,18 @@ import asyncio
 import enum
 import importlib
 import logging
+import os
 import socket
 import sys
-from datetime import timedelta
-from typing import Annotated, Any
+from datetime import datetime, timedelta, timezone
+from typing import Annotated, Any, Collection
 
 import typer
+from rich.console import Console
+from rich.table import Table
 
 from . import __version__, tasks
-from .docket import Docket
+from .docket import Docket, WorkerInfo
 from .execution import Operator
 from .worker import Worker
 
@@ -33,6 +36,10 @@ class LogFormat(enum.StrEnum):
     RICH = "rich"
     PLAIN = "plain"
     JSON = "json"
+
+
+def default_worker_name() -> str:
+    return f"{socket.gethostname()}#{os.getpid()}"
 
 
 def duration(duration_str: str | timedelta) -> timedelta:
@@ -166,7 +173,7 @@ def worker(
             help="The name of the worker",
             envvar="DOCKET_WORKER_NAME",
         ),
-    ] = socket.gethostname(),
+    ] = default_worker_name(),
     logging_level: Annotated[
         LogLevel,
         typer.Option(
@@ -408,3 +415,102 @@ def trace(
 )
 def version() -> None:
     print(__version__)
+
+
+workers_app: typer.Typer = typer.Typer(
+    help="Worker management commands", no_args_is_help=True
+)
+app.add_typer(workers_app, name="workers")
+
+
+def print_workers(
+    docket_name: str,
+    workers: Collection[WorkerInfo],
+    highlight_task: str | None = None,
+) -> None:
+    sorted_workers = sorted(workers, key=lambda w: w.last_seen, reverse=True)
+
+    table = Table(title=f"Workers in Docket: {docket_name}")
+
+    table.add_column("Name", style="cyan")
+    table.add_column("Last Seen", style="green")
+    table.add_column("Tasks", style="yellow")
+
+    now = datetime.now(timezone.utc)
+
+    for worker in sorted_workers:
+        time_ago = now - worker.last_seen
+
+        tasks = [
+            f"[bold]{task}[/bold]" if task == highlight_task else task
+            for task in sorted(worker.tasks)
+        ]
+
+        table.add_row(
+            worker.name,
+            f"{time_ago} ago",
+            "\n".join(tasks) if tasks else "(none)",
+        )
+
+    console = Console()
+    console.print(table)
+
+
+@workers_app.command(name="ls", help="List the workers in the Docket")
+def list_workers(
+    docket_: Annotated[
+        str,
+        typer.Option(
+            "--docket",
+            help="The name of the docket",
+            envvar="DOCKET_NAME",
+        ),
+    ] = "docket",
+    url: Annotated[
+        str,
+        typer.Option(
+            help="The URL of the Redis server",
+            envvar="DOCKET_URL",
+        ),
+    ] = "redis://localhost:6379/0",
+) -> None:
+    async def run() -> Collection[WorkerInfo]:
+        async with Docket(name=docket_, url=url) as docket:
+            return await docket.workers()
+
+    workers = asyncio.run(run())
+
+    print_workers(docket_, workers)
+
+
+@workers_app.command(name="for-task", help="List the workers in the Docket")
+def workers_for_task(
+    task: Annotated[
+        str,
+        typer.Argument(
+            help="The name of the task",
+        ),
+    ],
+    docket_: Annotated[
+        str,
+        typer.Option(
+            "--docket",
+            help="The name of the docket",
+            envvar="DOCKET_NAME",
+        ),
+    ] = "docket",
+    url: Annotated[
+        str,
+        typer.Option(
+            help="The URL of the Redis server",
+            envvar="DOCKET_URL",
+        ),
+    ] = "redis://localhost:6379/0",
+) -> None:
+    async def run() -> Collection[WorkerInfo]:
+        async with Docket(name=docket_, url=url) as docket:
+            return await docket.task_workers(task)
+
+    workers = asyncio.run(run())
+
+    print_workers(docket_, workers, highlight_task=task)
