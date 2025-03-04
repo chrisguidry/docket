@@ -54,10 +54,10 @@ RedisReadGroupResponse = Sequence[RedisStream]
 class Comparable(Protocol):
     """Protocol for types that support comparison operations."""
 
-    def __lt__(self, other: Any) -> bool: ...
-    def __le__(self, other: Any) -> bool: ...
-    def __gt__(self, other: Any) -> bool: ...
-    def __ge__(self, other: Any) -> bool: ...
+    def __lt__(self, other: Any) -> bool: ...  # pragma: no cover
+    def __le__(self, other: Any) -> bool: ...  # pragma: no cover
+    def __gt__(self, other: Any) -> bool: ...  # pragma: no cover
+    def __ge__(self, other: Any) -> bool: ...  # pragma: no cover
 
 
 class Docket:
