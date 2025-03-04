@@ -2,13 +2,15 @@ import asyncio
 import importlib
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
     Any,
     AsyncGenerator,
     Awaitable,
     Callable,
+    Collection,
     Hashable,
     Iterable,
     NoReturn,
@@ -16,6 +18,7 @@ from typing import (
     Self,
     Sequence,
     TypeVar,
+    cast,
     overload,
 )
 from uuid import uuid4
@@ -61,6 +64,13 @@ RedisStream = tuple[RedisStreamID, RedisMessages]
 RedisReadGroupResponse = Sequence[RedisStream]
 
 
+@dataclass
+class WorkerInfo:
+    name: str
+    last_seen: datetime
+    tasks: set[str]
+
+
 class Docket:
     tasks: dict[str, Callable[..., Awaitable[Any]]]
     strike_list: StrikeList
@@ -69,6 +79,8 @@ class Docket:
         self,
         name: str = "docket",
         url: str = "redis://localhost:6379/0",
+        heartbeat_interval: timedelta = timedelta(seconds=1),
+        missed_heartbeats: int = 5,
     ) -> None:
         """
         Args:
@@ -82,6 +94,8 @@ class Docket:
         """
         self.name = name
         self.url = url
+        self.heartbeat_interval = heartbeat_interval
+        self.missed_heartbeats = missed_heartbeats
 
     async def __aenter__(self) -> Self:
         from .tasks import standard_tasks
@@ -381,3 +395,73 @@ class Docket:
             except Exception:  # pragma: no cover
                 logger.exception("Error monitoring strikes")
                 await asyncio.sleep(1)
+
+    @property
+    def workers_set(self) -> str:
+        return f"{self.name}:workers"
+
+    def worker_tasks_set(self, worker_name: str) -> str:
+        return f"{self.name}:worker-tasks:{worker_name}"
+
+    def task_workers_set(self, task_name: str) -> str:
+        return f"{self.name}:task-workers:{task_name}"
+
+    async def workers(self) -> Collection[WorkerInfo]:
+        workers: list[WorkerInfo] = []
+
+        oldest = datetime.now(timezone.utc).timestamp() - (
+            self.heartbeat_interval.total_seconds() * self.missed_heartbeats
+        )
+
+        async with self.redis() as r:
+            await r.zremrangebyscore(self.workers_set, 0, oldest)
+
+            worker_name_bytes: bytes
+            last_seen_timestamp: float
+
+            for worker_name_bytes, last_seen_timestamp in await r.zrange(
+                self.workers_set, 0, -1, withscores=True
+            ):
+                worker_name = worker_name_bytes.decode()
+                last_seen = datetime.fromtimestamp(last_seen_timestamp, timezone.utc)
+
+                task_names: set[str] = {
+                    task_name_bytes.decode()
+                    for task_name_bytes in cast(
+                        set[bytes], await r.smembers(self.worker_tasks_set(worker_name))
+                    )
+                }
+
+                workers.append(WorkerInfo(worker_name, last_seen, task_names))
+
+        return workers
+
+    async def task_workers(self, task_name: str) -> Collection[WorkerInfo]:
+        workers: list[WorkerInfo] = []
+
+        oldest = datetime.now(timezone.utc).timestamp() - (
+            self.heartbeat_interval.total_seconds() * self.missed_heartbeats
+        )
+
+        async with self.redis() as r:
+            await r.zremrangebyscore(self.task_workers_set(task_name), 0, oldest)
+
+            worker_name_bytes: bytes
+            last_seen_timestamp: float
+
+            for worker_name_bytes, last_seen_timestamp in await r.zrange(
+                self.task_workers_set(task_name), 0, -1, withscores=True
+            ):
+                worker_name = worker_name_bytes.decode()
+                last_seen = datetime.fromtimestamp(last_seen_timestamp, timezone.utc)
+
+                task_names: set[str] = {
+                    task_name_bytes.decode()
+                    for task_name_bytes in cast(
+                        set[bytes], await r.smembers(self.worker_tasks_set(worker_name))
+                    )
+                }
+
+                workers.append(WorkerInfo(worker_name, last_seen, task_names))
+
+        return workers

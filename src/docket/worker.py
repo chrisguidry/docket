@@ -89,6 +89,8 @@ class Worker:
                 if "BUSYGROUP" not in repr(e):
                     raise
 
+            self._heartbeat_task = asyncio.create_task(self._heartbeat())
+
         return self
 
     async def __aexit__(
@@ -97,7 +99,12 @@ class Worker:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        pass
+        self._heartbeat_task.cancel()
+        try:
+            await self._heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        del self._heartbeat_task
 
     @property
     def consumer_group_name(self) -> str:
@@ -447,3 +454,52 @@ class Worker:
             return True
 
         return False
+
+    @property
+    def workers_set(self) -> str:
+        return self.docket.workers_set
+
+    def worker_tasks_set(self, worker_name: str) -> str:
+        return self.docket.worker_tasks_set(worker_name)
+
+    def task_workers_set(self, task_name: str) -> str:
+        return self.docket.task_workers_set(task_name)
+
+    async def _heartbeat(self) -> None:
+        while True:
+            await asyncio.sleep(self.docket.heartbeat_interval.total_seconds())
+            try:
+                now = datetime.now(timezone.utc).timestamp()
+                maximum_age = (
+                    self.docket.heartbeat_interval * self.docket.missed_heartbeats
+                )
+                oldest = now - maximum_age.total_seconds()
+
+                task_names = list(self.docket.tasks)
+
+                async with self.docket.redis() as r:
+                    async with r.pipeline() as pipeline:
+                        pipeline.zremrangebyscore(self.workers_set, 0, oldest)
+                        pipeline.zadd(self.workers_set, {self.name: now})
+
+                        for task_name in task_names:
+                            task_workers_set = self.task_workers_set(task_name)
+                            pipeline.zremrangebyscore(task_workers_set, 0, oldest)
+                            pipeline.zadd(task_workers_set, {self.name: now})
+
+                        pipeline.sadd(self.worker_tasks_set(self.name), *task_names)
+                        pipeline.expire(
+                            self.worker_tasks_set(self.name),
+                            max(maximum_age, timedelta(seconds=1)),
+                        )
+
+                        await pipeline.execute()
+            except asyncio.CancelledError:  # pragma: no cover
+                return
+            except redis.exceptions.ConnectionError:
+                REDIS_DISRUPTIONS.add(
+                    1, {"docket": self.docket.name, "worker": self.name}
+                )
+                logger.exception("Error sending worker heartbeat", exc_info=True)
+            except Exception:
+                logger.exception("Error sending worker heartbeat", exc_info=True)
