@@ -45,12 +45,13 @@ def python_entrypoint() -> list[str]:
 
 async def main(
     mode: Literal["performance", "chaos", "hard"] = "chaos",
-    tasks: int = 2000,
+    tasks: int = 5000,
     producers: int = 2,
     workers: int = 4,
 ):
     with RedisContainer("redis:7.4.2") as redis_server:
         redis_url = f"redis://{redis_server.get_container_host_ip()}:{redis_server.get_exposed_port(6379)}"
+        logger.info("Redis running at %s", redis_url)
         docket = Docket(
             name=f"test-docket-{uuid4()}",
             url=redis_url,
@@ -150,19 +151,14 @@ async def main(
             if mode in ("chaos", "hard"):
                 chaos_chance = random.random()
                 if chaos_chance < 0.01 and mode == "hard":
-                    logger.warning("CHAOS: Killing redis server...")
-                    redis_server.stop()
-
+                    logger.warning("CHAOS: Restaring redis server...")
+                    before = redis_server.get_exposed_port(6379)
+                    redis_server.get_wrapped_container().restart()
+                    after = redis_server.get_exposed_port(6379)
+                    # TODO: this ends up happening most of the time, so we need to
+                    # have a different approach here
+                    assert after == before, f"redis changed from {before} to {after}"
                     await asyncio.sleep(5)
-
-                    logger.warning("CHAOS: Starting redis server...")
-                    while True:
-                        try:
-                            redis_server.start()
-                            break
-                        except Exception:
-                            logger.warning("  Redis server failed, retrying in 5s...")
-                            await asyncio.sleep(5)
 
                 elif chaos_chance < 0.10:
                     worker_index = random.randrange(len(worker_processes))

@@ -17,9 +17,15 @@ from uuid import uuid4
 import redis.exceptions
 from opentelemetry import propagate, trace
 from opentelemetry.trace import Tracer
-from redis import RedisError
 
-from .docket import Docket, Execution, RedisMessage, RedisReadGroupResponse
+from .docket import (
+    Docket,
+    Execution,
+    RedisMessage,
+    RedisMessageID,
+    RedisMessages,
+    RedisReadGroupResponse,
+)
 from .instrumentation import (
     TASK_DURATION,
     TASK_PUNCTUALITY,
@@ -56,26 +62,28 @@ class Worker:
         self,
         docket: Docket,
         name: str | None = None,
-        prefetch_count: int = 10,
+        concurrency: int = 10,
         redelivery_timeout: timedelta = timedelta(minutes=5),
         reconnection_delay: timedelta = timedelta(seconds=5),
+        minimum_check_interval: timedelta = timedelta(milliseconds=10),
     ) -> None:
         self.docket = docket
         self.name = name or f"worker:{uuid4()}"
-        self.prefetch_count = prefetch_count
+        self.concurrency = concurrency
         self.redelivery_timeout = redelivery_timeout
         self.reconnection_delay = reconnection_delay
+        self.minimum_check_interval = minimum_check_interval
 
     async def __aenter__(self) -> Self:
-        async with self.docket.redis() as redis:
+        async with self.docket.redis() as r:
             try:
-                await redis.xgroup_create(
+                await r.xgroup_create(
                     groupname=self.consumer_group_name,
                     name=self.docket.stream_key,
                     id="0-0",
                     mkstream=True,
                 )
-            except RedisError as e:
+            except redis.exceptions.RedisError as e:
                 if "BUSYGROUP" not in repr(e):
                     raise
 
@@ -106,7 +114,7 @@ class Worker:
         docket_name: str = "docket",
         url: str = "redis://localhost:6379/0",
         name: str | None = None,
-        prefetch_count: int = 10,
+        concurrency: int = 10,
         redelivery_timeout: timedelta = timedelta(minutes=5),
         reconnection_delay: timedelta = timedelta(seconds=5),
         until_finished: bool = False,
@@ -119,7 +127,7 @@ class Worker:
             async with Worker(
                 docket=docket,
                 name=name,
-                prefetch_count=prefetch_count,
+                concurrency=concurrency,
                 redelivery_timeout=redelivery_timeout,
                 reconnection_delay=reconnection_delay,
             ) as worker:
@@ -200,61 +208,103 @@ class Worker:
                 ),
             )
 
-            total_work, due_work = sys.maxsize, 0
-            while forever or total_work:
-                now = datetime.now(timezone.utc)
-                total_work, due_work = await stream_due_tasks(
-                    keys=[self.docket.queue_key, self.docket.stream_key],
-                    args=[now.timestamp(), self.docket.name],
-                )
-                if due_work > 0:
-                    logger.debug(
-                        "Moved %d/%d due tasks from %s to %s",
-                        due_work,
-                        total_work,
-                        self.docket.queue_key,
-                        self.docket.stream_key,
-                        extra=self._log_context,
+            active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
+
+            async def process_completed_tasks() -> None:
+                completed_tasks = {task for task in active_tasks if task.done()}
+                for task in completed_tasks:
+                    message_id = active_tasks.pop(task)
+
+                    await task
+
+                    async with redis.pipeline() as pipeline:
+                        pipeline.xack(
+                            self.docket.stream_key,
+                            self.consumer_group_name,
+                            message_id,
+                        )
+                        pipeline.xdel(
+                            self.docket.stream_key,
+                            message_id,
+                        )
+                        await pipeline.execute()
+
+            future_work, due_work = sys.maxsize, 0
+
+            try:
+                while forever or future_work or active_tasks:
+                    await process_completed_tasks()
+
+                    available_slots = self.concurrency - len(active_tasks)
+
+                    def start_task(
+                        message_id: RedisMessageID, message: RedisMessage
+                    ) -> None:
+                        task = asyncio.create_task(self._execute(message))
+                        active_tasks[task] = message_id
+
+                        nonlocal available_slots, future_work
+                        available_slots -= 1
+                        future_work += 1
+
+                    if available_slots <= 0:
+                        await asyncio.sleep(self.minimum_check_interval.total_seconds())
+                        continue
+
+                    future_work, due_work = await stream_due_tasks(
+                        keys=[self.docket.queue_key, self.docket.stream_key],
+                        args=[datetime.now(timezone.utc).timestamp(), self.docket.name],
+                    )
+                    if due_work > 0:
+                        logger.debug(
+                            "Moved %d/%d due tasks from %s to %s",
+                            due_work,
+                            future_work,
+                            self.docket.queue_key,
+                            self.docket.stream_key,
+                            extra=self._log_context,
+                        )
+
+                    redeliveries: RedisMessages
+                    _, redeliveries, _ = await redis.xautoclaim(
+                        name=self.docket.stream_key,
+                        groupname=self.consumer_group_name,
+                        consumername=self.name,
+                        min_idle_time=int(
+                            self.redelivery_timeout.total_seconds() * 1000
+                        ),
+                        start_id="0-0",
+                        count=available_slots,
                     )
 
-                _, redeliveries, _ = await redis.xautoclaim(
-                    name=self.docket.stream_key,
-                    groupname=self.consumer_group_name,
-                    consumername=self.name,
-                    min_idle_time=int(self.redelivery_timeout.total_seconds() * 1000),
-                    start_id="0-0",
-                    count=self.prefetch_count,
-                )
+                    for message_id, message in redeliveries:
+                        start_task(message_id, message)
+                        if available_slots <= 0:
+                            break
 
-                new_deliveries: RedisReadGroupResponse = await redis.xreadgroup(
-                    groupname=self.consumer_group_name,
-                    consumername=self.name,
-                    streams={self.docket.stream_key: ">"},
-                    count=self.prefetch_count,
-                    block=10,
-                )
+                    if available_slots <= 0:
+                        continue
 
-                for source in [[(b"redeliveries", redeliveries)], new_deliveries]:
-                    for _, messages in source:
+                    new_deliveries: RedisReadGroupResponse = await redis.xreadgroup(
+                        groupname=self.consumer_group_name,
+                        consumername=self.name,
+                        streams={self.docket.stream_key: ">"},
+                        block=(
+                            int(self.minimum_check_interval.total_seconds() * 1000)
+                            if forever or active_tasks
+                            else None
+                        ),
+                        count=available_slots,
+                    )
+                    for _, messages in new_deliveries:
                         for message_id, message in messages:
-                            await self._execute(message)
-
-                            async with redis.pipeline() as pipeline:
-                                pipeline.xack(
-                                    self.docket.stream_key,
-                                    self.consumer_group_name,
-                                    message_id,
-                                )
-                                pipeline.xdel(
-                                    self.docket.stream_key,
-                                    message_id,
-                                )
-                                await pipeline.execute()
-
-                            # When executing a task, there's always a chance that it was
-                            # either retried or it scheduled another task, so let's give
-                            # ourselves one more iteration of the loop to handle that.
-                            total_work += 1
+                            start_task(message_id, message)
+                            if available_slots <= 0:
+                                break
+            finally:
+                if active_tasks:
+                    await asyncio.gather(*active_tasks, return_exceptions=True)
+                    await process_completed_tasks()
 
     async def _execute(self, message: RedisMessage) -> None:
         execution = Execution.from_message(
