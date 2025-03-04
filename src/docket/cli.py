@@ -1,17 +1,17 @@
 import asyncio
 import enum
+import importlib
 import logging
 import socket
 import sys
 from datetime import timedelta
-from typing import Annotated, cast
+from typing import Annotated, Any
 
 import typer
 
-from docket.execution import Operator
-
 from . import __version__, tasks
 from .docket import Docket
+from .execution import Operator
 from .worker import Worker
 
 app: typer.Typer = typer.Typer(
@@ -100,6 +100,34 @@ def set_logging_format(format: LogFormat) -> None:
 
 def set_logging_level(level: LogLevel) -> None:
     logging.getLogger().setLevel(level)
+
+
+def handle_strike_wildcard(value: str) -> str | None:
+    if value in ("", "*"):
+        return None
+    return value
+
+
+def interpret_python_value(value: str | None) -> Any:
+    if value is None:
+        return None
+
+    type, _, value = value.rpartition(":")
+    if not type:
+        # without a type hint, we assume the value is a string
+        return value
+
+    module_name, _, member_name = type.rpartition(".")
+    module = importlib.import_module(module_name or "builtins")
+    member = getattr(module, member_name)
+
+    # special cases for common useful types
+    if member is timedelta:
+        return timedelta(seconds=int(value))
+    elif member is bool:
+        return value.lower() == "true"
+    else:
+        return member(value)
 
 
 @app.command(
@@ -209,24 +237,26 @@ def strike(
         str,
         typer.Argument(
             help="The function to strike",
+            callback=handle_strike_wildcard,
         ),
     ] = "*",
     parameter: Annotated[
         str,
         typer.Argument(
             help="The parameter to strike",
+            callback=handle_strike_wildcard,
         ),
     ] = "*",
     operator: Annotated[
-        str,
+        Operator,
         typer.Argument(
-            help="The operator to use for the strike",
+            help="The operator to compare the value against",
         ),
-    ] = "==",
+    ] = Operator.EQUAL,
     value: Annotated[
         str | None,
         typer.Argument(
-            help="The value to strike against",
+            help="The value to strike from the docket",
         ),
     ] = None,
     docket_: Annotated[
@@ -245,10 +275,21 @@ def strike(
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:
+    if not function and not parameter:
+        raise typer.BadParameter(
+            message="Must provide either a function and/or a parameter",
+        )
+
+    value_ = interpret_python_value(value)
+    if parameter:
+        function_name = f"{function or '(all tasks)'}"
+        print(f"Striking {function_name} {parameter} {operator} {value_!r}")
+    else:
+        print(f"Striking {function}")
+
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
-            assert operator in {"==", "!=", ">", ">=", "<", "<=", "between"}
-            await docket.strike(function, parameter, cast(Operator, operator), value)
+            await docket.strike(function, parameter, operator, value_)
 
     asyncio.run(run())
 
@@ -258,25 +299,27 @@ def restore(
     function: Annotated[
         str,
         typer.Argument(
-            help="The function to strike",
+            help="The function to restore",
+            callback=handle_strike_wildcard,
         ),
     ] = "*",
     parameter: Annotated[
         str,
         typer.Argument(
-            help="The parameter to strike",
+            help="The parameter to restore",
+            callback=handle_strike_wildcard,
         ),
     ] = "*",
     operator: Annotated[
-        str,
+        Operator,
         typer.Argument(
-            help="The operator to use for the strike",
+            help="The operator to compare the value against",
         ),
-    ] = "==",
+    ] = Operator.EQUAL,
     value: Annotated[
         str | None,
         typer.Argument(
-            help="The value to strike against",
+            help="The value to restore to the docket",
         ),
     ] = None,
     docket_: Annotated[
@@ -295,10 +338,21 @@ def restore(
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:
+    if not function and not parameter:
+        raise typer.BadParameter(
+            message="Must provide either a function and/or a parameter",
+        )
+
+    value_ = interpret_python_value(value)
+    if parameter:
+        function_name = f"{function or '(all tasks)'}"
+        print(f"Striking {function_name} {parameter} {operator} {value_!r}")
+    else:
+        print(f"Restoring {function}")
+
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
-            assert operator in {"==", "!=", ">", ">=", "<", "<=", "between"}
-            await docket.restore(function, parameter, cast(Operator, operator), value)
+            await docket.restore(function, parameter, operator, value_)
 
     asyncio.run(run())
 

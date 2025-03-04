@@ -11,7 +11,6 @@ from typing import (
     Callable,
     Hashable,
     Iterable,
-    Literal,
     NoReturn,
     ParamSpec,
     Self,
@@ -27,6 +26,7 @@ from redis.asyncio import Redis
 
 from .execution import (
     Execution,
+    LiteralOperator,
     Operator,
     Restore,
     Strike,
@@ -297,11 +297,13 @@ class Docket:
         self,
         function: Callable[P, Awaitable[R]] | str | None = None,
         parameter: str | None = None,
-        operator: Operator = "==",
+        operator: Operator | LiteralOperator = "==",
         value: Hashable | None = None,
     ) -> None:
         if not isinstance(function, (str, type(None))):
             function = function.__name__
+
+        operator = Operator(operator)
 
         strike = Strike(function, parameter, operator, value)
         return await self._send_strike_instruction(strike)
@@ -310,11 +312,13 @@ class Docket:
         self,
         function: Callable[P, Awaitable[R]] | str | None = None,
         parameter: str | None = None,
-        operator: Literal["==", "!=", ">", ">=", "<", "<=", "between"] = "==",
+        operator: Operator | LiteralOperator = "==",
         value: Hashable | None = None,
     ) -> None:
         if not isinstance(function, (str, type(None))):
             function = function.__name__
+
+        operator = Operator(operator)
 
         restore = Restore(function, parameter, operator, value)
         return await self._send_strike_instruction(restore)
