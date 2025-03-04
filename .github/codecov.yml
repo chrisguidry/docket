@@ -1,0 +1,24 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 100%
+        threshold: 0%
+        informational: false
+        only_pulls: false
+    patch:
+      default:
+        target: 100%
+        threshold: 0%
+        informational: false
+        only_pulls: false
+  precision: 2
+  round: down
+  range: "100...100"
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false
+  require_base: no
+  require_head: no
