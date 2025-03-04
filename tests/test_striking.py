@@ -1,11 +1,11 @@
 import asyncio
 from datetime import datetime
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 import pytest
 
 from docket import Docket
-from docket.execution import Execution, Strike, StrikeList
+from docket.execution import Execution, Operator, Strike, StrikeList
 
 
 async def test_all_dockets_see_all_strikes(docket: Docket):
@@ -140,7 +140,7 @@ async def test_restoring_is_idempotent(docket: Docket):
     ],
 )
 def test_strike_operators(
-    operator: Literal["==", "!=", ">", ">=", "<", "<=", "between"],
+    operator: Operator,
     value: Any,
     test_value: Any,
     expected_result: bool,
@@ -165,3 +165,45 @@ def test_strike_operators(
     )
 
     assert strike_list.is_stricken(execution) == expected_result
+
+
+@pytest.mark.parametrize(
+    "operator,value,test_value",
+    [
+        (">", 42, "string"),  # comparing int with string
+        ("<", "string", 42),  # comparing string with int
+        (">=", None, 42),  # comparing None with int
+        ("<=", 42, None),  # comparing int with None
+        (">", {}, 42),  # comparing dict with int
+        ("<", 42, {}),  # comparing int with dict
+        (">=", [], 42),  # comparing list with int
+        ("<=", 42, []),  # comparing int with list
+    ],
+)
+async def test_strike_incomparable_values(
+    operator: Operator,
+    value: Any,
+    test_value: Any,
+    docket: Docket,
+    caplog: pytest.LogCaptureFixture,
+):
+    """should handle incomparable values gracefully in strikes"""
+
+    # Register a test task
+    async def test_task(parameter: Any) -> None:
+        pass  # pragma: no cover
+
+    docket.register(test_task)
+
+    # Create a strike with potentially incomparable values
+    await docket.strike("test_task", "parameter", operator, value)
+
+    # We should be able to add the task without errors, even if the strike would be
+    # comparing incomparable values
+    execution = await docket.add(test_task)(test_value)
+
+    # The task might or might not be stricken depending on the implementation's
+    # handling of incomparable values, but the operation shouldn't raise exceptions
+    assert execution is not None  # Simply access the variable to satisfy the linter
+
+    assert "Incompatible type for strike condition" in caplog.text

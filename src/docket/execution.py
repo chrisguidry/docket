@@ -1,5 +1,6 @@
 import abc
 import inspect
+import logging
 from datetime import datetime
 from typing import (
     Any,
@@ -14,6 +15,8 @@ from typing import (
 import cloudpickle  # type: ignore[import]
 
 from .annotations import Logged
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 Message = dict[bytes, bytes]
 
@@ -186,8 +189,12 @@ class StrikeList:
 
         sig = inspect.signature(execution.function)
 
-        bound_args = sig.bind(*execution.args, **execution.kwargs)
-        bound_args.apply_defaults()
+        try:
+            bound_args = sig.bind(*execution.args, **execution.kwargs)
+            bound_args.apply_defaults()
+        except TypeError:
+            # If we can't make sense of the arguments, just assume the task is fine
+            return False
 
         all_arguments = {
             **bound_args.arguments,
@@ -211,27 +218,46 @@ class StrikeList:
 
     def _is_match(self, value: Any, operator: Operator, strike_value: Any) -> bool:
         """Determines if a value matches a strike condition."""
-        match operator:
-            case "==":
-                return value == strike_value
-            case "!=":
-                return value != strike_value
-            case ">":
-                return value > strike_value
-            case ">=":
-                return value >= strike_value
-            case "<":
-                return value < strike_value
-            case "<=":
-                return value <= strike_value
-            case "between":  # pragma: no branch
-                try:
+        try:
+            match operator:
+                case "==":
+                    return value == strike_value
+                case "!=":
+                    return value != strike_value
+                case ">":
+                    return value > strike_value
+                case ">=":
+                    return value >= strike_value
+                case "<":
+                    return value < strike_value
+                case "<=":
+                    return value <= strike_value
+                case "between":  # pragma: no branch
                     lower, upper = strike_value
                     return lower <= value <= upper
-                except (ValueError, TypeError):
-                    return False
+        except (ValueError, TypeError):
+            # If we can't make the comparison due to incompatible types, just log the
+            # error and assume the task is not stricken
+            logger.warning(
+                "Incompatible type for strike condition: %r %s %r",
+                strike_value,
+                operator,
+                value,
+                exc_info=True,
+            )
+            return False
 
     def update(self, instruction: StrikeInstruction) -> None:
+        try:
+            hash(instruction.value)
+        except TypeError:
+            logger.warning(
+                "Incompatible type for strike condition: %s %r",
+                instruction.operator,
+                instruction.value,
+            )
+            return
+
         if isinstance(instruction, Strike):
             self._strike(instruction)
         elif isinstance(instruction, Restore):  # pragma: no branch

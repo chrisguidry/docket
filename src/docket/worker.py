@@ -307,10 +307,15 @@ class Worker:
                     await process_completed_tasks()
 
     async def _execute(self, message: RedisMessage) -> None:
-        execution = Execution.from_message(
-            self.docket.tasks[message[b"function"].decode()],
-            message,
-        )
+        function_name = message[b"function"].decode()
+        function = self.docket.tasks.get(function_name)
+        if function is None:
+            logger.warning(
+                "Task function %r not found", function_name, extra=self._log_context
+            )
+            return
+
+        execution = Execution.from_message(function, message)
         name = execution.function.__name__
         key = execution.key
 
