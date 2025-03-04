@@ -2,16 +2,19 @@ import asyncio
 import logging
 import os
 import random
+import socket
 import sys
 from asyncio import subprocess
 from asyncio.subprocess import Process
+from contextlib import contextmanager
 from datetime import timedelta
-from typing import Any, Literal, Sequence
+from typing import Any, Generator, Literal, Sequence
 from uuid import uuid4
 
 import redis.exceptions
+from docker import DockerClient
+from docker.models.containers import Container
 from opentelemetry import trace
-from testcontainers.redis import RedisContainer
 
 from docket import Docket
 from docket.execution import Operator
@@ -43,14 +46,41 @@ def python_entrypoint() -> list[str]:
     return [sys.executable]
 
 
+@contextmanager
+def run_redis(version: str) -> Generator[tuple[str, Container], None, None]:
+    def get_free_port() -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            return s.getsockname()[1]
+
+    port = get_free_port()
+
+    client = DockerClient.from_env()
+    container = client.containers.run(
+        f"redis:{version}",
+        detach=True,
+        ports={"6379/tcp": port},
+        auto_remove=True,
+    )
+
+    # Wait for Redis to be ready
+    for line in container.logs(stream=True):
+        if b"Ready to accept connections" in line:
+            break
+
+    try:
+        yield f"redis://localhost:{port}/0", container
+    finally:
+        container.stop()
+
+
 async def main(
-    mode: Literal["performance", "chaos", "hard"] = "chaos",
+    mode: Literal["performance", "chaos"] = "chaos",
     tasks: int = 5000,
-    producers: int = 2,
-    workers: int = 4,
+    producers: int = 4,
+    workers: int = 7,
 ):
-    with RedisContainer("redis:7.4.2") as redis_server:
-        redis_url = f"redis://{redis_server.get_container_host_ip()}:{redis_server.get_exposed_port(6379)}"
+    with run_redis("7.4.2") as (redis_url, redis_container):
         logger.info("Redis running at %s", redis_url)
         docket = Docket(
             name=f"test-docket-{uuid4()}",
@@ -148,17 +178,11 @@ async def main(
 
             # Now apply some chaos to the system:
 
-            if mode in ("chaos", "hard"):
+            if mode in ("chaos",):
                 chaos_chance = random.random()
-                if chaos_chance < 0.01 and mode == "hard":
-                    logger.warning("CHAOS: Restaring redis server...")
-                    before = redis_server.get_exposed_port(6379)
-                    redis_server.get_wrapped_container().restart()
-                    after = redis_server.get_exposed_port(6379)
-                    # TODO: this ends up happening most of the time, so we need to
-                    # have a different approach here
-                    assert after == before, f"redis changed from {before} to {after}"
-                    await asyncio.sleep(5)
+                if chaos_chance < 0.02:
+                    logger.warning("CHAOS: Restarting redis server...")
+                    redis_container.restart(timeout=2)
 
                 elif chaos_chance < 0.10:
                     worker_index = random.randrange(len(worker_processes))
@@ -211,5 +235,5 @@ async def main(
 
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "chaos"
-    assert mode in ("performance", "chaos", "hard")
+    assert mode in ("performance", "chaos")
     asyncio.run(main(mode=mode))

@@ -1,11 +1,15 @@
+import time
 from datetime import datetime, timezone
 from functools import partial
-from typing import AsyncGenerator, Callable
+from typing import AsyncGenerator, Callable, Generator, Iterable, cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from testcontainers.redis import RedisContainer  # type: ignore[import]
+import redis.exceptions
+from docker import DockerClient
+from docker.models.containers import Container
+from redis import Redis
 
 from docket import Docket, Worker
 
@@ -16,9 +20,42 @@ def now() -> Callable[[], datetime]:
 
 
 @pytest.fixture(scope="session")
-async def redis_server() -> AsyncGenerator[RedisContainer, None]:
-    container = RedisContainer("redis:7.4.2")
-    container.start()
+def redis_port(unused_tcp_port_factory: Callable[[], int]) -> int:
+    return unused_tcp_port_factory()
+
+
+@pytest.fixture(scope="session")
+def redis_server(redis_port: int) -> Generator[Container, None, None]:
+    client = DockerClient.from_env()
+
+    container: Container
+
+    # Find and remove any containers from previous test runs
+    containers: Iterable[Container] = cast(
+        Iterable[Container],
+        client.containers.list(all=True, filters={"label": "source=docket-unit-tests"}),  # type: ignore
+    )
+    for container in containers:  # pragma: no cover
+        container.remove(force=True)
+
+    container = client.containers.run(
+        "redis:7.4.2",
+        detach=True,
+        ports={"6379/tcp": redis_port},
+        labels={"source": "docket-unit-tests"},
+        auto_remove=True,
+    )
+
+    while True:
+        try:
+            with Redis.from_url(f"redis://localhost:{redis_port}/0") as r:  # type: ignore
+                if r.ping():  # type: ignore
+                    break
+        except redis.exceptions.ConnectionError:
+            pass
+
+        time.sleep(0.1)
+
     try:
         yield container
     finally:
@@ -26,10 +63,8 @@ async def redis_server() -> AsyncGenerator[RedisContainer, None]:
 
 
 @pytest.fixture(scope="session")
-def redis_url(redis_server: RedisContainer) -> str:
-    host = redis_server.get_container_host_ip()
-    port = redis_server.get_exposed_port(6379)
-    return f"redis://{host}:{port}/0"
+def redis_url(redis_server: Container, redis_port: int) -> str:
+    return f"redis://localhost:{redis_port}/0"
 
 
 @pytest.fixture

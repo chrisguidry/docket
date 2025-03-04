@@ -34,6 +34,7 @@ from .execution import (
     StrikeList,
 )
 from .instrumentation import (
+    REDIS_DISRUPTIONS,
     TASKS_ADDED,
     TASKS_CANCELLED,
     TASKS_REPLACED,
@@ -348,6 +349,7 @@ class Docket:
                                     extra={"docket": self.name},
                                 )
             except redis.exceptions.ConnectionError:  # pragma: no cover
+                REDIS_DISRUPTIONS.add(1, {"docket": self.name})
                 logger.warning("Connection error, sleeping for 1 second...")
                 await asyncio.sleep(1)
             except Exception:  # pragma: no cover

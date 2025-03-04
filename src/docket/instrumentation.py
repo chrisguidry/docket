@@ -75,6 +75,12 @@ TASKS_RUNNING = meter.create_up_down_counter(
     unit="1",
 )
 
+REDIS_DISRUPTIONS = meter.create_counter(
+    "docket_redis_disruptions",
+    description="How many times the Redis connection has been disrupted",
+    unit="1",
+)
+
 Message = dict[bytes, bytes]
 
 

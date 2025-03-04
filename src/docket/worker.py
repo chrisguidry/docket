@@ -27,6 +27,7 @@ from .docket import (
     RedisReadGroupResponse,
 )
 from .instrumentation import (
+    REDIS_DISRUPTIONS,
     TASK_DURATION,
     TASK_PUNCTUALITY,
     TASKS_COMPLETED,
@@ -154,6 +155,9 @@ class Worker:
             try:
                 return await self._worker_loop(forever=forever)
             except redis.exceptions.ConnectionError:
+                REDIS_DISRUPTIONS.add(
+                    1, {"docket": self.docket.name, "worker": self.name}
+                )
                 logger.warning(
                     "Error connecting to redis, retrying in %s...",
                     self.reconnection_delay,
