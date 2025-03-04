@@ -80,7 +80,7 @@ async def test_worker_reconnects_when_connection_is_lost(
             raise ConnectionError("Simulated connection error")
         return await original_worker_loop(forever=forever)
 
-    worker._worker_loop = mock_worker_loop
+    worker._worker_loop = mock_worker_loop  # type: ignore[protected-access]
 
     await docket.add(the_task)()
 

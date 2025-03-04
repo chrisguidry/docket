@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from testcontainers.redis import RedisContainer
+from testcontainers.redis import RedisContainer  # type: ignore[import]
 
 from docket import Docket, Worker
 

@@ -107,7 +107,7 @@ class Docket:
 
     @asynccontextmanager
     async def redis(self) -> AsyncGenerator[Redis, None]:
-        async with Redis.from_url(self.url) as redis:
+        async with Redis.from_url(self.url) as redis:  # type: ignore
             yield redis
 
     def register(self, function: Callable[..., Awaitable[Any]]) -> None:
@@ -251,10 +251,10 @@ class Docket:
                     return
 
                 if when <= datetime.now(timezone.utc):
-                    await redis.xadd(self.stream_key, message)
+                    await redis.xadd(self.stream_key, message)  # type: ignore[arg-type]
                 else:
                     async with redis.pipeline() as pipe:
-                        pipe.hset(self.parked_task_key(key), mapping=message)
+                        pipe.hset(self.parked_task_key(key), mapping=message)  # type: ignore[arg-type]
                         pipe.zadd(self.queue_key, {key: when.timestamp()})
                         await pipe.execute()
 
@@ -317,7 +317,8 @@ class Docket:
             },
         ):
             async with self.redis() as redis:
-                await redis.xadd(self.strike_key, instruction.as_message())
+                message = instruction.as_message()
+                await redis.xadd(self.strike_key, message)  # type: ignore[arg-type]
             self.strike_list.update(instruction)
 
     async def _monitor_strikes(self) -> NoReturn:
