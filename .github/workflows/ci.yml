@@ -30,7 +30,7 @@ jobs:
         run: uv sync --dev
 
       - name: Run tests
-        run: uv run pytest --cov-branch --cov-report=xml
+        run: uv run pytest --cov-branch --cov-report=xml --cov-report=term-missing:skip-covered
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
