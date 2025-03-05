@@ -551,12 +551,15 @@ def snapshot(
 
     console = Console()
 
-    summary_line = (
-        f"Docket: {docket_!r} as of {local_time(snapshot.taken)}\n"
-        f"{len(snapshot.workers)} workers, "
-        f"{len(snapshot.running)}/{snapshot.total_tasks} running"
-    )
-    table = Table(title=summary_line)
+    summary_lines = [
+        f"Docket: {docket_!r}",
+        f"as of {local_time(snapshot.taken)}",
+        (
+            f"{len(snapshot.workers)} workers, "
+            f"{len(snapshot.running)}/{snapshot.total_tasks} running"
+        ),
+    ]
+    table = Table(title="\n".join(summary_lines))
     table.add_column("When", style="green")
     table.add_column("Function", style="cyan")
     table.add_column("Key", style="cyan")
