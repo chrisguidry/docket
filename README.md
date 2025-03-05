@@ -43,7 +43,7 @@ Howdy, John at 2025-03-05 13:58:24.550773!
 ## Why `docket`?
 
 * Snappy one-way background task processing without any bloat
-* Schedule immediate or future work seamlessly with the same interface'
+* Schedule immediate or future work seamlessly with the same interface
 * Skip problematic tasks or parameters without redeploying
 * Purpose-built for Redis streams
 * Fully type-complete and type-aware for your background task functions
