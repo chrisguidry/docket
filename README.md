@@ -12,7 +12,7 @@ on the scheduling of future work as seamlessly and efficiency as immediate work.
 ```python
 from datetime import datetime, timedelta, timezone
 
-from docket import Docket, Worker
+from docket import Docket
 
 
 async def greet(name: str, greeting="Hello") -> None:
@@ -25,7 +25,12 @@ async with Docket() as docket:
     now = datetime.now(timezone.utc)
     soon = now + timedelta(seconds=3)
     await docket.add(greet, when=soon)("John", greeting="Howdy")
+```
 
+```python
+from docket import Docket, Worker
+
+async with Docket() as docket:
     async with Worker(docket) as worker:
         await worker.run_until_finished()
 ```
@@ -35,16 +40,19 @@ Hello, Jane at 2025-03-05 13:58:21.552644!
 Howdy, John at 2025-03-05 13:58:24.550773!
 ```
 
+## Why `docket`?
+
+* Snappy one-way background task processing without any bloat
+* Schedule immediate or future work seamlessly with the same interface'
+* Skip problematic tasks or parameters without redeploying
+* Purpose-built for Redis streams
+* Fully type-complete and type-aware for your background task functions
+
+
 ## Installing `docket`
 
 Docket is [available on PyPI](https://pypi.org/project/pydocket/) under the package name
 `pydocket`.  It targets Python 3.12 or above.
-
-With `pip`:
-
-```bash
-pip install pydocket
-```
 
 With [`uv`](https://docs.astral.sh/uv/):
 
@@ -54,6 +62,12 @@ uv pip install pydocket
 or
 
 uv add pydocket
+```
+
+With `pip`:
+
+```bash
+pip install pydocket
 ```
 
 Docket requires a [Redis](http://redis.io/) server with Streams support (which was
