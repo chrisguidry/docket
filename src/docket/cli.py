@@ -6,6 +6,7 @@ import os
 import socket
 import sys
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from typing import Annotated, Any, Collection
 
 import typer
@@ -13,7 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__, tasks
-from .docket import Docket, WorkerInfo
+from .docket import Docket, DocketSnapshot, WorkerInfo
 from .execution import Operator
 from .worker import Worker
 
@@ -36,6 +37,10 @@ class LogFormat(enum.StrEnum):
     RICH = "rich"
     PLAIN = "plain"
     JSON = "json"
+
+
+def local_time(when: datetime) -> str:
+    return when.astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
 
 
 def default_worker_name() -> str:
@@ -135,6 +140,13 @@ def interpret_python_value(value: str | None) -> Any:
         return value.lower() == "true"
     else:
         return member(value)
+
+
+@app.command(
+    help="Print the version of docket",
+)
+def version() -> None:
+    print(__version__)
 
 
 @app.command(
@@ -238,7 +250,7 @@ def worker(
     )
 
 
-@app.command(help="Strikes a task or parameters from the Docket")
+@app.command(help="Strikes a task or parameters from the docket")
 def strike(
     function: Annotated[
         str,
@@ -364,7 +376,13 @@ def restore(
     asyncio.run(run())
 
 
-@app.command(help="Adds a trace task to the Docket")
+tasks_app: typer.Typer = typer.Typer(
+    help="Run docket's built-in tasks", no_args_is_help=True
+)
+app.add_typer(tasks_app, name="tasks")
+
+
+@tasks_app.command(help="Adds a trace task to the Docket")
 def trace(
     docket_: Annotated[
         str,
@@ -387,21 +405,18 @@ def trace(
             help="The message to print",
         ),
     ] = "Howdy!",
-    error: Annotated[
-        bool,
+    delay: Annotated[
+        timedelta,
         typer.Option(
-            "--error",
-            help="Intentionally raise an error",
+            parser=duration,
+            help="The delay before the task is added to the docket",
         ),
-    ] = False,
+    ] = timedelta(seconds=0),
 ) -> None:
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
-            if error:
-                execution = await docket.add(tasks.fail)(message)
-            else:
-                execution = await docket.add(tasks.trace)(message)
-
+            when = datetime.now(timezone.utc) + delay
+            execution = await docket.add(tasks.trace, when)(message)
             print(
                 f"Added {execution.function.__name__} task {execution.key!r} to "
                 f"the docket {docket.name!r}"
@@ -410,15 +425,170 @@ def trace(
     asyncio.run(run())
 
 
-@app.command(
-    help="Print the version of Docket",
-)
-def version() -> None:
-    print(__version__)
+@tasks_app.command(help="Adds a fail task to the Docket")
+def fail(
+    docket_: Annotated[
+        str,
+        typer.Option(
+            "--docket",
+            help="The name of the docket",
+            envvar="DOCKET_NAME",
+        ),
+    ] = "docket",
+    url: Annotated[
+        str,
+        typer.Option(
+            help="The URL of the Redis server",
+            envvar="DOCKET_URL",
+        ),
+    ] = "redis://localhost:6379/0",
+    message: Annotated[
+        str,
+        typer.Argument(
+            help="The message to print",
+        ),
+    ] = "Howdy!",
+    delay: Annotated[
+        timedelta,
+        typer.Option(
+            parser=duration,
+            help="The delay before the task is added to the docket",
+        ),
+    ] = timedelta(seconds=0),
+) -> None:
+    async def run() -> None:
+        async with Docket(name=docket_, url=url) as docket:
+            when = datetime.now(timezone.utc) + delay
+            execution = await docket.add(tasks.fail, when)(message)
+            print(
+                f"Added {execution.function.__name__} task {execution.key!r} to "
+                f"the docket {docket.name!r}"
+            )
+
+    asyncio.run(run())
+
+
+@tasks_app.command(help="Adds a sleep task to the Docket")
+def sleep(
+    docket_: Annotated[
+        str,
+        typer.Option(
+            "--docket",
+            help="The name of the docket",
+            envvar="DOCKET_NAME",
+        ),
+    ] = "docket",
+    url: Annotated[
+        str,
+        typer.Option(
+            help="The URL of the Redis server",
+            envvar="DOCKET_URL",
+        ),
+    ] = "redis://localhost:6379/0",
+    seconds: Annotated[
+        float,
+        typer.Argument(
+            help="The number of seconds to sleep",
+        ),
+    ] = 1,
+    delay: Annotated[
+        timedelta,
+        typer.Option(
+            parser=duration,
+            help="The delay before the task is added to the docket",
+        ),
+    ] = timedelta(seconds=0),
+) -> None:
+    async def run() -> None:
+        async with Docket(name=docket_, url=url) as docket:
+            when = datetime.now(timezone.utc) + delay
+            execution = await docket.add(tasks.sleep, when)(seconds)
+            print(
+                f"Added {execution.function.__name__} task {execution.key!r} to "
+                f"the docket {docket.name!r}"
+            )
+
+    asyncio.run(run())
+
+
+def relative_time(now: datetime, when: datetime) -> str:
+    delta = now - when
+    if delta < -timedelta(minutes=30):
+        return f"at {local_time(when)}"
+    elif delta < timedelta(0):
+        return f"in {-delta}"
+    elif delta < timedelta(minutes=30):
+        return f"{delta} ago"
+    else:
+        return f"at {local_time(when)}"
+
+
+@app.command(help="Shows a snapshot of what's on the docket right now")
+def snapshot(
+    docket_: Annotated[
+        str,
+        typer.Option(
+            "--docket",
+            help="The name of the docket",
+            envvar="DOCKET_NAME",
+        ),
+    ] = "docket",
+    url: Annotated[
+        str,
+        typer.Option(
+            help="The URL of the Redis server",
+            envvar="DOCKET_URL",
+        ),
+    ] = "redis://localhost:6379/0",
+) -> None:
+    async def run() -> DocketSnapshot:
+        async with Docket(name=docket_, url=url) as docket:
+            return await docket.snapshot()
+
+    snapshot = asyncio.run(run())
+
+    relative = partial(relative_time, snapshot.taken)
+
+    console = Console()
+
+    summary_lines = [
+        f"Docket: {docket_!r}",
+        f"as of {local_time(snapshot.taken)}",
+        (
+            f"{len(snapshot.workers)} workers, "
+            f"{len(snapshot.running)}/{snapshot.total_tasks} running"
+        ),
+    ]
+    table = Table(title="\n".join(summary_lines))
+    table.add_column("When", style="green")
+    table.add_column("Function", style="cyan")
+    table.add_column("Key", style="cyan")
+    table.add_column("Worker", style="yellow")
+    table.add_column("Started", style="green")
+
+    for execution in snapshot.running:
+        table.add_row(
+            relative(execution.when),
+            execution.function.__name__,
+            execution.key,
+            execution.worker,
+            relative(execution.started),
+        )
+
+    for execution in snapshot.future:
+        table.add_row(
+            relative(execution.when),
+            execution.function.__name__,
+            execution.key,
+            "",
+            "",
+        )
+
+    console.print(table)
 
 
 workers_app: typer.Typer = typer.Typer(
-    help="Worker management commands", no_args_is_help=True
+    help="Look at the workers on a docket", no_args_is_help=True
 )
 app.add_typer(workers_app, name="workers")
 
@@ -456,7 +626,7 @@ def print_workers(
     console.print(table)
 
 
-@workers_app.command(name="ls", help="List the workers in the Docket")
+@workers_app.command(name="ls", help="List all workers on the docket")
 def list_workers(
     docket_: Annotated[
         str,
@@ -483,7 +653,10 @@ def list_workers(
     print_workers(docket_, workers)
 
 
-@workers_app.command(name="for-task", help="List the workers in the Docket")
+@workers_app.command(
+    name="for-task",
+    help="List the workers on the docket that can process a certain task",
+)
 def workers_for_task(
     task: Annotated[
         str,

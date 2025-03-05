@@ -12,15 +12,7 @@ from redis.asyncio import Redis
 
 from docket import CurrentWorker, Docket, Worker
 from docket.docket import RedisMessage
-
-
-async def test_worker_aenter_propagates_connection_errors():
-    """The worker should propagate Redis connection errors"""
-
-    docket = Docket(name="test-docket", url="redis://nonexistent-host:12345/0")
-    worker = Worker(docket)
-    with pytest.raises(redis.exceptions.RedisError):
-        await worker.__aenter__()
+from docket.tasks import standard_tasks
 
 
 async def test_worker_acknowledges_messages(
@@ -35,7 +27,7 @@ async def test_worker_acknowledges_messages(
     async with docket.redis() as redis:
         pending_info = await redis.xpending(
             name=docket.stream_key,
-            groupname=worker.consumer_group_name,
+            groupname=docket.worker_group_name,
         )
         assert pending_info["pending"] == 0
 
@@ -147,7 +139,7 @@ async def test_worker_handles_redeliveries_from_abandoned_workers(
         async with docket.redis() as redis:
             pending_info = await redis.xpending(
                 docket.stream_key,
-                worker_b.consumer_group_name,
+                docket.worker_group_name,
             )
             assert pending_info["pending"] == 1, (
                 "Expected one pending task in the stream"
@@ -226,6 +218,9 @@ async def test_worker_handles_unregistered_task_execution(
     assert "Task function 'the_task' not found" in caplog.text
 
 
+builtin_tasks = {function.__name__ for function in standard_tasks}
+
+
 async def test_worker_announcements(
     docket: Docket, the_task: AsyncMock, another_task: AsyncMock
 ):
@@ -252,7 +247,7 @@ async def test_worker_announcements(
 
             for worker in workers:
                 assert worker.last_seen > datetime.now(timezone.utc) - (heartbeat * 3)
-                assert worker.tasks == {"trace", "fail", "the_task", "another_task"}
+                assert worker.tasks == builtin_tasks | {"the_task", "another_task"}
 
         await asyncio.sleep(heartbeat.total_seconds() * 10)
 
@@ -294,7 +289,7 @@ async def test_task_announcements(
 
             for worker in workers:
                 assert worker.last_seen > datetime.now(timezone.utc) - (heartbeat * 3)
-                assert worker.tasks == {"trace", "fail", "the_task", "another_task"}
+                assert worker.tasks == builtin_tasks | {"the_task", "another_task"}
 
         await asyncio.sleep(heartbeat.total_seconds() * 10)
 

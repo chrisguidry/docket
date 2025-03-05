@@ -17,6 +17,7 @@ from typing import (
     ParamSpec,
     Self,
     Sequence,
+    TypedDict,
     TypeVar,
     cast,
     overload,
@@ -64,11 +65,47 @@ RedisStream = tuple[RedisStreamID, RedisMessages]
 RedisReadGroupResponse = Sequence[RedisStream]
 
 
+class RedisStreamPendingMessage(TypedDict):
+    message_id: bytes
+    consumer: bytes
+    time_since_delivered: int
+    times_delivered: int
+
+
 @dataclass
 class WorkerInfo:
     name: str
     last_seen: datetime
     tasks: set[str]
+
+
+class RunningExecution(Execution):
+    worker: str
+    started: datetime
+
+    def __init__(
+        self,
+        execution: Execution,
+        worker: str,
+        started: datetime,
+    ) -> None:
+        self.function: Callable[..., Awaitable[Any]] = execution.function
+        self.args: tuple[Any, ...] = execution.args
+        self.kwargs: dict[str, Any] = execution.kwargs
+        self.when: datetime = execution.when
+        self.key: str = execution.key
+        self.attempt: int = execution.attempt
+        self.worker = worker
+        self.started = started
+
+
+@dataclass
+class DocketSnapshot:
+    taken: datetime
+    total_tasks: int
+    future: Sequence[Execution]
+    running: Sequence[RunningExecution]
+    workers: Collection[WorkerInfo]
 
 
 class Docket:
@@ -97,6 +134,10 @@ class Docket:
         self.heartbeat_interval = heartbeat_interval
         self.missed_heartbeats = missed_heartbeats
 
+    @property
+    def worker_group_name(self) -> str:
+        return "docket-workers"
+
     async def __aenter__(self) -> Self:
         from .tasks import standard_tasks
 
@@ -104,6 +145,19 @@ class Docket:
         self.strike_list = StrikeList()
 
         self._monitor_strikes_task = asyncio.create_task(self._monitor_strikes())
+
+        # Ensure that the stream and worker group exist
+        async with self.redis() as r:
+            try:
+                await r.xgroup_create(
+                    groupname=self.worker_group_name,
+                    name=self.stream_key,
+                    id="0-0",
+                    mkstream=True,
+                )
+            except redis.exceptions.RedisError as e:
+                if "BUSYGROUP" not in repr(e):
+                    raise
 
         return self
 
@@ -395,6 +449,80 @@ class Docket:
             except Exception:  # pragma: no cover
                 logger.exception("Error monitoring strikes")
                 await asyncio.sleep(1)
+
+    async def snapshot(self) -> DocketSnapshot:
+        running: list[RunningExecution] = []
+        future: list[Execution] = []
+
+        async with self.redis() as r:
+            async with r.pipeline() as pipeline:
+                pipeline.xlen(self.stream_key)
+
+                pipeline.zcard(self.queue_key)
+
+                pipeline.xpending_range(
+                    self.stream_key,
+                    self.worker_group_name,
+                    min="-",
+                    max="+",
+                    count=1000,
+                )
+
+                pipeline.xrange(self.stream_key, "-", "+", count=1000)
+
+                pipeline.zrange(self.queue_key, 0, -1)
+
+                total_stream_messages: int
+                total_schedule_messages: int
+                pending_messages: list[RedisStreamPendingMessage]
+                stream_messages: list[tuple[RedisMessageID, RedisMessage]]
+                scheduled_task_keys: list[bytes]
+
+                now = datetime.now(timezone.utc)
+                (
+                    total_stream_messages,
+                    total_schedule_messages,
+                    pending_messages,
+                    stream_messages,
+                    scheduled_task_keys,
+                ) = await pipeline.execute()
+
+                for task_key in scheduled_task_keys:
+                    pipeline.hgetall(self.parked_task_key(task_key.decode()))
+
+                # Because these are two separate pipeline commands, it's possible that
+                # a message has been moved from the schedule to the stream in the
+                # meantime, which would end up being an empty `{}` message
+                queued_messages: list[RedisMessage] = [
+                    m for m in await pipeline.execute() if m
+                ]
+
+        total_tasks = total_stream_messages + total_schedule_messages
+
+        pending_lookup: dict[RedisMessageID, RedisStreamPendingMessage] = {
+            pending["message_id"]: pending for pending in pending_messages
+        }
+
+        for message_id, message in stream_messages:
+            function = self.tasks[message[b"function"].decode()]
+            execution = Execution.from_message(function, message)
+            if message_id in pending_lookup:
+                worker_name = pending_lookup[message_id]["consumer"].decode()
+                started = now - timedelta(
+                    milliseconds=pending_lookup[message_id]["time_since_delivered"]
+                )
+                running.append(RunningExecution(execution, worker_name, started))
+            else:
+                future.append(execution)
+
+        for message in queued_messages:
+            function = self.tasks[message[b"function"].decode()]
+            execution = Execution.from_message(function, message)
+            future.append(execution)
+
+        workers = await self.workers()
+
+        return DocketSnapshot(now, total_tasks, future, running, workers)
 
     @property
     def workers_set(self) -> str:
