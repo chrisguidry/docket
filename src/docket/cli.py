@@ -468,7 +468,7 @@ def fail(
     asyncio.run(run())
 
 
-@tasks_app.command(help="Adds a trace task to the Docket")
+@tasks_app.command(help="Adds a sleep task to the Docket")
 def sleep(
     docket_: Annotated[
         str,
