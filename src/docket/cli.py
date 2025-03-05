@@ -585,7 +585,7 @@ def snapshot(
 
 
 workers_app: typer.Typer = typer.Typer(
-    help="Look a the the workers on a docket", no_args_is_help=True
+    help="Look at the workers on a docket", no_args_is_help=True
 )
 app.add_typer(workers_app, name="workers")
 
