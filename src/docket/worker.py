@@ -77,19 +77,7 @@ class Worker:
         self.minimum_check_interval = minimum_check_interval
 
     async def __aenter__(self) -> Self:
-        async with self.docket.redis() as r:
-            try:
-                await r.xgroup_create(
-                    groupname=self.consumer_group_name,
-                    name=self.docket.stream_key,
-                    id="0-0",
-                    mkstream=True,
-                )
-            except redis.exceptions.RedisError as e:
-                if "BUSYGROUP" not in repr(e):
-                    raise
-
-            self._heartbeat_task = asyncio.create_task(self._heartbeat())
+        self._heartbeat_task = asyncio.create_task(self._heartbeat())
 
         return self
 
@@ -105,10 +93,6 @@ class Worker:
         except asyncio.CancelledError:
             pass
         del self._heartbeat_task
-
-    @property
-    def consumer_group_name(self) -> str:
-        return "docket"
 
     @property
     def _log_context(self) -> dict[str, str]:
@@ -232,7 +216,7 @@ class Worker:
                     async with redis.pipeline() as pipeline:
                         pipeline.xack(
                             self.docket.stream_key,
-                            self.consumer_group_name,
+                            self.docket.worker_group_name,
                             message_id,
                         )
                         pipeline.xdel(
@@ -280,7 +264,7 @@ class Worker:
                     redeliveries: RedisMessages
                     _, redeliveries, _ = await redis.xautoclaim(
                         name=self.docket.stream_key,
-                        groupname=self.consumer_group_name,
+                        groupname=self.docket.worker_group_name,
                         consumername=self.name,
                         min_idle_time=int(
                             self.redelivery_timeout.total_seconds() * 1000
@@ -298,7 +282,7 @@ class Worker:
                         continue
 
                     new_deliveries: RedisReadGroupResponse = await redis.xreadgroup(
-                        groupname=self.consumer_group_name,
+                        groupname=self.docket.worker_group_name,
                         consumername=self.name,
                         streams={self.docket.stream_key: ">"},
                         block=(
@@ -313,6 +297,13 @@ class Worker:
                             start_task(message_id, message)
                             if available_slots <= 0:
                                 break
+            except asyncio.CancelledError:
+                if active_tasks:  # pragma: no cover
+                    logger.info(
+                        "Shutdown requested, finishing %d active tasks...",
+                        len(active_tasks),
+                        extra=self._log_context,
+                    )
             finally:
                 if active_tasks:
                     await asyncio.gather(*active_tasks, return_exceptions=True)

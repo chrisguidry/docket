@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -44,7 +45,13 @@ async def fail(
     )
 
 
+async def sleep(seconds: float) -> None:
+    logger.info("Sleeping for %s seconds", seconds)
+    await asyncio.sleep(seconds)
+
+
 standard_tasks: TaskCollection = [
     trace,
     fail,
+    sleep,
 ]
