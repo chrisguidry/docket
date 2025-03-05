@@ -623,7 +623,7 @@ def print_workers(
     console.print(table)
 
 
-@workers_app.command(name="ls", help="List the workers in the Docket")
+@workers_app.command(name="ls", help="List all workers on the docket")
 def list_workers(
     docket_: Annotated[
         str,
@@ -650,7 +650,10 @@ def list_workers(
     print_workers(docket_, workers)
 
 
-@workers_app.command(name="for-task", help="List the workers in the Docket")
+@workers_app.command(
+    name="for-task",
+    help="List the workers on the docket that can process a certain task",
+)
 def workers_for_task(
     task: Annotated[
         str,
