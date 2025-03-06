@@ -1,0 +1,22 @@
+---
+description: how to write python
+globs: *.py
+alwaysApply: false
+---
+
+# Code style
+
+When generating production code, always use full parameter and return type hints
+for every function. Never generate useless inline comments that just reiterate
+what the code is doing. It's okay to include comments in the rare case there is
+something tricky going on.
+
+When generating tests, always use parameter type hints, but never include the
+`-> None` return type hint for a test function. For `pytest` fixtures, always
+generate both the parameter and return type hints.
+
+When generating tests, favor smaller, focused tests that use fixtures for reuse.
+Don't include extraneous comments in the test code unless something needs more
+clarity. Always generate a docstring using "should" language to describe the
+aspect of the system the test is checking. Use simple direct language and avoid
+sounding stuffy, but make these complete sentences.
