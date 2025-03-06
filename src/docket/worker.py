@@ -262,7 +262,7 @@ class Worker:
                         )
 
                     redeliveries: RedisMessages
-                    _, redeliveries, _ = await redis.xautoclaim(
+                    _, redeliveries, *_ = await redis.xautoclaim(
                         name=self.docket.stream_key,
                         groupname=self.docket.worker_group_name,
                         consumername=self.name,
