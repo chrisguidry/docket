@@ -1,7 +1,7 @@
 import time
 from datetime import datetime, timezone
 from functools import partial
-from typing import AsyncGenerator, Callable, Generator, Iterable, cast
+from typing import Any, AsyncGenerator, Callable, Generator, Iterable, cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -46,12 +46,14 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
         auto_remove=True,
     )
 
+    url = f"redis://localhost:{redis_port}/0"
+
     while True:
         try:
-            with Redis.from_url(f"redis://localhost:{redis_port}/0") as r:  # type: ignore
+            with Redis.from_url(url) as r:  # type: ignore
                 if r.ping():  # type: ignore
                     break
-        except redis.exceptions.ConnectionError:
+        except redis.exceptions.ConnectionError:  # pragma: no cover
             pass
 
         time.sleep(0.1)
@@ -59,7 +61,16 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
     try:
         yield container
     finally:
+        with Redis.from_url(url) as r:  # type: ignore
+            info: dict[str, Any] = r.info()  # type: ignore
+
         container.stop()
+
+        # By the time the test suite finishes, there should have been no more open
+        # Redis connections (just the one that we used to ask about client connections).
+        assert info["connected_clients"] == 1, (
+            f"Expected 1 connected clients, but found {info['connected_clients']}"
+        )
 
 
 @pytest.fixture
