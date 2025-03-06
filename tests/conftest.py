@@ -62,8 +62,11 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
         container.stop()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def redis_url(redis_server: Container, redis_port: int) -> str:
+    with Redis.from_url(f"redis://localhost:{redis_port}/0") as r:  # type: ignore
+        r.flushdb()  # type: ignore
+
     return f"redis://localhost:{redis_port}/0"
 
 

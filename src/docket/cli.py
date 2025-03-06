@@ -365,7 +365,7 @@ def restore(
     value_ = interpret_python_value(value)
     if parameter:
         function_name = f"{function or '(all tasks)'}"
-        print(f"Striking {function_name} {parameter} {operator} {value_!r}")
+        print(f"Restoring {function_name} {parameter} {operator} {value_!r}")
     else:
         print(f"Restoring {function}")
 

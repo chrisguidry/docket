@@ -1,12 +1,12 @@
 import asyncio
-import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from pytest import MonkeyPatch
+from typer.testing import CliRunner
 
 from docket import tasks
-from docket.cli import relative_time
+from docket.cli import app, relative_time
 from docket.docket import Docket
 from docket.worker import Worker
 
@@ -19,105 +19,83 @@ async def empty_docket(docket: Docket):
     await docket.cancel("initial")
 
 
-async def test_snapshot_empty_docket(docket: Docket):
+async def test_snapshot_empty_docket(docket: Docket, runner: CliRunner):
     """Should show an empty snapshot when no tasks are scheduled"""
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "docket",
-        "snapshot",
-        "--url",
-        docket.url,
-        "--docket",
-        docket.name,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await process.wait()
-
-    assert process.stderr
-    stderr = await process.stderr.read()
-    assert process.returncode == 0, stderr.decode()
-
-    assert process.stdout
-    output = await process.stdout.read()
-    output_text = output.decode()
-
-    assert "0 workers, 0/0 running" in output_text
-
-
-async def test_snapshot_with_scheduled_tasks(docket: Docket):
-    """Should show scheduled tasks in the snapshot"""
-    when = datetime.now(timezone.utc) + timedelta(seconds=5)
-    await docket.add(tasks.trace, when=when, key="future-task")("hiya!")
-
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "docket",
-        "snapshot",
-        "--url",
-        docket.url,
-        "--docket",
-        docket.name,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await process.wait()
-
-    assert process.stderr
-    stderr = await process.stderr.read()
-    assert process.returncode == 0, stderr.decode()
-
-    assert process.stdout
-    output = await process.stdout.read()
-    output_text = output.decode()
-
-    assert "0 workers, 0/1 running" in output_text
-    assert "future-task" in output_text
-
-
-async def test_snapshot_with_running_tasks(docket: Docket):
-    """Should show running tasks in the snapshot"""
-    heartbeat = timedelta(milliseconds=20)
-    docket.heartbeat_interval = heartbeat
-
-    await docket.add(tasks.sleep)(2)
-
-    async with Worker(docket, name="test-worker") as worker:
-        worker_running = asyncio.create_task(worker.run_until_finished())
-
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "docket",
+    result = await asyncio.get_running_loop().run_in_executor(
+        None,
+        runner.invoke,
+        app,
+        [
             "snapshot",
             "--url",
             docket.url,
             "--docket",
             docket.name,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    assert "0 workers, 0/0 running" in result.output
+
+
+async def test_snapshot_with_scheduled_tasks(docket: Docket, runner: CliRunner):
+    """Should show scheduled tasks in the snapshot"""
+    when = datetime.now(timezone.utc) + timedelta(seconds=5)
+    await docket.add(tasks.trace, when=when, key="future-task")("hiya!")
+
+    result = await asyncio.get_running_loop().run_in_executor(
+        None,
+        runner.invoke,
+        app,
+        [
+            "snapshot",
+            "--url",
+            docket.url,
+            "--docket",
+            docket.name,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    assert "0 workers, 0/1 running" in result.output
+    assert "future-task" in result.output
+
+
+async def test_snapshot_with_running_tasks(docket: Docket, runner: CliRunner):
+    """Should show running tasks in the snapshot"""
+    heartbeat = timedelta(milliseconds=20)
+    docket.heartbeat_interval = heartbeat
+
+    await docket.add(tasks.sleep)(1)
+
+    async with Worker(docket, name="test-worker") as worker:
+        worker_running = asyncio.create_task(worker.run_until_finished())
+
+        await asyncio.sleep(0.1)
+
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                "snapshot",
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+            ],
         )
-        await process.wait()
+        assert result.exit_code == 0, result.output
 
-        assert process.stderr
-        stderr = await process.stderr.read()
-        assert process.returncode == 0, stderr.decode()
-
-        assert process.stdout
-        output = await process.stdout.read()
-        output_text = output.decode()
-
-        assert "1 workers, 1/1 running" in output_text
-        assert "sleep" in output_text
-        assert "test-worker" in output_text
+        assert "1 workers, 1/1 running" in result.output
+        assert "sleep" in result.output
+        assert "test-worker" in result.output
 
         worker_running.cancel()
         await worker_running
 
 
-async def test_snapshot_with_mixed_tasks(docket: Docket):
+async def test_snapshot_with_mixed_tasks(docket: Docket, runner: CliRunner):
     """Should show both running and scheduled tasks in the snapshot"""
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
@@ -130,34 +108,26 @@ async def test_snapshot_with_mixed_tasks(docket: Docket):
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
 
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "docket",
-            "snapshot",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        await asyncio.sleep(0.1)
+
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                "snapshot",
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+            ],
         )
-        await process.wait()
+        assert result.exit_code == 0, result.output
 
-        assert process.stderr
-        stderr = await process.stderr.read()
-        assert process.returncode == 0, stderr.decode()
-
-        assert process.stdout
-        output = await process.stdout.read()
-        output_text = output.decode()
-
-        print(output_text)
-
-        assert "1 workers, 2/6 running" in output_text
-        assert "sleep" in output_text
-        assert "test-worker" in output_text
-        assert "trace" in output_text
+        assert "1 workers, 2/6 running" in result.output
+        assert "sleep" in result.output
+        assert "test-worker" in result.output
+        assert "trace" in result.output
 
         worker_running.cancel()
         await worker_running
