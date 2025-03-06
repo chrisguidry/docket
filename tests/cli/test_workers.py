@@ -1,12 +1,14 @@
 import asyncio
-import sys
 from datetime import timedelta
 
+from typer.testing import CliRunner
+
+from docket.cli import app
 from docket.docket import Docket
 from docket.worker import Worker
 
 
-async def test_list_workers_command(docket: Docket):
+async def test_list_workers_command(docket: Docket, runner: CliRunner):
     """Should list all active workers"""
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
@@ -15,34 +17,26 @@ async def test_list_workers_command(docket: Docket):
     async with Worker(docket, name="worker-1"), Worker(docket, name="worker-2"):
         await asyncio.sleep(heartbeat.total_seconds() * 5)
 
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "docket",
-            "workers",
-            "ls",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                "workers",
+                "ls",
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+            ],
         )
-        await process.wait()
+        assert result.exit_code == 0, result.output
 
-        assert process.stderr
-        stderr = await process.stderr.read()
-        assert process.returncode == 0, stderr.decode()
-
-        assert process.stdout
-        output = await process.stdout.read()
-        output_text = output.decode()
-
-        assert "worker-1" in output_text
-        assert "worker-2" in output_text
+        assert "worker-1" in result.output
+        assert "worker-2" in result.output
 
 
-async def test_list_workers_for_task(docket: Docket):
+async def test_list_workers_for_task(docket: Docket, runner: CliRunner):
     """Should list workers that can handle a specific task"""
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
@@ -51,29 +45,21 @@ async def test_list_workers_for_task(docket: Docket):
     async with Worker(docket, name="worker-1"), Worker(docket, name="worker-2"):
         await asyncio.sleep(heartbeat.total_seconds() * 5)
 
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "docket",
-            "workers",
-            "for-task",
-            "trace",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                "workers",
+                "for-task",
+                "trace",
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+            ],
         )
-        await process.wait()
+        assert result.exit_code == 0, result.output
 
-        assert process.stderr
-        stderr = await process.stderr.read()
-        assert process.returncode == 0, stderr.decode()
-
-        assert process.stdout
-        output = await process.stdout.read()
-        output_text = output.decode()
-
-        assert "worker-1" in output_text
-        assert "worker-2" in output_text
+        assert "worker-1" in result.output
+        assert "worker-2" in result.output
