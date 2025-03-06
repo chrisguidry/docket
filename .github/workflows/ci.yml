@@ -3,16 +3,8 @@ name: Docket CI
 on:
   push:
     branches: [main]
-    paths:
-      - "uv.lock"
-      - "src/docket/**/*.py"
-      - "tests/**/*.py"
   pull_request:
     branches: [main]
-    paths:
-      - "uv.lock"
-      - "src/docket/**/*.py"
-      - "tests/**/*.py"
   workflow_call:
 
 
