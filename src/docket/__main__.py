@@ -1,3 +1,3 @@
-from docket.cli import app  # pragma: no cover
+from docket.cli import app
 
-app()  # pragma: no cover
+app()

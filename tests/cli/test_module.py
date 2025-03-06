@@ -1,18 +1,22 @@
 import asyncio
+import subprocess
+import sys
 
-from typer.testing import CliRunner
-
-from docket.cli import app
+import docket
 
 
-async def test_module_invocation_as_cli_entrypoint(runner: CliRunner):
+async def test_module_invocation_as_cli_entrypoint():
     """Should allow invoking docket as a module with python -m docket."""
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        runner.invoke,
-        app,
-        ["version"],
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "docket",
+        "version",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
 
-    assert result.exit_code == 0
-    assert result.output.strip() != ""
+    stdout, stderr = await process.communicate()
+
+    assert process.returncode == 0, stderr.decode()
+    assert stdout.decode().strip() == docket.__version__
