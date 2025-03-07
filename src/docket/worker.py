@@ -67,7 +67,7 @@ class Worker:
         concurrency: int = 10,
         redelivery_timeout: timedelta = timedelta(minutes=5),
         reconnection_delay: timedelta = timedelta(seconds=5),
-        minimum_check_interval: timedelta = timedelta(milliseconds=10),
+        minimum_check_interval: timedelta = timedelta(milliseconds=100),
     ) -> None:
         self.docket = docket
         self.name = name or f"worker:{uuid4()}"
@@ -110,6 +110,7 @@ class Worker:
         concurrency: int = 10,
         redelivery_timeout: timedelta = timedelta(minutes=5),
         reconnection_delay: timedelta = timedelta(seconds=5),
+        minimum_check_interval: timedelta = timedelta(milliseconds=100),
         until_finished: bool = False,
         tasks: list[str] = ["docket.tasks:standard_tasks"],
     ) -> None:
@@ -123,6 +124,7 @@ class Worker:
                 concurrency=concurrency,
                 redelivery_timeout=redelivery_timeout,
                 reconnection_delay=reconnection_delay,
+                minimum_check_interval=minimum_check_interval,
             ) as worker:
                 if until_finished:
                     await worker.run_until_finished()
