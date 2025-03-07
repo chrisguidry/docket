@@ -7,6 +7,7 @@ from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     Mapping,
     Protocol,
     Self,
@@ -63,6 +64,11 @@ class _stream_due_tasks(Protocol):
 class Worker:
     docket: Docket
     name: str
+    concurrency: int
+    redelivery_timeout: timedelta
+    reconnection_delay: timedelta
+    minimum_check_interval: timedelta
+    _strike_conditions: list[Callable[[Execution], bool]] = []
 
     def __init__(
         self,
@@ -79,6 +85,10 @@ class Worker:
         self.redelivery_timeout = redelivery_timeout
         self.reconnection_delay = reconnection_delay
         self.minimum_check_interval = minimum_check_interval
+
+        self._strike_conditions = [
+            docket.strike_list.is_stricken,
+        ]
 
     async def __aenter__(self) -> Self:
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
@@ -150,6 +160,35 @@ class Worker:
     async def run_forever(self) -> None:
         """Run the worker indefinitely."""
         return await self._run(forever=True)  # pragma: no cover
+
+    async def run_at_most(self, iterations_by_key: Mapping[str, int]) -> None:
+        """
+        Run the worker until there are no more tasks to process, but limit specified
+        task keys to a maximum number of iterations.
+
+        This is particularly useful for testing self-perpetuating tasks that would
+        otherwise run indefinitely.
+
+        Args:
+            iterations_by_key: Maps task keys to their maximum allowed executions
+        """
+        execution_counts: dict[str, int] = {key: 0 for key in iterations_by_key}
+
+        def has_reached_max_iterations(execution: Execution) -> bool:
+            if execution.key not in iterations_by_key:
+                return False
+
+            if execution_counts[execution.key] >= iterations_by_key[execution.key]:
+                return True
+
+            execution_counts[execution.key] += 1
+            return False
+
+        self._strike_conditions.insert(0, has_reached_max_iterations)
+        try:
+            await self.run_until_finished()
+        finally:
+            self._strike_conditions.remove(has_reached_max_iterations)
 
     async def _run(self, forever: bool = False) -> None:
         logger.info("Starting worker %r with the following tasks:", self.name)
@@ -322,7 +361,7 @@ class Worker:
                     await process_completed_tasks()
 
     async def _execute(self, message: RedisMessage) -> None:
-        log_context: dict[str, str | float] = self._log_context()
+        log_context: Mapping[str, str | float] = self._log_context()
 
         function_name = message[b"function"].decode()
         function = self.docket.tasks.get(function_name)
@@ -334,13 +373,13 @@ class Worker:
 
         execution = Execution.from_message(function, message)
 
-        log_context |= execution.specific_labels()
+        log_context = {**log_context, **execution.specific_labels()}
         counter_labels = {**self.labels(), **execution.general_labels()}
 
         arrow = "↬" if execution.attempt > 1 else "↪"
         call = execution.call_repr()
 
-        if self.docket.strike_list.is_stricken(execution):
+        if any(condition(execution) for condition in self._strike_conditions):
             arrow = "🗙"
             logger.warning("%s %s", arrow, call, extra=log_context)
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
@@ -354,7 +393,7 @@ class Worker:
 
         start = datetime.now(timezone.utc)
         punctuality = start - execution.when
-        log_context["punctuality"] = punctuality.total_seconds()
+        log_context = {**log_context, "punctuality": punctuality.total_seconds()}
         duration = timedelta(0)
 
         TASKS_STARTED.add(1, counter_labels)

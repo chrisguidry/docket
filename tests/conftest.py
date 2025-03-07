@@ -3,7 +3,7 @@ import os
 import socket
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import AsyncGenerator, Callable, Generator, Iterable, cast
 from unittest.mock import AsyncMock
@@ -147,7 +147,9 @@ async def docket(redis_url: str, aiolib: str) -> AsyncGenerator[Docket, None]:
 
 @pytest.fixture
 async def worker(docket: Docket) -> AsyncGenerator[Worker, None]:
-    async with Worker(docket) as worker:
+    async with Worker(
+        docket, minimum_check_interval=timedelta(milliseconds=10)
+    ) as worker:
         yield worker
 
 
