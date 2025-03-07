@@ -228,6 +228,14 @@ def worker(
             envvar="DOCKET_WORKER_RECONNECTION_DELAY",
         ),
     ] = timedelta(seconds=5),
+    minimum_check_interval: Annotated[
+        timedelta,
+        typer.Option(
+            parser=duration,
+            help="The minimum interval to check for tasks",
+            envvar="DOCKET_WORKER_MINIMUM_CHECK_INTERVAL",
+        ),
+    ] = timedelta(milliseconds=100),
     until_finished: Annotated[
         bool,
         typer.Option(
@@ -244,6 +252,7 @@ def worker(
             concurrency=concurrency,
             redelivery_timeout=redelivery_timeout,
             reconnection_delay=reconnection_delay,
+            minimum_check_interval=minimum_check_interval,
             until_finished=until_finished,
             tasks=tasks,
         )
