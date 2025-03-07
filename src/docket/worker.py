@@ -28,7 +28,9 @@ from .docket import (
     RedisReadGroupResponse,
 )
 from .instrumentation import (
+    QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
+    SCHEDULE_DEPTH,
     TASK_DURATION,
     TASK_PUNCTUALITY,
     TASKS_COMPLETED,
@@ -479,6 +481,23 @@ class Worker:
                         )
 
                         await pipeline.execute()
+
+                    async with r.pipeline() as pipeline:
+                        pipeline.xlen(self.docket.stream_key)
+                        pipeline.zcount(self.docket.queue_key, 0, now)
+                        pipeline.zcount(self.docket.queue_key, now, "+inf")
+
+                        (
+                            stream_depth,
+                            overdue_depth,
+                            schedule_depth,
+                        ) = await pipeline.execute()
+
+                        QUEUE_DEPTH.set(
+                            stream_depth + overdue_depth, self.docket.labels()
+                        )
+                        SCHEDULE_DEPTH.set(schedule_depth, self.docket.labels())
+
             except asyncio.CancelledError:  # pragma: no cover
                 return
             except redis.exceptions.ConnectionError:

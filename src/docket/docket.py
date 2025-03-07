@@ -117,7 +117,7 @@ class Docket:
         self,
         name: str = "docket",
         url: str = "redis://localhost:6379/0",
-        heartbeat_interval: timedelta = timedelta(seconds=1),
+        heartbeat_interval: timedelta = timedelta(seconds=2),
         missed_heartbeats: int = 5,
     ) -> None:
         """

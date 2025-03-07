@@ -100,6 +100,17 @@ STRIKES_IN_EFFECT = meter.create_up_down_counter(
     unit="1",
 )
 
+QUEUE_DEPTH = meter.create_gauge(
+    "docket_queue_depth",
+    description="How many tasks are due to be executed now",
+    unit="1",
+)
+SCHEDULE_DEPTH = meter.create_gauge(
+    "docket_schedule_depth",
+    description="How many tasks are scheduled to be executed in the future",
+    unit="1",
+)
+
 Message = dict[bytes, bytes]
 
 
