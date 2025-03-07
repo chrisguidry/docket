@@ -72,9 +72,7 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
                 if success:  # pragma: no branch
                     break
         except redis.exceptions.ConnectionError:  # pragma: no cover
-            pass
-
-        time.sleep(0.1)
+            time.sleep(0.1)
 
     try:
         yield container

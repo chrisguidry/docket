@@ -2,16 +2,21 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from .dependencies import CurrentDocket, CurrentExecution, CurrentWorker, Retry
+from .dependencies import (
+    CurrentDocket,
+    CurrentExecution,
+    CurrentWorker,
+    Retry,
+    TaskLogger,
+)
 from .docket import Docket, TaskCollection
 from .execution import Execution
 from .worker import Worker
 
-logger: logging.Logger = logging.getLogger(__name__)
-
 
 async def trace(
     message: str,
+    logger: logging.LoggerAdapter[logging.Logger] = TaskLogger(),
     docket: Docket = CurrentDocket(),
     worker: Worker = CurrentWorker(),
     execution: Execution = CurrentExecution(),
@@ -23,11 +28,6 @@ async def trace(
         docket.name,
         (datetime.now(timezone.utc) - execution.when),
         worker.name,
-        extra={
-            "docket.name": docket.name,
-            "worker.name": worker.name,
-            "execution.key": execution.key,
-        },
     )
 
 
@@ -45,7 +45,9 @@ async def fail(
     )
 
 
-async def sleep(seconds: float) -> None:
+async def sleep(
+    seconds: float, logger: logging.LoggerAdapter[logging.Logger] = TaskLogger()
+) -> None:
     logger.info("Sleeping for %s seconds", seconds)
     await asyncio.sleep(seconds)
 

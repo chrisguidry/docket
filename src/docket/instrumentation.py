@@ -1,5 +1,12 @@
+import threading
+from contextlib import contextmanager
+from typing import Generator, cast
+
 from opentelemetry import metrics
+from opentelemetry.exporter.prometheus import PrometheusMetricReader
+from opentelemetry.metrics import set_meter_provider
 from opentelemetry.propagators.textmap import Getter, Setter
+from opentelemetry.sdk.metrics import MeterProvider
 
 meter: metrics.Meter = metrics.get_meter("docket")
 
@@ -119,3 +126,38 @@ class MessageSetter(Setter[Message]):
 
 message_getter: MessageGetter = MessageGetter()
 message_setter: MessageSetter = MessageSetter()
+
+
+@contextmanager
+def metrics_server(
+    host: str = "0.0.0.0", port: int | None = None
+) -> Generator[None, None, None]:
+    if port is None:
+        yield
+        return
+
+    from wsgiref.types import WSGIApplication
+
+    from prometheus_client import REGISTRY
+    from prometheus_client.exposition import (
+        ThreadingWSGIServer,
+        _SilentHandler,  # type: ignore[member-access]
+        make_server,  # type: ignore[import]
+        make_wsgi_app,  # type: ignore[import]
+    )
+
+    set_meter_provider(MeterProvider(metric_readers=[PrometheusMetricReader()]))
+
+    server = make_server(
+        host,
+        port,
+        cast(WSGIApplication, make_wsgi_app(registry=REGISTRY)),
+        ThreadingWSGIServer,
+        handler_class=_SilentHandler,
+    )
+    with server:
+        t = threading.Thread(target=server.serve_forever)
+        t.daemon = True
+        t.start()
+
+        yield

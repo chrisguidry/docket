@@ -243,6 +243,13 @@ def worker(
             help="Exit after the current docket is finished",
         ),
     ] = False,
+    metrics_port: Annotated[
+        int | None,
+        typer.Option(
+            "--metrics-port",
+            help="The port to listen for metrics on",
+        ),
+    ] = None,
 ) -> None:
     asyncio.run(
         Worker.run(
@@ -254,6 +261,7 @@ def worker(
             reconnection_delay=reconnection_delay,
             minimum_check_interval=minimum_check_interval,
             until_finished=until_finished,
+            metrics_port=metrics_port,
             tasks=tasks,
         )
     )
