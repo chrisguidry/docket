@@ -91,6 +91,45 @@ async def test_snapshot_with_running_tasks(docket: Docket, runner: CliRunner):
         assert "sleep" in result.output
         assert "test-worker" in result.output
 
+        worker_running.cancel()
+        await worker_running
+
+
+async def test_snapshot_with_mixed_tasks(docket: Docket, runner: CliRunner):
+    """Should show both running and scheduled tasks in the snapshot"""
+    heartbeat = timedelta(milliseconds=20)
+    docket.heartbeat_interval = heartbeat
+
+    future = datetime.now(timezone.utc) + timedelta(seconds=5)
+    await docket.add(tasks.trace, when=future)("hi!")
+    for _ in range(5):  # more than the concurrency allows
+        await docket.add(tasks.sleep)(2)
+
+    async with Worker(docket, name="test-worker", concurrency=2) as worker:
+        worker_running = asyncio.create_task(worker.run_until_finished())
+
+        await asyncio.sleep(0.1)
+
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                "snapshot",
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        assert "1 workers, 2/6 running" in result.output
+        assert "sleep" in result.output
+        assert "test-worker" in result.output
+        assert "trace" in result.output
+
+        worker_running.cancel()
         await worker_running
 
 
