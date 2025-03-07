@@ -12,6 +12,7 @@ jobs:
     name: Test Python ${{ matrix.python-version }}, Redis ${{ matrix.redis-version }}, redis-py ${{ matrix.redis-py-version }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
         redis-version: ["6.2", "7.4"]
