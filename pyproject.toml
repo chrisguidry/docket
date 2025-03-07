@@ -70,7 +70,6 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 filterwarnings = ["error"]
 
-
 [tool.pyright]
 include = ["src", "tests"]
 typeCheckingMode = "strict"

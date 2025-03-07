@@ -26,7 +26,7 @@ from uuid import uuid4
 
 import redis.exceptions
 from opentelemetry import propagate, trace
-from redis.asyncio import Redis
+from redis.asyncio import ConnectionPool, Redis
 
 from .execution import (
     Execution,
@@ -147,17 +147,17 @@ class Docket:
         self._monitor_strikes_task = asyncio.create_task(self._monitor_strikes())
 
         # Ensure that the stream and worker group exist
-        async with self.redis() as r:
-            try:
+        try:
+            async with self.redis() as r:
                 await r.xgroup_create(
                     groupname=self.worker_group_name,
                     name=self.stream_key,
                     id="0-0",
                     mkstream=True,
                 )
-            except redis.exceptions.RedisError as e:
-                if "BUSYGROUP" not in repr(e):
-                    raise
+        except redis.exceptions.RedisError as e:
+            if "BUSYGROUP" not in repr(e):
+                raise
 
         return self
 
@@ -178,8 +178,15 @@ class Docket:
 
     @asynccontextmanager
     async def redis(self) -> AsyncGenerator[Redis, None]:
-        async with Redis.from_url(self.url) as redis:  # type: ignore
-            yield redis
+        pool: ConnectionPool | None = None
+        try:
+            async with Redis.from_url(self.url, single_connection_client=True) as redis:
+                pool = redis.connection_pool  # type: ignore
+                yield redis
+        finally:
+            # redis 4.6.0 doesn't disconnect correctly and leaves connections open
+            if pool:
+                await pool.disconnect()
 
     def register(self, function: Callable[..., Awaitable[Any]]) -> None:
         from .dependencies import validate_dependencies
