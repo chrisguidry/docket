@@ -34,7 +34,7 @@ def redis_port() -> int:
 @contextmanager
 def _sync_redis(url: str) -> Generator[Redis, None, None]:
     pool: ConnectionPool | None = None
-    redis = Redis.from_url(url, single_connection_client=True)  # type: ignore
+    redis = Redis.from_url(url)  # type: ignore
     try:
         with redis:
             pool = redis.connection_pool  # type: ignore

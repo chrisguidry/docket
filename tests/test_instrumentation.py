@@ -1,7 +1,6 @@
 import asyncio
 import http.client
 import socket
-import time
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 from unittest.mock import AsyncMock, Mock
@@ -475,7 +474,7 @@ def metrics_port() -> int:
         return s.getsockname()[1]
 
 
-def test_exports_metrics_as_prometheus_metrics(
+async def test_exports_metrics_as_prometheus_metrics(
     docket: Docket,
     worker: Worker,
     the_task: AsyncMock,
@@ -485,29 +484,36 @@ def test_exports_metrics_as_prometheus_metrics(
     underscores for Prometheus."""
 
     with metrics_server(port=metrics_port):
-        asyncio.run(docket.add(the_task)())  # type: ignore[arg-type]
-        asyncio.run(worker.run_until_finished())
+        await docket.add(the_task)()
+        await worker.run_until_finished()
 
-        time.sleep(0.1)
+        await asyncio.sleep(0.1)
 
-        conn = http.client.HTTPConnection(f"localhost:{metrics_port}")
-        conn.request("GET", "/")
-        response = conn.getresponse()
+        def read_metrics(port: int) -> tuple[http.client.HTTPResponse, str]:
+            conn = http.client.HTTPConnection(f"localhost:{port}")
+            conn.request("GET", "/")
+            response = conn.getresponse()
+            return response, response.read().decode()
 
-        assert response.status == 200, response.read().decode()
+        response, body = await asyncio.get_running_loop().run_in_executor(
+            None,
+            read_metrics,
+            metrics_port,
+        )
+
+        assert response.status == 200, body
 
         assert (
             response.headers["Content-Type"]
             == "text/plain; version=0.0.4; charset=utf-8"
         )
 
-        metrics_content = response.read().decode()
-        assert "docket_tasks_added" in metrics_content
-        assert "docket_tasks_completed" in metrics_content
+        assert "docket_tasks_added" in body
+        assert "docket_tasks_completed" in body
 
-        assert f'docket_name="{docket.name}"' in metrics_content
-        assert 'docket_task="the_task"' in metrics_content
-        assert f'docket_worker="{worker.name}"' in metrics_content
+        assert f'docket_name="{docket.name}"' in body
+        assert 'docket_task="the_task"' in body
+        assert f'docket_worker="{worker.name}"' in body
 
 
 @pytest.fixture

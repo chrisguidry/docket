@@ -27,7 +27,7 @@ from uuid import uuid4
 
 import redis.exceptions
 from opentelemetry import propagate, trace
-from redis.asyncio import Redis
+from redis.asyncio import ConnectionPool, Redis
 
 from .execution import (
     Execution,
@@ -113,6 +113,9 @@ class Docket:
     tasks: dict[str, Callable[..., Awaitable[Any]]]
     strike_list: StrikeList
 
+    _monitor_strikes_task: asyncio.Task[None]
+    _connection_pool: ConnectionPool
+
     def __init__(
         self,
         name: str = "docket",
@@ -145,6 +148,7 @@ class Docket:
         self.tasks = {fn.__name__: fn for fn in standard_tasks}
         self.strike_list = StrikeList()
 
+        self._connection_pool = ConnectionPool.from_url(self.url)  # type: ignore
         self._monitor_strikes_task = asyncio.create_task(self._monitor_strikes())
 
         # Ensure that the stream and worker group exist
@@ -177,23 +181,13 @@ class Docket:
         except asyncio.CancelledError:
             pass
 
+        await asyncio.shield(self._connection_pool.aclose())
+        del self._connection_pool
+
     @asynccontextmanager
     async def redis(self) -> AsyncGenerator[Redis, None]:
-        redis: Redis | None = None
-        try:
-            redis = await Redis.from_url(
-                self.url,
-                single_connection_client=True,
-            )
-            await redis.__aenter__()
-            try:
-                yield redis
-            finally:
-                await asyncio.shield(redis.__aexit__(None, None, None))
-        finally:
-            # redis 4.6.0 doesn't automatically disconnect and leaves connections open
-            if redis:
-                await asyncio.shield(redis.connection_pool.disconnect())
+        r = Redis.from_pool(connection_pool=self._connection_pool)
+        yield r
 
     def register(self, function: Callable[..., Awaitable[Any]]) -> None:
         from .dependencies import validate_dependencies
