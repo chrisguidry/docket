@@ -26,7 +26,7 @@ from uuid import uuid4
 
 import redis.exceptions
 from opentelemetry import propagate, trace
-from redis.asyncio import ConnectionPool, Redis
+from redis.asyncio import Redis
 
 from .execution import (
     Execution,
@@ -178,18 +178,15 @@ class Docket:
 
     @asynccontextmanager
     async def redis(self) -> AsyncGenerator[Redis, None]:
-        pool: ConnectionPool | None = None
+        redis: Redis | None = None
         try:
-            async with Redis.from_url(self.url, single_connection_client=True) as redis:
-                pool = redis.connection_pool  # type: ignore
-                try:
-                    yield redis
-                finally:
-                    await redis.close()
+            redis = await Redis.from_url(self.url, single_connection_client=True)
+            async with redis:
+                yield redis
         finally:
-            # redis 4.6.0 doesn't disconnect correctly and leaves connections open
-            if pool:
-                await pool.disconnect()
+            # redis 4.6.0 doesn't automatically disconnect and leaves connections open
+            if redis:
+                await redis.connection_pool.disconnect()
 
     def register(self, function: Callable[..., Awaitable[Any]]) -> None:
         from .dependencies import validate_dependencies
