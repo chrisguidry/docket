@@ -247,7 +247,7 @@ def worker(
         int | None,
         typer.Option(
             "--metrics-port",
-            help="The port to listen for metrics on",
+            help="The port to serve Prometheus metrics on",
         ),
     ] = None,
 ) -> None:
