@@ -180,7 +180,10 @@ class Docket:
     async def redis(self) -> AsyncGenerator[Redis, None]:
         redis: Redis | None = None
         try:
-            redis = await Redis.from_url(self.url, single_connection_client=True)
+            redis = await Redis.from_url(
+                self.url,
+                single_connection_client=True,
+            )
             async with redis:
                 yield redis
         finally:

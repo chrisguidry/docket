@@ -53,8 +53,9 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
 
     while True:
         try:
-            with Redis.from_url(url) as r:  # type: ignore
+            with Redis.from_url(url, single_connection_client=True) as r:  # type: ignore
                 if r.ping():  # type: ignore
+                    r.connection_pool.disconnect()
                     break
         except redis.exceptions.ConnectionError:  # pragma: no cover
             pass
@@ -64,8 +65,9 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
     try:
         yield container
     finally:
-        with Redis.from_url(url) as r:  # type: ignore
+        with Redis.from_url(url, single_connection_client=True) as r:  # type: ignore
             info: dict[str, Any] = r.info()  # type: ignore
+            r.connection_pool.disconnect()
 
         container.stop()
 
@@ -78,8 +80,12 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
 
 @pytest.fixture
 def redis_url(redis_server: Container, redis_port: int) -> str:
-    with Redis.from_url(f"redis://localhost:{redis_port}/0") as r:  # type: ignore
+    with Redis.from_url(  # type: ignore
+        f"redis://localhost:{redis_port}/0",
+        single_connection_client=True,
+    ) as r:
         r.flushdb()  # type: ignore
+        r.connection_pool.disconnect()
 
     return f"redis://localhost:{redis_port}/0"
 
