@@ -1,4 +1,5 @@
 import os
+import socket
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -23,22 +24,11 @@ def now() -> Callable[[], datetime]:
     return partial(datetime.now, timezone.utc)
 
 
-# @pytest.fixture(scope="session")
-# def redis_port(unused_tcp_port_factory: Callable[[], int]) -> int:
-#     return unused_tcp_port_factory()
-
-
 @pytest.fixture(scope="session")
 def redis_port() -> int:
-    import socket
-
-    # Find an unused port by creating a socket, binding to port 0 (which lets the OS choose),
-    # getting the assigned port number, and then closing the socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("localhost", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
 
 
 @contextmanager

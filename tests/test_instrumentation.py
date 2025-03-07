@@ -470,11 +470,9 @@ async def test_task_running_gauge_is_incremented(
 
 @pytest.fixture
 def metrics_port() -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("localhost", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
 
 
 def test_exports_metrics_as_prometheus_metrics(
