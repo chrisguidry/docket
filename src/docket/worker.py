@@ -7,6 +7,7 @@ from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
+    Mapping,
     Protocol,
     Self,
     TypeVar,
@@ -95,18 +96,17 @@ class Worker:
             pass
         del self._heartbeat_task
 
-    @property
-    def _log_context(self) -> dict[str, str]:
+    def labels(self) -> Mapping[str, str]:
+        return {
+            **self.docket.labels(),
+            "docket.worker": self.name,
+        }
+
+    def _log_context(self) -> Mapping[str, str]:
         return {
             **self.labels(),
             "docket.queue_key": self.docket.queue_key,
             "docket.stream_key": self.docket.stream_key,
-        }
-
-    def labels(self) -> dict[str, str]:
-        return {
-            **self.docket.labels(),
-            "docket.worker": self.name,
         }
 
     @classmethod
@@ -271,7 +271,7 @@ class Worker:
                             future_work,
                             self.docket.queue_key,
                             self.docket.stream_key,
-                            extra=self._log_context,
+                            extra=self._log_context(),
                         )
 
                     redeliveries: RedisMessages
@@ -312,7 +312,7 @@ class Worker:
                     logger.info(
                         "Shutdown requested, finishing %d active tasks...",
                         len(active_tasks),
-                        extra=self._log_context,
+                        extra=self._log_context(),
                     )
             finally:
                 if active_tasks:
@@ -320,20 +320,19 @@ class Worker:
                     await process_completed_tasks()
 
     async def _execute(self, message: RedisMessage) -> None:
+        log_context: dict[str, str | float] = self._log_context()
+
         function_name = message[b"function"].decode()
         function = self.docket.tasks.get(function_name)
         if function is None:
             logger.warning(
-                "Task function %r not found", function_name, extra=self._log_context
+                "Task function %r not found", function_name, extra=log_context
             )
             return
 
         execution = Execution.from_message(function, message)
 
-        log_context: dict[str, str | float] = {
-            **self._log_context,
-            **execution.labels(),
-        }
+        log_context |= execution.specific_labels()
         counter_labels = {**self.labels(), **execution.general_labels()}
 
         arrow = "↬" if execution.attempt > 1 else "↪"
@@ -368,7 +367,7 @@ class Worker:
                 kind=trace.SpanKind.CONSUMER,
                 attributes={
                     **self.labels(),
-                    **execution.labels(),
+                    **execution.specific_labels(),
                     "code.function.name": execution.function.__name__,
                 },
                 links=links,
@@ -436,7 +435,7 @@ class Worker:
             execution.attempt += 1
             await self.docket.schedule(execution)
 
-            TASKS_RETRIED.add(1, {**self.labels(), **execution.labels()})
+            TASKS_RETRIED.add(1, {**self.labels(), **execution.specific_labels()})
             return True
 
         return False
@@ -485,9 +484,13 @@ class Worker:
             except redis.exceptions.ConnectionError:
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.exception(
-                    "Error sending worker heartbeat", exc_info=True, extra=self.labels()
+                    "Error sending worker heartbeat",
+                    exc_info=True,
+                    extra=self._log_context(),
                 )
             except Exception:
                 logger.exception(
-                    "Error sending worker heartbeat", exc_info=True, extra=self.labels()
+                    "Error sending worker heartbeat",
+                    exc_info=True,
+                    extra=self._log_context(),
                 )

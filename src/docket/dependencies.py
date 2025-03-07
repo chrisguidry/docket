@@ -66,7 +66,7 @@ class _TaskLogger(Dependency):
             {
                 **docket.labels(),
                 **worker.labels(),
-                **execution.labels(),
+                **execution.specific_labels(),
             },
         )
 

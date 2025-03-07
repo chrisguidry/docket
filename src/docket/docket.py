@@ -13,6 +13,7 @@ from typing import (
     Collection,
     Hashable,
     Iterable,
+    Mapping,
     NoReturn,
     ParamSpec,
     Self,
@@ -214,7 +215,7 @@ class Docket:
         for function in collection:
             self.register(function)
 
-    def labels(self) -> dict[str, str]:
+    def labels(self) -> Mapping[str, str]:
         return {
             "docket.name": self.name,
         }
@@ -320,7 +321,7 @@ class Docket:
                 1,
                 {
                     **self.labels(),
-                    **execution.labels(),
+                    **execution.specific_labels(),
                     "docket.where": "docket",
                 },
             )
@@ -333,7 +334,7 @@ class Docket:
             "docket.schedule",
             attributes={
                 **self.labels(),
-                **execution.labels(),
+                **execution.specific_labels(),
                 "code.function.name": execution.function.__name__,
             },
         ):
@@ -445,14 +446,12 @@ class Docket:
                                     extra=self.labels(),
                                 )
 
-                                counter_labels = {
-                                    **self.labels(),
-                                    **instruction.labels(),
-                                }
-
                                 STRIKES_IN_EFFECT.add(
                                     1 if instruction.direction == "strike" else -1,
-                                    counter_labels,
+                                    {
+                                        **self.labels(),
+                                        **instruction.labels(),
+                                    },
                                 )
 
             except redis.exceptions.ConnectionError:  # pragma: no cover

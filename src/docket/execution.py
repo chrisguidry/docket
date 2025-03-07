@@ -3,7 +3,7 @@ import enum
 import inspect
 import logging
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Hashable, Literal, Self, cast
+from typing import Any, Awaitable, Callable, Hashable, Literal, Mapping, Self, cast
 
 import cloudpickle  # type: ignore[import]
 
@@ -55,10 +55,10 @@ class Execution:
             attempt=int(message[b"attempt"].decode()),
         )
 
-    def general_labels(self) -> dict[str, str]:
+    def general_labels(self) -> Mapping[str, str]:
         return {"docket.task": self.function.__name__}
 
-    def labels(self) -> dict[str, str | int]:
+    def specific_labels(self) -> Mapping[str, str | int]:
         return {
             "docket.task": self.function.__name__,
             "docket.key": self.key,
@@ -142,7 +142,7 @@ class StrikeInstruction(abc.ABC):
         else:
             return Restore(function, parameter, operator, value)
 
-    def labels(self) -> dict[str, str]:
+    def labels(self) -> Mapping[str, str]:
         labels: dict[str, str] = {}
         if self.function:
             labels["docket.task"] = self.function
