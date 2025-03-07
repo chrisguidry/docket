@@ -1,5 +1,6 @@
 import os
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import partial
 from typing import Any, AsyncGenerator, Callable, Generator, Iterable, cast
@@ -10,7 +11,7 @@ import pytest
 import redis.exceptions
 from docker import DockerClient
 from docker.models.containers import Container
-from redis import Redis
+from redis import ConnectionPool, Redis
 
 from docket import Docket, Worker
 
@@ -25,6 +26,19 @@ def now() -> Callable[[], datetime]:
 @pytest.fixture(scope="session")
 def redis_port(unused_tcp_port_factory: Callable[[], int]) -> int:
     return unused_tcp_port_factory()
+
+
+@contextmanager
+def _sync_redis(url: str) -> Generator[Redis, None, None]:
+    pool: ConnectionPool | None = None
+    redis = Redis.from_url(url, single_connection_client=True)  # type: ignore
+    try:
+        with redis:
+            pool = redis.connection_pool  # type: ignore
+            yield redis
+    finally:
+        if pool:  # pragma: no branch
+            pool.disconnect()
 
 
 @pytest.fixture(scope="session")
@@ -53,8 +67,9 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
 
     while True:
         try:
-            with Redis.from_url(url) as r:  # type: ignore
-                if r.ping():  # type: ignore
+            with _sync_redis(url) as r:
+                success = r.ping()  # type: ignore
+                if success:  # pragma: no branch
                     break
         except redis.exceptions.ConnectionError:  # pragma: no cover
             pass
@@ -64,7 +79,7 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
     try:
         yield container
     finally:
-        with Redis.from_url(url) as r:  # type: ignore
+        with _sync_redis(url) as r:
             info: dict[str, Any] = r.info()  # type: ignore
 
         container.stop()
@@ -78,10 +93,10 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
 
 @pytest.fixture
 def redis_url(redis_server: Container, redis_port: int) -> str:
-    with Redis.from_url(f"redis://localhost:{redis_port}/0") as r:  # type: ignore
+    url = f"redis://localhost:{redis_port}/0"
+    with _sync_redis(url) as r:
         r.flushdb()  # type: ignore
-
-    return f"redis://localhost:{redis_port}/0"
+    return url
 
 
 @pytest.fixture
