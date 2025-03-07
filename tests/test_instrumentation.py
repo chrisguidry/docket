@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from opentelemetry import trace
+from opentelemetry.metrics import Counter, Histogram, UpDownCounter
+from opentelemetry.metrics import _Gauge as Gauge
 from opentelemetry.sdk.trace import Span, TracerProvider
 
 from docket import Docket, Worker
@@ -137,15 +139,15 @@ async def test_message_setter_overwrites_existing_value():
 
 
 @pytest.fixture
-def docket_labels(docket: Docket, the_task: AsyncMock) -> dict[str, str]:
-    """Create labels dictionary for the Docket client-side metrics."""
+def task_labels(docket: Docket, the_task: AsyncMock) -> dict[str, str]:
+    """Create labels dictionary for the task-side metrics."""
     return {"docket.name": docket.name, "docket.task": the_task.__name__}
 
 
 @pytest.fixture
 def TASKS_ADDED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_ADDED counter."""
-    mock = Mock()
+    mock = Mock(spec=Counter.add)
     monkeypatch.setattr("docket.instrumentation.TASKS_ADDED.add", mock)
     return mock
 
@@ -153,7 +155,7 @@ def TASKS_ADDED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_REPLACED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_REPLACED counter."""
-    mock = Mock()
+    mock = Mock(spec=Counter.add)
     monkeypatch.setattr("docket.instrumentation.TASKS_REPLACED.add", mock)
     return mock
 
@@ -161,7 +163,7 @@ def TASKS_REPLACED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_SCHEDULED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_SCHEDULED counter."""
-    mock = Mock()
+    mock = Mock(spec=Counter.add)
     monkeypatch.setattr("docket.instrumentation.TASKS_SCHEDULED.add", mock)
     return mock
 
@@ -169,7 +171,7 @@ def TASKS_SCHEDULED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 async def test_adding_a_task_increments_counter(
     docket: Docket,
     the_task: AsyncMock,
-    docket_labels: dict[str, str],
+    task_labels: dict[str, str],
     TASKS_ADDED: Mock,
     TASKS_REPLACED: Mock,
     TASKS_SCHEDULED: Mock,
@@ -177,15 +179,15 @@ async def test_adding_a_task_increments_counter(
     """Should increment the appropriate counters when adding a task."""
     await docket.add(the_task)()
 
-    TASKS_ADDED.assert_called_once_with(1, docket_labels)
+    TASKS_ADDED.assert_called_once_with(1, task_labels)
     TASKS_REPLACED.assert_not_called()
-    TASKS_SCHEDULED.assert_called_once_with(1, docket_labels)
+    TASKS_SCHEDULED.assert_called_once_with(1, task_labels)
 
 
 async def test_replacing_a_task_increments_counter(
     docket: Docket,
     the_task: AsyncMock,
-    docket_labels: dict[str, str],
+    task_labels: dict[str, str],
     TASKS_ADDED: Mock,
     TASKS_REPLACED: Mock,
     TASKS_SCHEDULED: Mock,
@@ -197,14 +199,14 @@ async def test_replacing_a_task_increments_counter(
     await docket.replace(the_task, when, key)()
 
     TASKS_ADDED.assert_not_called()
-    TASKS_REPLACED.assert_called_once_with(1, docket_labels)
-    TASKS_SCHEDULED.assert_called_once_with(1, docket_labels)
+    TASKS_REPLACED.assert_called_once_with(1, task_labels)
+    TASKS_SCHEDULED.assert_called_once_with(1, task_labels)
 
 
 @pytest.fixture
 def TASKS_CANCELLED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_CANCELLED counter."""
-    mock = Mock()
+    mock = Mock(spec=Counter.add)
     monkeypatch.setattr("docket.instrumentation.TASKS_CANCELLED.add", mock)
     return mock
 
@@ -212,7 +214,7 @@ def TASKS_CANCELLED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 async def test_cancelling_a_task_increments_counter(
     docket: Docket,
     the_task: AsyncMock,
-    docket_labels: dict[str, str],
+    task_labels: dict[str, str],
     TASKS_CANCELLED: Mock,
 ):
     """Should increment the TASKS_CANCELLED counter when cancelling a task."""
@@ -240,7 +242,7 @@ def worker_labels(
 @pytest.fixture
 def TASKS_STARTED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_STARTED counter."""
-    mock = Mock()
+    mock = Mock(spec=Counter.add)
     monkeypatch.setattr("docket.instrumentation.TASKS_STARTED.add", mock)
     return mock
 
@@ -248,7 +250,7 @@ def TASKS_STARTED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_COMPLETED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_COMPLETED counter."""
-    mock = Mock()
+    mock = Mock(spec=Counter.add)
     monkeypatch.setattr("docket.instrumentation.TASKS_COMPLETED.add", mock)
     return mock
 
@@ -256,7 +258,7 @@ def TASKS_COMPLETED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_SUCCEEDED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_SUCCEEDED counter."""
-    mock = Mock()
+    mock = Mock(spec=Counter.add)
     monkeypatch.setattr("docket.instrumentation.TASKS_SUCCEEDED.add", mock)
     return mock
 
@@ -264,7 +266,7 @@ def TASKS_SUCCEEDED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_FAILED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_FAILED counter."""
-    mock = Mock()
+    mock = Mock(spec=Counter.add)
     monkeypatch.setattr("docket.instrumentation.TASKS_FAILED.add", mock)
     return mock
 
@@ -272,7 +274,7 @@ def TASKS_FAILED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_RETRIED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_RETRIED counter."""
-    mock = Mock()
+    mock = Mock(spec=Counter.add)
     monkeypatch.setattr("docket.instrumentation.TASKS_RETRIED.add", mock)
     return mock
 
@@ -380,7 +382,7 @@ async def test_exhausted_retried_task_increments_retry_counter(
 @pytest.fixture
 def TASK_DURATION(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASK_DURATION histogram."""
-    mock = Mock()
+    mock = Mock(spec=Histogram.record)
     monkeypatch.setattr("docket.instrumentation.TASK_DURATION.record", mock)
     return mock
 
@@ -406,7 +408,7 @@ async def test_task_duration_is_measured(
 @pytest.fixture
 def TASK_PUNCTUALITY(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASK_PUNCTUALITY histogram."""
-    mock = Mock()
+    mock = Mock(spec=Histogram.record)
     monkeypatch.setattr("docket.instrumentation.TASK_PUNCTUALITY.record", mock)
     return mock
 
@@ -434,7 +436,7 @@ async def test_task_punctuality_is_measured(
 @pytest.fixture
 def TASKS_RUNNING(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_RUNNING up-down counter."""
-    mock = Mock()
+    mock = Mock(spec=UpDownCounter.add)
     monkeypatch.setattr("docket.instrumentation.TASKS_RUNNING.add", mock)
     return mock
 
@@ -498,3 +500,49 @@ def test_exports_metrics_as_prometheus_metrics(
         assert f'docket_name="{docket.name}"' in metrics_content
         assert 'docket_task="the_task"' in metrics_content
         assert f'docket_worker="{worker.name}"' in metrics_content
+
+
+@pytest.fixture
+def QUEUE_DEPTH(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Mock for the QUEUE_DEPTH counter."""
+    mock = Mock(spec=Gauge.set)
+    monkeypatch.setattr("docket.instrumentation.QUEUE_DEPTH.set", mock)
+    return mock
+
+
+@pytest.fixture
+def SCHEDULE_DEPTH(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Mock for the SCHEDULE_DEPTH counter."""
+    mock = Mock(spec=Gauge.set)
+    monkeypatch.setattr("docket.instrumentation.SCHEDULE_DEPTH.set", mock)
+    return mock
+
+
+@pytest.fixture
+def docket_labels(docket: Docket) -> dict[str, str]:
+    """Create labels dictionary for the Docket client-side metrics."""
+    return {"docket.name": docket.name}
+
+
+async def test_worker_publishes_depth_gauges(
+    docket: Docket,
+    docket_labels: dict[str, str],
+    the_task: AsyncMock,
+    QUEUE_DEPTH: Mock,
+    SCHEDULE_DEPTH: Mock,
+):
+    """Should publish depth gauges for due and scheduled tasks."""
+    await docket.add(the_task)()
+    await docket.add(the_task)()
+
+    future = datetime.now(timezone.utc) + timedelta(seconds=60)
+    await docket.add(the_task, when=future)()
+    await docket.add(the_task, when=future)()
+    await docket.add(the_task, when=future)()
+
+    docket.heartbeat_interval = timedelta(seconds=0.1)
+    async with Worker(docket):
+        await asyncio.sleep(0.2)  # enough for a heartbeat to be published
+
+    QUEUE_DEPTH.assert_called_once_with(2, docket_labels)
+    SCHEDULE_DEPTH.assert_called_once_with(3, docket_labels)
