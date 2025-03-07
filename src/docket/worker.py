@@ -280,8 +280,6 @@ class Worker:
 
                     for message_id, message in redeliveries:
                         start_task(message_id, message)
-                        if available_slots <= 0:
-                            break
 
                     if available_slots <= 0:
                         continue
@@ -300,8 +298,7 @@ class Worker:
                     for _, messages in new_deliveries:
                         for message_id, message in messages:
                             start_task(message_id, message)
-                            if available_slots <= 0:
-                                break
+
             except asyncio.CancelledError:
                 if active_tasks:  # pragma: no cover
                     logger.info(
