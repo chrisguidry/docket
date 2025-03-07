@@ -184,12 +184,15 @@ class Docket:
                 self.url,
                 single_connection_client=True,
             )
-            async with redis:
+            await redis.__aenter__()
+            try:
                 yield redis
+            finally:
+                await asyncio.shield(redis.__aexit__(None, None, None))
         finally:
             # redis 4.6.0 doesn't automatically disconnect and leaves connections open
             if redis:
-                await redis.connection_pool.disconnect()
+                await asyncio.shield(redis.connection_pool.disconnect())
 
     def register(self, function: Callable[..., Awaitable[Any]]) -> None:
         from .dependencies import validate_dependencies
