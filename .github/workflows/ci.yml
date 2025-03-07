@@ -9,7 +9,7 @@ on:
 
 jobs:
   test:
-    name: Test Python ${{ matrix.python-version }}
+    name: Test Python ${{ matrix.python-version }}, Redis ${{ matrix.redis-version }}, redis-py ${{ matrix.redis-py-version }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
