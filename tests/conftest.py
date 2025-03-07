@@ -1,3 +1,4 @@
+import os
 import time
 from datetime import datetime, timezone
 from functools import partial
@@ -12,6 +13,8 @@ from docker.models.containers import Container
 from redis import Redis
 
 from docket import Docket, Worker
+
+REDIS_VERSION = os.environ.get("REDIS_VERSION", "7.4")
 
 
 @pytest.fixture
@@ -39,7 +42,7 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
         container.remove(force=True)
 
     container = client.containers.run(
-        "redis:7.4.2",
+        f"redis:{REDIS_VERSION}",
         detach=True,
         ports={"6379/tcp": redis_port},
         labels={"source": "docket-unit-tests"},
