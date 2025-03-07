@@ -181,13 +181,17 @@ class Docket:
         except asyncio.CancelledError:
             pass
 
-        await asyncio.shield(self._connection_pool.aclose())
+        await asyncio.shield(self._connection_pool.disconnect())
         del self._connection_pool
 
     @asynccontextmanager
     async def redis(self) -> AsyncGenerator[Redis, None]:
-        r = Redis.from_pool(connection_pool=self._connection_pool)
-        yield r
+        r = Redis(connection_pool=self._connection_pool)
+        await r.__aenter__()
+        try:
+            yield r
+        finally:
+            await asyncio.shield(r.__aexit__(None, None, None))
 
     def register(self, function: Callable[..., Awaitable[Any]]) -> None:
         from .dependencies import validate_dependencies
