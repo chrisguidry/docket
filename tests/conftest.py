@@ -37,7 +37,7 @@ def _sync_redis(url: str) -> Generator[Redis, None, None]:
             pool = redis.connection_pool  # type: ignore
             yield redis
     finally:
-        if pool:
+        if pool:  # pragma: no branch
             pool.disconnect()
 
 
@@ -68,7 +68,8 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
     while True:
         try:
             with _sync_redis(url) as r:
-                if r.ping():  # type: ignore
+                success = r.ping()  # type: ignore
+                if success:  # pragma: no branch
                     break
         except redis.exceptions.ConnectionError:  # pragma: no cover
             pass
