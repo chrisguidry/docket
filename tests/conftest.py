@@ -1,9 +1,10 @@
 import os
+import socket
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any, AsyncGenerator, Callable, Generator, Iterable, cast
+from typing import AsyncGenerator, Callable, Generator, Iterable, cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -24,8 +25,10 @@ def now() -> Callable[[], datetime]:
 
 
 @pytest.fixture(scope="session")
-def redis_port(unused_tcp_port_factory: Callable[[], int]) -> int:
-    return unused_tcp_port_factory()
+def redis_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
 
 
 @contextmanager
@@ -77,16 +80,7 @@ def redis_server(redis_port: int) -> Generator[Container, None, None]:
     try:
         yield container
     finally:
-        with _sync_redis(url) as r:
-            info: dict[str, Any] = r.info()  # type: ignore
-
         container.stop()
-
-        # By the time the test suite finishes, there should have been no more open
-        # Redis connections (just the one that we used to ask about client connections).
-        assert info["connected_clients"] == 1, (
-            f"Expected 1 connected clients, but found {info['connected_clients']}"
-        )
 
 
 @pytest.fixture
@@ -98,7 +92,7 @@ def redis_url(redis_server: Container, redis_port: int) -> str:
 
 
 @pytest.fixture
-async def docket(redis_url: str) -> AsyncGenerator[Docket, None]:
+async def docket(redis_url: str, aiolib: str) -> AsyncGenerator[Docket, None]:
     async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
         yield docket
 

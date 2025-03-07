@@ -1,5 +1,6 @@
 import asyncio
 import http.client
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -467,22 +468,29 @@ async def test_task_running_gauge_is_incremented(
     )
 
 
+@pytest.fixture
+def metrics_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
 def test_exports_metrics_as_prometheus_metrics(
     docket: Docket,
     worker: Worker,
     the_task: AsyncMock,
-    unused_tcp_port: int,
+    metrics_port: int,
 ):
     """Should export metrics as Prometheus metrics, translating dots in labels to
     underscores for Prometheus."""
 
-    with metrics_server(port=unused_tcp_port):
+    with metrics_server(port=metrics_port):
         asyncio.run(docket.add(the_task)())  # type: ignore[arg-type]
         asyncio.run(worker.run_until_finished())
 
         time.sleep(0.1)
 
-        conn = http.client.HTTPConnection(f"localhost:{unused_tcp_port}")
+        conn = http.client.HTTPConnection(f"localhost:{metrics_port}")
         conn.request("GET", "/")
         response = conn.getresponse()
 
