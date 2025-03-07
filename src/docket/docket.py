@@ -523,7 +523,7 @@ class Docket:
                 )
                 running.append(RunningExecution(execution, worker_name, started))
             else:
-                future.append(execution)
+                future.append(execution)  # pragma: no cover
 
         for message in queued_messages:
             function = self.tasks[message[b"function"].decode()]
