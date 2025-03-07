@@ -182,7 +182,10 @@ class Docket:
         try:
             async with Redis.from_url(self.url, single_connection_client=True) as redis:
                 pool = redis.connection_pool  # type: ignore
-                yield redis
+                try:
+                    yield redis
+                finally:
+                    await redis.close()
         finally:
             # redis 4.6.0 doesn't disconnect correctly and leaves connections open
             if pool:
