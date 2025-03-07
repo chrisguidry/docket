@@ -584,6 +584,31 @@ async def test_self_perpetuating_immediate_tasks(
     assert calls["second"] == [21, 22, 23]
 
 
+async def test_self_perpetuating_scheduled_tasks(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """docket should support self-perpetuating tasks"""
+
+    calls: dict[str, list[int]] = {
+        "first": [],
+        "second": [],
+    }
+
+    async def the_task(start: int, iteration: int, key: str = TaskKey()):
+        calls[key].append(start + iteration)
+        if iteration < 3:
+            soon = now() + timedelta(milliseconds=100)
+            await docket.add(the_task, key=key, when=soon)(start, iteration + 1)
+
+    await docket.add(the_task, key="first")(10, 1)
+    await docket.add(the_task, key="second")(20, 1)
+
+    await worker.run_until_finished()
+
+    assert calls["first"] == [11, 12, 13]
+    assert calls["second"] == [21, 22, 23]
+
+
 async def test_infinitely_self_perpetuating_tasks(
     docket: Docket, worker: Worker, now: Callable[[], datetime]
 ):
