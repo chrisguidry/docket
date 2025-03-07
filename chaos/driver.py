@@ -6,9 +6,9 @@ import socket
 import sys
 from asyncio import subprocess
 from asyncio.subprocess import Process
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import Any, Generator, Literal, Sequence
+from typing import Any, AsyncGenerator, Literal, Sequence
 from uuid import uuid4
 
 import redis.exceptions
@@ -46,8 +46,8 @@ def python_entrypoint() -> list[str]:
     return [sys.executable]
 
 
-@contextmanager
-def run_redis(version: str) -> Generator[tuple[str, Container], None, None]:
+@asynccontextmanager
+async def run_redis(version: str) -> AsyncGenerator[tuple[str, Container], None]:
     def get_free_port() -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("", 0))
@@ -80,12 +80,14 @@ async def main(
     producers: int = 4,
     workers: int = 7,
 ):
-    with run_redis("7.4.2") as (redis_url, redis_container):
-        logger.info("Redis running at %s", redis_url)
-        docket = Docket(
+    async with (
+        run_redis("7.4.2") as (redis_url, redis_container),
+        Docket(
             name=f"test-docket-{uuid4()}",
             url=redis_url,
-        )
+        ) as docket,
+    ):
+        logger.info("Redis running at %s", redis_url)
         environment = {
             **os.environ,
             "DOCKET_NAME": docket.name,
@@ -93,14 +95,13 @@ async def main(
         }
 
         # Add in some random strikes to performance test
-        async with docket:
-            for _ in range(100):
-                parameter = f"param_{random.randint(1, 100)}"
-                operator: Operator = random.choice(
-                    ["==", "!=", ">", ">=", "<", "<=", "between"]
-                )
-                value = f"val_{random.randint(1, 1000)}"
-                await docket.strike("rando", parameter, operator, value)
+        for _ in range(100):
+            parameter = f"param_{random.randint(1, 100)}"
+            operator: Operator = random.choice(
+                ["==", "!=", ">", ">=", "<", "<=", "between"]
+            )
+            value = f"val_{random.randint(1, 1000)}"
+            await docket.strike("rando", parameter, operator, value)
 
         if tasks % producers != 0:
             raise ValueError("total_tasks must be divisible by total_producers")
@@ -199,8 +200,7 @@ async def main(
                 elif chaos_chance < 0.15:
                     logger.warning("CHAOS: Queuing a toxic task...")
                     try:
-                        async with docket:
-                            await docket.add(toxic)()
+                        await docket.add(toxic)()
                     except redis.exceptions.ConnectionError:
                         pass
 
