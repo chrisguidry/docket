@@ -1,4 +1,6 @@
 import asyncio
+import http.client
+import time
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 from unittest.mock import AsyncMock, Mock
@@ -9,7 +11,7 @@ from opentelemetry.sdk.trace import Span, TracerProvider
 
 from docket import Docket, Worker
 from docket.dependencies import Retry
-from docket.instrumentation import message_getter, message_setter
+from docket.instrumentation import message_getter, message_setter, metrics_server
 
 tracer = trace.get_tracer(__name__)
 
@@ -43,10 +45,13 @@ async def test_executing_a_task_is_wrapped_in_a_span(docket: Docket, worker: Wor
     assert task_span.kind == trace.SpanKind.CONSUMER
     assert task_span.attributes
 
+    print(task_span.attributes)
+
     assert task_span.attributes["docket.name"] == docket.name
-    assert task_span.attributes["docket.execution.key"] == execution.key
-    assert task_span.attributes["docket.execution.when"] == execution.when.isoformat()
-    assert task_span.attributes["docket.execution.attempt"] == 1
+    assert task_span.attributes["docket.task"] == "the_task"
+    assert task_span.attributes["docket.key"] == execution.key
+    assert task_span.attributes["docket.when"] == execution.when.isoformat()
+    assert task_span.attributes["docket.attempt"] == 1
     assert task_span.attributes["code.function.name"] == "the_task"
 
 
@@ -134,7 +139,7 @@ async def test_message_setter_overwrites_existing_value():
 @pytest.fixture
 def docket_labels(docket: Docket, the_task: AsyncMock) -> dict[str, str]:
     """Create labels dictionary for the Docket client-side metrics."""
-    return {"docket": docket.name, "task": the_task.__name__}
+    return {"docket.name": docket.name, "docket.task": the_task.__name__}
 
 
 @pytest.fixture
@@ -217,7 +222,7 @@ async def test_cancelling_a_task_increments_counter(
 
     await docket.cancel(key)
 
-    TASKS_CANCELLED.assert_called_once_with(1, {"docket": docket.name})
+    TASKS_CANCELLED.assert_called_once_with(1, {"docket.name": docket.name})
 
 
 @pytest.fixture
@@ -225,7 +230,11 @@ def worker_labels(
     docket: Docket, worker: Worker, the_task: AsyncMock
 ) -> dict[str, str]:
     """Create labels dictionary for worker-side metrics."""
-    return {"docket": docket.name, "worker": worker.name, "task": the_task.__name__}
+    return {
+        "docket.name": docket.name,
+        "docket.worker": worker.name,
+        "docket.task": the_task.__name__,
+    }
 
 
 @pytest.fixture
@@ -454,3 +463,38 @@ async def test_task_running_gauge_is_incremented(
             mock.call(-1, worker_labels),
         ]
     )
+
+
+def test_exports_metrics_as_prometheus_metrics(
+    docket: Docket,
+    worker: Worker,
+    the_task: AsyncMock,
+    unused_tcp_port: int,
+):
+    """Should export metrics as Prometheus metrics, translating dots in labels to
+    underscores for Prometheus."""
+
+    with metrics_server(port=unused_tcp_port):
+        asyncio.run(docket.add(the_task)())  # type: ignore[arg-type]
+        asyncio.run(worker.run_until_finished())
+
+        time.sleep(0.1)
+
+        conn = http.client.HTTPConnection(f"localhost:{unused_tcp_port}")
+        conn.request("GET", "/")
+        response = conn.getresponse()
+
+        assert response.status == 200, response.read().decode()
+
+        assert (
+            response.headers["Content-Type"]
+            == "text/plain; version=0.0.4; charset=utf-8"
+        )
+
+        metrics_content = response.read().decode()
+        assert "docket_tasks_added" in metrics_content
+        assert "docket_tasks_completed" in metrics_content
+
+        assert f'docket_name="{docket.name}"' in metrics_content
+        assert 'docket_task="the_task"' in metrics_content
+        assert f'docket_worker="{worker.name}"' in metrics_content

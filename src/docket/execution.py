@@ -3,7 +3,7 @@ import enum
 import inspect
 import logging
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Hashable, Literal, Self, cast
+from typing import Any, Awaitable, Callable, Hashable, Literal, Mapping, Self, cast
 
 import cloudpickle  # type: ignore[import]
 
@@ -54,6 +54,17 @@ class Execution:
             key=message[b"key"].decode(),
             attempt=int(message[b"attempt"].decode()),
         )
+
+    def general_labels(self) -> Mapping[str, str]:
+        return {"docket.task": self.function.__name__}
+
+    def specific_labels(self) -> Mapping[str, str | int]:
+        return {
+            "docket.task": self.function.__name__,
+            "docket.key": self.key,
+            "docket.when": self.when.isoformat(),
+            "docket.attempt": self.attempt,
+        }
 
     def call_repr(self) -> str:
         arguments: list[str] = []
@@ -131,17 +142,17 @@ class StrikeInstruction(abc.ABC):
         else:
             return Restore(function, parameter, operator, value)
 
-    def as_span_attributes(self) -> dict[str, str]:
-        span_attributes: dict[str, str] = {}
+    def labels(self) -> Mapping[str, str]:
+        labels: dict[str, str] = {}
         if self.function:
-            span_attributes["docket.function"] = self.function
+            labels["docket.task"] = self.function
 
         if self.parameter:
-            span_attributes["docket.parameter"] = self.parameter
-            span_attributes["docket.operator"] = self.operator
-            span_attributes["docket.value"] = repr(self.value)
+            labels["docket.parameter"] = self.parameter
+            labels["docket.operator"] = self.operator
+            labels["docket.value"] = repr(self.value)
 
-        return span_attributes
+        return labels
 
     def call_repr(self) -> str:
         return (

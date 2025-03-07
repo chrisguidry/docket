@@ -13,6 +13,7 @@ from typing import (
     Collection,
     Hashable,
     Iterable,
+    Mapping,
     NoReturn,
     ParamSpec,
     Self,
@@ -214,6 +215,11 @@ class Docket:
         for function in collection:
             self.register(function)
 
+    def labels(self) -> Mapping[str, str]:
+        return {
+            "docket.name": self.name,
+        }
+
     @overload
     def add(
         self,
@@ -251,7 +257,7 @@ class Docket:
             execution = Execution(function, args, kwargs, when, key, attempt=1)
             await self.schedule(execution)
 
-            TASKS_ADDED.add(1, {"docket": self.name, "task": function.__name__})
+            TASKS_ADDED.add(1, {**self.labels(), **execution.general_labels()})
 
             return execution
 
@@ -287,7 +293,7 @@ class Docket:
             await self.cancel(key)
             await self.schedule(execution)
 
-            TASKS_REPLACED.add(1, {"docket": self.name, "task": function.__name__})
+            TASKS_REPLACED.add(1, {**self.labels(), **execution.general_labels()})
 
             return execution
 
@@ -314,9 +320,9 @@ class Docket:
             TASKS_STRICKEN.add(
                 1,
                 {
-                    "docket": self.name,
-                    "task": execution.function.__name__,
-                    "where": "docket",
+                    **self.labels(),
+                    **execution.specific_labels(),
+                    "docket.where": "docket",
                 },
             )
             return
@@ -327,10 +333,8 @@ class Docket:
         with tracer.start_as_current_span(
             "docket.schedule",
             attributes={
-                "docket.name": self.name,
-                "docket.execution.when": execution.when.isoformat(),
-                "docket.execution.key": execution.key,
-                "docket.execution.attempt": execution.attempt,
+                **self.labels(),
+                **execution.specific_labels(),
                 "code.function.name": execution.function.__name__,
             },
         ):
@@ -350,16 +354,14 @@ class Docket:
                         pipe.zadd(self.queue_key, {key: when.timestamp()})
                         await pipe.execute()
 
-        TASKS_SCHEDULED.add(
-            1, {"docket": self.name, "task": execution.function.__name__}
-        )
+        TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
 
     async def cancel(self, key: str) -> None:
         with tracer.start_as_current_span(
             "docket.cancel",
             attributes={
-                "docket.name": self.name,
-                "docket.execution.key": key,
+                **self.labels(),
+                "docket.key": key,
             },
         ):
             async with self.redis() as redis:
@@ -368,7 +370,7 @@ class Docket:
                     pipe.zrem(self.queue_key, key)
                     await pipe.execute()
 
-        TASKS_CANCELLED.add(1, {"docket": self.name})
+        TASKS_CANCELLED.add(1, self.labels())
 
     @property
     def strike_key(self) -> str:
@@ -408,8 +410,8 @@ class Docket:
         with tracer.start_as_current_span(
             f"docket.{instruction.direction}",
             attributes={
-                "docket.name": self.name,
-                **instruction.as_span_attributes(),
+                **self.labels(),
+                **instruction.labels(),
             },
         ):
             async with self.redis() as redis:
@@ -441,18 +443,15 @@ class Docket:
                                         else "Restoring"
                                     ),
                                     instruction.call_repr(),
-                                    extra={"docket": self.name},
+                                    extra=self.labels(),
                                 )
-
-                                counter_labels = {"docket": self.name}
-                                if instruction.function:
-                                    counter_labels["task"] = instruction.function
-                                if instruction.parameter:
-                                    counter_labels["parameter"] = instruction.parameter
 
                                 STRIKES_IN_EFFECT.add(
                                     1 if instruction.direction == "strike" else -1,
-                                    counter_labels,
+                                    {
+                                        **self.labels(),
+                                        **instruction.labels(),
+                                    },
                                 )
 
             except redis.exceptions.ConnectionError:  # pragma: no cover

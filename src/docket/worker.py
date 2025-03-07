@@ -7,6 +7,7 @@ from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
+    Mapping,
     Protocol,
     Self,
     TypeVar,
@@ -38,6 +39,7 @@ from .instrumentation import (
     TASKS_STRICKEN,
     TASKS_SUCCEEDED,
     message_getter,
+    metrics_server,
 )
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -94,11 +96,17 @@ class Worker:
             pass
         del self._heartbeat_task
 
-    @property
-    def _log_context(self) -> dict[str, str]:
+    def labels(self) -> Mapping[str, str]:
         return {
-            "queue_key": self.docket.queue_key,
-            "stream_key": self.docket.stream_key,
+            **self.docket.labels(),
+            "docket.worker": self.name,
+        }
+
+    def _log_context(self) -> Mapping[str, str]:
+        return {
+            **self.labels(),
+            "docket.queue_key": self.docket.queue_key,
+            "docket.stream_key": self.docket.stream_key,
         }
 
     @classmethod
@@ -112,24 +120,26 @@ class Worker:
         reconnection_delay: timedelta = timedelta(seconds=5),
         minimum_check_interval: timedelta = timedelta(milliseconds=100),
         until_finished: bool = False,
+        metrics_port: int | None = None,
         tasks: list[str] = ["docket.tasks:standard_tasks"],
     ) -> None:
-        async with Docket(name=docket_name, url=url) as docket:
-            for task_path in tasks:
-                docket.register_collection(task_path)
+        with metrics_server(port=metrics_port):
+            async with Docket(name=docket_name, url=url) as docket:
+                for task_path in tasks:
+                    docket.register_collection(task_path)
 
-            async with Worker(
-                docket=docket,
-                name=name,
-                concurrency=concurrency,
-                redelivery_timeout=redelivery_timeout,
-                reconnection_delay=reconnection_delay,
-                minimum_check_interval=minimum_check_interval,
-            ) as worker:
-                if until_finished:
-                    await worker.run_until_finished()
-                else:
-                    await worker.run_forever()  # pragma: no cover
+                async with Worker(
+                    docket=docket,
+                    name=name,
+                    concurrency=concurrency,
+                    redelivery_timeout=redelivery_timeout,
+                    reconnection_delay=reconnection_delay,
+                    minimum_check_interval=minimum_check_interval,
+                ) as worker:
+                    if until_finished:
+                        await worker.run_until_finished()
+                    else:
+                        await worker.run_forever()  # pragma: no cover
 
     async def run_until_finished(self) -> None:
         """Run the worker until there are no more tasks to process."""
@@ -149,9 +159,7 @@ class Worker:
             try:
                 return await self._worker_loop(forever=forever)
             except redis.exceptions.ConnectionError:
-                REDIS_DISRUPTIONS.add(
-                    1, {"docket": self.docket.name, "worker": self.name}
-                )
+                REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.warning(
                     "Error connecting to redis, retrying in %s...",
                     self.reconnection_delay,
@@ -263,7 +271,7 @@ class Worker:
                             future_work,
                             self.docket.queue_key,
                             self.docket.stream_key,
-                            extra=self._log_context,
+                            extra=self._log_context(),
                         )
 
                     redeliveries: RedisMessages
@@ -304,7 +312,7 @@ class Worker:
                     logger.info(
                         "Shutdown requested, finishing %d active tasks...",
                         len(active_tasks),
-                        extra=self._log_context,
+                        extra=self._log_context(),
                     )
             finally:
                 if active_tasks:
@@ -312,28 +320,20 @@ class Worker:
                     await process_completed_tasks()
 
     async def _execute(self, message: RedisMessage) -> None:
+        log_context: dict[str, str | float] = self._log_context()
+
         function_name = message[b"function"].decode()
         function = self.docket.tasks.get(function_name)
         if function is None:
             logger.warning(
-                "Task function %r not found", function_name, extra=self._log_context
+                "Task function %r not found", function_name, extra=log_context
             )
             return
 
         execution = Execution.from_message(function, message)
-        name = execution.function.__name__
-        key = execution.key
 
-        log_context: dict[str, str | float] = {
-            **self._log_context,
-            "task": name,
-            "key": key,
-        }
-        counter_labels = {
-            "docket": self.docket.name,
-            "worker": self.name,
-            "task": name,
-        }
+        log_context |= execution.specific_labels()
+        counter_labels = {**self.labels(), **execution.general_labels()}
 
         arrow = "↬" if execution.attempt > 1 else "↪"
         call = execution.call_repr()
@@ -341,7 +341,7 @@ class Worker:
         if self.docket.strike_list.is_stricken(execution):
             arrow = "🗙"
             logger.warning("%s %s", arrow, call, extra=log_context)
-            TASKS_STRICKEN.add(1, counter_labels | {"where": "worker"})
+            TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
             return
 
         dependencies = self._get_dependencies(execution)
@@ -366,11 +366,8 @@ class Worker:
                 execution.function.__name__,
                 kind=trace.SpanKind.CONSUMER,
                 attributes={
-                    "docket.name": self.docket.name,
-                    "docket.execution.when": execution.when.isoformat(),
-                    "docket.execution.key": execution.key,
-                    "docket.execution.attempt": execution.attempt,
-                    "docket.execution.punctuality": punctuality.total_seconds(),
+                    **self.labels(),
+                    **execution.specific_labels(),
                     "code.function.name": execution.function.__name__,
                 },
                 links=links,
@@ -438,12 +435,7 @@ class Worker:
             execution.attempt += 1
             await self.docket.schedule(execution)
 
-            counter_labels = {
-                "docket": self.docket.name,
-                "worker": self.name,
-                "task": execution.function.__name__,
-            }
-            TASKS_RETRIED.add(1, counter_labels)
+            TASKS_RETRIED.add(1, {**self.labels(), **execution.specific_labels()})
             return True
 
         return False
@@ -490,9 +482,15 @@ class Worker:
             except asyncio.CancelledError:  # pragma: no cover
                 return
             except redis.exceptions.ConnectionError:
-                REDIS_DISRUPTIONS.add(
-                    1, {"docket": self.docket.name, "worker": self.name}
+                REDIS_DISRUPTIONS.add(1, self.labels())
+                logger.exception(
+                    "Error sending worker heartbeat",
+                    exc_info=True,
+                    extra=self._log_context(),
                 )
-                logger.exception("Error sending worker heartbeat", exc_info=True)
             except Exception:
-                logger.exception("Error sending worker heartbeat", exc_info=True)
+                logger.exception(
+                    "Error sending worker heartbeat",
+                    exc_info=True,
+                    extra=self._log_context(),
+                )
