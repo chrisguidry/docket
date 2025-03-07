@@ -172,28 +172,31 @@ class Worker:
                     """
                 local total_work = redis.call('ZCARD', KEYS[1])
                 local due_work = 0
-                local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
 
-                for i, key in ipairs(tasks) do
-                    local hash_key = ARGV[2] .. ":" .. key
-                    local task_data = redis.call('HGETALL', hash_key)
+                if total_work > 0 then
+                    local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
 
-                    if #task_data > 0 then
-                        local task = {}
-                        for j = 1, #task_data, 2 do
-                            task[task_data[j]] = task_data[j+1]
+                    for i, key in ipairs(tasks) do
+                        local hash_key = ARGV[2] .. ":" .. key
+                        local task_data = redis.call('HGETALL', hash_key)
+
+                        if #task_data > 0 then
+                            local task = {}
+                            for j = 1, #task_data, 2 do
+                                task[task_data[j]] = task_data[j+1]
+                            end
+
+                            redis.call('XADD', KEYS[2], '*',
+                                'key', task['key'],
+                                'when', task['when'],
+                                'function', task['function'],
+                                'args', task['args'],
+                                'kwargs', task['kwargs'],
+                                'attempt', task['attempt']
+                            )
+                            redis.call('DEL', hash_key)
+                            due_work = due_work + 1
                         end
-
-                        redis.call('XADD', KEYS[2], '*',
-                            'key', task['key'],
-                            'when', task['when'],
-                            'function', task['function'],
-                            'args', task['args'],
-                            'kwargs', task['kwargs'],
-                            'attempt', task['attempt']
-                        )
-                        redis.call('DEL', hash_key)
-                        due_work = due_work + 1
                     end
                 end
 
