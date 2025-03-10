@@ -126,6 +126,34 @@ class ExponentialRetry(Retry):
         return retry
 
 
+class Perpetual(Dependency):
+    single = True
+
+    every: timedelta
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    cancelled: bool
+
+    def __init__(self, every: timedelta = timedelta(0)) -> None:
+        self.every = every
+        self.cancelled = False
+
+    def __call__(
+        self, docket: Docket, worker: Worker, execution: Execution
+    ) -> "Perpetual":
+        perpetual = Perpetual(every=self.every)
+        perpetual.args = execution.args
+        perpetual.kwargs = execution.kwargs
+        return perpetual
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def perpetuate(self, *args: Any, **kwargs: Any) -> None:
+        self.args = args
+        self.kwargs = kwargs
+
+
 def get_dependency_parameters(
     function: Callable[..., Awaitable[Any]],
 ) -> dict[str, Dependency]:

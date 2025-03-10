@@ -22,6 +22,7 @@ from docket import (
     Execution,
     ExponentialRetry,
     Logged,
+    Perpetual,
     Retry,
     TaskKey,
     TaskLogger,
@@ -854,3 +855,104 @@ async def test_adding_task_with_unbindable_arguments(
         await worker.run_until_finished()
 
     assert "got an unexpected keyword argument 'd'" in caplog.text
+
+
+async def test_perpetual_tasks(docket: Docket, worker: Worker):
+    """Perpetual tasks should reschedule themselves forever"""
+
+    calls = 0
+
+    async def perpetual_task(
+        a: str,
+        b: int,
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=50)),
+    ):
+        assert a == "a"
+        assert b == 2
+
+        assert isinstance(perpetual, Perpetual)
+
+        assert perpetual.every == timedelta(milliseconds=50)
+
+        nonlocal calls
+        calls += 1
+
+    execution = await docket.add(perpetual_task)(a="a", b=2)
+
+    await worker.run_at_most({execution.key: 3})
+
+    assert calls == 3
+
+
+async def test_perpetual_tasks_can_cancel_themselves(docket: Docket, worker: Worker):
+    """A perpetual task can request its own cancellation"""
+    calls = 0
+
+    async def perpetual_task(
+        a: str,
+        b: int,
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=50)),
+    ):
+        assert a == "a"
+        assert b == 2
+
+        assert isinstance(perpetual, Perpetual)
+
+        assert perpetual.every == timedelta(milliseconds=50)
+
+        nonlocal calls
+        calls += 1
+
+        if calls == 3:
+            perpetual.cancel()
+
+    await docket.add(perpetual_task)(a="a", b=2)
+
+    await worker.run_until_finished()
+
+    assert calls == 3
+
+
+async def test_perpetual_tasks_can_change_their_parameters(
+    docket: Docket, worker: Worker
+):
+    """Perpetual tasks may change their parameters each time"""
+    arguments: list[tuple[str, int]] = []
+
+    async def perpetual_task(
+        a: str,
+        b: int,
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=50)),
+    ):
+        arguments.append((a, b))
+        perpetual.perpetuate(a + "a", b=b + 1)
+
+    execution = await docket.add(perpetual_task)(a="a", b=1)
+
+    await worker.run_at_most({execution.key: 3})
+
+    assert len(arguments) == 3
+    assert arguments == [("a", 1), ("aa", 2), ("aaa", 3)]
+
+
+async def test_perpetual_tasks_perpetuate_even_after_errors(
+    docket: Docket, worker: Worker
+):
+    """Perpetual tasks may change their parameters each time"""
+    calls = 0
+
+    async def perpetual_task(
+        a: str,
+        b: int,
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=50)),
+    ):
+        nonlocal calls
+        calls += 1
+
+        raise ValueError("woops!")
+
+    execution = await docket.add(perpetual_task)(a="a", b=1)
+
+    await worker.run_at_most({execution.key: 3})
+
+    assert calls == 3

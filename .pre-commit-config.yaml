@@ -24,13 +24,13 @@ repos:
     hooks:
       - id: pyright
         name: pyright (docket package)
-        entry: uv run pyright --verifytypes docket --ignoreexternal
+        entry: pyright --verifytypes docket --ignoreexternal
         language: system
         types: [python]
         pass_filenames: false
       - id: pyright
         name: pyright (source and tests)
-        entry: uv run pyright tests
+        entry: pyright tests
         language: system
         types: [python]
         pass_filenames: false
