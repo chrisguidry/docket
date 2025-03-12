@@ -11,7 +11,7 @@ import redis.exceptions
 from redis.asyncio import Redis
 
 from docket import CurrentWorker, Docket, Worker
-from docket.dependencies import Perpetual
+from docket.dependencies import CurrentDocket, Perpetual
 from docket.docket import RedisMessage
 from docket.tasks import standard_tasks
 
@@ -389,3 +389,28 @@ async def test_perpetual_tasks_are_scheduled_close_to_target_time(
 
     # even with a variable duration, Docket attempts to schedule them equally
     assert timedelta(milliseconds=45) <= average <= timedelta(milliseconds=70)
+
+
+async def test_worker_can_exit_from_perpetual_tasks_that_queue_further_tasks(
+    docket: Docket, worker: Worker
+):
+    """A worker can exit if it's processing a perpetual task that queues more tasks"""
+
+    inner_calls = 0
+
+    async def inner_task():
+        nonlocal inner_calls
+        inner_calls += 1
+
+    async def perpetual_task(
+        docket: Docket = CurrentDocket(),
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=50)),
+    ):
+        await docket.add(inner_task)()
+        await docket.add(inner_task)()
+
+    execution = await docket.add(perpetual_task)()
+
+    await worker.run_at_most({execution.key: 3})
+
+    assert inner_calls == 6
