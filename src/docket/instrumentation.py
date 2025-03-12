@@ -70,6 +70,12 @@ TASKS_RETRIED = meter.create_counter(
     unit="1",
 )
 
+TASKS_PERPETUATED = meter.create_counter(
+    "docket_tasks_perpetuated",
+    description="How many tasks that have been self-perpetuated",
+    unit="1",
+)
+
 TASK_DURATION = meter.create_histogram(
     "docket_task_duration",
     description="How long tasks take to complete",

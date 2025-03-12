@@ -11,6 +11,7 @@ import redis.exceptions
 from redis.asyncio import Redis
 
 from docket import CurrentWorker, Docket, Worker
+from docket.dependencies import CurrentDocket, Perpetual
 from docket.docket import RedisMessage
 from docket.tasks import standard_tasks
 
@@ -358,3 +359,58 @@ async def test_worker_recovers_from_redis_errors(
         assert worker_info.last_seen > error_time, (
             "Worker should have sent heartbeats after the Redis error"
         )
+
+
+async def test_perpetual_tasks_are_scheduled_close_to_target_time(
+    docket: Docket, worker: Worker
+):
+    """A perpetual task is scheduled as close to the target period as possible"""
+    timestamps: list[datetime] = []
+
+    async def perpetual_task(
+        a: str,
+        b: int,
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=50)),
+    ):
+        timestamps.append(datetime.now(timezone.utc))
+
+        if len(timestamps) % 2 == 0:
+            await asyncio.sleep(0.05)
+
+    await docket.add(perpetual_task, key="my-key")(a="a", b=2)
+
+    await worker.run_at_most({"my-key": 8})
+
+    assert len(timestamps) == 8
+
+    intervals = [next - previous for previous, next in zip(timestamps, timestamps[1:])]
+    total = timedelta(seconds=sum(i.total_seconds() for i in intervals))
+    average = total / len(intervals)
+
+    # even with a variable duration, Docket attempts to schedule them equally
+    assert timedelta(milliseconds=45) <= average <= timedelta(milliseconds=70)
+
+
+async def test_worker_can_exit_from_perpetual_tasks_that_queue_further_tasks(
+    docket: Docket, worker: Worker
+):
+    """A worker can exit if it's processing a perpetual task that queues more tasks"""
+
+    inner_calls = 0
+
+    async def inner_task():
+        nonlocal inner_calls
+        inner_calls += 1
+
+    async def perpetual_task(
+        docket: Docket = CurrentDocket(),
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=50)),
+    ):
+        await docket.add(inner_task)()
+        await docket.add(inner_task)()
+
+    execution = await docket.add(perpetual_task)()
+
+    await worker.run_at_most({execution.key: 3})
+
+    assert inner_calls == 6

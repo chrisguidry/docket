@@ -36,6 +36,7 @@ from .instrumentation import (
     TASK_PUNCTUALITY,
     TASKS_COMPLETED,
     TASKS_FAILED,
+    TASKS_PERPETUATED,
     TASKS_RETRIED,
     TASKS_RUNNING,
     TASKS_STARTED,
@@ -424,12 +425,20 @@ class Worker:
             TASKS_SUCCEEDED.add(1, counter_labels)
             duration = datetime.now(timezone.utc) - start
             log_context["duration"] = duration.total_seconds()
-            logger.info("%s [%s] %s", "↩", duration, call, extra=log_context)
+            rescheduled = await self._perpetuate_if_requested(
+                execution, dependencies, duration
+            )
+            arrow = "↫" if rescheduled else "↩"
+            logger.info("%s [%s] %s", arrow, duration, call, extra=log_context)
         except Exception:
             TASKS_FAILED.add(1, counter_labels)
             duration = datetime.now(timezone.utc) - start
             log_context["duration"] = duration.total_seconds()
             retried = await self._retry_if_requested(execution, dependencies)
+            if not retried:
+                retried = await self._perpetuate_if_requested(
+                    execution, dependencies, duration
+                )
             arrow = "↫" if retried else "↩"
             logger.exception("%s [%s] %s", arrow, duration, call, extra=log_context)
         finally:
@@ -480,6 +489,34 @@ class Worker:
             return True
 
         return False
+
+    async def _perpetuate_if_requested(
+        self, execution: Execution, dependencies: dict[str, Any], duration: timedelta
+    ) -> bool:
+        from .dependencies import Perpetual
+
+        perpetuals = [
+            perpetual
+            for perpetual in dependencies.values()
+            if isinstance(perpetual, Perpetual)
+        ]
+        if not perpetuals:
+            return False
+
+        perpetual = perpetuals[0]
+
+        if perpetual.cancelled:
+            return False
+
+        now = datetime.now(timezone.utc)
+        execution.when = max(now, now + perpetual.every - duration)
+        execution.args = perpetual.args
+        execution.kwargs = perpetual.kwargs
+
+        await self.docket.schedule(execution)
+
+        TASKS_PERPETUATED.add(1, {**self.labels(), **execution.specific_labels()})
+        return True
 
     @property
     def workers_set(self) -> str:

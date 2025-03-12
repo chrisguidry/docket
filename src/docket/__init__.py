@@ -14,6 +14,7 @@ from .dependencies import (
     CurrentExecution,
     CurrentWorker,
     ExponentialRetry,
+    Perpetual,
     Retry,
     TaskKey,
     TaskLogger,
@@ -34,5 +35,6 @@ __all__ = [
     "Retry",
     "ExponentialRetry",
     "Logged",
+    "Perpetual",
     "__version__",
 ]
