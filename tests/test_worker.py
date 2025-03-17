@@ -414,3 +414,25 @@ async def test_worker_can_exit_from_perpetual_tasks_that_queue_further_tasks(
     await worker.run_at_most({execution.key: 3})
 
     assert inner_calls == 6
+
+
+async def test_worker_can_exit_from_long_horizon_perpetual_tasks(
+    docket: Docket, worker: Worker
+):
+    """A worker can exit in a timely manner from a perpetual task that has a long
+    horizon because it is stricken on both execution and rescheduling"""
+    calls: int = 0
+
+    async def perpetual_task(
+        a: str,
+        b: int,
+        perpetual: Perpetual = Perpetual(every=timedelta(weeks=37)),
+    ):
+        nonlocal calls
+        calls += 1
+
+    await docket.add(perpetual_task, key="my-key")(a="a", b=2)
+
+    await worker.run_at_most({"my-key": 1})
+
+    assert calls == 1
