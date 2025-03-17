@@ -183,18 +183,33 @@ TaskStrikes = dict[str, ParameterStrikes]
 class StrikeList:
     task_strikes: TaskStrikes
     parameter_strikes: ParameterStrikes
+    _conditions: list[Callable[[Execution], bool]]
 
     def __init__(self) -> None:
         self.task_strikes = {}
         self.parameter_strikes = {}
+        self._conditions = [self._matches_task_or_parameter_strike]
+
+    def add_condition(self, condition: Callable[[Execution], bool]) -> None:
+        """Adds a temporary condition that indicates an execution is stricken."""
+        self._conditions.insert(0, condition)
+
+    def remove_condition(self, condition: Callable[[Execution], bool]) -> None:
+        """Adds a temporary condition that indicates an execution is stricken."""
+        assert condition is not self._matches_task_or_parameter_strike
+        self._conditions.remove(condition)
 
     def is_stricken(self, execution: Execution) -> bool:
         """
-        Checks if an execution is stricken based on task name or parameter values.
+        Checks if an execution is stricken based on task, parameter, or temporary
+        conditions.
 
         Returns:
             bool: True if the execution is stricken, False otherwise.
         """
+        return any(condition(execution) for condition in self._conditions)
+
+    def _matches_task_or_parameter_strike(self, execution: Execution) -> bool:
         function_name = execution.function.__name__
 
         # Check if the entire task is stricken (without parameter conditions)

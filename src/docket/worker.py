@@ -7,7 +7,6 @@ from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Mapping,
     Protocol,
     Self,
@@ -69,7 +68,6 @@ class Worker:
     redelivery_timeout: timedelta
     reconnection_delay: timedelta
     minimum_check_interval: timedelta
-    _strike_conditions: list[Callable[[Execution], bool]] = []
 
     def __init__(
         self,
@@ -87,13 +85,9 @@ class Worker:
         self.reconnection_delay = reconnection_delay
         self.minimum_check_interval = minimum_check_interval
 
-        self._strike_conditions = [
-            docket.strike_list.is_stricken,
-        ]
-
     async def __aenter__(self) -> Self:
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
-
+        self._execution_counts = {}
         return self
 
     async def __aexit__(
@@ -102,6 +96,8 @@ class Worker:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        del self._execution_counts
+
         self._heartbeat_task.cancel()
         try:
             await self._heartbeat_task
@@ -162,6 +158,8 @@ class Worker:
         """Run the worker indefinitely."""
         return await self._run(forever=True)  # pragma: no cover
 
+    _execution_counts: dict[str, int]
+
     async def run_at_most(self, iterations_by_key: Mapping[str, int]) -> None:
         """
         Run the worker until there are no more tasks to process, but limit specified
@@ -173,23 +171,25 @@ class Worker:
         Args:
             iterations_by_key: Maps task keys to their maximum allowed executions
         """
-        execution_counts: dict[str, int] = {key: 0 for key in iterations_by_key}
+        self._execution_counts = {key: 0 for key in iterations_by_key}
 
         def has_reached_max_iterations(execution: Execution) -> bool:
-            if execution.key not in iterations_by_key:
+            key = execution.key
+
+            if key not in iterations_by_key:
                 return False
 
-            if execution_counts[execution.key] >= iterations_by_key[execution.key]:
+            if self._execution_counts[key] >= iterations_by_key[key]:
                 return True
 
-            execution_counts[execution.key] += 1
             return False
 
-        self._strike_conditions.insert(0, has_reached_max_iterations)
+        self.docket.strike_list.add_condition(has_reached_max_iterations)
         try:
             await self.run_until_finished()
         finally:
-            self._strike_conditions.remove(has_reached_max_iterations)
+            self.docket.strike_list.remove_condition(has_reached_max_iterations)
+            self._execution_counts = {}
 
     async def _run(self, forever: bool = False) -> None:
         logger.info("Starting worker %r with the following tasks:", self.name)
@@ -380,11 +380,14 @@ class Worker:
         arrow = "↬" if execution.attempt > 1 else "↪"
         call = execution.call_repr()
 
-        if any(condition(execution) for condition in self._strike_conditions):
+        if self.docket.strike_list.is_stricken(execution):
             arrow = "🗙"
             logger.warning("%s %s", arrow, call, extra=log_context)
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
             return
+
+        if execution.key in self._execution_counts:
+            self._execution_counts[execution.key] += 1
 
         dependencies = self._get_dependencies(execution)
 

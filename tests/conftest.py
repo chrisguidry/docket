@@ -1,4 +1,5 @@
 import fcntl
+import logging
 import os
 import socket
 import time
@@ -18,6 +19,12 @@ from redis import ConnectionPool, Redis
 from docket import Docket, Worker
 
 REDIS_VERSION = os.environ.get("REDIS_VERSION", "7.4")
+
+
+@pytest.fixture(autouse=True)
+def log_level(caplog: pytest.LogCaptureFixture) -> Generator[None, None, None]:
+    with caplog.at_level(logging.DEBUG):
+        yield
 
 
 @pytest.fixture
