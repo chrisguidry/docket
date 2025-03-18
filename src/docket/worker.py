@@ -291,6 +291,9 @@ class Worker:
                     def start_task(
                         message_id: RedisMessageID, message: RedisMessage
                     ) -> None:
+                        if not message:  # pragma: no cover
+                            return
+
                         task = asyncio.create_task(self._execute(message))
                         active_tasks[task] = message_id
 
