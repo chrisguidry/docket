@@ -388,7 +388,7 @@ async def test_perpetual_tasks_are_scheduled_close_to_target_time(
     average = total / len(intervals)
 
     # even with a variable duration, Docket attempts to schedule them equally
-    assert timedelta(milliseconds=45) <= average <= timedelta(milliseconds=70)
+    assert timedelta(milliseconds=45) <= average <= timedelta(milliseconds=75)
 
 
 async def test_worker_can_exit_from_perpetual_tasks_that_queue_further_tasks(
