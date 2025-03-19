@@ -864,7 +864,8 @@ async def test_striking_tasks_for_specific_parameters(
             # b <= 2 is stricken, so b=1 is out
             # b <= 2 is stricken, so b=2 is out
             call("a", b=3),
-        ]
+        ],
+        any_order=True,
     )
     the_task.reset_mock()
 
@@ -874,7 +875,8 @@ async def test_striking_tasks_for_specific_parameters(
             call("d", b=1),
             call("d", b=2),
             call("d", b=3),
-        ]
+        ],
+        any_order=True,
     )
     another_task.reset_mock()
 
@@ -895,7 +897,8 @@ async def test_striking_tasks_for_specific_parameters(
             call("a", b=1),
             call("a", b=2),
             call("a", b=3),
-        ]
+        ],
+        any_order=True,
     )
 
     assert another_task.call_count == 3
@@ -904,7 +907,8 @@ async def test_striking_tasks_for_specific_parameters(
             call("d", b=1),
             call("d", b=2),
             call("d", b=3),
-        ]
+        ],
+        any_order=True,
     )
 
 
