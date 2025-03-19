@@ -79,7 +79,7 @@ async def test_scheduled_execution(
     assert when <= now()
 
 
-async def test_adding_is_itempotent(
+async def test_adding_is_idempotent(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
 ):
     """docket should allow for rescheduling a task for later"""
@@ -157,6 +157,77 @@ async def test_rescheduling_by_name(
     the_task.assert_awaited_once_with("b", "c", c="d")
 
     assert later <= now()
+
+
+async def test_task_keys_are_idempotent_in_the_future(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """docket should only allow one task with the same key to be scheduled or due"""
+
+    key = f"my-cool-task:{uuid4()}"
+
+    soon = now() + timedelta(milliseconds=10)
+    await docket.add(the_task, when=soon, key=key)("a", "b", c="c")
+    await docket.add(the_task, when=now(), key=key)("d", "e", c="f")
+
+    await worker.run_until_finished()
+
+    the_task.assert_awaited_once_with("a", "b", c="c")
+    the_task.reset_mock()
+
+    # It should be fine to run it afterward
+    await docket.add(the_task, key=key)("d", "e", c="f")
+
+    await worker.run_until_finished()
+
+    the_task.assert_awaited_once_with("d", "e", c="f")
+
+
+async def test_task_keys_are_idempotent_between_the_future_and_present(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """docket should only allow one task with the same key to be scheduled or due"""
+
+    key = f"my-cool-task:{uuid4()}"
+
+    soon = now() + timedelta(milliseconds=10)
+    await docket.add(the_task, when=now(), key=key)("a", "b", c="c")
+    await docket.add(the_task, when=soon, key=key)("d", "e", c="f")
+
+    await worker.run_until_finished()
+
+    the_task.assert_awaited_once_with("a", "b", c="c")
+    the_task.reset_mock()
+
+    # It should be fine to run it afterward
+    await docket.add(the_task, key=key)("d", "e", c="f")
+
+    await worker.run_until_finished()
+
+    the_task.assert_awaited_once_with("d", "e", c="f")
+
+
+async def test_task_keys_are_idempotent_in_the_present(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """docket should only allow one task with the same key to be scheduled or due"""
+
+    key = f"my-cool-task:{uuid4()}"
+
+    await docket.add(the_task, when=now(), key=key)("a", "b", c="c")
+    await docket.add(the_task, when=now(), key=key)("d", "e", c="f")
+
+    await worker.run_until_finished()
+
+    the_task.assert_awaited_once_with("a", "b", c="c")
+    the_task.reset_mock()
+
+    # It should be fine to run it afterward
+    await docket.add(the_task, key=key)("d", "e", c="f")
+
+    await worker.run_until_finished()
+
+    the_task.assert_awaited_once_with("d", "e", c="f")
 
 
 async def test_cancelling_future_task(
@@ -696,7 +767,8 @@ async def test_striking_entire_parameters(
             call(customer_id="123", order_id="456"),
             call(customer_id="456", order_id="789"),
             # customer_id == 789 is stricken
-        ]
+        ],
+        any_order=True,
     )
     the_task.reset_mock()
 
@@ -705,7 +777,8 @@ async def test_striking_entire_parameters(
         [
             call(customer_id="456", order_id="012"),
             # customer_id == 789 is stricken
-        ]
+        ],
+        any_order=True,
     )
     another_task.reset_mock()
 
@@ -725,7 +798,8 @@ async def test_striking_entire_parameters(
             # customer_id == 123 is stricken
             call(customer_id="456", order_id="789"),
             # customer_id == 789 is stricken
-        ]
+        ],
+        any_order=True,
     )
     the_task.reset_mock()
 
@@ -734,7 +808,8 @@ async def test_striking_entire_parameters(
         [
             call(customer_id="456", order_id="012"),
             # customer_id == 789 is stricken
-        ]
+        ],
+        any_order=True,
     )
     another_task.reset_mock()
 
@@ -754,7 +829,8 @@ async def test_striking_entire_parameters(
             call(customer_id="123", order_id="456"),
             call(customer_id="456", order_id="789"),
             # customer_id == 789 is still stricken
-        ]
+        ],
+        any_order=True,
     )
 
     assert another_task.call_count == 1
@@ -762,7 +838,8 @@ async def test_striking_entire_parameters(
         [
             call(customer_id="456", order_id="012"),
             # customer_id == 789 is still stricken
-        ]
+        ],
+        any_order=True,
     )
 
 
@@ -787,7 +864,8 @@ async def test_striking_tasks_for_specific_parameters(
             # b <= 2 is stricken, so b=1 is out
             # b <= 2 is stricken, so b=2 is out
             call("a", b=3),
-        ]
+        ],
+        any_order=True,
     )
     the_task.reset_mock()
 
@@ -797,7 +875,8 @@ async def test_striking_tasks_for_specific_parameters(
             call("d", b=1),
             call("d", b=2),
             call("d", b=3),
-        ]
+        ],
+        any_order=True,
     )
     another_task.reset_mock()
 
@@ -818,7 +897,8 @@ async def test_striking_tasks_for_specific_parameters(
             call("a", b=1),
             call("a", b=2),
             call("a", b=3),
-        ]
+        ],
+        any_order=True,
     )
 
     assert another_task.call_count == 3
@@ -827,7 +907,8 @@ async def test_striking_tasks_for_specific_parameters(
             call("d", b=1),
             call("d", b=2),
             call("d", b=3),
-        ]
+        ],
+        any_order=True,
     )
 
 

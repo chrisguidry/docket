@@ -132,6 +132,9 @@ class Docket:
                 - "redis://user:password@localhost:6379/0?ssl=true"
                 - "rediss://localhost:6379/0"
                 - "unix:///path/to/redis.sock"
+            heartbeat_interval: How often workers send heartbeat messages to the docket.
+            missed_heartbeats: How many heartbeats a worker can miss before it is
+                considered dead.
         """
         self.name = name
         self.url = url
@@ -305,6 +308,9 @@ class Docket:
     def stream_key(self) -> str:
         return f"{self.name}:stream"
 
+    def known_task_key(self, key: str) -> str:
+        return f"{self.name}:known:{key}"
+
     def parked_task_key(self, key: str) -> str:
         return f"{self.name}:{key}"
 
@@ -340,30 +346,36 @@ class Docket:
             when = execution.when
 
             async with self.redis() as redis:
-                # if the task is already in the queue, retain it
-                if await redis.zscore(self.queue_key, key) is not None:
+                # if the task is already in the queue or stream, retain it
+                if await redis.exists(self.known_task_key(key)):
+                    logger.debug(
+                        "Task %r is already in the queue or stream, skipping schedule",
+                        key,
+                        extra=self.labels(),
+                    )
                     return
 
-                if when <= datetime.now(timezone.utc):
-                    await redis.xadd(self.stream_key, message)  # type: ignore[arg-type]
-                else:
-                    async with redis.pipeline() as pipe:
+                async with redis.pipeline() as pipe:
+                    pipe.set(self.known_task_key(key), when.timestamp())
+
+                    if when <= datetime.now(timezone.utc):
+                        pipe.xadd(self.stream_key, message)  # type: ignore[arg-type]
+                    else:
                         pipe.hset(self.parked_task_key(key), mapping=message)  # type: ignore[arg-type]
                         pipe.zadd(self.queue_key, {key: when.timestamp()})
-                        await pipe.execute()
+
+                    await pipe.execute()
 
         TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
 
     async def cancel(self, key: str) -> None:
         with tracer.start_as_current_span(
             "docket.cancel",
-            attributes={
-                **self.labels(),
-                "docket.key": key,
-            },
+            attributes={**self.labels(), "docket.key": key},
         ):
             async with self.redis() as redis:
                 async with redis.pipeline() as pipe:
+                    pipe.delete(self.known_task_key(key))
                     pipe.delete(self.parked_task_key(key))
                     pipe.zrem(self.queue_key, key)
                     await pipe.execute()
