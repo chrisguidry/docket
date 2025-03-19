@@ -120,7 +120,6 @@ class Docket:
         self,
         name: str = "docket",
         url: str = "redis://localhost:6379/0",
-        task_idempotency_window: timedelta = timedelta(minutes=5),
         heartbeat_interval: timedelta = timedelta(seconds=2),
         missed_heartbeats: int = 5,
     ) -> None:
@@ -133,16 +132,12 @@ class Docket:
                 - "redis://user:password@localhost:6379/0?ssl=true"
                 - "rediss://localhost:6379/0"
                 - "unix:///path/to/redis.sock"
-            task_idempotency_window: How long a task key is considered idempotent after
-                its scheduled time.  This helps to prevent tasks from being locked
-                forever in the case of a worker that crashes before it can execute it.
             heartbeat_interval: How often workers send heartbeat messages to the docket.
             missed_heartbeats: How many heartbeats a worker can miss before it is
                 considered dead.
         """
         self.name = name
         self.url = url
-        self.task_idempotency_window = task_idempotency_window
         self.heartbeat_interval = heartbeat_interval
         self.missed_heartbeats = missed_heartbeats
 
