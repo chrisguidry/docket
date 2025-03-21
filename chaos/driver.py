@@ -76,9 +76,9 @@ async def run_redis(version: str) -> AsyncGenerator[tuple[str, Container], None]
 
 async def main(
     mode: Literal["performance", "chaos"] = "chaos",
-    tasks: int = 5000,
-    producers: int = 4,
-    workers: int = 7,
+    tasks: int = 10000,
+    producers: int = 5,
+    workers: int = 10,
 ):
     async with (
         run_redis("7.4.2") as (redis_url, redis_container),
@@ -97,9 +97,7 @@ async def main(
         # Add in some random strikes to performance test
         for _ in range(100):
             parameter = f"param_{random.randint(1, 100)}"
-            operator: Operator = random.choice(
-                ["==", "!=", ">", ">=", "<", "<=", "between"]
-            )
+            operator = random.choice(list(Operator))
             value = f"val_{random.randint(1, 1000)}"
             await docket.strike("rando", parameter, operator, value)
 
@@ -141,11 +139,9 @@ async def main(
                 redis_url,
                 "--tasks",
                 "chaos.tasks:chaos_tasks",
-                env=environment
-                | {
-                    "OTEL_SERVICE_NAME": "chaos-worker",
-                    "DOCKET_WORKER_REDELIVERY_TIMEOUT": "5s",
-                },
+                "--redelivery-timeout",
+                "5s",
+                env=environment | {"OTEL_SERVICE_NAME": "chaos-worker"},
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )

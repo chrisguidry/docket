@@ -1,8 +1,11 @@
 import asyncio
+import datetime
 import logging
 import os
+import random
 import sys
 import time
+from datetime import timedelta
 
 import redis.exceptions
 
@@ -12,6 +15,10 @@ from .tasks import hello
 
 logging.getLogger().setLevel(logging.INFO)
 logger = logging.getLogger("chaos.producer")
+
+
+def now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 async def main(tasks_to_produce: int):
@@ -25,7 +32,9 @@ async def main(tasks_to_produce: int):
             async with docket:
                 async with docket.redis() as r:
                     for _ in range(tasks_sent, tasks_to_produce):
-                        execution = await docket.add(hello)()
+                        jitter = 5 * ((random.random() * 2) - 1)
+                        when = now() + timedelta(seconds=jitter)
+                        execution = await docket.add(hello, when=when)()
                         await r.zadd("hello:sent", {execution.key: time.time()})
                         logger.info("Added task %s", execution.key)
                         tasks_sent += 1
