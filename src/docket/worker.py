@@ -18,6 +18,7 @@ from uuid import uuid4
 import redis.exceptions
 from opentelemetry import propagate, trace
 from opentelemetry.trace import Tracer
+from redis.asyncio import Redis
 
 from .docket import (
     Docket,
@@ -68,6 +69,7 @@ class Worker:
     redelivery_timeout: timedelta
     reconnection_delay: timedelta
     minimum_check_interval: timedelta
+    scheduling_resolution: timedelta
 
     def __init__(
         self,
@@ -77,6 +79,7 @@ class Worker:
         redelivery_timeout: timedelta = timedelta(minutes=5),
         reconnection_delay: timedelta = timedelta(seconds=5),
         minimum_check_interval: timedelta = timedelta(milliseconds=100),
+        scheduling_resolution: timedelta = timedelta(milliseconds=250),
     ) -> None:
         self.docket = docket
         self.name = name or f"worker:{uuid4()}"
@@ -84,6 +87,7 @@ class Worker:
         self.redelivery_timeout = redelivery_timeout
         self.reconnection_delay = reconnection_delay
         self.minimum_check_interval = minimum_check_interval
+        self.scheduling_resolution = scheduling_resolution
 
     async def __aenter__(self) -> Self:
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
@@ -128,6 +132,7 @@ class Worker:
         redelivery_timeout: timedelta = timedelta(minutes=5),
         reconnection_delay: timedelta = timedelta(seconds=5),
         minimum_check_interval: timedelta = timedelta(milliseconds=100),
+        scheduling_resolution: timedelta = timedelta(milliseconds=250),
         until_finished: bool = False,
         metrics_port: int | None = None,
         tasks: list[str] = ["docket.tasks:standard_tasks"],
@@ -144,6 +149,7 @@ class Worker:
                     redelivery_timeout=redelivery_timeout,
                     reconnection_delay=reconnection_delay,
                     minimum_check_interval=minimum_check_interval,
+                    scheduling_resolution=scheduling_resolution,
                 ) as worker:
                     if until_finished:
                         await worker.run_until_finished()
@@ -210,56 +216,23 @@ class Worker:
                 await asyncio.sleep(self.reconnection_delay.total_seconds())
 
     async def _worker_loop(self, forever: bool = False):
+        should_stop = asyncio.Event()
+
         async with self.docket.redis() as redis:
-            stream_due_tasks: _stream_due_tasks = cast(
-                _stream_due_tasks,
-                redis.register_script(
-                    # Lua script to atomically move scheduled tasks to the stream
-                    # KEYS[1]: queue key (sorted set)
-                    # KEYS[2]: stream key
-                    # ARGV[1]: current timestamp
-                    # ARGV[2]: docket name prefix
-                    """
-                local total_work = redis.call('ZCARD', KEYS[1])
-                local due_work = 0
-
-                if total_work > 0 then
-                    local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-
-                    for i, key in ipairs(tasks) do
-                        local hash_key = ARGV[2] .. ":" .. key
-                        local task_data = redis.call('HGETALL', hash_key)
-
-                        if #task_data > 0 then
-                            local task = {}
-                            for j = 1, #task_data, 2 do
-                                task[task_data[j]] = task_data[j+1]
-                            end
-
-                            redis.call('XADD', KEYS[2], '*',
-                                'key', task['key'],
-                                'when', task['when'],
-                                'function', task['function'],
-                                'args', task['args'],
-                                'kwargs', task['kwargs'],
-                                'attempt', task['attempt']
-                            )
-                            redis.call('DEL', hash_key)
-                            due_work = due_work + 1
-                        end
-                    end
-                end
-
-                if due_work > 0 then
-                    redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-                end
-
-                return {total_work, due_work}
-                """
-                ),
+            scheduler_task = asyncio.create_task(
+                self._scheduler_loop(redis, should_stop)
             )
 
             active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
+
+            async def check_for_work() -> bool:
+                async with redis.pipeline() as pipeline:
+                    pipeline.xlen(self.docket.stream_key)
+                    pipeline.zcard(self.docket.queue_key)
+                    results: list[int] = await pipeline.execute()
+                    stream_len = results[0]
+                    queue_len = results[1]
+                    return stream_len > 0 or queue_len > 0
 
             async def process_completed_tasks() -> None:
                 completed_tasks = {task for task in active_tasks if task.done()}
@@ -280,10 +253,13 @@ class Worker:
                         )
                         await pipeline.execute()
 
-            future_work, due_work = sys.maxsize, 0
+            has_work: bool = True
+
+            if not forever:  # pragma: no branch
+                has_work = await check_for_work()
 
             try:
-                while forever or future_work or active_tasks:
+                while forever or has_work or active_tasks:
                     await process_completed_tasks()
 
                     available_slots = self.concurrency - len(active_tasks)
@@ -297,27 +273,12 @@ class Worker:
                         task = asyncio.create_task(self._execute(message))
                         active_tasks[task] = message_id
 
-                        nonlocal available_slots, future_work
+                        nonlocal available_slots
                         available_slots -= 1
-                        future_work += 1
 
                     if available_slots <= 0:
                         await asyncio.sleep(self.minimum_check_interval.total_seconds())
                         continue
-
-                    future_work, due_work = await stream_due_tasks(
-                        keys=[self.docket.queue_key, self.docket.stream_key],
-                        args=[datetime.now(timezone.utc).timestamp(), self.docket.name],
-                    )
-                    if due_work > 0:
-                        logger.debug(
-                            "Moved %d/%d due tasks from %s to %s",
-                            due_work,
-                            future_work,
-                            self.docket.queue_key,
-                            self.docket.stream_key,
-                            extra=self._log_context(),
-                        )
 
                     redeliveries: RedisMessages
                     _, redeliveries, *_ = await redis.xautoclaim(
@@ -348,9 +309,13 @@ class Worker:
                         ),
                         count=available_slots,
                     )
+
                     for _, messages in new_deliveries:
                         for message_id, message in messages:
                             start_task(message_id, message)
+
+                    if not forever and not active_tasks and not new_deliveries:
+                        has_work = await check_for_work()
 
             except asyncio.CancelledError:
                 if active_tasks:  # pragma: no cover
@@ -363,6 +328,93 @@ class Worker:
                 if active_tasks:
                     await asyncio.gather(*active_tasks, return_exceptions=True)
                     await process_completed_tasks()
+
+                should_stop.set()
+                await scheduler_task
+
+    async def _scheduler_loop(
+        self,
+        redis: Redis,
+        should_stop: asyncio.Event,
+    ) -> None:
+        """Loop that moves due tasks from the queue to the stream."""
+
+        stream_due_tasks: _stream_due_tasks = cast(
+            _stream_due_tasks,
+            redis.register_script(
+                # Lua script to atomically move scheduled tasks to the stream
+                # KEYS[1]: queue key (sorted set)
+                # KEYS[2]: stream key
+                # ARGV[1]: current timestamp
+                # ARGV[2]: docket name prefix
+                """
+            local total_work = redis.call('ZCARD', KEYS[1])
+            local due_work = 0
+
+            if total_work > 0 then
+                local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+
+                for i, key in ipairs(tasks) do
+                    local hash_key = ARGV[2] .. ":" .. key
+                    local task_data = redis.call('HGETALL', hash_key)
+
+                    if #task_data > 0 then
+                        local task = {}
+                        for j = 1, #task_data, 2 do
+                            task[task_data[j]] = task_data[j+1]
+                        end
+
+                        redis.call('XADD', KEYS[2], '*',
+                            'key', task['key'],
+                            'when', task['when'],
+                            'function', task['function'],
+                            'args', task['args'],
+                            'kwargs', task['kwargs'],
+                            'attempt', task['attempt']
+                        )
+                        redis.call('DEL', hash_key)
+                        due_work = due_work + 1
+                    end
+                end
+            end
+
+            if due_work > 0 then
+                redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+            end
+
+            return {total_work, due_work}
+            """
+            ),
+        )
+
+        total_work: int = sys.maxsize
+
+        while not should_stop.is_set() or total_work:
+            try:
+                total_work, due_work = await stream_due_tasks(
+                    keys=[self.docket.queue_key, self.docket.stream_key],
+                    args=[datetime.now(timezone.utc).timestamp(), self.docket.name],
+                )
+
+                if due_work > 0:
+                    logger.debug(
+                        "Moved %d/%d due tasks from %s to %s",
+                        due_work,
+                        total_work,
+                        self.docket.queue_key,
+                        self.docket.stream_key,
+                        extra=self._log_context(),
+                    )
+            except Exception:  # pragma: no cover
+                logger.exception(
+                    "Error in scheduler loop",
+                    exc_info=True,
+                    extra=self._log_context(),
+                )
+            finally:
+                await asyncio.sleep(self.scheduling_resolution.total_seconds())
+
+        logger.debug("Scheduler loop finished", extra=self._log_context())
 
     async def _execute(self, message: RedisMessage) -> None:
         log_context: Mapping[str, str | float] = self._log_context()
@@ -572,11 +624,10 @@ class Worker:
                         pipeline.zcount(self.docket.queue_key, 0, now)
                         pipeline.zcount(self.docket.queue_key, now, "+inf")
 
-                        (
-                            stream_depth,
-                            overdue_depth,
-                            schedule_depth,
-                        ) = await pipeline.execute()
+                        results: list[int] = await pipeline.execute()
+                        stream_depth = results[0]
+                        overdue_depth = results[1]
+                        schedule_depth = results[2]
 
                         QUEUE_DEPTH.set(
                             stream_depth + overdue_depth, self.docket.labels()

@@ -155,7 +155,9 @@ async def docket(redis_url: str, aiolib: str) -> AsyncGenerator[Docket, None]:
 @pytest.fixture
 async def worker(docket: Docket) -> AsyncGenerator[Worker, None]:
     async with Worker(
-        docket, minimum_check_interval=timedelta(milliseconds=10)
+        docket,
+        minimum_check_interval=timedelta(milliseconds=10),
+        scheduling_resolution=timedelta(milliseconds=10),
     ) as worker:
         yield worker
 
