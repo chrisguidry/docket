@@ -76,7 +76,7 @@ async def run_redis(version: str) -> AsyncGenerator[tuple[str, Container], None]
 
 async def main(
     mode: Literal["performance", "chaos"] = "chaos",
-    tasks: int = 10000,
+    tasks: int = 20000,
     producers: int = 5,
     workers: int = 10,
 ):
