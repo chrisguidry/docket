@@ -240,7 +240,7 @@ def worker(
         timedelta,
         typer.Option(
             parser=duration,
-            help="How frequently to check for and promote scheduled tasks to the queue",
+            help="How frequently to check for future tasks to be scheduled",
             envvar="DOCKET_WORKER_SCHEDULING_RESOLUTION",
         ),
     ] = timedelta(milliseconds=250),
