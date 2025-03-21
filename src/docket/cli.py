@@ -236,6 +236,14 @@ def worker(
             envvar="DOCKET_WORKER_MINIMUM_CHECK_INTERVAL",
         ),
     ] = timedelta(milliseconds=100),
+    scheduling_resolution: Annotated[
+        timedelta,
+        typer.Option(
+            parser=duration,
+            help="How frequently to check for and promote scheduled tasks to the queue",
+            envvar="DOCKET_WORKER_SCHEDULING_RESOLUTION",
+        ),
+    ] = timedelta(milliseconds=250),
     until_finished: Annotated[
         bool,
         typer.Option(
@@ -260,6 +268,7 @@ def worker(
             redelivery_timeout=redelivery_timeout,
             reconnection_delay=reconnection_delay,
             minimum_check_interval=minimum_check_interval,
+            scheduling_resolution=scheduling_resolution,
             until_finished=until_finished,
             metrics_port=metrics_port,
             tasks=tasks,
