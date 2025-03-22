@@ -162,6 +162,7 @@ def worker(
                 "This can be specified multiple times.  A task collection is any "
                 "iterable of async functions."
             ),
+            envvar="DOCKET_TASKS",
         ),
     ] = ["docket.tasks:standard_tasks"],
     docket_: Annotated[
@@ -551,6 +552,18 @@ def relative_time(now: datetime, when: datetime) -> str:
 
 @app.command(help="Shows a snapshot of what's on the docket right now")
 def snapshot(
+    tasks: Annotated[
+        list[str],
+        typer.Option(
+            "--tasks",
+            help=(
+                "The dotted path of a task collection to register with the docket. "
+                "This can be specified multiple times.  A task collection is any "
+                "iterable of async functions."
+            ),
+            envvar="DOCKET_TASKS",
+        ),
+    ] = ["docket.tasks:standard_tasks"],
     docket_: Annotated[
         str,
         typer.Option(
@@ -569,6 +582,9 @@ def snapshot(
 ) -> None:
     async def run() -> DocketSnapshot:
         async with Docket(name=docket_, url=url) as docket:
+            for task_path in tasks:
+                docket.register_collection(task_path)
+
             return await docket.snapshot()
 
     snapshot = asyncio.run(run())
