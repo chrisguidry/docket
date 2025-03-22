@@ -417,6 +417,10 @@ class Worker:
         logger.debug("Scheduler loop finished", extra=self._log_context())
 
     async def _execute(self, message: RedisMessage) -> None:
+        key = message[b"key"].decode()
+        async with self.docket.redis() as redis:
+            await redis.delete(self.docket.known_task_key(key))
+
         log_context: Mapping[str, str | float] = self._log_context()
 
         function_name = message[b"function"].decode()
@@ -428,9 +432,6 @@ class Worker:
             return
 
         execution = Execution.from_message(function, message)
-
-        async with self.docket.redis() as redis:
-            await redis.delete(self.docket.known_task_key(execution.key))
 
         log_context = {**log_context, **execution.specific_labels()}
         counter_labels = {**self.labels(), **execution.general_labels()}
