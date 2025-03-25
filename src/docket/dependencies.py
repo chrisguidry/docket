@@ -2,7 +2,7 @@ import abc
 import inspect
 import logging
 from datetime import timedelta
-from typing import Any, Awaitable, Callable, Counter, cast
+from typing import Any, Awaitable, Callable, Counter, TypeVar, cast
 
 from .docket import Docket
 from .execution import Execution
@@ -130,12 +130,29 @@ class Perpetual(Dependency):
     single = True
 
     every: timedelta
+    automatic: bool
+
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
+
     cancelled: bool
 
-    def __init__(self, every: timedelta = timedelta(0)) -> None:
+    def __init__(
+        self,
+        every: timedelta = timedelta(0),
+        automatic: bool = False,
+    ) -> None:
+        """Declare a task that should be run perpetually.
+
+        Args:
+            every: The target interval between task executions.
+            automatic: If set, this task will be automatically scheduled during worker
+                startup and continually through the worker's lifespan.  This ensures
+                that the task will always be scheduled despite crashes and other
+                adverse conditions.  Automatic tasks must not require any arguments.
+        """
         self.every = every
+        self.automatic = automatic
         self.cancelled = False
 
     def __call__(
@@ -168,6 +185,29 @@ def get_dependency_parameters(
         dependencies[param_name] = param.default
 
     return dependencies
+
+
+D = TypeVar("D", bound=Dependency)
+
+
+def get_single_dependency_parameter_of_type(
+    function: Callable[..., Awaitable[Any]], dependency_type: type[D]
+) -> D | None:
+    assert dependency_type.single, "Dependency must be single"
+    for _, dependency in get_dependency_parameters(function).items():
+        if isinstance(dependency, dependency_type):
+            return dependency
+    return None
+
+
+def get_single_dependency_of_type(
+    dependencies: dict[str, Dependency], dependency_type: type[D]
+) -> D | None:
+    assert dependency_type.single, "Dependency must be single"
+    for _, dependency in dependencies.items():
+        if isinstance(dependency, dependency_type):
+            return dependency
+    return None
 
 
 def validate_dependencies(function: Callable[..., Awaitable[Any]]) -> None:

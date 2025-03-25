@@ -6,11 +6,9 @@ from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
     TYPE_CHECKING,
-    Any,
     Mapping,
     Protocol,
     Self,
-    TypeVar,
     cast,
 )
 from uuid import uuid4
@@ -52,8 +50,6 @@ tracer: Tracer = trace.get_tracer(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover
     from .dependencies import Dependency
-
-D = TypeVar("D", bound="Dependency")
 
 
 class _stream_due_tasks(Protocol):
@@ -216,13 +212,17 @@ class Worker:
                 await asyncio.sleep(self.reconnection_delay.total_seconds())
 
     async def _worker_loop(self, forever: bool = False):
-        should_stop = asyncio.Event()
+        worker_stopping = asyncio.Event()
+
+        await self._schedule_all_automatic_perpetual_tasks()
+        perpetual_scheduling_task = asyncio.create_task(
+            self._perpetual_scheduling_loop(worker_stopping)
+        )
 
         async with self.docket.redis() as redis:
             scheduler_task = asyncio.create_task(
-                self._scheduler_loop(redis, should_stop)
+                self._scheduler_loop(redis, worker_stopping)
             )
-
             active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
 
             async def check_for_work() -> bool:
@@ -329,13 +329,14 @@ class Worker:
                     await asyncio.gather(*active_tasks, return_exceptions=True)
                     await process_completed_tasks()
 
-                should_stop.set()
+                worker_stopping.set()
                 await scheduler_task
+                await perpetual_scheduling_task
 
     async def _scheduler_loop(
         self,
         redis: Redis,
-        should_stop: asyncio.Event,
+        worker_stopping: asyncio.Event,
     ) -> None:
         """Loop that moves due tasks from the queue to the stream."""
 
@@ -389,7 +390,7 @@ class Worker:
 
         total_work: int = sys.maxsize
 
-        while not should_stop.is_set() or total_work:
+        while not worker_stopping.is_set() or total_work:
             try:
                 total_work, due_work = await stream_due_tasks(
                     keys=[self.docket.queue_key, self.docket.stream_key],
@@ -415,6 +416,49 @@ class Worker:
                 await asyncio.sleep(self.scheduling_resolution.total_seconds())
 
         logger.debug("Scheduler loop finished", extra=self._log_context())
+
+    async def _perpetual_scheduling_loop(self, worker_stopping: asyncio.Event) -> None:
+        """Loop that ensures that automatic perpetual tasks are always scheduled."""
+
+        while not worker_stopping.is_set():
+            minimum_interval = self.scheduling_resolution
+            try:
+                minimum_interval = await self._schedule_all_automatic_perpetual_tasks()
+            except Exception:  # pragma: no cover
+                logger.exception(
+                    "Error in perpetual scheduling loop",
+                    exc_info=True,
+                    extra=self._log_context(),
+                )
+            finally:
+                # Wait until just before the next time any task would need to be
+                # scheduled (one scheduling_resolution before the lowest interval)
+                interval = max(
+                    minimum_interval - self.scheduling_resolution,
+                    self.scheduling_resolution,
+                )
+                assert interval <= self.scheduling_resolution
+                await asyncio.sleep(interval.total_seconds())
+
+    async def _schedule_all_automatic_perpetual_tasks(self) -> timedelta:
+        from .dependencies import Perpetual, get_single_dependency_parameter_of_type
+
+        minimum_interval = self.scheduling_resolution
+        for task_function in self.docket.tasks.values():
+            perpetual = get_single_dependency_parameter_of_type(
+                task_function, Perpetual
+            )
+            if perpetual is None:
+                continue
+
+            if not perpetual.automatic:
+                continue
+
+            key = task_function.__name__
+            await self.docket.add(task_function, key=key)()
+            minimum_interval = min(minimum_interval, perpetual.every)
+
+        return minimum_interval
 
     async def _execute(self, message: RedisMessage) -> None:
         key = message[b"key"].decode()
@@ -511,12 +555,12 @@ class Worker:
     def _get_dependencies(
         self,
         execution: Execution,
-    ) -> dict[str, Any]:
+    ) -> dict[str, "Dependency"]:
         from .dependencies import get_dependency_parameters
 
         parameters = get_dependency_parameters(execution.function)
 
-        dependencies: dict[str, Any] = {}
+        dependencies: dict[str, "Dependency"] = {}
 
         for parameter_name, dependency in parameters.items():
             # If the argument is already provided, skip it, which allows users to call
@@ -532,15 +576,13 @@ class Worker:
     async def _retry_if_requested(
         self,
         execution: Execution,
-        dependencies: dict[str, Any],
+        dependencies: dict[str, "Dependency"],
     ) -> bool:
-        from .dependencies import Retry
+        from .dependencies import Retry, get_single_dependency_of_type
 
-        retries = [retry for retry in dependencies.values() if isinstance(retry, Retry)]
-        if not retries:
+        retry = get_single_dependency_of_type(dependencies, Retry)
+        if not retry:
             return False
-
-        retry = retries[0]
 
         if retry.attempts is None or execution.attempt < retry.attempts:
             execution.when = datetime.now(timezone.utc) + retry.delay
@@ -553,19 +595,16 @@ class Worker:
         return False
 
     async def _perpetuate_if_requested(
-        self, execution: Execution, dependencies: dict[str, Any], duration: timedelta
+        self,
+        execution: Execution,
+        dependencies: dict[str, "Dependency"],
+        duration: timedelta,
     ) -> bool:
-        from .dependencies import Perpetual
+        from .dependencies import Perpetual, get_single_dependency_of_type
 
-        perpetuals = [
-            perpetual
-            for perpetual in dependencies.values()
-            if isinstance(perpetual, Perpetual)
-        ]
-        if not perpetuals:
+        perpetual = get_single_dependency_of_type(dependencies, Perpetual)
+        if not perpetual:
             return False
-
-        perpetual = perpetuals[0]
 
         if perpetual.cancelled:
             return False
