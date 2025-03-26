@@ -28,6 +28,7 @@ from uuid import uuid4
 import redis.exceptions
 from opentelemetry import propagate, trace
 from redis.asyncio import ConnectionPool, Redis
+from redis.asyncio.client import Pipeline
 
 from .execution import (
     Execution,
@@ -256,9 +257,14 @@ class Docket:
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
             execution = Execution(function, args, kwargs, when, key, attempt=1)
-            await self.schedule(execution)
+
+            async with self.redis() as redis:
+                async with redis.pipeline() as pipeline:
+                    await self._schedule(redis, pipeline, execution, replace=False)
+                    await pipeline.execute()
 
             TASKS_ADDED.add(1, {**self.labels(), **execution.general_labels()})
+            TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
 
             return execution
 
@@ -291,14 +297,47 @@ class Docket:
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
             execution = Execution(function, args, kwargs, when, key, attempt=1)
-            await self.cancel(key)
-            await self.schedule(execution)
+
+            async with self.redis() as redis:
+                async with redis.pipeline() as pipeline:
+                    await self._schedule(redis, pipeline, execution, replace=True)
+                    await pipeline.execute()
 
             TASKS_REPLACED.add(1, {**self.labels(), **execution.general_labels()})
+            TASKS_CANCELLED.add(1, {**self.labels(), **execution.general_labels()})
+            TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
 
             return execution
 
         return scheduler
+
+    async def schedule(self, execution: Execution) -> None:
+        with tracer.start_as_current_span(
+            "docket.schedule",
+            attributes={
+                **self.labels(),
+                **execution.specific_labels(),
+                "code.function.name": execution.function.__name__,
+            },
+        ):
+            async with self.redis() as redis:
+                async with redis.pipeline() as pipeline:
+                    await self._schedule(redis, pipeline, execution, replace=False)
+                    await pipeline.execute()
+
+        TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
+
+    async def cancel(self, key: str) -> None:
+        with tracer.start_as_current_span(
+            "docket.cancel",
+            attributes={**self.labels(), "docket.key": key},
+        ):
+            async with self.redis() as redis:
+                async with redis.pipeline() as pipeline:
+                    await self._cancel(pipeline, key)
+                    await pipeline.execute()
+
+        TASKS_CANCELLED.add(1, self.labels())
 
     @property
     def queue_key(self) -> str:
@@ -314,7 +353,13 @@ class Docket:
     def parked_task_key(self, key: str) -> str:
         return f"{self.name}:{key}"
 
-    async def schedule(self, execution: Execution) -> None:
+    async def _schedule(
+        self,
+        redis: Redis,
+        pipeline: Pipeline,
+        execution: Execution,
+        replace: bool = False,
+    ) -> None:
         if self.strike_list.is_stricken(execution):
             logger.warning(
                 "%r is stricken, skipping schedule of %r",
@@ -334,53 +379,35 @@ class Docket:
         message: dict[bytes, bytes] = execution.as_message()
         propagate.inject(message, setter=message_setter)
 
-        with tracer.start_as_current_span(
-            "docket.schedule",
-            attributes={
-                **self.labels(),
-                **execution.specific_labels(),
-                "code.function.name": execution.function.__name__,
-            },
-        ):
-            key = execution.key
-            when = execution.when
+        key = execution.key
+        when = execution.when
+        known_task_key = self.known_task_key(key)
 
-            async with self.redis() as redis:
+        async with redis.lock(f"{known_task_key}:lock", timeout=10):
+            if replace:
+                await self._cancel(pipeline, key)
+            else:
                 # if the task is already in the queue or stream, retain it
-                if await redis.exists(self.known_task_key(key)):
+                if await redis.exists(known_task_key):
                     logger.debug(
-                        "Task %r is already in the queue or stream, skipping schedule",
+                        "Task %r is already in the queue or stream, not scheduling",
                         key,
                         extra=self.labels(),
                     )
                     return
 
-                async with redis.pipeline() as pipe:
-                    pipe.set(self.known_task_key(key), when.timestamp())
+            pipeline.set(known_task_key, when.timestamp())
 
-                    if when <= datetime.now(timezone.utc):
-                        pipe.xadd(self.stream_key, message)  # type: ignore[arg-type]
-                    else:
-                        pipe.hset(self.parked_task_key(key), mapping=message)  # type: ignore[arg-type]
-                        pipe.zadd(self.queue_key, {key: when.timestamp()})
+            if when <= datetime.now(timezone.utc):
+                pipeline.xadd(self.stream_key, message)  # type: ignore[arg-type]
+            else:
+                pipeline.hset(self.parked_task_key(key), mapping=message)  # type: ignore[arg-type]
+                pipeline.zadd(self.queue_key, {key: when.timestamp()})
 
-                    await pipe.execute()
-
-        TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
-
-    async def cancel(self, key: str) -> None:
-        with tracer.start_as_current_span(
-            "docket.cancel",
-            attributes={**self.labels(), "docket.key": key},
-        ):
-            async with self.redis() as redis:
-                async with redis.pipeline() as pipe:
-                    pipe.delete(self.known_task_key(key))
-                    pipe.delete(self.parked_task_key(key))
-                    pipe.zrem(self.queue_key, key)
-                    await pipe.execute()
-
-        TASKS_CANCELLED.add(1, self.labels())
+    async def _cancel(self, pipeline: Pipeline, key: str) -> None:
+        pipeline.delete(self.known_task_key(key))
+        pipeline.delete(self.parked_task_key(key))
+        pipeline.zrem(self.queue_key, key)
 
     @property
     def strike_key(self) -> str:

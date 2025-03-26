@@ -17,6 +17,7 @@ import redis.exceptions
 from opentelemetry import propagate, trace
 from opentelemetry.trace import Tracer
 from redis.asyncio import Redis
+from redis.exceptions import LockError
 
 from .docket import (
     Docket,
@@ -215,9 +216,6 @@ class Worker:
         worker_stopping = asyncio.Event()
 
         await self._schedule_all_automatic_perpetual_tasks()
-        perpetual_scheduling_task = asyncio.create_task(
-            self._perpetual_scheduling_loop(worker_stopping)
-        )
 
         async with self.docket.redis() as redis:
             scheduler_task = asyncio.create_task(
@@ -331,7 +329,6 @@ class Worker:
 
                 worker_stopping.set()
                 await scheduler_task
-                await perpetual_scheduling_task
 
     async def _scheduler_loop(
         self,
@@ -417,65 +414,47 @@ class Worker:
 
         logger.debug("Scheduler loop finished", extra=self._log_context())
 
-    async def _perpetual_scheduling_loop(self, worker_stopping: asyncio.Event) -> None:
-        """Loop that ensures that automatic perpetual tasks are always scheduled."""
-
-        while not worker_stopping.is_set():
-            minimum_interval = self.scheduling_resolution
-            try:
-                minimum_interval = await self._schedule_all_automatic_perpetual_tasks()
-            except Exception:  # pragma: no cover
-                logger.exception(
-                    "Error in perpetual scheduling loop",
-                    exc_info=True,
-                    extra=self._log_context(),
-                )
-            finally:
-                # Wait until just before the next time any task would need to be
-                # scheduled (one scheduling_resolution before the lowest interval)
-                interval = max(
-                    minimum_interval - self.scheduling_resolution,
-                    self.scheduling_resolution,
-                )
-                assert interval <= self.scheduling_resolution
-                await asyncio.sleep(interval.total_seconds())
-
-    async def _schedule_all_automatic_perpetual_tasks(self) -> timedelta:
+    async def _schedule_all_automatic_perpetual_tasks(self) -> None:
         from .dependencies import Perpetual, get_single_dependency_parameter_of_type
 
-        minimum_interval = self.scheduling_resolution
-        for task_function in self.docket.tasks.values():
-            perpetual = get_single_dependency_parameter_of_type(
-                task_function, Perpetual
-            )
-            if perpetual is None:
-                continue
+        async with self.docket.redis() as redis:
+            try:
+                async with redis.lock(
+                    f"{self.docket.name}:perpetual:lock", timeout=10, blocking=False
+                ):
+                    for task_function in self.docket.tasks.values():
+                        perpetual = get_single_dependency_parameter_of_type(
+                            task_function, Perpetual
+                        )
+                        if perpetual is None:
+                            continue
 
-            if not perpetual.automatic:
-                continue
+                        if not perpetual.automatic:
+                            continue
 
-            key = task_function.__name__
-            await self.docket.add(task_function, key=key)()
-            minimum_interval = min(minimum_interval, perpetual.every)
+                        key = task_function.__name__
 
-        return minimum_interval
+                        await self.docket.add(task_function, key=key)()
+            except LockError:  # pragma: no cover
+                return
 
     async def _execute(self, message: RedisMessage) -> None:
         key = message[b"key"].decode()
-        async with self.docket.redis() as redis:
-            await redis.delete(self.docket.known_task_key(key))
 
         log_context: Mapping[str, str | float] = self._log_context()
 
         function_name = message[b"function"].decode()
         function = self.docket.tasks.get(function_name)
         if function is None:
+            async with self.docket.redis() as redis:
+                await redis.delete(self.docket.known_task_key(key))
             logger.warning(
                 "Task function %r not found", function_name, extra=log_context
             )
             return
 
         execution = Execution.from_message(function, message)
+        dependencies = self._get_dependencies(execution)
 
         log_context = {**log_context, **execution.specific_labels()}
         counter_labels = {**self.labels(), **execution.general_labels()}
@@ -484,6 +463,9 @@ class Worker:
         call = execution.call_repr()
 
         if self.docket.strike_list.is_stricken(execution):
+            async with self.docket.redis() as redis:
+                await redis.delete(self.docket.known_task_key(key))
+
             arrow = "🗙"
             logger.warning("%s %s", arrow, call, extra=log_context)
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
@@ -492,7 +474,12 @@ class Worker:
         if execution.key in self._execution_counts:
             self._execution_counts[execution.key] += 1
 
-        dependencies = self._get_dependencies(execution)
+        # Preemptively reschedule the perpetual task for the future, or clear the
+        # known task key for this task
+        rescheduled = await self._perpetuate_if_requested(execution, dependencies)
+        if not rescheduled:
+            async with self.docket.redis() as redis:
+                await redis.delete(self.docket.known_task_key(key))
 
         context = propagate.extract(message, getter=message_getter)
         initiating_context = trace.get_current_span(context).get_span_context()
@@ -598,7 +585,7 @@ class Worker:
         self,
         execution: Execution,
         dependencies: dict[str, "Dependency"],
-        duration: timedelta,
+        duration: timedelta | None = None,
     ) -> bool:
         from .dependencies import Perpetual, get_single_dependency_of_type
 
@@ -607,16 +594,20 @@ class Worker:
             return False
 
         if perpetual.cancelled:
+            await self.docket.cancel(execution.key)
             return False
 
         now = datetime.now(timezone.utc)
-        execution.when = max(now, now + perpetual.every - duration)
-        execution.args = perpetual.args
-        execution.kwargs = perpetual.kwargs
+        when = max(now, now + perpetual.every - (duration or timedelta(0)))
 
-        await self.docket.schedule(execution)
+        await self.docket.replace(execution.function, when, execution.key)(
+            *perpetual.args,
+            **perpetual.kwargs,
+        )
 
-        TASKS_PERPETUATED.add(1, {**self.labels(), **execution.specific_labels()})
+        if duration is not None:
+            TASKS_PERPETUATED.add(1, {**self.labels(), **execution.specific_labels()})
+
         return True
 
     @property
