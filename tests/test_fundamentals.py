@@ -1037,3 +1037,31 @@ async def test_perpetual_tasks_perpetuate_even_after_errors(
     await worker.run_at_most({execution.key: 3})
 
     assert calls == 3
+
+
+async def test_perpetual_tasks_can_be_automatically_scheduled(
+    docket: Docket, worker: Worker
+):
+    """Perpetual tasks can be automatically scheduled"""
+
+    calls = 0
+
+    async def my_automatic_task(
+        perpetual: Perpetual = Perpetual(
+            every=timedelta(milliseconds=50), automatic=True
+        ),
+    ):
+        assert isinstance(perpetual, Perpetual)
+
+        assert perpetual.every == timedelta(milliseconds=50)
+
+        nonlocal calls
+        calls += 1
+
+    # Note we never add this task to the docket, we just register it.
+    docket.register(my_automatic_task)
+
+    # The automatic key will be the task function's name
+    await worker.run_at_most({"my_automatic_task": 3})
+
+    assert calls == 3
