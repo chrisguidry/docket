@@ -1,30 +1,16 @@
 import asyncio
-import logging
 import os
 import socket
-import sys
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from logging import Logger, LoggerAdapter
 from typing import Annotated, AsyncGenerator
 
 from docker import DockerClient
-from opentelemetry import trace
 
 from docket import Docket
 from docket.annotations import Logged
-from docket.dependencies import CurrentDocket, Perpetual
-
-logging.getLogger().setLevel(logging.INFO)
-
-console = logging.StreamHandler(stream=sys.stdout)
-console.setFormatter(
-    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-)
-logging.getLogger().addHandler(console)
-
-
-logger = logging.getLogger("example.find_and_flood")
-tracer = trace.get_tracer("example.find_and_flood")
+from docket.dependencies import CurrentDocket, Perpetual, TaskLogger
 
 
 @asynccontextmanager
@@ -57,7 +43,7 @@ async def run_redis(version: str) -> AsyncGenerator[str, None]:
 
 async def main():
     async with run_redis("7.4.2") as redis_url:
-        logger.info("Redis is running on %s", redis_url)
+        print("***** Redis is running on %s", redis_url)
         processes = [
             await asyncio.create_subprocess_exec(
                 "docket",
@@ -69,7 +55,7 @@ async def main():
                 "--tasks",
                 "find_and_flood:tasks",
                 "--concurrency",
-                "1",
+                "5",
                 env={
                     **os.environ,
                     "PYTHONPATH": os.path.abspath(
@@ -94,13 +80,17 @@ async def main():
 
 async def find(
     docket: Docket = CurrentDocket(),
+    logger: LoggerAdapter[Logger] = TaskLogger(),
     perpetual: Perpetual = Perpetual(every=timedelta(seconds=10), automatic=True),
 ) -> None:
     for i in range(1, 10 + 1):
         await docket.add(flood, key=str(i))(i)
 
 
-async def flood(item: Annotated[int, Logged]) -> None:
+async def flood(
+    item: Annotated[int, Logged],
+    logger: LoggerAdapter[Logger] = TaskLogger(),
+) -> None:
     logger.info("Working on %s", item)
 
 
