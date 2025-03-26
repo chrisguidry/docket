@@ -23,12 +23,6 @@ from .tasks import toxic
 
 logging.getLogger().setLevel(logging.INFO)
 
-# Quiets down the testcontainers logger
-testcontainers_logger = logging.getLogger("testcontainers.core.container")
-testcontainers_logger.setLevel(logging.ERROR)
-testcontainers_logger = logging.getLogger("testcontainers.core.waiting_utils")
-testcontainers_logger.setLevel(logging.ERROR)
-
 console = logging.StreamHandler(stream=sys.stdout)
 console.setFormatter(
     logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
