@@ -13,6 +13,25 @@ from docket.annotations import Logged
 from docket.dependencies import CurrentDocket, Perpetual, TaskLogger
 
 
+async def find(
+    docket: Docket = CurrentDocket(),
+    logger: LoggerAdapter[Logger] = TaskLogger(),
+    perpetual: Perpetual = Perpetual(every=timedelta(seconds=10), automatic=True),
+) -> None:
+    for i in range(1, 10 + 1):
+        await docket.add(flood, key=str(i))(i)
+
+
+async def flood(
+    item: Annotated[int, Logged],
+    logger: LoggerAdapter[Logger] = TaskLogger(),
+) -> None:
+    logger.info("Working on %s", item)
+
+
+tasks = [find, flood]
+
+
 @asynccontextmanager
 async def run_redis(version: str) -> AsyncGenerator[str, None]:
     def get_free_port() -> int:
@@ -53,13 +72,13 @@ async def main():
                 "--url",
                 redis_url,
                 "--tasks",
-                "find_and_flood:tasks",
+                "examples.find_and_flood:tasks",
                 "--concurrency",
                 "5",
                 env={
                     **os.environ,
                     "PYTHONPATH": os.path.abspath(
-                        os.path.join(os.path.dirname(__file__))
+                        os.path.join(os.path.dirname(__file__), "..")
                     ),
                 },
             )
@@ -76,25 +95,6 @@ async def main():
                     pass
                 except Exception:
                     pass
-
-
-async def find(
-    docket: Docket = CurrentDocket(),
-    logger: LoggerAdapter[Logger] = TaskLogger(),
-    perpetual: Perpetual = Perpetual(every=timedelta(seconds=10), automatic=True),
-) -> None:
-    for i in range(1, 10 + 1):
-        await docket.add(flood, key=str(i))(i)
-
-
-async def flood(
-    item: Annotated[int, Logged],
-    logger: LoggerAdapter[Logger] = TaskLogger(),
-) -> None:
-    logger.info("Working on %s", item)
-
-
-tasks = [find, flood]
 
 
 if __name__ == "__main__":
