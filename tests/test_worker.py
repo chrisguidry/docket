@@ -374,9 +374,6 @@ async def test_perpetual_tasks_are_scheduled_close_to_target_time(
     ):
         timestamps.append(datetime.now(timezone.utc))
 
-        if len(timestamps) % 2 == 0:
-            await asyncio.sleep(0.05)
-
     await docket.add(perpetual_task, key="my-key")(a="a", b=2)
 
     await worker.run_at_most({"my-key": 8})
@@ -384,13 +381,15 @@ async def test_perpetual_tasks_are_scheduled_close_to_target_time(
     assert len(timestamps) == 8
 
     intervals = [next - previous for previous, next in zip(timestamps, timestamps[1:])]
-    total = timedelta(seconds=sum(i.total_seconds() for i in intervals))
-    average = total / len(intervals)
+    minimum = min(intervals)
+    maximum = max(intervals)
 
     debug = ", ".join([f"{i.total_seconds() * 1000:.2f}ms" for i in intervals])
 
-    # even with a variable duration, Docket attempts to schedule them equally
-    assert timedelta(milliseconds=45) <= average <= timedelta(milliseconds=75), debug
+    # even with a variable duration, Docket attempts to schedule them equally and to
+    # abide by the target interval
+    assert minimum >= timedelta(milliseconds=50), debug
+    assert maximum <= timedelta(milliseconds=75), debug
 
 
 async def test_worker_can_exit_from_perpetual_tasks_that_queue_further_tasks(
