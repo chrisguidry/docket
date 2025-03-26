@@ -89,12 +89,8 @@ async def main():
         except asyncio.CancelledError:
             for p in processes:
                 p.kill()
-                try:
-                    await p.wait()
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    pass
+        finally:
+            await asyncio.gather(*[p.wait() for p in processes])
 
 
 if __name__ == "__main__":
