@@ -28,3 +28,8 @@ class Annotation(abc.ABC):
 
 class Logged(Annotation):
     """Instructs docket to include arguments to this parameter in the log."""
+
+    length_only: bool = False
+
+    def __init__(self, length_only: bool = False) -> None:
+        self.length_only = length_only

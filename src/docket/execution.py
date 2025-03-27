@@ -75,16 +75,29 @@ class Execution:
 
         parameter_names = list(signature.parameters.keys())
 
+        def format_argument(argument: Any, logged: Logged) -> str:
+            if logged.length_only:
+                if isinstance(argument, (dict, set)):
+                    return f"{{len {len(argument)}}}"
+                elif isinstance(argument, tuple):
+                    return f"(len {len(argument)})"
+                elif hasattr(argument, "__len__"):
+                    return f"[len {len(argument)}]"
+
+            return repr(argument)
+
         for i, argument in enumerate(self.args[: len(parameter_names)]):
             parameter_name = parameter_names[i]
-            if parameter_name in logged_parameters:
-                arguments.append(repr(argument))
+            if logged := logged_parameters.get(parameter_name):
+                arguments.append(format_argument(argument, logged))
             else:
                 arguments.append("...")
 
         for parameter_name, argument in self.kwargs.items():
-            if parameter_name in logged_parameters:
-                arguments.append(f"{parameter_name}={repr(argument)}")
+            if logged := logged_parameters.get(parameter_name):
+                arguments.append(
+                    f"{parameter_name}={format_argument(argument, logged)}"
+                )
             else:
                 arguments.append(f"{parameter_name}=...")
 
