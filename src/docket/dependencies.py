@@ -1,6 +1,7 @@
 import abc
 import inspect
 import logging
+import time
 from datetime import timedelta
 from typing import Any, Awaitable, Callable, Counter, TypeVar, cast
 
@@ -169,6 +170,36 @@ class Perpetual(Dependency):
     def perpetuate(self, *args: Any, **kwargs: Any) -> None:
         self.args = args
         self.kwargs = kwargs
+
+
+class Timeout(Dependency):
+    single = True
+
+    base: timedelta
+
+    _deadline: float
+
+    def __init__(self, base: timedelta) -> None:
+        self.base = base
+
+    def __call__(
+        self, docket: Docket, worker: Worker, execution: Execution
+    ) -> "Timeout":
+        return Timeout(base=self.base)
+
+    def start(self) -> None:
+        self._deadline = time.monotonic() + self.base.total_seconds()
+
+    def expired(self) -> bool:
+        return time.monotonic() >= self._deadline
+
+    def remaining(self) -> timedelta:
+        return timedelta(seconds=self._deadline - time.monotonic())
+
+    def extend(self, by: timedelta | None = None) -> None:
+        if by is None:
+            by = self.base
+        self._deadline += by.total_seconds()
 
 
 def get_dependency_parameters(

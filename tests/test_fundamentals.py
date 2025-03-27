@@ -5,8 +5,9 @@ don't need to cover detailed edge cases.  Keep these tests as straightforward an
 as possible to aid with understanding docket.
 """
 
+import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from logging import LoggerAdapter
 from typing import Annotated, Callable
 from unittest.mock import AsyncMock, call
@@ -26,6 +27,7 @@ from docket import (
     Retry,
     TaskKey,
     TaskLogger,
+    Timeout,
     Worker,
     tasks,
 )
@@ -1065,3 +1067,135 @@ async def test_perpetual_tasks_can_be_automatically_scheduled(
     await worker.run_at_most({"my_automatic_task": 3})
 
     assert calls == 3
+
+
+async def test_simple_timeout(docket: Docket, worker: Worker):
+    """A task can be scheduled with a timeout"""
+
+    called = False
+
+    async def task_with_timeout(
+        timeout: Timeout = Timeout(timedelta(milliseconds=100)),
+    ):
+        await asyncio.sleep(0.01)
+
+        nonlocal called
+        called = True
+
+    await docket.add(task_with_timeout)()
+
+    start = datetime.now(timezone.utc)
+
+    await worker.run_until_finished()
+
+    elapsed = datetime.now(timezone.utc) - start
+
+    assert called
+    assert elapsed <= timedelta(milliseconds=150)
+
+
+async def test_simple_timeout_cancels_tasks(docket: Docket, worker: Worker):
+    """A task can be scheduled with a timeout and are cancelled"""
+
+    called = False
+
+    async def task_with_timeout(
+        timeout: Timeout = Timeout(timedelta(milliseconds=100)),
+    ):
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            nonlocal called
+            called = True
+
+    await docket.add(task_with_timeout)()
+
+    start = datetime.now(timezone.utc)
+
+    await worker.run_until_finished()
+
+    elapsed = datetime.now(timezone.utc) - start
+
+    assert called
+    assert timedelta(milliseconds=100) <= elapsed <= timedelta(milliseconds=200)
+
+
+async def test_timeout_can_be_extended(docket: Docket, worker: Worker):
+    """A task can be scheduled with a timeout and extend themselves"""
+
+    called = False
+
+    async def task_with_timeout(
+        timeout: Timeout = Timeout(timedelta(milliseconds=100)),
+    ):
+        await asyncio.sleep(0.05)
+
+        timeout.extend(timedelta(milliseconds=200))
+
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            nonlocal called
+            called = True
+
+    await docket.add(task_with_timeout)()
+
+    start = datetime.now(timezone.utc)
+
+    await worker.run_until_finished()
+
+    elapsed = datetime.now(timezone.utc) - start
+
+    assert called
+    assert timedelta(milliseconds=250) <= elapsed <= timedelta(milliseconds=400)
+
+
+async def test_timeout_extends_by_base_by_default(docket: Docket, worker: Worker):
+    """A task can be scheduled with a timeout and extend itself by the base timeout"""
+
+    called = False
+
+    async def task_with_timeout(
+        timeout: Timeout = Timeout(timedelta(milliseconds=100)),
+    ):
+        await asyncio.sleep(0.05)
+
+        timeout.extend()  # defaults to the base timeout
+
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            nonlocal called
+            called = True
+
+    await docket.add(task_with_timeout)()
+
+    start = datetime.now(timezone.utc)
+
+    await worker.run_until_finished()
+
+    elapsed = datetime.now(timezone.utc) - start
+
+    assert called
+    assert timedelta(milliseconds=150) <= elapsed <= timedelta(milliseconds=300)
+
+
+async def test_timeout_is_compatible_with_retry(docket: Docket, worker: Worker):
+    """A task that times out can be retried"""
+
+    successes: list[int] = []
+
+    async def task_with_timeout(
+        retry: Retry = Retry(attempts=3),
+        timeout: Timeout = Timeout(timedelta(milliseconds=100)),
+    ):
+        if retry.attempt == 1:
+            await asyncio.sleep(1)
+
+        successes.append(retry.attempt)
+
+    await docket.add(task_with_timeout)()
+
+    await worker.run_until_finished()
+
+    assert successes == [2]
