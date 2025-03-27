@@ -3,7 +3,7 @@ import inspect
 import logging
 import time
 from datetime import timedelta
-from typing import Any, Awaitable, Callable, Counter, TypeVar, cast
+from typing import Any, Awaitable, Callable, Counter, Generic, TypeVar, cast
 
 from .docket import Docket
 from .execution import Execution
@@ -14,13 +14,15 @@ class Dependency(abc.ABC):
     single: bool = False
 
     @abc.abstractmethod
-    def __call__(
+    async def __call__(
         self, docket: Docket, worker: Worker, execution: Execution
     ) -> Any: ...  # pragma: no cover
 
 
 class _CurrentWorker(Dependency):
-    def __call__(self, docket: Docket, worker: Worker, execution: Execution) -> Worker:
+    async def __call__(
+        self, docket: Docket, worker: Worker, execution: Execution
+    ) -> Worker:
         return worker
 
 
@@ -29,7 +31,9 @@ def CurrentWorker() -> Worker:
 
 
 class _CurrentDocket(Dependency):
-    def __call__(self, docket: Docket, worker: Worker, execution: Execution) -> Docket:
+    async def __call__(
+        self, docket: Docket, worker: Worker, execution: Execution
+    ) -> Docket:
         return docket
 
 
@@ -38,7 +42,7 @@ def CurrentDocket() -> Docket:
 
 
 class _CurrentExecution(Dependency):
-    def __call__(
+    async def __call__(
         self, docket: Docket, worker: Worker, execution: Execution
     ) -> Execution:
         return execution
@@ -49,7 +53,9 @@ def CurrentExecution() -> Execution:
 
 
 class _TaskKey(Dependency):
-    def __call__(self, docket: Docket, worker: Worker, execution: Execution) -> str:
+    async def __call__(
+        self, docket: Docket, worker: Worker, execution: Execution
+    ) -> str:
         return execution.key
 
 
@@ -58,7 +64,7 @@ def TaskKey() -> str:
 
 
 class _TaskLogger(Dependency):
-    def __call__(
+    async def __call__(
         self, docket: Docket, worker: Worker, execution: Execution
     ) -> logging.LoggerAdapter[logging.Logger]:
         logger = logging.getLogger(f"docket.task.{execution.function.__name__}")
@@ -86,7 +92,9 @@ class Retry(Dependency):
         self.delay = delay
         self.attempt = 1
 
-    def __call__(self, docket: Docket, worker: Worker, execution: Execution) -> "Retry":
+    async def __call__(
+        self, docket: Docket, worker: Worker, execution: Execution
+    ) -> "Retry":
         retry = Retry(attempts=self.attempts, delay=self.delay)
         retry.attempt = execution.attempt
         return retry
@@ -105,7 +113,7 @@ class ExponentialRetry(Retry):
         self.minimum_delay = minimum_delay
         self.maximum_delay = maximum_delay
 
-    def __call__(
+    async def __call__(
         self, docket: Docket, worker: Worker, execution: Execution
     ) -> "ExponentialRetry":
         retry = ExponentialRetry(
@@ -156,7 +164,7 @@ class Perpetual(Dependency):
         self.automatic = automatic
         self.cancelled = False
 
-    def __call__(
+    async def __call__(
         self, docket: Docket, worker: Worker, execution: Execution
     ) -> "Perpetual":
         perpetual = Perpetual(every=self.every)
@@ -182,10 +190,12 @@ class Timeout(Dependency):
     def __init__(self, base: timedelta) -> None:
         self.base = base
 
-    def __call__(
+    async def __call__(
         self, docket: Docket, worker: Worker, execution: Execution
     ) -> "Timeout":
-        return Timeout(base=self.base)
+        timeout = Timeout(base=self.base)
+        timeout.start()
+        return timeout
 
     def start(self) -> None:
         self._deadline = time.monotonic() + self.base.total_seconds()
@@ -200,6 +210,21 @@ class Timeout(Dependency):
         if by is None:
             by = self.base
         self._deadline += by.total_seconds()
+
+
+R = TypeVar("R")
+
+
+class _Depends(Dependency, Generic[R]):
+    def __init__(self, dependency: Callable[[], Awaitable[R]]) -> None:
+        self.dependency = dependency
+
+    async def __call__(self, docket: Docket, worker: Worker, execution: Execution) -> R:
+        return await self.dependency()
+
+
+def Depends(dependency: Callable[[], Awaitable[R]]) -> R:
+    return cast(R, _Depends(dependency))
 
 
 def get_dependency_parameters(

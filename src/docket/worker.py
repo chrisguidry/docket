@@ -4,27 +4,19 @@ import logging
 import sys
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import (
-    TYPE_CHECKING,
-    Mapping,
-    Protocol,
-    Self,
-    cast,
-)
+from typing import TYPE_CHECKING, Mapping, Protocol, Self, cast
 from uuid import uuid4
 
-import redis.exceptions
-from opentelemetry import propagate, trace
+from opentelemetry import trace
 from opentelemetry.trace import Tracer
 from redis.asyncio import Redis
-from redis.exceptions import LockError
+from redis.exceptions import ConnectionError, LockError
 
 from .docket import (
     Docket,
     Execution,
     RedisMessage,
     RedisMessageID,
-    RedisMessages,
     RedisReadGroupResponse,
 )
 from .instrumentation import (
@@ -41,7 +33,6 @@ from .instrumentation import (
     TASKS_STARTED,
     TASKS_STRICKEN,
     TASKS_SUCCEEDED,
-    message_getter,
     metrics_server,
 )
 
@@ -75,7 +66,7 @@ class Worker:
         concurrency: int = 10,
         redelivery_timeout: timedelta = timedelta(minutes=5),
         reconnection_delay: timedelta = timedelta(seconds=5),
-        minimum_check_interval: timedelta = timedelta(milliseconds=100),
+        minimum_check_interval: timedelta = timedelta(milliseconds=250),
         scheduling_resolution: timedelta = timedelta(milliseconds=250),
     ) -> None:
         self.docket = docket
@@ -202,8 +193,9 @@ class Worker:
 
         while True:
             try:
-                return await self._worker_loop(forever=forever)
-            except redis.exceptions.ConnectionError:
+                async with self.docket.redis() as redis:
+                    return await self._worker_loop(redis, forever=forever)
+            except ConnectionError:
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.warning(
                     "Error connecting to redis, retrying in %s...",
@@ -212,123 +204,133 @@ class Worker:
                 )
                 await asyncio.sleep(self.reconnection_delay.total_seconds())
 
-    async def _worker_loop(self, forever: bool = False):
+    async def _worker_loop(self, redis: Redis, forever: bool = False):
         worker_stopping = asyncio.Event()
 
         await self._schedule_all_automatic_perpetual_tasks()
 
-        async with self.docket.redis() as redis:
-            scheduler_task = asyncio.create_task(
-                self._scheduler_loop(redis, worker_stopping)
+        scheduler_task = asyncio.create_task(
+            self._scheduler_loop(redis, worker_stopping)
+        )
+
+        active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
+        available_slots = self.concurrency
+
+        async def check_for_work() -> bool:
+            logger.debug("Checking for work", extra=self._log_context())
+            async with redis.pipeline() as pipeline:
+                pipeline.xlen(self.docket.stream_key)
+                pipeline.zcard(self.docket.queue_key)
+                results: list[int] = await pipeline.execute()
+                stream_len = results[0]
+                queue_len = results[1]
+                return stream_len > 0 or queue_len > 0
+
+        async def get_redeliveries(redis: Redis) -> RedisReadGroupResponse:
+            logger.debug("Getting redeliveries", extra=self._log_context())
+            _, redeliveries, *_ = await redis.xautoclaim(
+                name=self.docket.stream_key,
+                groupname=self.docket.worker_group_name,
+                consumername=self.name,
+                min_idle_time=int(self.redelivery_timeout.total_seconds() * 1000),
+                start_id="0-0",
+                count=available_slots,
             )
-            active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
+            return [(b"__redelivery__", redeliveries)]
 
-            async def check_for_work() -> bool:
-                async with redis.pipeline() as pipeline:
-                    pipeline.xlen(self.docket.stream_key)
-                    pipeline.zcard(self.docket.queue_key)
-                    results: list[int] = await pipeline.execute()
-                    stream_len = results[0]
-                    queue_len = results[1]
-                    return stream_len > 0 or queue_len > 0
+        async def get_new_deliveries(redis: Redis) -> RedisReadGroupResponse:
+            logger.debug("Getting new deliveries", extra=self._log_context())
+            return await redis.xreadgroup(
+                groupname=self.docket.worker_group_name,
+                consumername=self.name,
+                streams={self.docket.stream_key: ">"},
+                block=int(self.minimum_check_interval.total_seconds() * 1000),
+                count=available_slots,
+            )
 
-            async def process_completed_tasks() -> None:
-                completed_tasks = {task for task in active_tasks if task.done()}
-                for task in completed_tasks:
-                    message_id = active_tasks.pop(task)
+        def start_task(message_id: RedisMessageID, message: RedisMessage) -> bool:
+            if not message:  # pragma: no cover
+                return False
 
-                    await task
+            function_name = message[b"function"].decode()
+            if not (function := self.docket.tasks.get(function_name)):
+                logger.warning(
+                    "Task function %r not found",
+                    function_name,
+                    extra=self._log_context(),
+                )
+                return False
 
-                    async with redis.pipeline() as pipeline:
-                        pipeline.xack(
-                            self.docket.stream_key,
-                            self.docket.worker_group_name,
-                            message_id,
-                        )
-                        pipeline.xdel(
-                            self.docket.stream_key,
-                            message_id,
-                        )
-                        await pipeline.execute()
+            execution = Execution.from_message(function, message)
 
-            has_work: bool = True
+            task = asyncio.create_task(self._execute(execution))
+            active_tasks[task] = message_id
 
-            if not forever:  # pragma: no branch
-                has_work = await check_for_work()
+            nonlocal available_slots
+            available_slots -= 1
 
-            try:
-                while forever or has_work or active_tasks:
-                    await process_completed_tasks()
+            return True
 
-                    available_slots = self.concurrency - len(active_tasks)
+        async def ack_message(redis: Redis, message_id: RedisMessageID) -> None:
+            logger.debug("Acknowledging message", extra=self._log_context())
+            async with redis.pipeline() as pipeline:
+                pipeline.xack(
+                    self.docket.stream_key,
+                    self.docket.worker_group_name,
+                    message_id,
+                )
+                pipeline.xdel(
+                    self.docket.stream_key,
+                    message_id,
+                )
+                await pipeline.execute()
 
-                    def start_task(
-                        message_id: RedisMessageID, message: RedisMessage
-                    ) -> None:
-                        if not message:  # pragma: no cover
-                            return
+        async def process_completed_tasks() -> None:
+            completed_tasks = {task for task in active_tasks if task.done()}
+            for task in completed_tasks:
+                message_id = active_tasks.pop(task)
+                await task
+                await ack_message(redis, message_id)
 
-                        task = asyncio.create_task(self._execute(message))
-                        active_tasks[task] = message_id
+        has_work: bool = True
 
-                        nonlocal available_slots
-                        available_slots -= 1
+        try:
+            while forever or has_work or active_tasks:
+                await process_completed_tasks()
 
-                    if available_slots <= 0:
-                        await asyncio.sleep(self.minimum_check_interval.total_seconds())
-                        continue
+                available_slots = self.concurrency - len(active_tasks)
 
-                    redeliveries: RedisMessages
-                    _, redeliveries, *_ = await redis.xautoclaim(
-                        name=self.docket.stream_key,
-                        groupname=self.docket.worker_group_name,
-                        consumername=self.name,
-                        min_idle_time=int(
-                            self.redelivery_timeout.total_seconds() * 1000
-                        ),
-                        start_id="0-0",
-                        count=available_slots,
-                    )
+                if available_slots <= 0:
+                    await asyncio.sleep(self.minimum_check_interval.total_seconds())
+                    continue
 
-                    for message_id, message in redeliveries:
-                        start_task(message_id, message)
-
-                    if available_slots <= 0:
-                        continue
-
-                    new_deliveries: RedisReadGroupResponse = await redis.xreadgroup(
-                        groupname=self.docket.worker_group_name,
-                        consumername=self.name,
-                        streams={self.docket.stream_key: ">"},
-                        block=(
-                            int(self.minimum_check_interval.total_seconds() * 1000)
-                            if forever or active_tasks
-                            else None
-                        ),
-                        count=available_slots,
-                    )
-
-                    for _, messages in new_deliveries:
+                for source in [get_redeliveries, get_new_deliveries]:
+                    for _, messages in await source(redis):
                         for message_id, message in messages:
-                            start_task(message_id, message)
+                            if not start_task(message_id, message):
+                                await self._delete_known_task(redis, message)
+                                await ack_message(redis, message_id)
 
-                    if not forever and not active_tasks and not new_deliveries:
-                        has_work = await check_for_work()
+                    if available_slots <= 0:
+                        break
 
-            except asyncio.CancelledError:
-                if active_tasks:  # pragma: no cover
-                    logger.info(
-                        "Shutdown requested, finishing %d active tasks...",
-                        len(active_tasks),
-                        extra=self._log_context(),
-                    )
-            finally:
-                if active_tasks:
-                    await asyncio.gather(*active_tasks, return_exceptions=True)
-                    await process_completed_tasks()
+                if not forever and not active_tasks:
+                    has_work = await check_for_work()
 
-                worker_stopping.set()
-                await scheduler_task
+        except asyncio.CancelledError:
+            if active_tasks:  # pragma: no cover
+                logger.info(
+                    "Shutdown requested, finishing %d active tasks...",
+                    len(active_tasks),
+                    extra=self._log_context(),
+                )
+        finally:
+            if active_tasks:
+                await asyncio.gather(*active_tasks, return_exceptions=True)
+                await process_completed_tasks()
+
+            worker_stopping.set()
+            await scheduler_task
 
     async def _scheduler_loop(
         self,
@@ -389,6 +391,7 @@ class Worker:
 
         while not worker_stopping.is_set() or total_work:
             try:
+                logger.debug("Scheduling due tasks", extra=self._log_context())
                 total_work, due_work = await stream_due_tasks(
                     keys=[self.docket.queue_key, self.docket.stream_key],
                     args=[datetime.now(timezone.utc).timestamp(), self.docket.name],
@@ -438,25 +441,24 @@ class Worker:
             except LockError:  # pragma: no cover
                 return
 
-    async def _execute(self, message: RedisMessage) -> None:
-        key = message[b"key"].decode()
-
-        log_context: Mapping[str, str | float] = self._log_context()
-
-        function_name = message[b"function"].decode()
-        function = self.docket.tasks.get(function_name)
-        if function is None:
-            async with self.docket.redis() as redis:
-                await redis.delete(self.docket.known_task_key(key))
-            logger.warning(
-                "Task function %r not found", function_name, extra=log_context
-            )
+    async def _delete_known_task(
+        self, redis: Redis, execution_or_message: Execution | RedisMessage
+    ) -> None:
+        if isinstance(execution_or_message, Execution):
+            key = execution_or_message.key
+        elif bytes_key := execution_or_message.get(b"key"):
+            key = bytes_key.decode()
+        else:  # pragma: no cover
             return
 
-        execution = Execution.from_message(function, message)
-        dependencies = self._get_dependencies(execution)
+        logger.debug("Deleting known task", extra=self._log_context())
+        known_task_key = self.docket.known_task_key(key)
+        await redis.delete(known_task_key)
 
-        log_context = {**log_context, **execution.specific_labels()}
+    async def _execute(self, execution: Execution) -> None:
+        dependencies = await self._get_dependencies(execution)
+
+        log_context = {**self._log_context(), **execution.specific_labels()}
         counter_labels = {**self.labels(), **execution.general_labels()}
 
         arrow = "↬" if execution.attempt > 1 else "↪"
@@ -464,7 +466,7 @@ class Worker:
 
         if self.docket.strike_list.is_stricken(execution):
             async with self.docket.redis() as redis:
-                await redis.delete(self.docket.known_task_key(key))
+                await self._delete_known_task(redis, execution)
 
             arrow = "🗙"
             logger.warning("%s %s", arrow, call, extra=log_context)
@@ -479,10 +481,10 @@ class Worker:
         rescheduled = await self._perpetuate_if_requested(execution, dependencies)
         if not rescheduled:
             async with self.docket.redis() as redis:
-                await redis.delete(self.docket.known_task_key(key))
+                await self._delete_known_task(redis, execution)
 
-        context = propagate.extract(message, getter=message_getter)
-        initiating_context = trace.get_current_span(context).get_span_context()
+        initiating_span = trace.get_current_span(execution.trace_context)
+        initiating_context = initiating_span.get_span_context()
         links = [trace.Link(initiating_context)] if initiating_context.is_valid else []
 
         start = datetime.now(timezone.utc)
@@ -552,7 +554,6 @@ class Worker:
         dependencies: dict[str, "Dependency"],
         timeout: "Timeout",
     ) -> None:
-        timeout.start()
         task_coro = execution.function(
             *execution.args, **execution.kwargs, **dependencies
         )
@@ -578,7 +579,7 @@ class Worker:
             except asyncio.CancelledError:
                 raise asyncio.TimeoutError
 
-    def _get_dependencies(
+    async def _get_dependencies(
         self,
         execution: Execution,
     ) -> dict[str, "Dependency"]:
@@ -595,7 +596,9 @@ class Worker:
                 dependencies[parameter_name] = execution.kwargs[parameter_name]
                 continue
 
-            dependencies[parameter_name] = dependency(self.docket, self, execution)
+            dependencies[parameter_name] = await dependency(
+                self.docket, self, execution
+            )
 
         return dependencies
 
@@ -706,7 +709,7 @@ class Worker:
 
             except asyncio.CancelledError:  # pragma: no cover
                 return
-            except redis.exceptions.ConnectionError:
+            except ConnectionError:
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.exception(
                     "Error sending worker heartbeat",

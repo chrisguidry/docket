@@ -6,13 +6,12 @@ from typing import AsyncGenerator
 from unittest.mock import AsyncMock
 
 import pytest
-import redis.connection
-import redis.exceptions
 from redis.asyncio import Redis
+from redis.exceptions import ConnectionError
 
 from docket import CurrentWorker, Docket, Worker
 from docket.dependencies import CurrentDocket, Perpetual
-from docket.docket import RedisMessage
+from docket.execution import Execution
 from docket.tasks import standard_tasks
 
 
@@ -70,12 +69,12 @@ async def test_worker_reconnects_when_connection_is_lost(
     original_worker_loop = worker._worker_loop  # type: ignore[protected-access]
     call_count = 0
 
-    async def mock_worker_loop(forever: bool = False):
+    async def mock_worker_loop(redis: Redis, forever: bool = False):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise redis.exceptions.ConnectionError("Simulated connection error")
-        return await original_worker_loop(forever=forever)
+            raise ConnectionError("Simulated connection error")
+        return await original_worker_loop(redis, forever=forever)
 
     worker._worker_loop = mock_worker_loop  # type: ignore[protected-access]
 
@@ -178,10 +177,10 @@ async def test_redeliveries_abide_by_concurrency_limits(docket: Docket, worker: 
     ) as bad_worker:
         original_execute = bad_worker._execute  # type: ignore[protected-access]
 
-        async def die_after_10_tasks(message: RedisMessage):
+        async def die_after_10_tasks(execution: Execution):
             if len(task_results) >= 10:
                 raise Exception("Nope")
-            return await original_execute(message)
+            return await original_execute(execution)
 
         bad_worker._execute = die_after_10_tasks  # type: ignore[protected-access]
         with pytest.raises(Exception, match="Nope"):
@@ -201,7 +200,7 @@ async def test_redeliveries_abide_by_concurrency_limits(docket: Docket, worker: 
     assert 1 < max_concurrency_observed <= 5
 
 
-async def test_worker_handles_unregistered_task_execution(
+async def test_worker_handles_unregistered_task_execution_on_initial_delivery(
     docket: Docket,
     worker: Worker,
     caplog: pytest.LogCaptureFixture,
@@ -215,6 +214,47 @@ async def test_worker_handles_unregistered_task_execution(
 
     with caplog.at_level(logging.WARNING):
         await worker.run_until_finished()
+
+    assert "Task function 'the_task' not found" in caplog.text
+
+
+async def test_worker_handles_unregistered_task_execution_on_redelivery(
+    docket: Docket,
+    worker: Worker,
+    caplog: pytest.LogCaptureFixture,
+    the_task: AsyncMock,
+):
+    """worker should handle the case when an unregistered task is redelivered"""
+    await docket.add(the_task)()
+
+    async with Worker(
+        docket, redelivery_timeout=timedelta(milliseconds=100)
+    ) as worker_a:
+        worker_a._execute = AsyncMock(side_effect=Exception("Nope"))  # type: ignore[protected-access]
+        with pytest.raises(Exception, match="Nope"):
+            with caplog.at_level(logging.WARNING):
+                await worker_a.run_until_finished()
+
+    the_task.assert_not_called()
+
+    async with Worker(
+        docket, redelivery_timeout=timedelta(milliseconds=100)
+    ) as worker_b:
+        async with docket.redis() as redis:
+            pending_info = await redis.xpending(
+                docket.stream_key,
+                docket.worker_group_name,
+            )
+            assert pending_info["pending"] == 1, (
+                "Expected one pending task in the stream"
+            )
+
+        await asyncio.sleep(0.125)  # longer than the redelivery timeout
+
+        docket.tasks.pop("the_task")
+
+        with caplog.at_level(logging.WARNING):
+            await worker_b.run_until_finished()
 
     assert "Task function 'the_task' not found" in caplog.text
 
@@ -308,7 +348,7 @@ async def test_task_announcements(
 @pytest.mark.parametrize(
     "error",
     [
-        redis.exceptions.ConnectionError("oof"),
+        ConnectionError("oof"),
         ValueError("woops"),
     ],
 )
