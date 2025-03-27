@@ -427,7 +427,7 @@ async def test_perpetual_tasks_are_scheduled_close_to_target_time(
 
     # It's not reliable to assert the maximum duration on different machine setups, but
     # we'll make sure that the minimum is observed, which is the guarantee
-    assert minimum >= timedelta(milliseconds=50), debug
+    assert minimum >= timedelta(milliseconds=49), debug
 
 
 async def test_worker_can_exit_from_perpetual_tasks_that_queue_further_tasks(

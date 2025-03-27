@@ -2,9 +2,19 @@ import asyncio
 import inspect
 import logging
 import sys
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import TYPE_CHECKING, Mapping, Protocol, Self, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncGenerator,
+    Coroutine,
+    Mapping,
+    Protocol,
+    Self,
+    cast,
+)
 from uuid import uuid4
 
 from opentelemetry import trace
@@ -456,8 +466,6 @@ class Worker:
         await redis.delete(known_task_key)
 
     async def _execute(self, execution: Execution) -> None:
-        dependencies = await self._get_dependencies(execution)
-
         log_context = {**self._log_context(), **execution.specific_labels()}
         counter_labels = {**self.labels(), **execution.general_labels()}
 
@@ -476,20 +484,16 @@ class Worker:
         if execution.key in self._execution_counts:
             self._execution_counts[execution.key] += 1
 
-        # Preemptively reschedule the perpetual task for the future, or clear the
-        # known task key for this task
-        rescheduled = await self._perpetuate_if_requested(execution, dependencies)
-        if not rescheduled:
-            async with self.docket.redis() as redis:
-                await self._delete_known_task(redis, execution)
-
         initiating_span = trace.get_current_span(execution.trace_context)
         initiating_context = initiating_span.get_span_context()
         links = [trace.Link(initiating_context)] if initiating_context.is_valid else []
 
         start = datetime.now(timezone.utc)
         punctuality = start - execution.when
-        log_context = {**log_context, "punctuality": punctuality.total_seconds()}
+        log_context = {
+            **log_context,
+            "punctuality": punctuality.total_seconds(),
+        }
         duration = timedelta(0)
 
         TASKS_STARTED.add(1, counter_labels)
@@ -498,55 +502,67 @@ class Worker:
 
         logger.info("%s [%s] %s", arrow, punctuality, call, extra=log_context)
 
-        try:
-            with tracer.start_as_current_span(
-                execution.function.__name__,
-                kind=trace.SpanKind.CONSUMER,
-                attributes={
-                    **self.labels(),
-                    **execution.specific_labels(),
-                    "code.function.name": execution.function.__name__,
-                },
-                links=links,
-            ):
-                from .dependencies import Timeout, get_single_dependency_of_type
-
-                if timeout := get_single_dependency_of_type(dependencies, Timeout):
-                    await self._run_function_with_timeout(
-                        execution, dependencies, timeout
-                    )
-                else:
-                    await execution.function(
-                        *execution.args,
-                        **{
-                            **execution.kwargs,
-                            **dependencies,
-                        },
-                    )
-
-            TASKS_SUCCEEDED.add(1, counter_labels)
-            duration = datetime.now(timezone.utc) - start
-            log_context["duration"] = duration.total_seconds()
-            rescheduled = await self._perpetuate_if_requested(
-                execution, dependencies, duration
-            )
-            arrow = "↫" if rescheduled else "↩"
-            logger.info("%s [%s] %s", arrow, duration, call, extra=log_context)
-        except Exception:
-            TASKS_FAILED.add(1, counter_labels)
-            duration = datetime.now(timezone.utc) - start
-            log_context["duration"] = duration.total_seconds()
-            retried = await self._retry_if_requested(execution, dependencies)
-            if not retried:
-                retried = await self._perpetuate_if_requested(
-                    execution, dependencies, duration
+        with tracer.start_as_current_span(
+            execution.function.__name__,
+            kind=trace.SpanKind.CONSUMER,
+            attributes={
+                **self.labels(),
+                **execution.specific_labels(),
+                "code.function.name": execution.function.__name__,
+            },
+            links=links,
+        ):
+            async with self._dependencies(execution) as dependencies:
+                # Preemptively reschedule the perpetual task for the future, or clear
+                # the known task key for this task
+                rescheduled = await self._perpetuate_if_requested(
+                    execution, dependencies
                 )
-            arrow = "↫" if retried else "↩"
-            logger.exception("%s [%s] %s", arrow, duration, call, extra=log_context)
-        finally:
-            TASKS_RUNNING.add(-1, counter_labels)
-            TASKS_COMPLETED.add(1, counter_labels)
-            TASK_DURATION.record(duration.total_seconds(), counter_labels)
+                if not rescheduled:
+                    async with self.docket.redis() as redis:
+                        await self._delete_known_task(redis, execution)
+
+                try:
+                    from .dependencies import Timeout, get_single_dependency_of_type
+
+                    if timeout := get_single_dependency_of_type(dependencies, Timeout):
+                        await self._run_function_with_timeout(
+                            execution, dependencies, timeout
+                        )
+                    else:
+                        await execution.function(
+                            *execution.args,
+                            **{
+                                **execution.kwargs,
+                                **dependencies,
+                            },
+                        )
+
+                    TASKS_SUCCEEDED.add(1, counter_labels)
+                    duration = datetime.now(timezone.utc) - start
+                    log_context["duration"] = duration.total_seconds()
+                    rescheduled = await self._perpetuate_if_requested(
+                        execution, dependencies, duration
+                    )
+                    arrow = "↫" if rescheduled else "↩"
+                    logger.info("%s [%s] %s", arrow, duration, call, extra=log_context)
+                except Exception:
+                    TASKS_FAILED.add(1, counter_labels)
+                    duration = datetime.now(timezone.utc) - start
+                    log_context["duration"] = duration.total_seconds()
+                    retried = await self._retry_if_requested(execution, dependencies)
+                    if not retried:
+                        retried = await self._perpetuate_if_requested(
+                            execution, dependencies, duration
+                        )
+                    arrow = "↫" if retried else "↩"
+                    logger.exception(
+                        "%s [%s] %s", arrow, duration, call, extra=log_context
+                    )
+                finally:
+                    TASKS_RUNNING.add(-1, counter_labels)
+                    TASKS_COMPLETED.add(1, counter_labels)
+                    TASK_DURATION.record(duration.total_seconds(), counter_labels)
 
     async def _run_function_with_timeout(
         self,
@@ -554,8 +570,9 @@ class Worker:
         dependencies: dict[str, "Dependency"],
         timeout: "Timeout",
     ) -> None:
-        task_coro = execution.function(
-            *execution.args, **execution.kwargs, **dependencies
+        task_coro = cast(
+            Coroutine[None, None, None],
+            execution.function(*execution.args, **execution.kwargs, **dependencies),
         )
         task = asyncio.create_task(task_coro)
         try:
@@ -579,28 +596,31 @@ class Worker:
             except asyncio.CancelledError:
                 raise asyncio.TimeoutError
 
-    async def _get_dependencies(
-        self,
-        execution: Execution,
-    ) -> dict[str, "Dependency"]:
-        from .dependencies import get_dependency_parameters
+    @asynccontextmanager
+    async def _dependencies(
+        self, execution: Execution
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        from .dependencies import Dependency, get_dependency_parameters
 
         parameters = get_dependency_parameters(execution.function)
 
-        dependencies: dict[str, "Dependency"] = {}
+        values: dict[str, Any] = {}
 
-        for parameter_name, dependency in parameters.items():
-            # If the argument is already provided, skip it, which allows users to call
-            # the function directly with the arguments they want.
-            if parameter_name in execution.kwargs:
-                dependencies[parameter_name] = execution.kwargs[parameter_name]
-                continue
+        Dependency.docket.set(self.docket)
+        Dependency.worker.set(self)
+        Dependency.execution.set(execution)
 
-            dependencies[parameter_name] = await dependency(
-                self.docket, self, execution
-            )
+        async with AsyncExitStack() as stack:
+            for parameter_name, dependency in parameters.items():
+                # If the argument is already provided, skip it, which allows users to call
+                # the function directly with the arguments they want.
+                if parameter_name in execution.kwargs:
+                    values[parameter_name] = execution.kwargs[parameter_name]
+                    continue
 
-        return dependencies
+                values[parameter_name] = await stack.enter_async_context(dependency)
+
+            yield values
 
     async def _retry_if_requested(
         self,

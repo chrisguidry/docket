@@ -38,6 +38,7 @@ from .execution import (
     Strike,
     StrikeInstruction,
     StrikeList,
+    TaskFunction,
 )
 from .instrumentation import (
     REDIS_DISRUPTIONS,
@@ -57,7 +58,7 @@ tracer: trace.Tracer = trace.get_tracer(__name__)
 P = ParamSpec("P")
 R = TypeVar("R")
 
-TaskCollection = Iterable[Callable[..., Awaitable[Any]]]
+TaskCollection = Iterable[TaskFunction]
 
 RedisStreamID = bytes
 RedisMessageID = bytes
@@ -91,7 +92,7 @@ class RunningExecution(Execution):
         worker: str,
         started: datetime,
     ) -> None:
-        self.function: Callable[..., Awaitable[Any]] = execution.function
+        self.function: TaskFunction = execution.function
         self.args: tuple[Any, ...] = execution.args
         self.kwargs: dict[str, Any] = execution.kwargs
         self.when: datetime = execution.when
@@ -111,7 +112,7 @@ class DocketSnapshot:
 
 
 class Docket:
-    tasks: dict[str, Callable[..., Awaitable[Any]]]
+    tasks: dict[str, TaskFunction]
     strike_list: StrikeList
 
     _monitor_strikes_task: asyncio.Task[None]
@@ -197,7 +198,7 @@ class Docket:
         finally:
             await asyncio.shield(r.__aexit__(None, None, None))
 
-    def register(self, function: Callable[..., Awaitable[Any]]) -> None:
+    def register(self, function: TaskFunction) -> None:
         from .dependencies import validate_dependencies
 
         validate_dependencies(function)
