@@ -50,7 +50,7 @@ tracer: Tracer = trace.get_tracer(__name__)
 
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .dependencies import Dependency
+    from .dependencies import Dependency, Timeout
 
 
 class _stream_due_tasks(Protocol):
@@ -507,13 +507,20 @@ class Worker:
                 },
                 links=links,
             ):
-                await execution.function(
-                    *execution.args,
-                    **{
-                        **execution.kwargs,
-                        **dependencies,
-                    },
-                )
+                from .dependencies import Timeout, get_single_dependency_of_type
+
+                if timeout := get_single_dependency_of_type(dependencies, Timeout):
+                    await self._run_function_with_timeout(
+                        execution, dependencies, timeout
+                    )
+                else:
+                    await execution.function(
+                        *execution.args,
+                        **{
+                            **execution.kwargs,
+                            **dependencies,
+                        },
+                    )
 
             TASKS_SUCCEEDED.add(1, counter_labels)
             duration = datetime.now(timezone.utc) - start
@@ -538,6 +545,38 @@ class Worker:
             TASKS_RUNNING.add(-1, counter_labels)
             TASKS_COMPLETED.add(1, counter_labels)
             TASK_DURATION.record(duration.total_seconds(), counter_labels)
+
+    async def _run_function_with_timeout(
+        self,
+        execution: Execution,
+        dependencies: dict[str, "Dependency"],
+        timeout: "Timeout",
+    ) -> None:
+        timeout.start()
+        task_coro = execution.function(
+            *execution.args, **execution.kwargs, **dependencies
+        )
+        task = asyncio.create_task(task_coro)
+        try:
+            while not task.done():  # pragma: no branch
+                remaining = timeout.remaining().total_seconds()
+                if timeout.expired():
+                    task.cancel()
+                    break
+
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+                    return
+                except asyncio.TimeoutError:
+                    continue
+        finally:
+            if not task.done():
+                task.cancel()
+
+            try:
+                await task
+            except asyncio.CancelledError:
+                raise asyncio.TimeoutError
 
     def _get_dependencies(
         self,

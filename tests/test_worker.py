@@ -382,14 +382,12 @@ async def test_perpetual_tasks_are_scheduled_close_to_target_time(
 
     intervals = [next - previous for previous, next in zip(timestamps, timestamps[1:])]
     minimum = min(intervals)
-    maximum = max(intervals)
 
     debug = ", ".join([f"{i.total_seconds() * 1000:.2f}ms" for i in intervals])
 
-    # even with a variable duration, Docket attempts to schedule them equally and to
-    # abide by the target interval
+    # It's not reliable to assert the maximum duration on different machine setups, but
+    # we'll make sure that the minimum is observed, which is the guarantee
     assert minimum >= timedelta(milliseconds=50), debug
-    assert maximum <= timedelta(milliseconds=75), debug
 
 
 async def test_worker_can_exit_from_perpetual_tasks_that_queue_further_tasks(

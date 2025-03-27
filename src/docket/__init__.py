@@ -18,6 +18,7 @@ from .dependencies import (
     Retry,
     TaskKey,
     TaskLogger,
+    Timeout,
 )
 from .docket import Docket
 from .execution import Execution
@@ -36,5 +37,6 @@ __all__ = [
     "ExponentialRetry",
     "Logged",
     "Perpetual",
+    "Timeout",
     "__version__",
 ]
