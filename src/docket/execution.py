@@ -7,8 +7,11 @@ from typing import Any, Awaitable, Callable, Hashable, Literal, Mapping, Self, c
 
 import cloudpickle  # type: ignore[import]
 
+from opentelemetry import propagate
+import opentelemetry.context
 
 from .annotations import Logged
+from docket.instrumentation import message_getter
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -24,6 +27,7 @@ class Execution:
         when: datetime,
         key: str,
         attempt: int,
+        trace_context: opentelemetry.context.Context | None = None,
     ) -> None:
         self.function = function
         self.args = args
@@ -31,6 +35,7 @@ class Execution:
         self.when = when
         self.key = key
         self.attempt = attempt
+        self.trace_context = trace_context
 
     def as_message(self) -> Message:
         return {
@@ -53,6 +58,7 @@ class Execution:
             when=datetime.fromisoformat(message[b"when"].decode()),
             key=message[b"key"].decode(),
             attempt=int(message[b"attempt"].decode()),
+            trace_context=propagate.extract(message, getter=message_getter),
         )
 
     def general_labels(self) -> Mapping[str, str]:

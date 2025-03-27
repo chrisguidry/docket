@@ -13,6 +13,7 @@ from .dependencies import (
     CurrentDocket,
     CurrentExecution,
     CurrentWorker,
+    Depends,
     ExponentialRetry,
     Perpetual,
     Retry,
@@ -38,5 +39,6 @@ __all__ = [
     "Logged",
     "Perpetual",
     "Timeout",
+    "Depends",
     "__version__",
 ]
