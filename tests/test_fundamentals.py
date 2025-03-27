@@ -7,9 +7,10 @@ as possible to aid with understanding docket.
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from logging import LoggerAdapter
-from typing import Annotated, Callable
+from typing import Annotated, AsyncGenerator, Callable
 from unittest.mock import AsyncMock, call
 from uuid import uuid4
 
@@ -1259,3 +1260,41 @@ async def test_simple_function_dependencies(docket: Docket, worker: Worker):
     await worker.run_until_finished()
 
     assert called == 1
+
+
+async def test_contextual_dependencies(docket: Docket, worker: Worker):
+    """A task can depend on the return value of async context managers"""
+
+    stages: list[str] = []
+
+    @asynccontextmanager
+    async def dependency_one() -> AsyncGenerator[str, None]:
+        stages.append("one-before")
+        yield f"one-{uuid4()}"
+        stages.append("one-after")
+
+    async def dependency_two() -> str:
+        return f"two-{uuid4()}"
+
+    called = 0
+
+    async def dependent_task(
+        one_a: str = Depends(dependency_one),
+        one_b: str = Depends(dependency_one),
+        two: str = Depends(dependency_two),
+    ):
+        assert one_a.startswith("one-")
+        assert one_b.startswith("one-")
+        assert one_a != one_b
+
+        assert two.startswith("two-")
+
+        nonlocal called
+        called += 1
+
+    await docket.add(dependent_task)()
+
+    await worker.run_until_finished()
+
+    assert called == 1
+    assert stages == ["one-before", "one-before", "one-after", "one-after"]

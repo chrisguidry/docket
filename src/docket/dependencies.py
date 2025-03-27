@@ -2,28 +2,46 @@ import abc
 import inspect
 import logging
 import time
+from contextvars import ContextVar
 from datetime import timedelta
-from typing import Any, Awaitable, Callable, Counter, Generic, TypeVar, cast
+from types import TracebackType
+from typing import (
+    Any,
+    AsyncContextManager,
+    Awaitable,
+    Callable,
+    Counter,
+    Generic,
+    TypeVar,
+    cast,
+)
 
 from .docket import Docket
-from .execution import Execution
+from .execution import Execution, TaskFunction
 from .worker import Worker
 
 
 class Dependency(abc.ABC):
     single: bool = False
 
+    docket: ContextVar[Docket] = ContextVar("docket")
+    worker: ContextVar[Worker] = ContextVar("worker")
+    execution: ContextVar[Execution] = ContextVar("execution")
+
     @abc.abstractmethod
-    async def __call__(
-        self, docket: Docket, worker: Worker, execution: Execution
-    ) -> Any: ...  # pragma: no cover
+    async def __aenter__(self) -> Any: ...  # pragma: no cover
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool: ...  # pragma: no cover
 
 
 class _CurrentWorker(Dependency):
-    async def __call__(
-        self, docket: Docket, worker: Worker, execution: Execution
-    ) -> Worker:
-        return worker
+    async def __aenter__(self) -> Worker:
+        return self.worker.get()
 
 
 def CurrentWorker() -> Worker:
@@ -31,10 +49,8 @@ def CurrentWorker() -> Worker:
 
 
 class _CurrentDocket(Dependency):
-    async def __call__(
-        self, docket: Docket, worker: Worker, execution: Execution
-    ) -> Docket:
-        return docket
+    async def __aenter__(self) -> Docket:
+        return self.docket.get()
 
 
 def CurrentDocket() -> Docket:
@@ -42,10 +58,8 @@ def CurrentDocket() -> Docket:
 
 
 class _CurrentExecution(Dependency):
-    async def __call__(
-        self, docket: Docket, worker: Worker, execution: Execution
-    ) -> Execution:
-        return execution
+    async def __aenter__(self) -> Execution:
+        return self.execution.get()
 
 
 def CurrentExecution() -> Execution:
@@ -53,10 +67,8 @@ def CurrentExecution() -> Execution:
 
 
 class _TaskKey(Dependency):
-    async def __call__(
-        self, docket: Docket, worker: Worker, execution: Execution
-    ) -> str:
-        return execution.key
+    async def __aenter__(self) -> str:
+        return self.execution.get().key
 
 
 def TaskKey() -> str:
@@ -64,15 +76,14 @@ def TaskKey() -> str:
 
 
 class _TaskLogger(Dependency):
-    async def __call__(
-        self, docket: Docket, worker: Worker, execution: Execution
-    ) -> logging.LoggerAdapter[logging.Logger]:
+    async def __aenter__(self) -> logging.LoggerAdapter[logging.Logger]:
+        execution = self.execution.get()
         logger = logging.getLogger(f"docket.task.{execution.function.__name__}")
         return logging.LoggerAdapter(
             logger,
             {
-                **docket.labels(),
-                **worker.labels(),
+                **self.docket.get().labels(),
+                **self.worker.get().labels(),
                 **execution.specific_labels(),
             },
         )
@@ -92,9 +103,8 @@ class Retry(Dependency):
         self.delay = delay
         self.attempt = 1
 
-    async def __call__(
-        self, docket: Docket, worker: Worker, execution: Execution
-    ) -> "Retry":
+    async def __aenter__(self) -> "Retry":
+        execution = self.execution.get()
         retry = Retry(attempts=self.attempts, delay=self.delay)
         retry.attempt = execution.attempt
         return retry
@@ -113,9 +123,9 @@ class ExponentialRetry(Retry):
         self.minimum_delay = minimum_delay
         self.maximum_delay = maximum_delay
 
-    async def __call__(
-        self, docket: Docket, worker: Worker, execution: Execution
-    ) -> "ExponentialRetry":
+    async def __aenter__(self) -> "ExponentialRetry":
+        execution = self.execution.get()
+
         retry = ExponentialRetry(
             attempts=self.attempts,
             minimum_delay=self.minimum_delay,
@@ -164,9 +174,8 @@ class Perpetual(Dependency):
         self.automatic = automatic
         self.cancelled = False
 
-    async def __call__(
-        self, docket: Docket, worker: Worker, execution: Execution
-    ) -> "Perpetual":
+    async def __aenter__(self) -> "Perpetual":
+        execution = self.execution.get()
         perpetual = Perpetual(every=self.every)
         perpetual.args = execution.args
         perpetual.kwargs = execution.kwargs
@@ -190,9 +199,7 @@ class Timeout(Dependency):
     def __init__(self, base: timedelta) -> None:
         self.base = base
 
-    async def __call__(
-        self, docket: Docket, worker: Worker, execution: Execution
-    ) -> "Timeout":
+    async def __aenter__(self) -> "Timeout":
         timeout = Timeout(base=self.base)
         timeout.start()
         return timeout
@@ -214,23 +221,47 @@ class Timeout(Dependency):
 
 R = TypeVar("R")
 
+DependencyFunction = Callable[[], Awaitable[R] | AsyncContextManager[R]]
+
 
 class _Depends(Dependency, Generic[R]):
-    def __init__(self, dependency: Callable[[], Awaitable[R]]) -> None:
+    dependency: DependencyFunction[R]
+    context_manager: AsyncContextManager[R] | None
+
+    def __init__(
+        self, dependency: Callable[[], Awaitable[R] | AsyncContextManager[R]]
+    ) -> None:
         self.dependency = dependency
+        self.context_manager = None
 
-    async def __call__(self, docket: Docket, worker: Worker, execution: Execution) -> R:
-        return await self.dependency()
+    async def __aenter__(self) -> R:
+        value = self.dependency()
+
+        if isinstance(value, AsyncContextManager):
+            self.context_manager = value
+            return await value.__aenter__()
+
+        return await value
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        if self.context_manager is not None:
+            await self.context_manager.__aexit__(exc_type, exc_value, traceback)
+        return False
 
 
-def Depends(dependency: Callable[[], Awaitable[R]]) -> R:
+def Depends(dependency: DependencyFunction[R]) -> R:
     return cast(R, _Depends(dependency))
 
 
 def get_dependency_parameters(
-    function: Callable[..., Awaitable[Any]],
+    function: TaskFunction,
 ) -> dict[str, Dependency]:
-    dependencies: dict[str, Any] = {}
+    dependencies: dict[str, Dependency] = {}
 
     signature = inspect.signature(function)
 
@@ -247,7 +278,7 @@ D = TypeVar("D", bound=Dependency)
 
 
 def get_single_dependency_parameter_of_type(
-    function: Callable[..., Awaitable[Any]], dependency_type: type[D]
+    function: TaskFunction, dependency_type: type[D]
 ) -> D | None:
     assert dependency_type.single, "Dependency must be single"
     for _, dependency in get_dependency_parameters(function).items():
@@ -266,7 +297,7 @@ def get_single_dependency_of_type(
     return None
 
 
-def validate_dependencies(function: Callable[..., Awaitable[Any]]) -> None:
+def validate_dependencies(function: TaskFunction) -> None:
     parameters = get_dependency_parameters(function)
 
     counts = Counter(type(dependency) for dependency in parameters.values())

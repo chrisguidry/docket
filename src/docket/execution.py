@@ -15,13 +15,14 @@ from docket.instrumentation import message_getter
 
 logger: logging.Logger = logging.getLogger(__name__)
 
+TaskFunction = Callable[..., Awaitable[None]]
 Message = dict[bytes, bytes]
 
 
 class Execution:
     def __init__(
         self,
-        function: Callable[..., Awaitable[Any]],
+        function: TaskFunction,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
         when: datetime,
@@ -48,9 +49,7 @@ class Execution:
         }
 
     @classmethod
-    def from_message(
-        cls, function: Callable[..., Awaitable[Any]], message: Message
-    ) -> Self:
+    def from_message(cls, function: TaskFunction, message: Message) -> Self:
         return cls(
             function=function,
             args=cloudpickle.loads(message[b"args"]),
@@ -271,6 +270,8 @@ class StrikeList:
                 case "between":  # pragma: no branch
                     lower, upper = strike_value
                     return lower <= value <= upper
+                case _:  # pragma: no cover
+                    raise ValueError(f"Unknown operator: {operator}")
         except (ValueError, TypeError):
             # If we can't make the comparison due to incompatible types, just log the
             # error and assume the task is not stricken
