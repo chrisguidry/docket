@@ -15,8 +15,20 @@ from docket.instrumentation import message_getter
 
 logger: logging.Logger = logging.getLogger(__name__)
 
-TaskFunction = Callable[..., Awaitable[None]]
+TaskFunction = Callable[..., Awaitable[Any]]
 Message = dict[bytes, bytes]
+
+
+_signature_cache: dict[Callable[..., Any], inspect.Signature] = {}
+
+
+def get_signature(function: Callable[..., Any]) -> inspect.Signature:
+    if function in _signature_cache:
+        return _signature_cache[function]
+
+    signature = inspect.signature(function)
+    _signature_cache[function] = signature
+    return signature
 
 
 class Execution:
@@ -73,7 +85,7 @@ class Execution:
 
     def call_repr(self) -> str:
         arguments: list[str] = []
-        signature = inspect.signature(self.function)
+        signature = get_signature(self.function)
         function_name = self.function.__name__
 
         logged_parameters = Logged.annotated_parameters(signature)
@@ -222,10 +234,10 @@ class StrikeList:
         if function_name in self.task_strikes and not task_strikes:
             return True
 
-        sig = inspect.signature(execution.function)
+        signature = get_signature(execution.function)
 
         try:
-            bound_args = sig.bind(*execution.args, **execution.kwargs)
+            bound_args = signature.bind(*execution.args, **execution.kwargs)
             bound_args.apply_defaults()
         except TypeError:
             # If we can't make sense of the arguments, just assume the task is fine

@@ -1,13 +1,15 @@
 import abc
-import inspect
 import logging
 import time
+from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from datetime import timedelta
 from types import TracebackType
 from typing import (
+    TYPE_CHECKING,
     Any,
     AsyncContextManager,
+    AsyncGenerator,
     Awaitable,
     Callable,
     Counter,
@@ -17,15 +19,17 @@ from typing import (
 )
 
 from .docket import Docket
-from .execution import Execution, TaskFunction
-from .worker import Worker
+from .execution import Execution, TaskFunction, get_signature
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .worker import Worker
 
 
 class Dependency(abc.ABC):
     single: bool = False
 
     docket: ContextVar[Docket] = ContextVar("docket")
-    worker: ContextVar[Worker] = ContextVar("worker")
+    worker: ContextVar["Worker"] = ContextVar("worker")
     execution: ContextVar[Execution] = ContextVar("execution")
 
     @abc.abstractmethod
@@ -40,12 +44,12 @@ class Dependency(abc.ABC):
 
 
 class _CurrentWorker(Dependency):
-    async def __aenter__(self) -> Worker:
+    async def __aenter__(self) -> "Worker":
         return self.worker.get()
 
 
-def CurrentWorker() -> Worker:
-    return cast(Worker, _CurrentWorker())
+def CurrentWorker() -> "Worker":
+    return cast("Worker", _CurrentWorker())
 
 
 class _CurrentDocket(Dependency):
@@ -221,57 +225,82 @@ class Timeout(Dependency):
 
 R = TypeVar("R")
 
-DependencyFunction = Callable[[], Awaitable[R] | AsyncContextManager[R]]
+DependencyFunction = Callable[..., Awaitable[R] | AsyncContextManager[R]]
+
+
+_parameter_cache: dict[
+    TaskFunction | DependencyFunction[Any],
+    dict[str, Dependency],
+] = {}
+
+
+def get_dependency_parameters(
+    function: TaskFunction | DependencyFunction[Any],
+) -> dict[str, Dependency]:
+    if function in _parameter_cache:
+        return _parameter_cache[function]
+
+    dependencies: dict[str, Dependency] = {}
+
+    signature = get_signature(function)
+
+    for parameter, param in signature.parameters.items():
+        if not isinstance(param.default, Dependency):
+            continue
+
+        dependencies[parameter] = param.default
+
+    _parameter_cache[function] = dependencies
+    return dependencies
 
 
 class _Depends(Dependency, Generic[R]):
     dependency: DependencyFunction[R]
-    context_manager: AsyncContextManager[R] | None
+
+    cache: ContextVar[dict[DependencyFunction[Any], Any]] = ContextVar("cache")
+    stack: ContextVar[AsyncExitStack] = ContextVar("stack")
 
     def __init__(
         self, dependency: Callable[[], Awaitable[R] | AsyncContextManager[R]]
     ) -> None:
         self.dependency = dependency
-        self.context_manager = None
+
+    async def _resolve_parameters(
+        self,
+        function: TaskFunction | DependencyFunction[Any],
+    ) -> dict[str, Any]:
+        stack = self.stack.get()
+
+        arguments: dict[str, Any] = {}
+        parameters = get_dependency_parameters(function)
+
+        for parameter, dependency in parameters.items():
+            arguments[parameter] = await stack.enter_async_context(dependency)
+
+        return arguments
 
     async def __aenter__(self) -> R:
-        value = self.dependency()
+        cache = self.cache.get()
+
+        if self.dependency in cache:
+            return cache[self.dependency]
+
+        stack = self.stack.get()
+        arguments = await self._resolve_parameters(self.dependency)
+
+        value = self.dependency(**arguments)
 
         if isinstance(value, AsyncContextManager):
-            self.context_manager = value
-            return await value.__aenter__()
+            value = await stack.enter_async_context(value)
+        else:
+            value = await value
 
-        return await value
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> bool:
-        if self.context_manager is not None:
-            await self.context_manager.__aexit__(exc_type, exc_value, traceback)
-        return False
+        cache[self.dependency] = value
+        return value
 
 
 def Depends(dependency: DependencyFunction[R]) -> R:
     return cast(R, _Depends(dependency))
-
-
-def get_dependency_parameters(
-    function: TaskFunction,
-) -> dict[str, Dependency]:
-    dependencies: dict[str, Dependency] = {}
-
-    signature = inspect.signature(function)
-
-    for param_name, param in signature.parameters.items():
-        if not isinstance(param.default, Dependency):
-            continue
-
-        dependencies[param_name] = param.default
-
-    return dependencies
 
 
 D = TypeVar("D", bound=Dependency)
@@ -307,3 +336,31 @@ def validate_dependencies(function: TaskFunction) -> None:
             raise ValueError(
                 f"Only one {dependency_type.__name__} dependency is allowed per task"
             )
+
+
+@asynccontextmanager
+async def resolved_dependencies(
+    worker: "Worker", execution: Execution
+) -> AsyncGenerator[dict[str, Any], None]:
+    # Set context variables once at the beginning
+    Dependency.docket.set(worker.docket)
+    Dependency.worker.set(worker)
+    Dependency.execution.set(execution)
+
+    _Depends.cache.set({})
+
+    async with AsyncExitStack() as stack:
+        _Depends.stack.set(stack)
+
+        arguments: dict[str, Any] = {}
+
+        parameters = get_dependency_parameters(execution.function)
+        for parameter, dependency in parameters.items():
+            kwargs = execution.kwargs
+            if parameter in kwargs:
+                arguments[parameter] = kwargs[parameter]
+                continue
+
+            arguments[parameter] = await stack.enter_async_context(dependency)
+
+        yield arguments
