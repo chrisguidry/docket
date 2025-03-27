@@ -77,14 +77,14 @@ class Execution:
 
         for i, argument in enumerate(self.args[: len(parameter_names)]):
             parameter_name = parameter_names[i]
-            if parameter_name in logged_parameters:
-                arguments.append(repr(argument))
+            if logged := logged_parameters.get(parameter_name):
+                arguments.append(logged.format(argument))
             else:
                 arguments.append("...")
 
         for parameter_name, argument in self.kwargs.items():
-            if parameter_name in logged_parameters:
-                arguments.append(f"{parameter_name}={repr(argument)}")
+            if logged := logged_parameters.get(parameter_name):
+                arguments.append(f"{parameter_name}={logged.format(argument)}")
             else:
                 arguments.append(f"{parameter_name}=...")
 

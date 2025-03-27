@@ -28,3 +28,19 @@ class Annotation(abc.ABC):
 
 class Logged(Annotation):
     """Instructs docket to include arguments to this parameter in the log."""
+
+    length_only: bool = False
+
+    def __init__(self, length_only: bool = False) -> None:
+        self.length_only = length_only
+
+    def format(self, argument: Any) -> str:
+        if self.length_only:
+            if isinstance(argument, (dict, set)):
+                return f"{{len {len(argument)}}}"
+            elif isinstance(argument, tuple):
+                return f"(len {len(argument)})"
+            elif hasattr(argument, "__len__"):
+                return f"[len {len(argument)}]"
+
+        return repr(argument)

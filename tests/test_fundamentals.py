@@ -604,6 +604,33 @@ async def test_tasks_can_opt_into_argument_logging(
         assert "value-d" not in caplog.text
 
 
+async def test_tasks_can_opt_into_logging_collection_lengths(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """Tasks can opt into logging the length of collections"""
+
+    async def the_task(
+        a: Annotated[list[str], Logged(length_only=True)],
+        b: Annotated[dict[str, str], Logged(length_only=True)],
+        c: Annotated[tuple[str, ...], Logged(length_only=True)],
+        d: Annotated[set[str], Logged(length_only=True)],
+        e: Annotated[int, Logged(length_only=True)],
+        docket: Docket = CurrentDocket(),
+    ):
+        pass
+
+    await docket.add(the_task)(
+        ["a", "b"], b={"d": "e", "f": "g"}, c=("h", "i"), d={"a", "b", "c"}, e=123
+    )
+
+    with caplog.at_level(logging.INFO):
+        await worker.run_until_finished()
+
+        assert (
+            "the_task([len 2], b={len 2}, c=(len 2), d={len 3}, e=123)" in caplog.text
+        )
+
+
 async def test_logging_inside_of_task(
     docket: Docket,
     worker: Worker,
