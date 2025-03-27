@@ -1,14 +1,9 @@
 import asyncio
-import inspect
 import logging
 import sys
-from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
-    TYPE_CHECKING,
-    Any,
-    AsyncGenerator,
     Coroutine,
     Mapping,
     Protocol,
@@ -22,6 +17,17 @@ from opentelemetry.trace import Tracer
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError
 
+from docket.execution import get_signature
+
+from .dependencies import (
+    Dependency,
+    Perpetual,
+    Retry,
+    Timeout,
+    get_single_dependency_of_type,
+    get_single_dependency_parameter_of_type,
+    resolved_dependencies,
+)
 from .docket import (
     Docket,
     Execution,
@@ -48,10 +54,6 @@ from .instrumentation import (
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
-
-
-if TYPE_CHECKING:  # pragma: no cover
-    from .dependencies import Dependency, Timeout
 
 
 class _stream_due_tasks(Protocol):
@@ -198,7 +200,7 @@ class Worker:
     async def _run(self, forever: bool = False) -> None:
         logger.info("Starting worker %r with the following tasks:", self.name)
         for task_name, task in self.docket.tasks.items():
-            signature = inspect.signature(task)
+            signature = get_signature(task)
             logger.info("* %s%s", task_name, signature)
 
         while True:
@@ -428,8 +430,6 @@ class Worker:
         logger.debug("Scheduler loop finished", extra=self._log_context())
 
     async def _schedule_all_automatic_perpetual_tasks(self) -> None:
-        from .dependencies import Perpetual, get_single_dependency_parameter_of_type
-
         async with self.docket.redis() as redis:
             try:
                 async with redis.lock(
@@ -512,7 +512,7 @@ class Worker:
             },
             links=links,
         ):
-            async with self._dependencies(execution) as dependencies:
+            async with resolved_dependencies(self, execution) as dependencies:
                 # Preemptively reschedule the perpetual task for the future, or clear
                 # the known task key for this task
                 rescheduled = await self._perpetuate_if_requested(
@@ -523,8 +523,6 @@ class Worker:
                         await self._delete_known_task(redis, execution)
 
                 try:
-                    from .dependencies import Timeout, get_single_dependency_of_type
-
                     if timeout := get_single_dependency_of_type(dependencies, Timeout):
                         await self._run_function_with_timeout(
                             execution, dependencies, timeout
@@ -567,8 +565,8 @@ class Worker:
     async def _run_function_with_timeout(
         self,
         execution: Execution,
-        dependencies: dict[str, "Dependency"],
-        timeout: "Timeout",
+        dependencies: dict[str, Dependency],
+        timeout: Timeout,
     ) -> None:
         task_coro = cast(
             Coroutine[None, None, None],
@@ -596,39 +594,11 @@ class Worker:
             except asyncio.CancelledError:
                 raise asyncio.TimeoutError
 
-    @asynccontextmanager
-    async def _dependencies(
-        self, execution: Execution
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        from .dependencies import Dependency, get_dependency_parameters
-
-        parameters = get_dependency_parameters(execution.function)
-
-        values: dict[str, Any] = {}
-
-        Dependency.docket.set(self.docket)
-        Dependency.worker.set(self)
-        Dependency.execution.set(execution)
-
-        async with AsyncExitStack() as stack:
-            for parameter_name, dependency in parameters.items():
-                # If the argument is already provided, skip it, which allows users to call
-                # the function directly with the arguments they want.
-                if parameter_name in execution.kwargs:
-                    values[parameter_name] = execution.kwargs[parameter_name]
-                    continue
-
-                values[parameter_name] = await stack.enter_async_context(dependency)
-
-            yield values
-
     async def _retry_if_requested(
         self,
         execution: Execution,
-        dependencies: dict[str, "Dependency"],
+        dependencies: dict[str, Dependency],
     ) -> bool:
-        from .dependencies import Retry, get_single_dependency_of_type
-
         retry = get_single_dependency_of_type(dependencies, Retry)
         if not retry:
             return False
@@ -646,11 +616,9 @@ class Worker:
     async def _perpetuate_if_requested(
         self,
         execution: Execution,
-        dependencies: dict[str, "Dependency"],
+        dependencies: dict[str, Dependency],
         duration: timedelta | None = None,
     ) -> bool:
-        from .dependencies import Perpetual, get_single_dependency_of_type
-
         perpetual = get_single_dependency_of_type(dependencies, Perpetual)
         if not perpetual:
             return False

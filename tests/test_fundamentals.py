@@ -1247,8 +1247,7 @@ async def test_simple_function_dependencies(docket: Docket, worker: Worker):
         two: str = Depends(dependency_two),
     ):
         assert one_a.startswith("one-")
-        assert one_b.startswith("one-")
-        assert one_a != one_b
+        assert one_b == one_a
 
         assert two.startswith("two-")
 
@@ -1284,8 +1283,7 @@ async def test_contextual_dependencies(docket: Docket, worker: Worker):
         two: str = Depends(dependency_two),
     ):
         assert one_a.startswith("one-")
-        assert one_b.startswith("one-")
-        assert one_a != one_b
+        assert one_b == one_a
 
         assert two.startswith("two-")
 
@@ -1297,4 +1295,91 @@ async def test_contextual_dependencies(docket: Docket, worker: Worker):
     await worker.run_until_finished()
 
     assert called == 1
-    assert stages == ["one-before", "one-before", "one-after", "one-after"]
+    assert stages == ["one-before", "one-after"]
+
+
+async def test_dependencies_of_dependencies(docket: Docket, worker: Worker):
+    """A task dependency can depend on other dependencies"""
+    counter = 0
+
+    async def dependency_one() -> list[str]:
+        nonlocal counter
+        counter += 1
+        return [f"one-{counter}"]
+
+    async def dependency_two(my_one: list[str] = Depends(dependency_one)) -> list[str]:
+        nonlocal counter
+        counter += 1
+        return my_one + [f"two-{counter}"]
+
+    async def dependency_three(
+        my_one: list[str] = Depends(dependency_one),
+        my_two: list[str] = Depends(dependency_two),
+    ) -> list[str]:
+        nonlocal counter
+        counter += 1
+        return my_one + my_two + [f"three-{counter}"]
+
+    async def dependent_task(
+        one_a: list[str] = Depends(dependency_one),
+        one_b: list[str] = Depends(dependency_one),
+        two: list[str] = Depends(dependency_two),
+        three: list[str] = Depends(dependency_three),
+    ):
+        assert one_a is one_b
+
+        assert one_a == ["one-1"]
+        assert two == ["one-1", "two-2"]
+        assert three == ["one-1", "two-2", "three-3"]
+
+    await docket.add(dependent_task)()
+
+    await worker.run_until_finished()
+
+
+async def test_dependencies_can_ask_for_docket_dependencies(
+    docket: Docket, worker: Worker
+):
+    """A task dependency can ask for a docket dependency"""
+
+    called = 0
+
+    async def dependency_one(this_docket: Docket = CurrentDocket()) -> str:
+        assert this_docket is docket
+
+        nonlocal called
+        called += 1
+
+        return f"one-{called}"
+
+    async def dependency_two(
+        this_worker: Worker = CurrentWorker(),
+        one: str = Depends(dependency_one),
+    ) -> str:
+        assert this_worker is worker
+
+        assert one == "one-1"
+
+        nonlocal called
+        called += 1
+
+        return f"two-{called}"
+
+    async def dependent_task(
+        one: str = Depends(dependency_one),
+        two: str = Depends(dependency_two),
+        this_docket: Docket = CurrentDocket(),
+        this_worker: Worker = CurrentWorker(),
+    ):
+        assert one == "one-1"
+        assert two == "two-2"
+
+        assert this_docket is docket
+        assert this_worker is worker
+
+        nonlocal called
+        called += 1
+
+    await docket.add(dependent_task)()
+
+    await worker.run_until_finished()
