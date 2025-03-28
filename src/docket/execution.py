@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable, Hashable, Literal, Mapping, Self, c
 
 import cloudpickle  # type: ignore[import]
 
-from opentelemetry import propagate
+from opentelemetry import trace, propagate
 import opentelemetry.context
 
 from .annotations import Logged
@@ -85,11 +85,10 @@ class Execution:
 
     def call_repr(self) -> str:
         arguments: list[str] = []
-        signature = get_signature(self.function)
         function_name = self.function.__name__
 
+        signature = get_signature(self.function)
         logged_parameters = Logged.annotated_parameters(signature)
-
         parameter_names = list(signature.parameters.keys())
 
         for i, argument in enumerate(self.args[: len(parameter_names)]):
@@ -106,6 +105,11 @@ class Execution:
                 arguments.append(f"{parameter_name}=...")
 
         return f"{function_name}({', '.join(arguments)}){{{self.key}}}"
+
+    def incoming_span_links(self) -> list[trace.Link]:
+        initiating_span = trace.get_current_span(self.trace_context)
+        initiating_context = initiating_span.get_span_context()
+        return [trace.Link(initiating_context)] if initiating_context.is_valid else []
 
 
 class Operator(enum.StrEnum):
