@@ -27,6 +27,7 @@ from docket import (
     Logged,
     Perpetual,
     Retry,
+    TaskArgument,
     TaskKey,
     TaskLogger,
     Timeout,
@@ -1383,3 +1384,66 @@ async def test_dependencies_can_ask_for_docket_dependencies(
     await docket.add(dependent_task)()
 
     await worker.run_until_finished()
+
+
+async def test_dependency_failures_are_task_failures(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """A task dependency failure will cause the task to fail"""
+
+    called: bool = False
+
+    async def dependency_one() -> str:
+        raise ValueError("this one is bad")
+
+    async def dependency_two() -> str:
+        raise ValueError("and so is this one")
+
+    async def dependent_task(
+        a: str = Depends(dependency_one),
+        b: str = Depends(dependency_two),
+    ) -> None:
+        nonlocal called
+        called = True  # pragma: no cover
+
+    await docket.add(dependent_task)()
+
+    with caplog.at_level(logging.ERROR):
+        await worker.run_until_finished()
+
+    assert not called
+
+    assert "Failed to resolve dependencies for parameter(s): a, b" in caplog.text
+    assert "ValueError: this one is bad" in caplog.text
+    assert "ValueError: and so is this one" in caplog.text
+
+
+async def test_dependencies_can_ask_for_task_arguments(docket: Docket, worker: Worker):
+    """A task dependency can ask for a task argument"""
+
+    called = 0
+
+    async def dependency_one(a: list[str] = TaskArgument()) -> list[str]:
+        return a
+
+    async def dependency_two(another_name: list[str] = TaskArgument("a")) -> list[str]:
+        return another_name
+
+    async def dependent_task(
+        a: list[str],
+        b: list[str] = TaskArgument("a"),
+        c: list[str] = Depends(dependency_one),
+        d: list[str] = Depends(dependency_two),
+    ) -> None:
+        assert a is b
+        assert a is c
+        assert a is d
+
+        nonlocal called
+        called += 1
+
+    await docket.add(dependent_task)(a=["hello", "world"])
+
+    await worker.run_until_finished()
+
+    assert called == 1

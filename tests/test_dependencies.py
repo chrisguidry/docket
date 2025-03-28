@@ -1,7 +1,9 @@
+import logging
+
 import pytest
 
 from docket import CurrentDocket, CurrentWorker, Docket, Worker
-from docket.dependencies import Retry
+from docket.dependencies import Depends, Retry, TaskArgument
 
 
 async def test_dependencies_may_be_duplicated(docket: Docket, worker: Worker):
@@ -91,3 +93,48 @@ async def test_user_provide_retries_are_used(docket: Docket, worker: Worker):
     await worker.run_until_finished()
 
     assert calls == 2
+
+
+async def test_dependencies_error_for_missing_task_argument(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """A task will fail when asking for a missing task argument"""
+
+    async def dependency_one(nope: list[str] = TaskArgument()) -> list[str]:
+        raise NotImplementedError("This should not be called")  # pragma: no cover
+
+    async def dependent_task(
+        a: list[str],
+        b: list[str] = TaskArgument("a"),
+        c: list[str] = Depends(dependency_one),
+    ) -> None:
+        raise NotImplementedError("This should not be called")  # pragma: no cover
+
+    await docket.add(dependent_task)(a=["hello", "world"])
+
+    await worker.run_until_finished()
+
+    with caplog.at_level(logging.ERROR):
+        await worker.run_until_finished()
+
+    assert "Failed to resolve dependencies for parameter(s): c" in caplog.text
+    assert "ExceptionGroup" in caplog.text
+    assert "KeyError: 'nope'" in caplog.text
+
+
+async def test_a_task_argument_cannot_ask_for_itself(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """A task argument cannot ask for itself"""
+
+    # This task would be nonsense, because it's asking for itself.
+    async def dependent_task(a: list[str] = TaskArgument()) -> None:
+        raise NotImplementedError("This should not be called")  # pragma: no cover
+
+    await docket.add(dependent_task)()
+
+    with caplog.at_level(logging.ERROR):
+        await worker.run_until_finished()
+
+    assert "Failed to resolve dependencies for parameter(s): a" in caplog.text
+    assert "ValueError: No parameter name specified" in caplog.text

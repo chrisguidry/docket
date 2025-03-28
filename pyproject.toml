@@ -64,6 +64,9 @@ source = "vcs"
 [tool.hatch.build.targets.wheel]
 packages = ["src/docket"]
 
+[tool.ruff]
+target-version = "py312"
+
 [tool.pytest.ini_options]
 addopts = [
     "--numprocesses=logical",

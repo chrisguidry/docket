@@ -491,3 +491,25 @@ def test_formatting_durations():
     assert ms(1000.000) == "  1000s "
     assert ms(10000.00) == " 10000s "
     assert ms(100000.0) == "100000s "
+
+
+async def test_worker_can_be_told_to_skip_automatic_tasks(docket: Docket):
+    """A worker can be told to skip automatic tasks"""
+
+    called = False
+
+    async def perpetual_task(
+        perpetual: Perpetual = Perpetual(
+            every=timedelta(milliseconds=50), automatic=True
+        ),
+    ):
+        nonlocal called
+        called = True  # pragma: no cover
+
+    docket.register(perpetual_task)
+
+    # Without the flag, this would hang because the task would always be scheduled
+    async with Worker(docket, schedule_automatic_tasks=False) as worker:
+        await worker.run_until_finished()
+
+    assert not called
