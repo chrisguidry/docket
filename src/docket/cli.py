@@ -245,6 +245,13 @@ def worker(
             envvar="DOCKET_WORKER_SCHEDULING_RESOLUTION",
         ),
     ] = timedelta(milliseconds=250),
+    schedule_automatic_tasks: Annotated[
+        bool,
+        typer.Option(
+            "--schedule-automatic-tasks",
+            help="Schedule automatic tasks",
+        ),
+    ] = True,
     until_finished: Annotated[
         bool,
         typer.Option(
@@ -270,6 +277,7 @@ def worker(
             reconnection_delay=reconnection_delay,
             minimum_check_interval=minimum_check_interval,
             scheduling_resolution=scheduling_resolution,
+            schedule_automatic_tasks=schedule_automatic_tasks,
             until_finished=until_finished,
             metrics_port=metrics_port,
             tasks=tasks,

@@ -79,6 +79,22 @@ def TaskKey() -> str:
     return cast(str, _TaskKey())
 
 
+class _TaskArgument(Dependency):
+    parameter: str | None
+
+    def __init__(self, parameter: str | None = None) -> None:
+        self.parameter = parameter
+
+    async def __aenter__(self) -> Any:
+        assert self.parameter is not None
+        execution = self.execution.get()
+        return execution.get_argument(self.parameter)
+
+
+def TaskArgument(parameter: str | None = None) -> Any:
+    return cast(Any, _TaskArgument(parameter))
+
+
 class _TaskLogger(Dependency):
     async def __aenter__(self) -> logging.LoggerAdapter[logging.Logger]:
         execution = self.execution.get()
@@ -275,6 +291,11 @@ class _Depends(Dependency, Generic[R]):
         parameters = get_dependency_parameters(function)
 
         for parameter, dependency in parameters.items():
+            # Special case for TaskArguments, they are "magical" and infer the parameter
+            # they refer to from the parameter name (unless otherwise specified)
+            if isinstance(dependency, _TaskArgument) and not dependency.parameter:
+                dependency.parameter = parameter
+
             arguments[parameter] = await stack.enter_async_context(dependency)
 
         return arguments
@@ -338,6 +359,12 @@ def validate_dependencies(function: TaskFunction) -> None:
             )
 
 
+class FailedDependency:
+    def __init__(self, parameter: str, error: Exception) -> None:
+        self.parameter = parameter
+        self.error = error
+
+
 @asynccontextmanager
 async def resolved_dependencies(
     worker: "Worker", execution: Execution
@@ -361,6 +388,19 @@ async def resolved_dependencies(
                 arguments[parameter] = kwargs[parameter]
                 continue
 
-            arguments[parameter] = await stack.enter_async_context(dependency)
+            # Special case for TaskArguments, they are "magical" and infer the parameter
+            # they refer to from the parameter name (unless otherwise specified).  At
+            # the top-level task function call, it doesn't make sense to specify one
+            # _without_ a parameter name, so we'll call that a failed dependency.
+            if isinstance(dependency, _TaskArgument) and not dependency.parameter:
+                arguments[parameter] = FailedDependency(
+                    parameter, ValueError("No parameter name specified")
+                )
+                continue
+
+            try:
+                arguments[parameter] = await stack.enter_async_context(dependency)
+            except Exception as error:
+                arguments[parameter] = FailedDependency(parameter, error)
 
         yield arguments

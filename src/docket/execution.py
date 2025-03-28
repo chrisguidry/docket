@@ -83,6 +83,11 @@ class Execution:
             "docket.attempt": self.attempt,
         }
 
+    def get_argument(self, parameter: str) -> Any:
+        signature = get_signature(self.function)
+        bound_args = signature.bind(*self.args, **self.kwargs)
+        return bound_args.arguments[parameter]
+
     def call_repr(self) -> str:
         arguments: list[str] = []
         function_name = self.function.__name__

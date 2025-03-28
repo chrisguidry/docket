@@ -22,6 +22,7 @@ from docket.execution import get_signature
 
 from .dependencies import (
     Dependency,
+    FailedDependency,
     Perpetual,
     Retry,
     Timeout,
@@ -71,6 +72,7 @@ class Worker:
     reconnection_delay: timedelta
     minimum_check_interval: timedelta
     scheduling_resolution: timedelta
+    schedule_automatic_tasks: bool
 
     def __init__(
         self,
@@ -81,6 +83,7 @@ class Worker:
         reconnection_delay: timedelta = timedelta(seconds=5),
         minimum_check_interval: timedelta = timedelta(milliseconds=250),
         scheduling_resolution: timedelta = timedelta(milliseconds=250),
+        schedule_automatic_tasks: bool = True,
     ) -> None:
         self.docket = docket
         self.name = name or f"worker:{uuid4()}"
@@ -89,6 +92,7 @@ class Worker:
         self.reconnection_delay = reconnection_delay
         self.minimum_check_interval = minimum_check_interval
         self.scheduling_resolution = scheduling_resolution
+        self.schedule_automatic_tasks = schedule_automatic_tasks
 
     async def __aenter__(self) -> Self:
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
@@ -134,6 +138,7 @@ class Worker:
         reconnection_delay: timedelta = timedelta(seconds=5),
         minimum_check_interval: timedelta = timedelta(milliseconds=100),
         scheduling_resolution: timedelta = timedelta(milliseconds=250),
+        schedule_automatic_tasks: bool = True,
         until_finished: bool = False,
         metrics_port: int | None = None,
         tasks: list[str] = ["docket.tasks:standard_tasks"],
@@ -151,6 +156,7 @@ class Worker:
                     reconnection_delay=reconnection_delay,
                     minimum_check_interval=minimum_check_interval,
                     scheduling_resolution=scheduling_resolution,
+                    schedule_automatic_tasks=schedule_automatic_tasks,
                 ) as worker:
                     if until_finished:
                         await worker.run_until_finished()
@@ -220,7 +226,8 @@ class Worker:
     async def _worker_loop(self, redis: Redis, forever: bool = False):
         worker_stopping = asyncio.Event()
 
-        await self._schedule_all_automatic_perpetual_tasks()
+        if self.schedule_automatic_tasks:
+            await self._schedule_all_automatic_perpetual_tasks()
 
         scheduler_task = asyncio.create_task(
             self._scheduler_loop(redis, worker_stopping)
@@ -520,6 +527,23 @@ class Worker:
                         await self._delete_known_task(redis, execution)
 
                 try:
+                    dependency_failures = {
+                        k: v
+                        for k, v in dependencies.items()
+                        if isinstance(v, FailedDependency)
+                    }
+                    if dependency_failures:
+                        raise ExceptionGroup(
+                            (
+                                "Failed to resolve dependencies for parameter(s): "
+                                + ", ".join(dependency_failures.keys())
+                            ),
+                            [
+                                dependency.error
+                                for dependency in dependency_failures.values()
+                            ],
+                        )
+
                     if timeout := get_single_dependency_of_type(dependencies, Timeout):
                         await self._run_function_with_timeout(
                             execution, dependencies, timeout
