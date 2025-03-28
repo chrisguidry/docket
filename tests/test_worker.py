@@ -13,6 +13,7 @@ from docket import CurrentWorker, Docket, Worker
 from docket.dependencies import CurrentDocket, Perpetual
 from docket.execution import Execution
 from docket.tasks import standard_tasks
+from docket.worker import ms
 
 
 async def test_worker_acknowledges_messages(
@@ -475,3 +476,18 @@ async def test_worker_can_exit_from_long_horizon_perpetual_tasks(
     await worker.run_at_most({"my-key": 1})
 
     assert calls == 1
+
+
+def test_formatting_durations():
+    assert ms(0.000001) == "     0ms"
+    assert ms(0.000010) == "     0ms"
+    assert ms(0.000100) == "     0ms"
+    assert ms(0.001000) == "     1ms"
+    assert ms(0.010000) == "    10ms"
+    assert ms(0.100000) == "   100ms"
+    assert ms(1.000000) == "  1000ms"
+    assert ms(10.00000) == " 10000ms"
+    assert ms(100.0000) == "   100s "
+    assert ms(1000.000) == "  1000s "
+    assert ms(10000.00) == " 10000s "
+    assert ms(100000.0) == "100000s "

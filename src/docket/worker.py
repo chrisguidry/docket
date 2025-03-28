@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
@@ -228,8 +229,10 @@ class Worker:
         active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
         available_slots = self.concurrency
 
+        log_context = self._log_context()
+
         async def check_for_work() -> bool:
-            logger.debug("Checking for work", extra=self._log_context())
+            logger.debug("Checking for work", extra=log_context)
             async with redis.pipeline() as pipeline:
                 pipeline.xlen(self.docket.stream_key)
                 pipeline.zcard(self.docket.queue_key)
@@ -239,7 +242,7 @@ class Worker:
                 return stream_len > 0 or queue_len > 0
 
         async def get_redeliveries(redis: Redis) -> RedisReadGroupResponse:
-            logger.debug("Getting redeliveries", extra=self._log_context())
+            logger.debug("Getting redeliveries", extra=log_context)
             _, redeliveries, *_ = await redis.xautoclaim(
                 name=self.docket.stream_key,
                 groupname=self.docket.worker_group_name,
@@ -251,7 +254,7 @@ class Worker:
             return [(b"__redelivery__", redeliveries)]
 
         async def get_new_deliveries(redis: Redis) -> RedisReadGroupResponse:
-            logger.debug("Getting new deliveries", extra=self._log_context())
+            logger.debug("Getting new deliveries", extra=log_context)
             return await redis.xreadgroup(
                 groupname=self.docket.worker_group_name,
                 consumername=self.name,
@@ -261,21 +264,18 @@ class Worker:
             )
 
         def start_task(message_id: RedisMessageID, message: RedisMessage) -> bool:
-            if not message:  # pragma: no cover
-                return False
-
             function_name = message[b"function"].decode()
             if not (function := self.docket.tasks.get(function_name)):
                 logger.warning(
                     "Task function %r not found",
                     function_name,
-                    extra=self._log_context(),
+                    extra=log_context,
                 )
                 return False
 
             execution = Execution.from_message(function, message)
 
-            task = asyncio.create_task(self._execute(execution))
+            task = asyncio.create_task(self._execute(execution), name=execution.key)
             active_tasks[task] = message_id
 
             nonlocal available_slots
@@ -283,8 +283,15 @@ class Worker:
 
             return True
 
+        async def process_completed_tasks() -> None:
+            completed_tasks = {task for task in active_tasks if task.done()}
+            for task in completed_tasks:
+                message_id = active_tasks.pop(task)
+                await task
+                await ack_message(redis, message_id)
+
         async def ack_message(redis: Redis, message_id: RedisMessageID) -> None:
-            logger.debug("Acknowledging message", extra=self._log_context())
+            logger.debug("Acknowledging message", extra=log_context)
             async with redis.pipeline() as pipeline:
                 pipeline.xack(
                     self.docket.stream_key,
@@ -296,13 +303,6 @@ class Worker:
                     message_id,
                 )
                 await pipeline.execute()
-
-        async def process_completed_tasks() -> None:
-            completed_tasks = {task for task in active_tasks if task.done()}
-            for task in completed_tasks:
-                message_id = active_tasks.pop(task)
-                await task
-                await ack_message(redis, message_id)
 
         has_work: bool = True
 
@@ -319,6 +319,9 @@ class Worker:
                 for source in [get_redeliveries, get_new_deliveries]:
                     for _, messages in await source(redis):
                         for message_id, message in messages:
+                            if not message:  # pragma: no cover
+                                continue
+
                             if not start_task(message_id, message):
                                 await self._delete_known_task(redis, message)
                                 await ack_message(redis, message_id)
@@ -334,7 +337,7 @@ class Worker:
                 logger.info(
                     "Shutdown requested, finishing %d active tasks...",
                     len(active_tasks),
-                    extra=self._log_context(),
+                    extra=log_context,
                 )
         finally:
             if active_tasks:
@@ -401,9 +404,11 @@ class Worker:
 
         total_work: int = sys.maxsize
 
+        log_context = self._log_context()
+
         while not worker_stopping.is_set() or total_work:
             try:
-                logger.debug("Scheduling due tasks", extra=self._log_context())
+                logger.debug("Scheduling due tasks", extra=log_context)
                 total_work, due_work = await stream_due_tasks(
                     keys=[self.docket.queue_key, self.docket.stream_key],
                     args=[datetime.now(timezone.utc).timestamp(), self.docket.name],
@@ -416,18 +421,18 @@ class Worker:
                         total_work,
                         self.docket.queue_key,
                         self.docket.stream_key,
-                        extra=self._log_context(),
+                        extra=log_context,
                     )
             except Exception:  # pragma: no cover
                 logger.exception(
                     "Error in scheduler loop",
                     exc_info=True,
-                    extra=self._log_context(),
+                    extra=log_context,
                 )
             finally:
                 await asyncio.sleep(self.scheduling_resolution.total_seconds())
 
-        logger.debug("Scheduler loop finished", extra=self._log_context())
+        logger.debug("Scheduler loop finished", extra=log_context)
 
     async def _schedule_all_automatic_perpetual_tasks(self) -> None:
         async with self.docket.redis() as redis:
@@ -469,38 +474,30 @@ class Worker:
         log_context = {**self._log_context(), **execution.specific_labels()}
         counter_labels = {**self.labels(), **execution.general_labels()}
 
-        arrow = "↬" if execution.attempt > 1 else "↪"
         call = execution.call_repr()
 
         if self.docket.strike_list.is_stricken(execution):
             async with self.docket.redis() as redis:
                 await self._delete_known_task(redis, execution)
 
-            arrow = "🗙"
-            logger.warning("%s %s", arrow, call, extra=log_context)
+            logger.warning("🗙 %s", call, extra=log_context)
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
             return
 
         if execution.key in self._execution_counts:
             self._execution_counts[execution.key] += 1
 
-        initiating_span = trace.get_current_span(execution.trace_context)
-        initiating_context = initiating_span.get_span_context()
-        links = [trace.Link(initiating_context)] if initiating_context.is_valid else []
-
-        start = datetime.now(timezone.utc)
-        punctuality = start - execution.when
-        log_context = {
-            **log_context,
-            "punctuality": punctuality.total_seconds(),
-        }
-        duration = timedelta(0)
+        start = time.time()
+        punctuality = start - execution.when.timestamp()
+        log_context = {**log_context, "punctuality": punctuality}
+        duration = 0.0
 
         TASKS_STARTED.add(1, counter_labels)
         TASKS_RUNNING.add(1, counter_labels)
-        TASK_PUNCTUALITY.record(punctuality.total_seconds(), counter_labels)
+        TASK_PUNCTUALITY.record(punctuality, counter_labels)
 
-        logger.info("%s [%s] %s", arrow, punctuality, call, extra=log_context)
+        arrow = "↬" if execution.attempt > 1 else "↪"
+        logger.info("%s [%s] %s", arrow, ms(punctuality), call, extra=log_context)
 
         with tracer.start_as_current_span(
             execution.function.__name__,
@@ -510,7 +507,7 @@ class Worker:
                 **execution.specific_labels(),
                 "code.function.name": execution.function.__name__,
             },
-            links=links,
+            links=execution.incoming_span_links(),
         ):
             async with resolved_dependencies(self, execution) as dependencies:
                 # Preemptively reschedule the perpetual task for the future, or clear
@@ -536,31 +533,35 @@ class Worker:
                             },
                         )
 
+                    duration = log_context["duration"] = time.time() - start
                     TASKS_SUCCEEDED.add(1, counter_labels)
-                    duration = datetime.now(timezone.utc) - start
-                    log_context["duration"] = duration.total_seconds()
+
                     rescheduled = await self._perpetuate_if_requested(
-                        execution, dependencies, duration
+                        execution, dependencies, timedelta(seconds=duration)
                     )
+
                     arrow = "↫" if rescheduled else "↩"
-                    logger.info("%s [%s] %s", arrow, duration, call, extra=log_context)
+                    logger.info(
+                        "%s [%s] %s", arrow, ms(duration), call, extra=log_context
+                    )
                 except Exception:
+                    duration = log_context["duration"] = time.time() - start
                     TASKS_FAILED.add(1, counter_labels)
-                    duration = datetime.now(timezone.utc) - start
-                    log_context["duration"] = duration.total_seconds()
+
                     retried = await self._retry_if_requested(execution, dependencies)
                     if not retried:
                         retried = await self._perpetuate_if_requested(
-                            execution, dependencies, duration
+                            execution, dependencies, timedelta(seconds=duration)
                         )
+
                     arrow = "↫" if retried else "↩"
                     logger.exception(
-                        "%s [%s] %s", arrow, duration, call, extra=log_context
+                        "%s [%s] %s", arrow, ms(duration), call, extra=log_context
                     )
                 finally:
                     TASKS_RUNNING.add(-1, counter_labels)
                     TASKS_COMPLETED.add(1, counter_labels)
-                    TASK_DURATION.record(duration.total_seconds(), counter_labels)
+                    TASK_DURATION.record(duration, counter_labels)
 
     async def _run_function_with_timeout(
         self,
@@ -603,15 +604,15 @@ class Worker:
         if not retry:
             return False
 
-        if retry.attempts is None or execution.attempt < retry.attempts:
-            execution.when = datetime.now(timezone.utc) + retry.delay
-            execution.attempt += 1
-            await self.docket.schedule(execution)
+        if retry.attempts is not None and execution.attempt >= retry.attempts:
+            return False
 
-            TASKS_RETRIED.add(1, {**self.labels(), **execution.specific_labels()})
-            return True
+        execution.when = datetime.now(timezone.utc) + retry.delay
+        execution.attempt += 1
+        await self.docket.schedule(execution)
 
-        return False
+        TASKS_RETRIED.add(1, {**self.labels(), **execution.specific_labels()})
+        return True
 
     async def _perpetuate_if_requested(
         self,
@@ -710,3 +711,10 @@ class Worker:
                     exc_info=True,
                     extra=self._log_context(),
                 )
+
+
+def ms(seconds: float) -> str:
+    if seconds < 100:
+        return f"{seconds * 1000:6.0f}ms"
+    else:
+        return f"{seconds:6.0f}s "

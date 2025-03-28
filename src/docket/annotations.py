@@ -4,8 +4,14 @@ from typing import Any, Iterable, Mapping, Self
 
 
 class Annotation(abc.ABC):
+    _cache: dict[tuple[type[Self], inspect.Signature], Mapping[str, Self]] = {}
+
     @classmethod
     def annotated_parameters(cls, signature: inspect.Signature) -> Mapping[str, Self]:
+        key = (cls, signature)
+        if key in cls._cache:
+            return cls._cache[key]
+
         annotated: dict[str, Self] = {}
 
         for param_name, param in signature.parameters.items():
@@ -23,6 +29,7 @@ class Annotation(abc.ABC):
                 elif isinstance(arg_type, type) and issubclass(arg_type, cls):
                     annotated[param_name] = arg_type()
 
+        cls._cache[key] = annotated
         return annotated
 
 
