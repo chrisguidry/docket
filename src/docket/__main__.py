@@ -1,3 +1,3 @@
-from docket.cli import app
+from .cli import app
 
 app()

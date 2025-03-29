@@ -273,14 +273,14 @@ async def test_worker_announcements(
     docket.register(the_task)
     docket.register(another_task)
 
-    async with Worker(docket) as worker_a:
+    async with Worker(docket, name="worker-a") as worker_a:
         await asyncio.sleep(heartbeat.total_seconds() * 5)
 
         workers = await docket.workers()
         assert len(workers) == 1
         assert worker_a.name in {w.name for w in workers}
 
-        async with Worker(docket) as worker_b:
+        async with Worker(docket, name="worker-b") as worker_b:
             await asyncio.sleep(heartbeat.total_seconds() * 5)
 
             workers = await docket.workers()
@@ -315,14 +315,14 @@ async def test_task_announcements(
 
     docket.register(the_task)
     docket.register(another_task)
-    async with Worker(docket) as worker_a:
+    async with Worker(docket, name="worker-a") as worker_a:
         await asyncio.sleep(heartbeat.total_seconds() * 5)
 
         workers = await docket.task_workers("the_task")
         assert len(workers) == 1
         assert worker_a.name in {w.name for w in workers}
 
-        async with Worker(docket) as worker_b:
+        async with Worker(docket, name="worker-b") as worker_b:
             await asyncio.sleep(heartbeat.total_seconds() * 5)
 
             workers = await docket.task_workers("the_task")

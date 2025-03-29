@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import socket
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -11,14 +13,11 @@ from typing import (
     Self,
     cast,
 )
-from uuid import uuid4
 
 from opentelemetry import trace
 from opentelemetry.trace import Tracer
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError
-
-from docket.execution import get_signature
 
 from .dependencies import (
     Dependency,
@@ -37,6 +36,7 @@ from .docket import (
     RedisMessageID,
     RedisReadGroupResponse,
 )
+from .execution import compact_signature, get_signature
 from .instrumentation import (
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
@@ -86,7 +86,7 @@ class Worker:
         schedule_automatic_tasks: bool = True,
     ) -> None:
         self.docket = docket
-        self.name = name or f"worker:{uuid4()}"
+        self.name = name or f"{socket.gethostname()}#{os.getpid()}"
         self.concurrency = concurrency
         self.redelivery_timeout = redelivery_timeout
         self.reconnection_delay = reconnection_delay
@@ -205,10 +205,7 @@ class Worker:
             self._execution_counts = {}
 
     async def _run(self, forever: bool = False) -> None:
-        logger.info("Starting worker %r with the following tasks:", self.name)
-        for task_name, task in self.docket.tasks.items():
-            signature = get_signature(task)
-            logger.info("* %s%s", task_name, signature)
+        self._startup_log()
 
         while True:
             try:
@@ -664,6 +661,11 @@ class Worker:
             TASKS_PERPETUATED.add(1, {**self.labels(), **execution.specific_labels()})
 
         return True
+
+    def _startup_log(self) -> None:
+        logger.info("Starting worker %r with the following tasks:", self.name)
+        for task_name, task in self.docket.tasks.items():
+            logger.info("* %s(%s)", task_name, compact_signature(get_signature(task)))
 
     @property
     def workers_set(self) -> str:
