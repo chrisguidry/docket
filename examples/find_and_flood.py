@@ -17,7 +17,7 @@ async def find(
     perpetual: Perpetual = Perpetual(every=timedelta(seconds=3), automatic=True),
 ) -> None:
     for i in range(1, 10 + 1):
-        await docket.add(flood, key=f"item-{i}")(i)
+        await docket.add(flood)(i)
 
 
 async def flood(
