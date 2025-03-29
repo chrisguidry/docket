@@ -3,15 +3,23 @@ import enum
 import inspect
 import logging
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Hashable, Literal, Mapping, Self, cast
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Hashable,
+    Literal,
+    Mapping,
+    Self,
+    cast,
+)
 
 import cloudpickle  # type: ignore[import]
-
-from opentelemetry import trace, propagate
 import opentelemetry.context
+from opentelemetry import propagate, trace
 
 from .annotations import Logged
-from docket.instrumentation import message_getter
+from .instrumentation import message_getter
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -115,6 +123,37 @@ class Execution:
         initiating_span = trace.get_current_span(self.trace_context)
         initiating_context = initiating_span.get_span_context()
         return [trace.Link(initiating_context)] if initiating_context.is_valid else []
+
+
+def compact_signature(signature: inspect.Signature) -> str:
+    from .dependencies import Dependency
+
+    parameters: list[str] = []
+    dependencies: int = 0
+
+    for parameter in signature.parameters.values():
+        if isinstance(parameter.default, Dependency):
+            dependencies += 1
+            continue
+
+        parameter_definition = parameter.name
+        if parameter.annotation is not parameter.empty:
+            annotation = parameter.annotation
+            if hasattr(annotation, "__origin__"):
+                annotation = annotation.__args__[0]
+
+            type_name = getattr(annotation, "__name__", str(annotation))
+            parameter_definition = f"{parameter.name}: {type_name}"
+
+        if parameter.default is not parameter.empty:
+            parameter_definition = f"{parameter_definition} = {parameter.default!r}"
+
+        parameters.append(parameter_definition)
+
+    if dependencies > 0:
+        parameters.append("...")
+
+    return ", ".join(parameters)
 
 
 class Operator(enum.StrEnum):

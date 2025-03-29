@@ -1,4 +1,5 @@
 import asyncio
+import random
 from datetime import timedelta
 from logging import Logger, LoggerAdapter
 from typing import Annotated
@@ -24,6 +25,7 @@ async def flood(
     logger: LoggerAdapter[Logger] = TaskLogger(),
 ) -> None:
     logger.info("Working on %s", item)
+    await asyncio.sleep(random.uniform(0.5, 2))
 
 
 tasks = [find, flood]
