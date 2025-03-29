@@ -43,8 +43,6 @@ async def run_example_workers(workers: int, concurrency: int, tasks: str):
             await asyncio.create_subprocess_exec(
                 "docket",
                 "worker",
-                "--name",
-                f"worker-{i}",
                 "--url",
                 redis_url,
                 "--tasks",

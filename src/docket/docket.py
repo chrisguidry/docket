@@ -23,12 +23,12 @@ from typing import (
     cast,
     overload,
 )
-from uuid import uuid4
 
 import redis.exceptions
 from opentelemetry import propagate, trace
 from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import Pipeline
+from uuid_extensions import uuid7
 
 from .execution import (
     Execution,
@@ -254,7 +254,7 @@ class Docket:
             when = datetime.now(timezone.utc)
 
         if key is None:
-            key = f"{function.__name__}:{uuid4()}"
+            key = str(uuid7())
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
             execution = Execution(function, args, kwargs, when, key, attempt=1)

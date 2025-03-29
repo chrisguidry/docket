@@ -28,6 +28,7 @@ dependencies = [
     "redis>=4.6",
     "rich>=13.9.4",
     "typer>=0.15.1",
+    "uuid7>=0.1.0",
 ]
 
 [dependency-groups]
