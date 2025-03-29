@@ -81,18 +81,25 @@ def TaskKey() -> str:
 
 class _TaskArgument(Dependency):
     parameter: str | None
+    optional: bool
 
-    def __init__(self, parameter: str | None = None) -> None:
+    def __init__(self, parameter: str | None = None, optional: bool = False) -> None:
         self.parameter = parameter
+        self.optional = optional
 
     async def __aenter__(self) -> Any:
         assert self.parameter is not None
         execution = self.execution.get()
-        return execution.get_argument(self.parameter)
+        try:
+            return execution.get_argument(self.parameter)
+        except KeyError:
+            if self.optional:
+                return None
+            raise
 
 
-def TaskArgument(parameter: str | None = None) -> Any:
-    return cast(Any, _TaskArgument(parameter))
+def TaskArgument(parameter: str | None = None, optional: bool = False) -> Any:
+    return cast(Any, _TaskArgument(parameter, optional))
 
 
 class _TaskLogger(Dependency):

@@ -151,10 +151,10 @@ async def test_rescheduling_by_name(
 
     key = f"my-cool-task:{uuid4()}"
 
-    soon = now() + timedelta(milliseconds=10)
+    soon = now() + timedelta(milliseconds=100)
     await docket.add(the_task, soon, key=key)("a", "b", c="c")
 
-    later = now() + timedelta(milliseconds=100)
+    later = now() + timedelta(milliseconds=200)
     await docket.replace("the_task", later, key=key)("b", "c", c="d")
 
     await worker.run_until_finished()
@@ -1418,6 +1418,65 @@ async def test_dependency_failures_are_task_failures(
     assert "ValueError: and so is this one" in caplog.text
 
 
+async def test_contextual_dependency_before_failures_are_task_failures(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """A contextual task dependency failure will cause the task to fail"""
+
+    called: int = 0
+
+    @asynccontextmanager
+    async def dependency_before() -> AsyncGenerator[str, None]:
+        raise ValueError("this one is bad")
+        yield "this won't be used"  # pragma: no cover
+
+    async def dependent_task(
+        a: str = Depends(dependency_before),
+    ) -> None:
+        nonlocal called
+        called += 1  # pragma: no cover
+
+    await docket.add(dependent_task)()
+
+    with caplog.at_level(logging.ERROR):
+        await worker.run_until_finished()
+
+    assert not called
+
+    assert "Failed to resolve dependencies for parameter(s): a" in caplog.text
+    assert "ValueError: this one is bad" in caplog.text
+
+
+async def test_contextual_dependency_after_failures_are_task_failures(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """A contextual task dependency failure will cause the task to fail"""
+
+    called: int = 0
+
+    @asynccontextmanager
+    async def dependency_after() -> AsyncGenerator[str, None]:
+        yield "this will be used"
+        raise ValueError("this one is bad")
+
+    async def dependent_task(
+        a: str = Depends(dependency_after),
+    ) -> None:
+        assert a == "this will be used"
+
+        nonlocal called
+        called += 1
+
+    await docket.add(dependent_task)()
+
+    with caplog.at_level(logging.ERROR):
+        await worker.run_until_finished()
+
+    assert called == 1
+
+    assert "ValueError: this one is bad" in caplog.text
+
+
 async def test_dependencies_can_ask_for_task_arguments(docket: Docket, worker: Worker):
     """A task dependency can ask for a task argument"""
 
@@ -1443,6 +1502,33 @@ async def test_dependencies_can_ask_for_task_arguments(docket: Docket, worker: W
         called += 1
 
     await docket.add(dependent_task)(a=["hello", "world"])
+
+    await worker.run_until_finished()
+
+    assert called == 1
+
+
+async def test_task_arguments_may_be_optional(docket: Docket, worker: Worker):
+    """A task dependency can ask for a task argument optionally"""
+
+    called = 0
+
+    async def dependency_one(
+        a: list[str] | None = TaskArgument(optional=True),
+    ) -> list[str] | None:
+        return a
+
+    async def dependent_task(
+        not_a: list[str],
+        b: list[str] | None = Depends(dependency_one),
+    ) -> None:
+        assert not_a == ["hello", "world"]
+        assert b is None
+
+        nonlocal called
+        called += 1
+
+    await docket.add(dependent_task)(not_a=["hello", "world"])
 
     await worker.run_until_finished()
 

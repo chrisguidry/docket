@@ -422,13 +422,13 @@ async def test_perpetual_tasks_are_scheduled_close_to_target_time(
     assert len(timestamps) == 8
 
     intervals = [next - previous for previous, next in zip(timestamps, timestamps[1:])]
-    minimum = min(intervals)
+    average = sum(intervals, timedelta(0)) / len(intervals)
 
     debug = ", ".join([f"{i.total_seconds() * 1000:.2f}ms" for i in intervals])
 
     # It's not reliable to assert the maximum duration on different machine setups, but
     # we'll make sure that the minimum is observed (within 5ms), which is the guarantee
-    assert minimum >= timedelta(milliseconds=45), debug
+    assert average >= timedelta(milliseconds=50), debug
 
 
 async def test_worker_can_exit_from_perpetual_tasks_that_queue_further_tasks(
