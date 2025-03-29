@@ -503,6 +503,8 @@ class Worker:
         arrow = "↬" if execution.attempt > 1 else "↪"
         logger.info("%s [%s] %s", arrow, ms(punctuality), call, extra=log_context)
 
+        dependencies: dict[str, Dependency] = {}
+
         with tracer.start_as_current_span(
             execution.function.__name__,
             kind=trace.SpanKind.CONSUMER,
@@ -513,17 +515,17 @@ class Worker:
             },
             links=execution.incoming_span_links(),
         ):
-            async with resolved_dependencies(self, execution) as dependencies:
-                # Preemptively reschedule the perpetual task for the future, or clear
-                # the known task key for this task
-                rescheduled = await self._perpetuate_if_requested(
-                    execution, dependencies
-                )
-                if not rescheduled:
-                    async with self.docket.redis() as redis:
-                        await self._delete_known_task(redis, execution)
+            try:
+                async with resolved_dependencies(self, execution) as dependencies:
+                    # Preemptively reschedule the perpetual task for the future, or clear
+                    # the known task key for this task
+                    rescheduled = await self._perpetuate_if_requested(
+                        execution, dependencies
+                    )
+                    if not rescheduled:
+                        async with self.docket.redis() as redis:
+                            await self._delete_known_task(redis, execution)
 
-                try:
                     dependency_failures = {
                         k: v
                         for k, v in dependencies.items()
@@ -565,24 +567,24 @@ class Worker:
                     logger.info(
                         "%s [%s] %s", arrow, ms(duration), call, extra=log_context
                     )
-                except Exception:
-                    duration = log_context["duration"] = time.time() - start
-                    TASKS_FAILED.add(1, counter_labels)
+            except Exception:
+                duration = log_context["duration"] = time.time() - start
+                TASKS_FAILED.add(1, counter_labels)
 
-                    retried = await self._retry_if_requested(execution, dependencies)
-                    if not retried:
-                        retried = await self._perpetuate_if_requested(
-                            execution, dependencies, timedelta(seconds=duration)
-                        )
-
-                    arrow = "↫" if retried else "↩"
-                    logger.exception(
-                        "%s [%s] %s", arrow, ms(duration), call, extra=log_context
+                retried = await self._retry_if_requested(execution, dependencies)
+                if not retried:
+                    retried = await self._perpetuate_if_requested(
+                        execution, dependencies, timedelta(seconds=duration)
                     )
-                finally:
-                    TASKS_RUNNING.add(-1, counter_labels)
-                    TASKS_COMPLETED.add(1, counter_labels)
-                    TASK_DURATION.record(duration, counter_labels)
+
+                arrow = "↫" if retried else "↩"
+                logger.exception(
+                    "%s [%s] %s", arrow, ms(duration), call, extra=log_context
+                )
+            finally:
+                TASKS_RUNNING.add(-1, counter_labels)
+                TASKS_COMPLETED.add(1, counter_labels)
+                TASK_DURATION.record(duration, counter_labels)
 
     async def _run_function_with_timeout(
         self,
