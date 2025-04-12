@@ -12,6 +12,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -36,13 +37,36 @@ jobs:
         run: uv sync --group docs
 
       - name: Build site
-        run: uv run mkdocs build
+        run: |
+          if [[ $GITHUB_EVENT_NAME == 'pull_request' ]]; then
+            # Configure site_url for PR preview
+            export PR_NUMBER=$(echo $GITHUB_REF | cut -d '/' -f 3)
+            echo "site_url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/pr-preview/pr-${PR_NUMBER}" >> mkdocs.yml
+            # Build to a PR-specific directory
+            uv run mkdocs build -d "site/pr-preview/pr-${PR_NUMBER}"
+          else
+            uv run mkdocs build
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
           name: github-pages
+
+      - name: Comment PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.issue.number;
+            const comment = `📚 Documentation preview for this PR is ready!\n\nYou can view it at: https://${process.env.GITHUB_REPOSITORY_OWNER}.github.io/${context.repo.repo}/pr-preview/pr-${prNumber}/`;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: comment
+            });
 
   publish:
     if: github.ref == 'refs/heads/main'
