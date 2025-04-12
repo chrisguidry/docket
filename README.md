@@ -6,6 +6,7 @@ on the scheduling of future work as seamlessly and efficiency as immediate work.
 [![GitHub main checks](https://img.shields.io/github/check-runs/chrisguidry/docket/main)](https://github.com/chrisguidry/docket/actions/workflows/ci.yml)
 [![Codecov](https://img.shields.io/codecov/c/github/chrisguidry/docket)](https://app.codecov.io/gh/chrisguidry/docket)
 [![PyPI - License](https://img.shields.io/pypi/l/pydocket)](https://github.com/chrisguidry/docket/blob/main/LICENSE)
+[![Documentation](https://img.shields.io/badge/docs-latest-blue.svg)](https://chrisguidry.github.io/docket/)
 
 ## At a glance
 
