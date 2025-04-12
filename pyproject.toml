@@ -52,6 +52,13 @@ dev = [
     "ruff>=0.9.7",
 ]
 
+docs = [
+    "mkdocs>=1.5.3",
+    "mkdocs-material>=9.5.13",
+    "mkdocstrings>=0.24.1",
+    "mkdocstrings-python>=1.8.0",
+]
+
 [project.scripts]
 docket = "docket.__main__:app"
 
