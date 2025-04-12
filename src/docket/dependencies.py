@@ -49,6 +49,16 @@ class _CurrentWorker(Dependency):
 
 
 def CurrentWorker() -> "Worker":
+    """A dependency to access the current Worker.
+
+    Example:
+
+    ```python
+    @task
+    async def my_task(worker: Worker = CurrentWorker()) -> None:
+        assert isinstance(worker, Worker)
+    ```
+    """
     return cast("Worker", _CurrentWorker())
 
 
@@ -58,6 +68,16 @@ class _CurrentDocket(Dependency):
 
 
 def CurrentDocket() -> Docket:
+    """A dependency to access the current Docket.
+
+    Example:
+
+    ```python
+    @task
+    async def my_task(docket: Docket = CurrentDocket()) -> None:
+        assert isinstance(docket, Docket)
+    ```
+    """
     return cast(Docket, _CurrentDocket())
 
 
@@ -67,6 +87,16 @@ class _CurrentExecution(Dependency):
 
 
 def CurrentExecution() -> Execution:
+    """A dependency to access the current Execution.
+
+    Example:
+
+    ```python
+    @task
+    async def my_task(execution: Execution = CurrentExecution()) -> None:
+        assert isinstance(execution, Execution)
+    ```
+    """
     return cast(Execution, _CurrentExecution())
 
 
@@ -76,6 +106,16 @@ class _TaskKey(Dependency):
 
 
 def TaskKey() -> str:
+    """A dependency to access the key of the currently executing task.
+
+    Example:
+
+    ```python
+    @task
+    async def my_task(key: str = TaskKey()) -> None:
+        assert isinstance(key, str)
+    ```
+    """
     return cast(str, _TaskKey())
 
 
@@ -99,6 +139,22 @@ class _TaskArgument(Dependency):
 
 
 def TaskArgument(parameter: str | None = None, optional: bool = False) -> Any:
+    """A dependency to access a argument of the currently executing task.  This is
+    often useful in dependency functions so they can access the arguments of the
+    task they are injected into.
+
+    Example:
+
+    ```python
+    async def customer_name(customer_id: int = TaskArgument()) -> str:
+        ...look up the customer's name by ID...
+        return "John Doe"
+
+    @task
+    async def greet_customer(customer_id: int, name: str = Depends(customer_name)) -> None:
+        print(f"Hello, {name}!")
+    ```
+    """
     return cast(Any, _TaskArgument(parameter, optional))
 
 
@@ -117,15 +173,45 @@ class _TaskLogger(Dependency):
 
 
 def TaskLogger() -> logging.LoggerAdapter[logging.Logger]:
+    """A dependency to access a logger for the currently executing task.  The logger
+    will automatically inject contextual information such as the worker and docket
+    name, the task key, and the current execution attempt number.
+
+    Example:
+
+    ```python
+    @task
+    async def my_task(logger: LoggerAdapter[Logger] = TaskLogger()) -> None:
+        logger.info("Hello, world!")
+    ```
+    """
     return cast(logging.LoggerAdapter[logging.Logger], _TaskLogger())
 
 
 class Retry(Dependency):
+    """Configures linear retries for a task.  You can specify the total number of
+    attempts (or `None` to retry indefinitely), and the delay between attempts.
+
+    Example:
+
+    ```python
+    @task
+    async def my_task(retry: Retry = Retry(attempts=3)) -> None:
+        ...
+    ```
+    """
+
     single: bool = True
 
     def __init__(
         self, attempts: int | None = 1, delay: timedelta = timedelta(0)
     ) -> None:
+        """
+        Args:
+            attempts: The total number of attempts to make.  If `None`, the task will
+                be retried indefinitely.
+            delay: The delay between attempts.
+        """
         self.attempts = attempts
         self.delay = delay
         self.attempt = 1
@@ -138,14 +224,32 @@ class Retry(Dependency):
 
 
 class ExponentialRetry(Retry):
-    attempts: int
+    """Configures exponential retries for a task.  You can specify the total number
+    of attempts (or `None` to retry indefinitely), and the minimum and maximum delays
+    between attempts.
+
+    Example:
+
+    ```python
+    @task
+    async def my_task(retry: ExponentialRetry = ExponentialRetry(attempts=3)) -> None:
+        ...
+    ```
+    """
 
     def __init__(
         self,
-        attempts: int = 1,
+        attempts: int | None = 1,
         minimum_delay: timedelta = timedelta(seconds=1),
         maximum_delay: timedelta = timedelta(seconds=64),
     ) -> None:
+        """
+        Args:
+            attempts: The total number of attempts to make.  If `None`, the task will
+                be retried indefinitely.
+            minimum_delay: The minimum delay between attempts.
+            maximum_delay: The maximum delay between attempts.
+        """
         super().__init__(attempts=attempts, delay=minimum_delay)
         self.minimum_delay = minimum_delay
         self.maximum_delay = maximum_delay
@@ -173,6 +277,19 @@ class ExponentialRetry(Retry):
 
 
 class Perpetual(Dependency):
+    """Declare a task that should be run perpetually.  Perpetual tasks are automatically
+    rescheduled for the future after they finish (whether they succeed or fail).  A
+    perpetual task can be scheduled at worker startup with the `automatic=True`.
+
+    Example:
+
+    ```python
+    @task
+    async def my_task(perpetual: Perpetual = Perpetual()) -> None:
+        ...
+    ```
+    """
+
     single = True
 
     every: timedelta
@@ -188,8 +305,7 @@ class Perpetual(Dependency):
         every: timedelta = timedelta(0),
         automatic: bool = False,
     ) -> None:
-        """Declare a task that should be run perpetually.
-
+        """
         Args:
             every: The target interval between task executions.
             automatic: If set, this task will be automatically scheduled during worker
@@ -217,13 +333,29 @@ class Perpetual(Dependency):
 
 
 class Timeout(Dependency):
-    single = True
+    """Configures a timeout for a task.  You can specify the base timeout, and the
+    task will be cancelled if it exceeds this duration.  The timeout may be extended
+    within the context of a single running task.
+
+    Example:
+
+    ```python
+    @task
+    async def my_task(timeout: Timeout = Timeout(timedelta(seconds=10))) -> None:
+        ...
+    ```
+    """
+
+    single: bool = True
 
     base: timedelta
-
     _deadline: float
 
     def __init__(self, base: timedelta) -> None:
+        """
+        Args:
+            base: The base timeout duration.
+        """
         self.base = base
 
     async def __aenter__(self) -> "Timeout":
@@ -238,9 +370,16 @@ class Timeout(Dependency):
         return time.monotonic() >= self._deadline
 
     def remaining(self) -> timedelta:
+        """Get the remaining time until the timeout expires."""
         return timedelta(seconds=self._deadline - time.monotonic())
 
     def extend(self, by: timedelta | None = None) -> None:
+        """Extend the timeout by a given duration.  If no duration is provided, the
+        base timeout will be used.
+
+        Args:
+            by: The duration to extend the timeout by.
+        """
         if by is None:
             by = self.base
         self._deadline += by.total_seconds()
@@ -328,6 +467,23 @@ class _Depends(Dependency, Generic[R]):
 
 
 def Depends(dependency: DependencyFunction[R]) -> R:
+    """Include a user-defined function as a dependency.  Dependencies may either return
+    a value or an async context manager.  If it returns a context manager, the
+    dependency will be entered and exited around the task, giving an opportunity to
+    control the lifetime of a resource, like a database connection.
+
+    Example:
+
+    ```python
+
+    async def my_dependency() -> str:
+        return "Hello, world!"
+
+    @task async def my_task(dependency: str = Depends(my_dependency)) -> None:
+        print(dependency)
+
+    ```
+    """
     return cast(R, _Depends(dependency))
 
 

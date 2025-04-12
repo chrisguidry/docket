@@ -1,0 +1,76 @@
+name: Documentation
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv and set Python version
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync --group docs
+
+      - name: Configure preview path
+        if: github.event_name == 'pull_request'
+        id: preview
+        run: |
+          PR_NUMBER=$(jq --raw-output .pull_request.number "$GITHUB_EVENT_PATH")
+          echo "path=pr-preview/pr-${PR_NUMBER}" >> $GITHUB_OUTPUT
+
+      - name: Build preview
+        if: github.event_name == 'pull_request'
+        run: |
+          # Update mkdocs config with the preview URL
+          echo "site_url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ steps.preview.outputs.path }}" >> mkdocs.yml
+
+          # Build to the PR-specific directory
+          uv run mkdocs build -d "site/${{ steps.preview.outputs.path }}"
+
+      - name: Build site
+        if: github.event_name != 'pull_request'
+        run: uv run mkdocs build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Add or Update Comment
+        if: github.event_name == 'pull_request' && github.event.action != 'closed'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: preview
+          message: |
+            📚 Documentation preview for this PR is ready!
+
+            You can view it at: ${{ steps.deployment.outputs.page_url }}${{ steps.preview.outputs.path }}/

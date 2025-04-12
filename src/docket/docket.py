@@ -112,6 +112,20 @@ class DocketSnapshot:
 
 
 class Docket:
+    """A Docket represents a collection of tasks that may be scheduled for later
+    execution.  With a Docket, you can add, replace, and cancel tasks.
+    Example:
+
+    ```python
+    @task
+    async def my_task(greeting: str, recipient: str) -> None:
+        print(f"{greeting}, {recipient}!")
+
+    async with Docket() as docket:
+        docket.add(my_task)("Hello", recipient="world")
+    ```
+    """
+
     tasks: dict[str, TaskFunction]
     strike_list: StrikeList
 
@@ -199,6 +213,11 @@ class Docket:
             await asyncio.shield(r.__aexit__(None, None, None))
 
     def register(self, function: TaskFunction) -> None:
+        """Register a task with the Docket.
+
+        Args:
+            function: The task to register.
+        """
         from .dependencies import validate_dependencies
 
         validate_dependencies(function)
@@ -229,7 +248,14 @@ class Docket:
         function: Callable[P, Awaitable[R]],
         when: datetime | None = None,
         key: str | None = None,
-    ) -> Callable[P, Awaitable[Execution]]: ...  # pragma: no cover
+    ) -> Callable[P, Awaitable[Execution]]:
+        """Add a task to the Docket.
+
+        Args:
+            function: The task function to add.
+            when: The time to schedule the task.
+            key: The key to schedule the task under.
+        """
 
     @overload
     def add(
@@ -237,7 +263,14 @@ class Docket:
         function: str,
         when: datetime | None = None,
         key: str | None = None,
-    ) -> Callable[..., Awaitable[Execution]]: ...  # pragma: no cover
+    ) -> Callable[..., Awaitable[Execution]]:
+        """Add a task to the Docket.
+
+        Args:
+            function: The name of a task to add.
+            when: The time to schedule the task.
+            key: The key to schedule the task under.
+        """
 
     def add(
         self,
@@ -245,6 +278,13 @@ class Docket:
         when: datetime | None = None,
         key: str | None = None,
     ) -> Callable[..., Awaitable[Execution]]:
+        """Add a task to the Docket.
+
+        Args:
+            function: The task to add.
+            when: The time to schedule the task.
+            key: The key to schedule the task under.
+        """
         if isinstance(function, str):
             function = self.tasks[function]
         else:
@@ -277,7 +317,14 @@ class Docket:
         function: Callable[P, Awaitable[R]],
         when: datetime,
         key: str,
-    ) -> Callable[P, Awaitable[Execution]]: ...  # pragma: no cover
+    ) -> Callable[P, Awaitable[Execution]]:
+        """Replace a previously scheduled task on the Docket.
+
+        Args:
+            function: The task function to replace.
+            when: The time to schedule the task.
+            key: The key to schedule the task under.
+        """
 
     @overload
     def replace(
@@ -285,7 +332,14 @@ class Docket:
         function: str,
         when: datetime,
         key: str,
-    ) -> Callable[..., Awaitable[Execution]]: ...  # pragma: no cover
+    ) -> Callable[..., Awaitable[Execution]]:
+        """Replace a previously scheduled task on the Docket.
+
+        Args:
+            function: The name of a task to replace.
+            when: The time to schedule the task.
+            key: The key to schedule the task under.
+        """
 
     def replace(
         self,
@@ -293,6 +347,13 @@ class Docket:
         when: datetime,
         key: str,
     ) -> Callable[..., Awaitable[Execution]]:
+        """Replace a previously scheduled task on the Docket.
+
+        Args:
+            function: The task to replace.
+            when: The time to schedule the task.
+            key: The key to schedule the task under.
+        """
         if isinstance(function, str):
             function = self.tasks[function]
 
@@ -329,6 +390,11 @@ class Docket:
         TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
 
     async def cancel(self, key: str) -> None:
+        """Cancel a previously scheduled task on the Docket.
+
+        Args:
+            key: The key of the task to cancel.
+        """
         with tracer.start_as_current_span(
             "docket.cancel",
             attributes={**self.labels(), "docket.key": key},
@@ -421,6 +487,14 @@ class Docket:
         operator: Operator | LiteralOperator = "==",
         value: Hashable | None = None,
     ) -> None:
+        """Strike a task from the Docket.
+
+        Args:
+            function: The task to strike.
+            parameter: The parameter to strike on.
+            operator: The operator to use.
+            value: The value to strike on.
+        """
         if not isinstance(function, (str, type(None))):
             function = function.__name__
 
@@ -436,6 +510,14 @@ class Docket:
         operator: Operator | LiteralOperator = "==",
         value: Hashable | None = None,
     ) -> None:
+        """Restore a previously stricken task to the Docket.
+
+        Args:
+            function: The task to restore.
+            parameter: The parameter to restore on.
+            operator: The operator to use.
+            value: The value to restore on.
+        """
         if not isinstance(function, (str, type(None))):
             function = function.__name__
 
@@ -501,6 +583,12 @@ class Docket:
                 await asyncio.sleep(1)
 
     async def snapshot(self) -> DocketSnapshot:
+        """Get a snapshot of the Docket, including which tasks are scheduled or currently
+        running, as well as which workers are active.
+
+        Returns:
+            A snapshot of the Docket.
+        """
         running: list[RunningExecution] = []
         future: list[Execution] = []
 
@@ -585,6 +673,11 @@ class Docket:
         return f"{self.name}:task-workers:{task_name}"
 
     async def workers(self) -> Collection[WorkerInfo]:
+        """Get a list of all workers that have sent heartbeats to the Docket.
+
+        Returns:
+            A list of all workers that have sent heartbeats to the Docket.
+        """
         workers: list[WorkerInfo] = []
 
         oldest = datetime.now(timezone.utc).timestamp() - (
@@ -615,8 +708,15 @@ class Docket:
         return workers
 
     async def task_workers(self, task_name: str) -> Collection[WorkerInfo]:
-        workers: list[WorkerInfo] = []
+        """Get a list of all workers that are able to execute a given task.
 
+        Args:
+            task_name: The name of the task.
+
+        Returns:
+            A list of all workers that are able to execute the given task.
+        """
+        workers: list[WorkerInfo] = []
         oldest = datetime.now(timezone.utc).timestamp() - (
             self.heartbeat_interval.total_seconds() * self.missed_heartbeats
         )

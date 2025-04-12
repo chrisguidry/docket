@@ -1,3 +1,5 @@
+# Welcome to docket
+
 Docket is a distributed background task system for Python functions with a focus
 on the scheduling of future work as seamlessly and efficiency as immediate work.
 
@@ -27,6 +29,8 @@ async with Docket() as docket:
     await docket.add(greet, when=soon)("John", greeting="Howdy")
 ```
 
+And in another process, run a worker:
+
 ```python
 from docket import Docket, Worker
 
@@ -35,16 +39,14 @@ async with Docket() as docket:
         await worker.run_until_finished()
 ```
 
+Which produces:
+
 ```
 Hello, Jane at 2025-03-05 13:58:21.552644!
 Howdy, John at 2025-03-05 13:58:24.550773!
 ```
 
-Check out our docs for more [details](http://chrisguidry.github.io/docket/),
-[examples](https://chrisguidry.github.io/docket/getting-started/), and the [API
-reference](https://chrisguidry.github.io/docket/api-reference/).
-
-## Why `docket`?
+## Why docket?
 
 ⚡️ Snappy one-way background task processing without any bloat
 
@@ -56,47 +58,14 @@ reference](https://chrisguidry.github.io/docket/api-reference/).
 
 🧩 Fully type-complete and type-aware for your background task functions
 
-## Installing `docket`
+## How It Works
 
-Docket is [available on PyPI](https://pypi.org/project/pydocket/) under the package name
-`pydocket`. It targets Python 3.12 or above.
+docket integrates two modes of task execution:
 
-With [`uv`](https://docs.astral.sh/uv/):
-
-```bash
-uv pip install pydocket
-
-or
-
-uv add pydocket
-```
-
-With `pip`:
-
-```bash
-pip install pydocket
-```
+1. **Immediate tasks** are pushed onto a Redis stream and are available to be picked up by any worker.
+2. **Scheduled tasks** are pushed onto a Redis sorted set with a schedule time. A loop within each worker moves scheduled tasks onto the stream when their schedule time has arrived. This move is performed as a Lua script to ensure atomicity.
 
 Docket requires a [Redis](http://redis.io/) server with Streams support (which was
-introduced in Redis 5.0.0). Docket is tested with Redis 6 and 7.
+introduced in Redis 5.0.0). Docket is tested with Redis 6 and s7.
 
-# Hacking on `docket`
-
-We use [`uv`](https://docs.astral.sh/uv/) for project management, so getting set up
-should be as simple as cloning the repo and running:
-
-```bash
-uv sync
-```
-
-The to run the test suite:
-
-```bash
-pytest
-```
-
-We aim to main 100% test coverage, which is required for all PRs to `docket`. We
-believe that `docket` should stay small, simple, understandable, and reliable, and that
-begins with testing all the dusty branches and corners. This will give us the
-confidence to upgrade dependencies quickly and to adapt to new versions of Redis over
-time.
+For more detailed information, check out our [Getting Started](getting-started.md) guide or dive into the [API Reference](api-reference.md).
