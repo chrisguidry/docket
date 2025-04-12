@@ -29,6 +29,9 @@ theme:
         icon: material/brightness-4
         name: Switch to light mode
 
+watch:
+  - src
+
 plugins:
   - search
   - mkdocstrings:

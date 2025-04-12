@@ -65,6 +65,18 @@ class _stream_due_tasks(Protocol):
 
 
 class Worker:
+    """A Worker executes tasks on a Docket.  You may run as many workers as you like
+    to work a single Docket.
+
+    Example:
+
+    ```python
+    async with Docket() as docket:
+        async with Worker(docket) as worker:
+            await worker.run_forever()
+    ```
+    """
+
     docket: Docket
     name: str
     concurrency: int

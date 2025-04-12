@@ -34,7 +34,29 @@ class Annotation(abc.ABC):
 
 
 class Logged(Annotation):
-    """Instructs docket to include arguments to this parameter in the log."""
+    """Instructs docket to include arguments to this parameter in the log.
+
+    If `length_only` is `True`, only the length of the argument will be included in
+    the log.
+
+    Example:
+
+    ```python
+    @task
+    def setup_new_customer(
+        customer_id: Annotated[int, Logged],
+        addresses: Annotated[list[Address], Logged(length_only=True)],
+        password: str,
+    ) -> None:
+        ...
+    ```
+
+    In the logs, you's see the task referenced as:
+
+    ```
+    setup_new_customer(customer_id=123, addresses[len 2], password=...)
+    ```
+    """
 
     length_only: bool = False
 

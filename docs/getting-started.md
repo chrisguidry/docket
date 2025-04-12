@@ -1,204 +1,270 @@
-# Getting Started with docket
+## Installing `docket`
 
-This guide will help you get up and running with docket for background task processing.
+Docket is [available on PyPI](https://pypi.org/project/pydocket/) under the package name
+`pydocket`. It targets Python 3.12 or above.
 
-## Prerequisites
+With [`uv`](https://docs.astral.sh/uv/):
 
-- Python 3.12 or higher
-- Redis server (local or remote)
+```bash
+uv pip install pydocket
 
-## Installation
+# or
 
-Install docket using pip:
+uv add pydocket
+```
+
+With `pip`:
 
 ```bash
 pip install pydocket
 ```
 
-## Basic Usage
+## Creating a `Docket`
 
-### 1. Configure Your Docket
+Each `Docket` should have a name that will be shared across your system, like the name
+of a topic or queue. By default this is `"docket"`. You can support many separate
+dockets on a single Redis server as long as they have different names.
 
-First, create a Docket instance that will manage your tasks:
-
-```python
-from docket import Docket
-
-async with Docket(
-    name="my-docket",  # Optional name for your docket instance
-    url="redis://localhost:6379/0",  # Redis connection URL
-    heartbeat_interval=timedelta(seconds=2),  # How often workers send heartbeats
-    missed_heartbeats=5,  # How many missed heartbeats before a worker is considered dead
-) as docket:
-    # Your docket usage here
-    pass
-```
-
-### 2. Define Tasks
-
-Tasks are async Python functions decorated with `@docket.add`:
+Docket accepts a URL to connect to the Redis server (defaulting to the local
+server), and you can pass any additional connection configuration you need on that
+connection URL.
 
 ```python
-from datetime import timedelta, datetime, timezone
-
-@docket.add
-async def process_user_data(user_id: str):
-    # Your processing logic here
-    print(f"Processing data for user {user_id}")
-
-@docket.add
-async def send_daily_report(email: str):
-    # Report generation and sending logic
-    print(f"Sending daily report to {email}")
+async with Docket(name="orders", url="redis://my-redis:6379/0") as docket:
+    ...
 ```
 
-### 3. Schedule Tasks
+The `name` and `url` together represent a single shared docket of work across all your
+system.
 
-You can schedule tasks for immediate or future execution:
+## Scheduling work
+
+A `Docket` is the entrypoint to scheduling immediate and future work. You define work
+in the form of `async` functions that return `None`. These task functions can accept
+any parameter types, so long as they can be serialized with
+[`cloudpickle`](https://github.com/cloudpipe/cloudpickle).
 
 ```python
-# Schedule for immediate execution
-await process_user_data.schedule(user_id="123")
+def now() -> datetime:
+    return datetime.now(timezone.utc)
 
-# Schedule for future execution with a delay
-await send_daily_report.schedule(
-    when=datetime.now(timezone.utc) + timedelta(days=1),
-    email="user@example.com"
-)
+async def send_welcome_email(customer_id: int, name: str) -> None:
+    ...
 
-# Schedule with a unique key for idempotency
-await send_daily_report.schedule(
-    key="daily-report-2024-03-20",
-    when=datetime.now(timezone.utc) + timedelta(days=1),
-    email="user@example.com"
-)
+async def send_followup_email(customer_id: int, name: str) -> None:
+    ...
+
+async with Docket() as docket:
+    await docket.add(send_welcome_email)(12345, "Jane Smith")
+
+    tomorrow = now() + timedelta(days=1)
+    await docket.add(send_followup_email, when=tomorrow)(12345, "Jane Smith")
 ```
 
-### 4. Run a Worker
+`docket.add` schedules both immediate work (the default) or future work (with the
+`when: datetime` parameter).
 
-To process tasks, you need to run at least one worker. You can do this from the command line:
+All task executions are identified with a `key` that captures the unique essence of that
+piece of work. By default they are randomly assigned UUIDs, but assigning your own keys
+unlocks many powerful capabilities.
+
+```python
+async with Docket() as docket:
+    await docket.add(send_welcome_email)(12345, "Jane Smith")
+
+    tomorrow = now() + timedelta(days=1)
+    key = "welcome-email-for-12345"
+    await docket.add(send_followup_email, when=tomorrow, key=key)(12345, "Jane Smith")
+```
+
+If you've given your future work a `key`, then only one unique instance of that
+execution will exist in the future:
+
+```python
+key = "welcome-email-for-12345"
+await docket.add(send_followup_email, when=tomorrow, key=key)(12345, "Jane Smith")
+```
+
+Calling `.add` a second time with the same key won't do anything, so luckily your
+customer won't get two emails!
+
+However, at any time later you can replace that task execution to alter _when_ it will
+happen:
+
+```python
+key = "welcome-email-for-12345"
+next_week = now() + timedelta(days=7)
+await docket.replace(send_followup_email, when=next_week, key=key)(12345, "Jane Smith")
+```
+
+_what arguments_ will be passed:
+
+```python
+key = "welcome-email-for-12345"
+await docket.replace(send_followup_email, when=tomorrow, key=key)(12345, "Jane Q. Smith")
+```
+
+Or just cancel it outright:
+
+```python
+await docket.cancel("welcome-email-for-12345")
+```
+
+Tasks may also be called by name, in cases where you can't or don't want to import the
+module that has your tasks. This may be common in a distributed environment where the
+code of your task system just isn't available, or it requires heavyweight libraries that
+you wouldn't want to import into your web server. In this case, you will lose the
+type-checking for `.add` and `.replace` calls, but otherwise everything will work as
+it does with the actual function:
+
+```python
+await docket.add("send_followup_email", when=tomorrow)(12345, "Jane Smith")
+```
+
+These primitives of `.add`, `.replace`, and `.cancel` are sufficient to build a
+large-scale and robust system of background tasks for your application.
+
+## Writing tasks
+
+Tasks are any `async` function that takes `cloudpickle`-able parameters, and returns
+`None`. Returning `None` is a strong signal that these are _fire-and-forget_ tasks
+whose results aren't used or waited-on by your application. These are the only kinds of
+tasks that Docket supports.
+
+Docket uses a parameter-based dependency and configuration pattern, which has become
+common in frameworks like [FastAPI](https://fastapi.tiangolo.com/),
+[Typer](https://typer.tiangolo.com/), or [FastMCP](https://github.com/jlowin/fastmcp).
+As such, there is no decorator for tasks.
+
+A very common requirement for tasks is that they have access to schedule further work
+on their own docket, especially for chains of self-perpetuating tasks to implement
+distributed polling and other periodic systems. One of the first dependencies you may
+look for is the `CurrentDocket`:
+
+```python
+from docket import Docket, CurrentDocket
+
+POLLING_INTERVAL = timedelta(seconds=10)
+
+async def poll_for_changes(file: Path, docket: Docket = CurrentDocket()) -> None:
+    if file.exists():
+        ...do something interesting...
+        return
+    else:
+        await docket.add(poll_for_changes, when=now() + POLLING_INTERVAL)(file)
+```
+
+Here the argument to `docket` is an instance of `Docket` with the same name and URL as
+the worker it's running on. You can ask for the `CurrentWorker` and `CurrentExecution`
+as well. Many times it could be useful to have your own task `key` available in order
+to idempotently schedule future work:
+
+```python
+from docket import Docket, CurrentDocket, TaskKey
+
+async def poll_for_changes(
+    file: Path,
+    key: str = TaskKey(),
+    docket: Docket = CurrentDocket()
+) -> None:
+    if file.exists():
+        ...do something interesting...
+        return
+    else:
+        await docket.add(poll_for_changes, when=now() + POLLING_INTERVAL, key=key)(file)
+```
+
+This helps to ensure that there is one continuous "chain" of these future tasks, as they
+all use the same key.
+
+Configuring the retry behavior for a task is also done with a dependency:
+
+```python
+from datetime import timedelta
+from docket import Retry
+
+async def faily(retry: Retry = Retry(attempts=5, delay=timedelta(seconds=3))):
+    if retry.attempt == 4:
+        print("whew!")
+        return
+
+    raise ValueError("whoops!")
+```
+
+In this case, the task `faily` will run 4 times with a delay of 3 seconds between each
+attempt. If it were to get to 5 attempts, no more would be attempted. This is a
+linear retry, and an `ExponentialRetry` is also available:
+
+```python
+from datetime import timedelta
+from docket import Retry, ExponentialRetry
+
+
+async def faily(
+    retry: Retry = Retry(
+        attempts=5,
+        minimum_delay=timedelta(seconds=2),
+        maximum_delay=timedelta(seconds=32),
+    ),
+):
+    if retry.attempt == 4:
+        print("whew!")
+        return
+
+    raise ValueError("whoops!")
+```
+
+This would retry in 2, 4, 8, then 16 seconds before that fourth attempt succeeded.
+
+## Running workers
+
+You can run as many workers as you like to process the tasks on your docket. You can
+either run a worker programmatically in Python, or via the CLI. Clients using docket
+have the advantage that they are usually passing the task functions, but workers don't
+necessarily know which tasks they are supposed to run. Docket solves this by allowing
+you to explicitly register tasks.
+
+In `my_tasks.py`:
+
+```python
+async def my_first_task():
+    ...
+
+async def my_second_task():
+    ...
+
+my_task_collection = [
+    my_first_task,
+    my_second_task,
+]
+```
+
+From Python:
+
+```python
+from my_tasks import my_task_collection
+
+async with Docket() as docket:
+    for task in my_task_collection:
+        docket.register(task)
+
+    async with Worker(docket) as worker:
+        await worker.run_forever()
+```
+
+From the CLI:
 
 ```bash
-python -m docket worker
+docket worker --tasks my_tasks:my_task_collection
 ```
 
-Or programmatically:
+By default, workers will process up to 10 tasks concurrently, but you can adjust this
+to your needs with the `concurrency=` keyword argument or the `--concurrency` CLI
+option.
 
-```python
-from docket import Worker
-
-async with docket, Worker(docket) as worker:
-    await worker.run()
-```
-
-## Advanced Features
-
-### Task Dependencies
-
-docket provides powerful dependency injection for tasks:
-
-```python
-from docket import Depends, CurrentDocket, TaskLogger
-
-async def get_user_profile(user_id: str) -> dict:
-    # Fetch user profile
-    return {"id": user_id, "name": "Example User"}
-
-@docket.add
-async def process_user(
-    user_id: str,
-    profile: dict = Depends(get_user_profile),
-    logger: TaskLogger = Depends(TaskLogger),
-    docket: Docket = Depends(CurrentDocket),
-):
-    logger.info("Processing user", user_id=user_id, profile=profile)
-    # Your processing logic here
-```
-
-### Task Retries and Timeouts
-
-Configure retry policies and timeouts for your tasks:
-
-```python
-from docket import ExponentialRetry, Timeout
-
-@docket.add
-@Timeout(seconds=30)  # Task will be cancelled if it runs longer than 30 seconds
-@ExponentialRetry(max_attempts=3)  # Retry up to 3 times with exponential backoff
-async def sensitive_operation():
-    try:
-        # Your operation here
-        pass
-    except TemporaryError:
-        # Task will be retried with exponential backoff
-        raise
-    except PermanentError:
-        # Task will not be retried
-        pass
-```
-
-### Self-Perpetuating Tasks
-
-Create tasks that reschedule themselves:
-
-```python
-from docket import Perpetual
-
-@docket.add
-@Perpetual(interval=timedelta(minutes=5))
-async def monitor_system_health():
-    # Check system health
-    status = await check_health()
-    if status.needs_attention:
-        await notify_admin(status)
-
-    # Task will automatically reschedule itself for 5 minutes later
-```
-
-### Task Strikes
-
-Temporarily disable tasks based on conditions:
-
-```python
-# Strike all tasks for a specific user
-await docket.strike(
-    parameter="user_id",
-    operator="==",
-    value="problematic_user"
-)
-
-# Restore tasks for that user
-await docket.restore(
-    parameter="user_id",
-    operator="==",
-    value="problematic_user"
-)
-```
-
-## Testing
-
-docket is designed to be easily testable:
-
-```python
-import pytest
-from docket import Docket, Worker
-
-@pytest.mark.asyncio
-async def test_my_task():
-    async with Docket() as docket, Worker(docket) as worker:
-        # Schedule a task
-        execution = await my_task.schedule(arg1="value")
-
-        # Process pending tasks
-        await worker.run_once()
-
-        # Get a snapshot of the docket state
-        snapshot = await docket.snapshot()
-        assert execution.key not in [e.key for e in snapshot.running]
-```
-
-## Next Steps
-
-- Check out the [API Reference](api-reference.md) for detailed documentation
-- Explore example projects in the [GitHub repository](https://github.com/chrisguidry/docket/tree/main/examples)
-- Join the community discussions on GitHub
+When a worker crashes ungracefully, any tasks it was currently executing will be held
+for a period of time before being redelivered to other workers. You can control this
+time period with `redelivery_timeout=` or `--redelivery-timeout`. You'd want to set
+this to a value higher than the longest task you expect to run. For queues of very fast
+tasks, a few seconds may be ideal; for long data-processing steps involving large
+amount of data, you may need minutes.

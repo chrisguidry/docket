@@ -1,67 +1,71 @@
 # Welcome to docket
 
-docket is a distributed background task system for Python functions that makes scheduling future work as seamless as immediate work. Built with modern Python features and async/await support, it provides a robust foundation for distributed task processing.
+Docket is a distributed background task system for Python functions with a focus
+on the scheduling of future work as seamlessly and efficiency as immediate work.
 
-## Key Features
+[![PyPI - Version](https://img.shields.io/pypi/v/pydocket)](https://pypi.org/project/pydocket/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/pydocket)](https://pypi.org/project/pydocket/)
+[![GitHub main checks](https://img.shields.io/github/check-runs/chrisguidry/docket/main)](https://github.com/chrisguidry/docket/actions/workflows/ci.yml)
+[![Codecov](https://img.shields.io/codecov/c/github/chrisguidry/docket)](https://app.codecov.io/gh/chrisguidry/docket)
+[![PyPI - License](https://img.shields.io/pypi/l/pydocket)](https://github.com/chrisguidry/docket/blob/main/LICENSE)
 
-- **Async First**: Built for modern Python with full async/await support
-- **Immediate and Scheduled Tasks**: Execute tasks right away or schedule them for the future
-- **Redis-Powered**: Built on Redis for reliable message brokering and storage
-- **Self-Perpetuating Tasks**: First-class support for recurring tasks with the `@Perpetual` decorator
-- **Dependency Injection**: Rich dependency injection system for tasks with `Depends`
-- **Task Strikes**: Temporarily disable tasks based on conditions
-- **Idempotency**: Guarantee task uniqueness with caller-defined keys
-- **Developer-Friendly**: Easy to use in both production code and test suites
-- **Observability**: Built-in OpenTelemetry instrumentation and structured logging
-
-## How It Works
-
-docket integrates two powerful modes of task execution:
-
-1. **Immediate Tasks**: Tasks are pushed onto a Redis stream and picked up by available workers
-2. **Scheduled Tasks**: Tasks are stored in a Redis sorted set with their schedule time and automatically moved to the immediate queue when their time arrives
-
-## Quick Start
+## At a glance
 
 ```python
-from datetime import timedelta
-from docket import Docket, Perpetual, Depends, TaskLogger
+from datetime import datetime, timedelta, timezone
 
-# Create a docket instance
+from docket import Docket
+
+
+async def greet(name: str, greeting="Hello") -> None:
+    print(f"{greeting}, {name} at {datetime.now()}!")
+
+
 async with Docket() as docket:
-    # Define a task with dependencies
-    @docket.add
-    @Perpetual(interval=timedelta(minutes=5))
-    async def monitor_service(
-        service_id: str,
-        logger: TaskLogger = Depends(TaskLogger)
-    ):
-        status = await check_service(service_id)
-        logger.info("Service status", service_id=service_id, status=status)
-        if status.needs_attention:
-            await notify_admin(service_id, status)
-        # Task will automatically reschedule itself for 5 minutes later
+    await docket.add(greet)("Jane")
 
-    # Schedule the task
-    await monitor_service.schedule(
-        key="monitor-service-main",  # Unique key for idempotency
-        service_id="main-service"
-    )
+    now = datetime.now(timezone.utc)
+    soon = now + timedelta(seconds=3)
+    await docket.add(greet, when=soon)("John", greeting="Howdy")
+```
+
+And in another process, run a worker:
+
+```python
+from docket import Docket, Worker
+
+async with Docket() as docket:
+    async with Worker(docket) as worker:
+        await worker.run_until_finished()
+```
+
+Which produces:
+
+```
+Hello, Jane at 2025-03-05 13:58:21.552644!
+Howdy, John at 2025-03-05 13:58:24.550773!
 ```
 
 ## Why docket?
 
-- **Modern Python**: Built for Python 3.12+ with type hints and async/await
-- **Reliability**: Built on Redis for robust message handling and persistence
-- **Flexibility**: Rich feature set for both immediate and scheduled tasks
-- **Testability**: First-class support for testing with async test suites
-- **Observability**: OpenTelemetry integration for monitoring and tracing
-- **Efficiency**: Optimized for both immediate execution and future scheduling
+⚡️ Snappy one-way background task processing without any bloat
 
-## Installation
+📅 Schedule immediate or future work seamlessly with the same interface
 
-```bash
-pip install pydocket
-```
+⏭️ Skip problematic tasks or parameters without redeploying
+
+🌊 Purpose-built for Redis streams
+
+🧩 Fully type-complete and type-aware for your background task functions
+
+## How It Works
+
+docket integrates two modes of task execution:
+
+1. **Immediate tasks** are pushed onto a Redis stream and are available to be picked up by any worker.
+2. **Scheduled tasks** are pushed onto a Redis sorted set with a schedule time. A loop within each worker moves scheduled tasks onto the stream when their schedule time has arrived. This move is performed as a Lua script to ensure atomicity.
+
+Docket requires a [Redis](http://redis.io/) server with Streams support (which was
+introduced in Redis 5.0.0). Docket is tested with Redis 6 and s7.
 
 For more detailed information, check out our [Getting Started](getting-started.md) guide or dive into the [API Reference](api-reference.md).
