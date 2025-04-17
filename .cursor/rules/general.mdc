@@ -6,7 +6,7 @@ alwaysApply: true
 
 # about docket
 docket is a distributed background task system for Python functions with a focus
-on the scheduling of future work as seamlessly and efficiency as immediate work.
+on the scheduling of future work as seamlessly and efficiently as immediate work.
 
 docket is built in Python and uses Redis as the message broker and storage system.
 
