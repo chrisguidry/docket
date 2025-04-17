@@ -1,7 +1,7 @@
 # Welcome to docket
 
 Docket is a distributed background task system for Python functions with a focus
-on the scheduling of future work as seamlessly and efficiency as immediate work.
+on the scheduling of future work as seamlessly and efficiently as immediate work.
 
 [![PyPI - Version](https://img.shields.io/pypi/v/pydocket)](https://pypi.org/project/pydocket/)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/pydocket)](https://pypi.org/project/pydocket/)
@@ -66,6 +66,6 @@ docket integrates two modes of task execution:
 2. **Scheduled tasks** are pushed onto a Redis sorted set with a schedule time. A loop within each worker moves scheduled tasks onto the stream when their schedule time has arrived. This move is performed as a Lua script to ensure atomicity.
 
 Docket requires a [Redis](http://redis.io/) server with Streams support (which was
-introduced in Redis 5.0.0). Docket is tested with Redis 6 and s7.
+introduced in Redis 5.0.0). Docket is tested with Redis 6 and 7.
 
 For more detailed information, check out our [Getting Started](getting-started.md) guide or dive into the [API Reference](api-reference.md).

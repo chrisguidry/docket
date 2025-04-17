@@ -30,7 +30,7 @@ async def run_redis(version: str) -> AsyncGenerator[str, None]:
             break
 
     url = f"redis://localhost:{port}/0"
-    print("***** Redis is running on %s *****", url)
+    print(f"***** Redis is running on {url} *****")
     try:
         yield url
     finally:

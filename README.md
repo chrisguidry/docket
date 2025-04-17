@@ -1,5 +1,5 @@
 Docket is a distributed background task system for Python functions with a focus
-on the scheduling of future work as seamlessly and efficiency as immediate work.
+on the scheduling of future work as seamlessly and efficiently as immediate work.
 
 [![PyPI - Version](https://img.shields.io/pypi/v/pydocket)](https://pypi.org/project/pydocket/)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/pydocket)](https://pypi.org/project/pydocket/)
@@ -96,7 +96,7 @@ The to run the test suite:
 pytest
 ```
 
-We aim to main 100% test coverage, which is required for all PRs to `docket`. We
+We aim to maintain 100% test coverage, which is required for all PRs to `docket`. We
 believe that `docket` should stay small, simple, understandable, and reliable, and that
 begins with testing all the dusty branches and corners. This will give us the
 confidence to upgrade dependencies quickly and to adapt to new versions of Redis over
