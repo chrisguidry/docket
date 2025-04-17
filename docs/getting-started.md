@@ -268,3 +268,19 @@ time period with `redelivery_timeout=` or `--redelivery-timeout`. You'd want to 
 this to a value higher than the longest task you expect to run. For queues of very fast
 tasks, a few seconds may be ideal; for long data-processing steps involving large
 amount of data, you may need minutes.
+
+## Delivery guarantees
+
+Docket provides _at-least-once_ delivery semantics. When a worker picks up a
+task, if it crashes or fails to acknowledge within `redelivery_timeout`, the
+task will be considered unacknowledged and redelivered to another available
+worker. This ensures tasks are not lost but may be delivered more than once. To
+achieve exactly-once processing, design your tasks to be idempotent.
+
+## Serialization and cloudpickle usage
+
+Docket uses `cloudpickle` to serialize task functions and their arguments. This
+allows you to pass nearly any Python object as arguments to a task, but it also
+means that deserializing these arguments can execute arbitrary code. Avoid
+scheduling tasks from untrusted or unauthenticated sources to mitigate security
+risks.
