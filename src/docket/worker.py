@@ -51,6 +51,7 @@ from .instrumentation import (
     TASKS_STARTED,
     TASKS_STRICKEN,
     TASKS_SUCCEEDED,
+    healthcheck_server,
     metrics_server,
 )
 
@@ -152,10 +153,14 @@ class Worker:
         scheduling_resolution: timedelta = timedelta(milliseconds=250),
         schedule_automatic_tasks: bool = True,
         until_finished: bool = False,
+        healthcheck_port: int | None = None,
         metrics_port: int | None = None,
         tasks: list[str] = ["docket.tasks:standard_tasks"],
     ) -> None:
-        with metrics_server(port=metrics_port):
+        with (
+            healthcheck_server(port=healthcheck_port),
+            metrics_server(port=metrics_port),
+        ):
             async with Docket(name=docket_name, url=url) as docket:
                 for task_path in tasks:
                     docket.register_collection(task_path)

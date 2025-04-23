@@ -259,11 +259,20 @@ def worker(
             help="Exit after the current docket is finished",
         ),
     ] = False,
+    healthcheck_port: Annotated[
+        int | None,
+        typer.Option(
+            "--healthcheck-port",
+            help="The port to serve a healthcheck on",
+            envvar="DOCKET_WORKER_HEALTHCHECK_PORT",
+        ),
+    ] = None,
     metrics_port: Annotated[
         int | None,
         typer.Option(
             "--metrics-port",
             help="The port to serve Prometheus metrics on",
+            envvar="DOCKET_WORKER_METRICS_PORT",
         ),
     ] = None,
 ) -> None:
@@ -279,6 +288,7 @@ def worker(
             scheduling_resolution=scheduling_resolution,
             schedule_automatic_tasks=schedule_automatic_tasks,
             until_finished=until_finished,
+            healthcheck_port=healthcheck_port,
             metrics_port=metrics_port,
             tasks=tasks,
         )
