@@ -1,5 +1,5 @@
-import threading
 from contextlib import contextmanager
+from threading import Thread
 from typing import Generator, cast
 
 from opentelemetry import metrics
@@ -146,6 +146,34 @@ message_setter: MessageSetter = MessageSetter()
 
 
 @contextmanager
+def healthcheck_server(
+    host: str = "0.0.0.0", port: int | None = None
+) -> Generator[None, None, None]:
+    if port is None:
+        yield
+        return
+
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class HealthcheckHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def log_message(self, format: str, *args: object) -> None:
+            # Suppress access logs from the webserver
+            pass
+
+    server = HTTPServer((host, port), HealthcheckHandler)
+    with server:
+        Thread(target=server.serve_forever, daemon=True).start()
+
+        yield
+
+
+@contextmanager
 def metrics_server(
     host: str = "0.0.0.0", port: int | None = None
 ) -> Generator[None, None, None]:
@@ -173,8 +201,6 @@ def metrics_server(
         handler_class=_SilentHandler,
     )
     with server:
-        t = threading.Thread(target=server.serve_forever)
-        t.daemon = True
-        t.start()
+        Thread(target=server.serve_forever, daemon=True).start()
 
         yield

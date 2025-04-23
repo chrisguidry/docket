@@ -13,7 +13,12 @@ from opentelemetry.sdk.trace import Span, TracerProvider
 
 from docket import Docket, Worker
 from docket.dependencies import Retry
-from docket.instrumentation import message_getter, message_setter, metrics_server
+from docket.instrumentation import (
+    healthcheck_server,
+    message_getter,
+    message_setter,
+    metrics_server,
+)
 
 tracer = trace.get_tracer(__name__)
 
@@ -560,3 +565,22 @@ async def test_worker_publishes_depth_gauges(
 
     QUEUE_DEPTH.assert_called_once_with(2, docket_labels)
     SCHEDULE_DEPTH.assert_called_once_with(3, docket_labels)
+
+
+@pytest.fixture
+def healthcheck_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+def test_healthcheck_server_returns_ok(healthcheck_port: int):
+    """Should return 200 and OK body from the liveness endpoint."""
+    with healthcheck_server(port=healthcheck_port):
+        conn = http.client.HTTPConnection(f"localhost:{healthcheck_port}")
+        conn.request("GET", "/")
+        response = conn.getresponse()
+
+        assert response.status == 200
+        assert response.headers["Content-Type"] == "text/plain"
+        assert response.read().decode() == "OK"
