@@ -153,13 +153,20 @@ async def main(
                     sent_tasks = await r.zcard("hello:sent")
                     received_tasks = await r.zcard("hello:received")
 
+                    stream_length = await r.xlen(docket.stream_key)
+                    pending = await r.xpending(
+                        docket.stream_key, docket.worker_group_name
+                    )
+
                     logger.info(
-                        "sent: %d, received: %d, clients: %d",
+                        "sent: %d, received: %d, stream: %d, pending: %d, clients: %d",
                         sent_tasks,
                         received_tasks,
+                        stream_length,
+                        pending["pending"],
                         connected_clients,
                     )
-                    if sent_tasks >= tasks:
+                    if sent_tasks >= tasks and received_tasks >= sent_tasks:
                         break
             except redis.exceptions.ConnectionError as e:
                 logger.error(
@@ -177,22 +184,30 @@ async def main(
 
                 elif chaos_chance < 0.10:
                     worker_index = random.randrange(len(worker_processes))
-                    worker_to_kill = worker_processes.pop(worker_index)
+                    worker_to_kill = worker_processes[worker_index]
 
                     logger.warning("CHAOS: Killing worker %d...", worker_index)
                     try:
-                        worker_to_kill.terminate()
+                        worker_to_kill.kill()
                     except ProcessLookupError:
                         logger.warning("  What is dead may never die!")
-
-                    logger.warning("CHAOS: Replacing worker %d...", worker_index)
-                    worker_processes.append(await spawn_worker())
                 elif chaos_chance < 0.15:
                     logger.warning("CHAOS: Queuing a toxic task...")
                     try:
                         await docket.add(toxic)()
                     except redis.exceptions.ConnectionError:
                         pass
+
+            # Check if any worker processes have died and replace them
+            for i in range(len(worker_processes)):
+                process = worker_processes[i]
+                if process.returncode is not None:
+                    logger.warning(
+                        "Worker %d has died with code %d, replacing it...",
+                        i,
+                        process.returncode,
+                    )
+                    worker_processes[i] = await spawn_worker()
 
             await asyncio.sleep(0.25)
 
@@ -225,5 +240,6 @@ async def main(
 
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "chaos"
+    tasks = int(sys.argv[2]) if len(sys.argv) > 2 else 20000
     assert mode in ("performance", "chaos")
-    asyncio.run(main(mode=mode))
+    asyncio.run(main(mode=mode, tasks=tasks))

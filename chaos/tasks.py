@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import random
 import sys
 import time
 
@@ -29,7 +31,12 @@ async def hello(
 
 
 async def toxic():
-    sys.exit(42)
+    if random.random() < 0.25:
+        sys.exit(42)
+    elif random.random() < 0.5:
+        raise Exception("Boom")
+    else:
+        await asyncio.sleep(random.uniform(0.01, 0.05))
 
 
 chaos_tasks = [hello, toxic]
