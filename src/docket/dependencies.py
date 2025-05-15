@@ -3,7 +3,7 @@ import logging
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import TracebackType
 from typing import (
     TYPE_CHECKING,
@@ -14,11 +14,13 @@ from typing import (
     Callable,
     Counter,
     Generic,
+    NoReturn,
     TypeVar,
     cast,
 )
 
 from .docket import Docket
+from .exceptions import ForcedRetry
 from .execution import Execution, TaskFunction, get_signature
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -221,6 +223,17 @@ class Retry(Dependency):
         retry = Retry(attempts=self.attempts, delay=self.delay)
         retry.attempt = execution.attempt
         return retry
+
+    def at(self, when: datetime) -> NoReturn:
+        now = datetime.now()
+        diff = when - now
+        diff = diff if diff.total_seconds() >= 0 else timedelta(0)
+
+        self.in_(diff)
+
+    def in_(self, when: timedelta) -> NoReturn:
+        self.delay = when
+        raise ForcedRetry()
 
 
 class ExponentialRetry(Retry):
