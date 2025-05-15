@@ -1,9 +1,10 @@
 import logging
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from docket import CurrentDocket, CurrentWorker, Docket, Worker
-from docket.dependencies import Depends, Retry, TaskArgument
+from docket.dependencies import Depends, ExponentialRetry, Retry, TaskArgument
 
 
 async def test_dependencies_may_be_duplicated(docket: Docket, worker: Worker):
@@ -93,6 +94,127 @@ async def test_user_provide_retries_are_used(docket: Docket, worker: Worker):
     await worker.run_until_finished()
 
     assert calls == 2
+
+
+@pytest.mark.parametrize("retry_cls", [Retry, ExponentialRetry])
+async def test_user_can_request_a_retry_in_timedelta_time(
+    retry_cls: Retry, docket: Docket, worker: Worker
+):
+    calls = 0
+    first_call_time = None
+    second_call_time = None
+
+    async def the_task(
+        a: str,
+        b: str,
+        retry: Retry = retry_cls(attempts=2),  # type: ignore[reportCallIssue]
+    ):
+        assert a == "a"
+        assert b == "b"
+
+        nonlocal calls
+        calls += 1
+
+        nonlocal first_call_time
+        if not first_call_time:
+            first_call_time = datetime.now(timezone.utc)
+            retry.in_(timedelta(seconds=0.5))
+        else:
+            nonlocal second_call_time
+            second_call_time = datetime.now(timezone.utc)
+
+    await docket.add(the_task)("a", "b")
+
+    await worker.run_until_finished()
+
+    assert calls == 2
+
+    assert isinstance(first_call_time, datetime)
+    assert isinstance(second_call_time, datetime)
+
+    delay = second_call_time - first_call_time
+    assert delay.total_seconds() > 0 < 1
+
+
+@pytest.mark.parametrize("retry_cls", [Retry, ExponentialRetry])
+async def test_user_can_request_a_retry_at_a_specific_time(
+    retry_cls: Retry, docket: Docket, worker: Worker
+):
+    calls = 0
+    first_call_time = None
+    second_call_time = None
+
+    async def the_task(
+        a: str,
+        b: str,
+        retry: Retry = retry_cls(attempts=2),  # type: ignore[reportCallIssue]
+    ):
+        assert a == "a"
+        assert b == "b"
+
+        nonlocal calls
+        calls += 1
+
+        nonlocal first_call_time
+        if not first_call_time:
+            when = datetime.now(timezone.utc) + timedelta(seconds=0.5)
+            first_call_time = datetime.now(timezone.utc)
+            retry.at(when)
+        else:
+            nonlocal second_call_time
+            second_call_time = datetime.now(timezone.utc)
+
+    await docket.add(the_task)("a", "b")
+
+    await worker.run_until_finished()
+
+    assert calls == 2
+
+    assert isinstance(first_call_time, datetime)
+    assert isinstance(second_call_time, datetime)
+
+    delay = second_call_time - first_call_time
+    assert delay.total_seconds() > 0 < 1
+
+
+async def test_user_can_request_a_retry_at_a_specific_time_in_the_past(
+    docket: Docket, worker: Worker
+):
+    calls = 0
+    first_call_time = None
+    second_call_time = None
+
+    async def the_task(
+        a: str,
+        b: str,
+        retry: Retry = Retry(attempts=2),
+    ):
+        assert a == "a"
+        assert b == "b"
+
+        nonlocal calls
+        calls += 1
+
+        nonlocal first_call_time
+        if not first_call_time:
+            when = datetime.now(timezone.utc) - timedelta(days=1)
+            first_call_time = datetime.now(timezone.utc)
+            retry.at(when)
+        else:
+            nonlocal second_call_time
+            second_call_time = datetime.now(timezone.utc)
+
+    await docket.add(the_task)("a", "b")
+
+    await worker.run_until_finished()
+
+    assert calls == 2
+
+    assert isinstance(first_call_time, datetime)
+    assert isinstance(second_call_time, datetime)
+
+    delay = second_call_time - first_call_time
+    assert delay.total_seconds() > 0 < 1
 
 
 async def test_dependencies_error_for_missing_task_argument(
