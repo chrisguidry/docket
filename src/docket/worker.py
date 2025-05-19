@@ -15,7 +15,7 @@ from typing import (
 )
 
 from opentelemetry import trace
-from opentelemetry.trace import Tracer
+from opentelemetry.trace import Status, StatusCode, Tracer
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError
 
@@ -531,7 +531,7 @@ class Worker:
                 "code.function.name": execution.function.__name__,
             },
             links=execution.incoming_span_links(),
-        ):
+        ) as span:
             try:
                 async with resolved_dependencies(self, execution) as dependencies:
                     # Preemptively reschedule the perpetual task for the future, or clear
@@ -576,6 +576,8 @@ class Worker:
                     duration = log_context["duration"] = time.time() - start
                     TASKS_SUCCEEDED.add(1, counter_labels)
 
+                    span.set_status(Status(StatusCode.OK))
+
                     rescheduled = await self._perpetuate_if_requested(
                         execution, dependencies, timedelta(seconds=duration)
                     )
@@ -584,9 +586,12 @@ class Worker:
                     logger.info(
                         "%s [%s] %s", arrow, ms(duration), call, extra=log_context
                     )
-            except Exception:
+            except Exception as e:
                 duration = log_context["duration"] = time.time() - start
                 TASKS_FAILED.add(1, counter_labels)
+
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
 
                 retried = await self._retry_if_requested(execution, dependencies)
                 if not retried:
