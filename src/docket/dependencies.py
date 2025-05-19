@@ -3,7 +3,7 @@ import logging
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
     TYPE_CHECKING,
@@ -14,6 +14,7 @@ from typing import (
     Callable,
     Counter,
     Generic,
+    NoReturn,
     TypeVar,
     cast,
 )
@@ -188,6 +189,10 @@ def TaskLogger() -> logging.LoggerAdapter[logging.Logger]:
     return cast(logging.LoggerAdapter[logging.Logger], _TaskLogger())
 
 
+class ForcedRetry(Exception):
+    """Raised when a task requests a retry via `in_` or `at`"""
+
+
 class Retry(Dependency):
     """Configures linear retries for a task.  You can specify the total number of
     attempts (or `None` to retry indefinitely), and the delay between attempts.
@@ -222,6 +227,17 @@ class Retry(Dependency):
         retry.attempt = execution.attempt
         return retry
 
+    def at(self, when: datetime) -> NoReturn:
+        now = datetime.now(timezone.utc)
+        diff = when - now
+        diff = diff if diff.total_seconds() >= 0 else timedelta(0)
+
+        self.in_(diff)
+
+    def in_(self, when: timedelta) -> NoReturn:
+        self.delay: timedelta = when
+        raise ForcedRetry()
+
 
 class ExponentialRetry(Retry):
     """Configures exponential retries for a task.  You can specify the total number
@@ -251,7 +267,6 @@ class ExponentialRetry(Retry):
             maximum_delay: The maximum delay between attempts.
         """
         super().__init__(attempts=attempts, delay=minimum_delay)
-        self.minimum_delay = minimum_delay
         self.maximum_delay = maximum_delay
 
     async def __aenter__(self) -> "ExponentialRetry":
@@ -259,14 +274,14 @@ class ExponentialRetry(Retry):
 
         retry = ExponentialRetry(
             attempts=self.attempts,
-            minimum_delay=self.minimum_delay,
+            minimum_delay=self.delay,
             maximum_delay=self.maximum_delay,
         )
         retry.attempt = execution.attempt
 
         if execution.attempt > 1:
             backoff_factor = 2 ** (execution.attempt - 1)
-            calculated_delay = self.minimum_delay * backoff_factor
+            calculated_delay = self.delay * backoff_factor
 
             if calculated_delay > self.maximum_delay:
                 retry.delay = self.maximum_delay
