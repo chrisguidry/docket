@@ -192,6 +192,11 @@ def TaskLogger() -> logging.LoggerAdapter[logging.Logger]:
 class ForcedRetry(Exception):
     """Raised when a task requests a retry via `in_` or `at`"""
 
+    when: datetime
+
+    def __init__(self, when: datetime) -> None:
+        self.when = when
+
 
 class Retry(Dependency):
     """Configures linear retries for a task.  You can specify the total number of
@@ -236,7 +241,7 @@ class Retry(Dependency):
 
     def in_(self, when: timedelta) -> NoReturn:
         self.delay: timedelta = when
-        raise ForcedRetry()
+        raise ForcedRetry(when=datetime.now(timezone.utc) + when)
 
 
 class ExponentialRetry(Retry):
