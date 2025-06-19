@@ -10,6 +10,7 @@ from opentelemetry import trace
 from opentelemetry.metrics import Counter, Histogram, UpDownCounter
 from opentelemetry.metrics import _Gauge as Gauge
 from opentelemetry.sdk.trace import Span, TracerProvider
+from opentelemetry.trace import StatusCode
 
 from docket import Docket, Worker
 from docket.dependencies import Retry
@@ -96,6 +97,97 @@ async def test_task_spans_are_linked_to_the_originating_span(
 
     assert link.context.trace_id == originating_span.context.trace_id
     assert link.context.span_id == originating_span.context.span_id
+
+
+async def test_failed_task_span_has_error_status(docket: Docket, worker: Worker):
+    """When a task fails, its span should have ERROR status."""
+    captured: list[Span] = []
+
+    async def the_failing_task():
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+        raise ValueError("Task failed")
+
+    await docket.add(the_failing_task)()
+    await worker.run_until_finished()
+
+    assert len(captured) == 1
+    (task_span,) = captured
+
+    assert isinstance(task_span, Span)
+    assert task_span.status is not None
+    assert task_span.status.status_code == StatusCode.ERROR
+    assert task_span.status.description is not None
+    assert "Task failed" in task_span.status.description
+
+
+async def test_retried_task_spans_have_error_status(docket: Docket, worker: Worker):
+    """When a task fails and is retried, each failed attempt's span should have ERROR status."""
+    captured: list[Span] = []
+    attempt_count = 0
+
+    async def the_retrying_task(retry: Retry = Retry(attempts=3)):
+        nonlocal attempt_count
+        attempt_count += 1
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+
+        if attempt_count < 3:
+            raise ValueError(f"Attempt {attempt_count} failed")
+        # Third attempt succeeds
+
+    await docket.add(the_retrying_task)()
+    await worker.run_until_finished()
+
+    assert len(captured) == 3
+
+    # First two attempts should have ERROR status
+    for i in range(2):
+        span = captured[i]
+        assert isinstance(span, Span)
+        assert span.status is not None
+        assert span.status.status_code == StatusCode.ERROR
+        assert span.status.description is not None
+        assert f"Attempt {i + 1} failed" in span.status.description
+
+    # Third attempt should have OK status (or no status set, which is treated as OK)
+    success_span = captured[2]
+    assert isinstance(success_span, Span)
+    assert (
+        success_span.status is None or success_span.status.status_code == StatusCode.OK
+    )
+
+
+async def test_infinitely_retrying_task_spans_have_error_status(
+    docket: Docket, worker: Worker
+):
+    """When a task with infinite retries fails, each attempt's span should have ERROR status."""
+    captured: list[Span] = []
+    attempt_count = 0
+
+    async def the_infinite_retry_task(retry: Retry = Retry(attempts=None)):
+        nonlocal attempt_count
+        attempt_count += 1
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+        raise ValueError(f"Attempt {attempt_count} failed")
+
+    execution = await docket.add(the_infinite_retry_task)()
+
+    # Run worker for only 3 task executions of this specific task
+    await worker.run_at_most({execution.key: 3})
+
+    # All captured spans should have ERROR status
+    assert len(captured) == 3
+    for i, span in enumerate(captured):
+        assert isinstance(span, Span)
+        assert span.status is not None
+        assert span.status.status_code == StatusCode.ERROR
+        assert span.status.description is not None
+        assert f"Attempt {i + 1} failed" in span.status.description
 
 
 async def test_message_getter_returns_none_for_missing_key():
