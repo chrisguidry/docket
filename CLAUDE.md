@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Docket** (`pydocket` on PyPI) is a distributed background task system for Python functions with Redis-backed persistence. It enables scheduling both immediate and future work with comprehensive dependency injection, retry mechanisms, and fault tolerance.
 
-**Key Requirements**: Python 3.12+, Redis 6.2+
+**Key Requirements**: Python 3.12+, Redis 6.2+ or Valkey 8.0+
 
 ## Development Commands
 
