@@ -34,7 +34,7 @@ jobs:
       - name: Run tests
         env:
           REDIS_VERSION: ${{ matrix.redis-version }}
-        run: uv run pytest --cov-branch --cov-report=xml --cov-report=term-missing:skip-covered
+        run: uv run pytest --cov-branch --cov-fail-under=100 --cov-report=xml --cov-report=term-missing:skip-covered
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5

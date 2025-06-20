@@ -91,9 +91,9 @@ def redis_server(testrun_uid: str, worker_id: str) -> Generator[Container, None,
                 redis_port = s.getsockname()[1]
 
             # Determine Docker image based on version
-            if REDIS_VERSION.startswith("valkey-"):
-                version = REDIS_VERSION.replace("valkey-", "")
-                image = f"valkey/valkey:{version}"
+            if REDIS_VERSION.startswith("valkey-"):  # pragma: no cover
+                version = REDIS_VERSION.replace("valkey-", "")  # pragma: no cover
+                image = f"valkey/valkey:{version}"  # pragma: no cover
             else:
                 image = f"redis:{REDIS_VERSION}"
 
