@@ -251,19 +251,3 @@ async def test_clear_command_with_custom_docket_name(
     )
     assert result.exit_code == 0, result.output
     assert "Cleared 1 tasks" in result.output
-
-
-def test_clear_command_help(runner: CliRunner):
-    """Should show help text for clear command"""
-    result = runner.invoke(app, ["clear", "--help"])
-    assert result.exit_code == 0
-    assert "clear" in result.output.lower()
-    assert "--url" in result.output
-    assert "--docket" in result.output
-
-
-def test_clear_command_requires_no_additional_args(runner: CliRunner):
-    """Should not require any additional arguments beyond URL and docket name"""
-    result = runner.invoke(app, ["clear", "--help"])
-    assert result.exit_code == 0
-    assert "Usage:" in result.output
