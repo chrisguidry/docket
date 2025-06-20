@@ -135,3 +135,31 @@ async def test_clear_returns_total_count(docket: Docket, the_task: AsyncMock):
 
     result = await docket.clear()
     assert result == 4
+
+
+async def test_clear_no_redis_key_leaks(docket: Docket, the_task: AsyncMock):
+    """Should not leak Redis keys when clearing tasks"""
+    docket.register(the_task)
+
+    await docket.add(the_task)("immediate1")
+    await docket.add(the_task)("immediate2")
+    await docket.add(the_task, key="keyed1")("keyed_task")
+
+    future = datetime.now(timezone.utc) + timedelta(seconds=60)
+    await docket.add(the_task, when=future)("scheduled1")
+    await docket.add(the_task, when=future + timedelta(seconds=1))("scheduled2")
+
+    async with docket.redis() as r:
+        keys_before = len(await r.keys("*"))  # type: ignore
+
+    result = await docket.clear()
+    assert result == 5
+
+    async with docket.redis() as r:
+        keys_after = len(await r.keys("*"))  # type: ignore
+
+    assert keys_after <= keys_before
+
+    snapshot = await docket.snapshot()
+    assert len(snapshot.future) == 0
+    assert len(snapshot.running) == 0
