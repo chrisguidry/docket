@@ -90,8 +90,15 @@ def redis_server(testrun_uid: str, worker_id: str) -> Generator[Container, None,
                 s.bind(("", 0))
                 redis_port = s.getsockname()[1]
 
+            # Determine Docker image based on version
+            if REDIS_VERSION.startswith("valkey-"):
+                version = REDIS_VERSION.replace("valkey-", "")
+                image = f"valkey/valkey:{version}"
+            else:
+                image = f"redis:{REDIS_VERSION}"
+
             container = client.containers.run(
-                f"redis:{REDIS_VERSION}",
+                image,
                 detach=True,
                 ports={"6379/tcp": redis_port},
                 labels={
