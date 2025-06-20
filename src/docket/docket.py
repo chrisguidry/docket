@@ -743,3 +743,46 @@ class Docket:
                 workers.append(WorkerInfo(worker_name, last_seen, task_names))
 
         return workers
+
+    async def clear(self) -> int:
+        """Clear all pending and scheduled tasks from the docket.
+
+        This removes all tasks from the stream (immediate tasks) and queue
+        (scheduled tasks), along with their associated parked data. Running
+        tasks are not affected.
+
+        Returns:
+            The total number of tasks that were cleared.
+        """
+        with tracer.start_as_current_span(
+            "docket.clear",
+            attributes=self.labels(),
+        ):
+            async with self.redis() as redis:
+                async with redis.pipeline() as pipeline:
+                    # Get counts before clearing
+                    pipeline.xlen(self.stream_key)
+                    pipeline.zcard(self.queue_key)
+                    pipeline.zrange(self.queue_key, 0, -1)
+
+                    stream_count: int
+                    queue_count: int
+                    scheduled_keys: list[bytes]
+                    stream_count, queue_count, scheduled_keys = await pipeline.execute()
+
+                    # Clear all data
+                    # Trim stream to 0 messages instead of deleting it to preserve consumer group
+                    if stream_count > 0:
+                        pipeline.xtrim(self.stream_key, maxlen=0, approximate=False)
+                    pipeline.delete(self.queue_key)
+
+                    # Clear parked task data and known task keys
+                    for key_bytes in scheduled_keys:
+                        key = key_bytes.decode()
+                        pipeline.delete(self.parked_task_key(key))
+                        pipeline.delete(self.known_task_key(key))
+
+                    await pipeline.execute()
+
+                    total_cleared = stream_count + queue_count
+                    return total_cleared

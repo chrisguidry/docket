@@ -358,6 +358,32 @@ def strike(
     asyncio.run(run())
 
 
+@app.command(help="Clear all pending and scheduled tasks from the docket")
+def clear(
+    docket_: Annotated[
+        str,
+        typer.Option(
+            "--docket",
+            help="The name of the docket",
+            envvar="DOCKET_NAME",
+        ),
+    ] = "docket",
+    url: Annotated[
+        str,
+        typer.Option(
+            help="The URL of the Redis server",
+            envvar="DOCKET_URL",
+        ),
+    ] = "redis://localhost:6379/0",
+) -> None:
+    async def run() -> None:
+        async with Docket(name=docket_, url=url) as docket:
+            cleared_count = await docket.clear()
+            print(f"Cleared {cleared_count} tasks from docket '{docket_}'")
+
+    asyncio.run(run())
+
+
 @app.command(help="Restores a task or parameters to the Docket")
 def restore(
     function: Annotated[
