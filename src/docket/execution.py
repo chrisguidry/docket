@@ -19,7 +19,7 @@ import opentelemetry.context
 from opentelemetry import propagate, trace
 
 from .annotations import Logged
-from .instrumentation import message_getter
+from .instrumentation import CACHE_SIZE, message_getter
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -32,10 +32,12 @@ _signature_cache: dict[Callable[..., Any], inspect.Signature] = {}
 
 def get_signature(function: Callable[..., Any]) -> inspect.Signature:
     if function in _signature_cache:
+        CACHE_SIZE.set(len(_signature_cache), {"cache": "signature"})
         return _signature_cache[function]
 
     signature = inspect.signature(function)
     _signature_cache[function] = signature
+    CACHE_SIZE.set(len(_signature_cache), {"cache": "signature"})
     return signature
 
 

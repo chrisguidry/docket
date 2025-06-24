@@ -21,6 +21,7 @@ from typing import (
 
 from .docket import Docket
 from .execution import Execution, TaskFunction, get_signature
+from .instrumentation import CACHE_SIZE
 
 if TYPE_CHECKING:  # pragma: no cover
     from .worker import Worker
@@ -415,6 +416,7 @@ def get_dependency_parameters(
     function: TaskFunction | DependencyFunction[Any],
 ) -> dict[str, Dependency]:
     if function in _parameter_cache:
+        CACHE_SIZE.set(len(_parameter_cache), {"cache": "parameter"})
         return _parameter_cache[function]
 
     dependencies: dict[str, Dependency] = {}
@@ -428,6 +430,7 @@ def get_dependency_parameters(
         dependencies[parameter] = param.default
 
     _parameter_cache[function] = dependencies
+    CACHE_SIZE.set(len(_parameter_cache), {"cache": "parameter"})
     return dependencies
 
 
