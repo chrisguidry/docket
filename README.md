@@ -57,6 +57,8 @@ reference](https://chrisguidry.github.io/docket/api-reference/).
 
 🧩 Fully type-complete and type-aware for your background task functions
 
+💉 Dependency injection like FastAPI, Typer, and FastMCP for reusable resources
+
 ## Installing `docket`
 
 Docket is [available on PyPI](https://pypi.org/project/pydocket/) under the package name
