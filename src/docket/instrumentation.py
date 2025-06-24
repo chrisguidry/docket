@@ -117,6 +117,12 @@ SCHEDULE_DEPTH = meter.create_gauge(
     unit="1",
 )
 
+CACHE_SIZE = meter.create_gauge(
+    "docket_cache_size",
+    description="Size of internal docket caches",
+    unit="1",
+)
+
 Message = dict[bytes, bytes]
 
 

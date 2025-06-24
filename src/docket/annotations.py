@@ -2,6 +2,8 @@ import abc
 import inspect
 from typing import Any, Iterable, Mapping, Self
 
+from .instrumentation import CACHE_SIZE
+
 
 class Annotation(abc.ABC):
     _cache: dict[tuple[type[Self], inspect.Signature], Mapping[str, Self]] = {}
@@ -10,6 +12,7 @@ class Annotation(abc.ABC):
     def annotated_parameters(cls, signature: inspect.Signature) -> Mapping[str, Self]:
         key = (cls, signature)
         if key in cls._cache:
+            CACHE_SIZE.set(len(cls._cache), {"cache": "annotation"})
             return cls._cache[key]
 
         annotated: dict[str, Self] = {}
@@ -30,6 +33,7 @@ class Annotation(abc.ABC):
                     annotated[param_name] = arg_type()
 
         cls._cache[key] = annotated
+        CACHE_SIZE.set(len(cls._cache), {"cache": "annotation"})
         return annotated
 
 
