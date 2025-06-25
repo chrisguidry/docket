@@ -335,7 +335,7 @@ async def dependent_task(
 
 If `unreliable_dependency` fails, the task won't execute and the error will be logged with context about which dependency failed. This prevents tasks from running with incomplete or invalid dependencies.
 
-## Dependency Best Practices
+## Dependency Guidelines
 
 ### Design for Reusability
 

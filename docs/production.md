@@ -4,7 +4,7 @@ Running Docket at scale requires understanding its Redis-based architecture, con
 
 ## Redis Streams Architecture
 
-Docket uses Redis streams and sorted sets to provide reliable task delivery with at-least-once semantics.
+Docket uses Redis streams and sorted sets to provide reliable task delivery with at-least-once semantics. Note that Docket requires a single Redis instance and does not support Redis Cluster.
 
 ### Task Lifecycle
 
@@ -30,6 +30,17 @@ async with Worker(
 ```
 
 Set redelivery timeout to be longer than your 99th percentile task duration to minimize duplicate executions.
+
+### Redis Data Structures
+
+Docket creates several Redis data structures for each docket:
+
+- **Stream (`{docket}:stream`)**: Ready-to-execute tasks using Redis consumer groups
+- **Sorted Set (`{docket}:queue`)**: Future tasks ordered by scheduled execution time
+- **Hashes (`{docket}:{key}`)**: Serialized task data for scheduled tasks
+- **Set (`{docket}:workers`)**: Active worker heartbeats with timestamps
+- **Set (`{docket}:worker-tasks:{worker}`)**: Tasks each worker can execute
+- **Stream (`{docket}:strikes`)**: Strike/restore commands for operational control
 
 ## Worker Configuration
 
@@ -91,7 +102,7 @@ docket worker --tasks myapp.tasks:all_tasks
 # Production worker with full configuration
 docket worker \
   --docket orders \
-  --url redis://redis-cluster:6379/0 \
+  --url redis://redis.prod.com:6379/0 \
   --name orders-worker-1 \
   --concurrency 50 \
   --redelivery-timeout 10m \
@@ -104,6 +115,7 @@ docket worker \
 ### Tuning for Different Workloads
 
 **High-throughput, fast tasks:**
+
 ```bash
 docket worker \
   --concurrency 100 \
@@ -113,6 +125,7 @@ docket worker \
 ```
 
 **Long-running, resource-intensive tasks:**
+
 ```bash
 docket worker \
   --concurrency 5 \
@@ -122,6 +135,7 @@ docket worker \
 ```
 
 **Mixed workload with perpetual tasks:**
+
 ```bash
 docket worker \
   --concurrency 25 \
@@ -141,15 +155,9 @@ from redis.asyncio import ConnectionPool
 
 # Custom connection pool for high-concurrency workers
 pool = ConnectionPool.from_url(
-    "redis://redis-cluster:6379/0",
+    "redis://redis.prod.com:6379/0",
     max_connections=50,  # Match or exceed worker concurrency
-    retry_on_timeout=True,
-    socket_keepalive=True,
-    socket_keepalive_options={
-        1: 1,  # TCP_KEEPIDLE
-        2: 3,  # TCP_KEEPINTVL
-        3: 5,  # TCP_KEEPCNT
-    }
+    retry_on_timeout=True
 )
 
 async with Docket(name="orders", connection_pool=pool) as docket:
@@ -157,17 +165,14 @@ async with Docket(name="orders", connection_pool=pool) as docket:
     pass
 ```
 
-### Redis Cluster and High Availability
+### Redis Requirements
 
-Docket works with Redis clusters and sentinel configurations:
+Docket requires a single Redis instance and does not currently support Redis Cluster. For high availability, consider:
+
+- **Managed Redis services** like AWS ElastiCache, Google Cloud Memorystore, or Redis Cloud
+- **Redis replicas** with manual failover procedures
 
 ```python
-# Redis Cluster
-docket_url = "redis://redis-cluster:6379/0?cluster=true"
-
-# Redis Sentinel
-docket_url = "redis+sentinel://sentinel1:26379,sentinel2:26379/mymaster"
-
 # With authentication
 docket_url = "redis://:password@redis.prod.com:6379/0"
 ```
@@ -193,6 +198,7 @@ docket worker --metrics-port 9090
 Available metrics include:
 
 #### Task Counters
+
 - `docket_tasks_added` - Tasks scheduled
 - `docket_tasks_started` - Tasks begun execution
 - `docket_tasks_succeeded` - Successfully completed tasks
@@ -201,10 +207,12 @@ Available metrics include:
 - `docket_tasks_stricken` - Tasks blocked by strikes
 
 #### Task Timing
+
 - `docket_task_duration` - Histogram of task execution times
 - `docket_task_punctuality` - How close tasks run to their scheduled time
 
 #### System Health
+
 - `docket_queue_depth` - Tasks ready for immediate execution
 - `docket_schedule_depth` - Tasks scheduled for future execution
 - `docket_tasks_running` - Currently executing tasks
@@ -212,17 +220,6 @@ Available metrics include:
 - `docket_strikes_in_effect` - Active strike rules
 
 All metrics include labels for docket name, worker name, and task function name.
-
-### Redis Data Structures
-
-Docket creates several Redis data structures for each docket:
-
-- **Stream (`{docket}:stream`)**: Ready-to-execute tasks using Redis consumer groups
-- **Sorted Set (`{docket}:queue`)**: Future tasks ordered by scheduled execution time
-- **Hashes (`{docket}:{key}`)**: Serialized task data for scheduled tasks
-- **Set (`{docket}:workers`)**: Active worker heartbeats with timestamps
-- **Set (`{docket}:worker-tasks:{worker}`)**: Tasks each worker can execute
-- **Stream (`{docket}:strikes`)**: Strike/restore commands for operational control
 
 ### Health Checks
 
@@ -258,6 +255,7 @@ docket worker --logging-format plain --logging-level warning
 ```
 
 Log entries include:
+
 - Task execution start/completion
 - Error details with stack traces
 - Worker lifecycle events
@@ -285,17 +283,19 @@ histogram_quantile(0.95, rate(docket_task_duration_bucket[5m]))
 up{job="docket-workers"}
 ```
 
-## Production Best Practices
+## Production Guidelines
 
 ### Capacity Planning
 
 **Estimate concurrent tasks:**
+
 ```
 concurrent_tasks = avg_task_duration * tasks_per_second
 worker_concurrency = concurrent_tasks * 1.2  # 20% buffer
 ```
 
 **Size worker pools:**
+
 - Start with 1-2 workers per CPU core
 - Monitor CPU and memory usage
 - Scale horizontally rather than increasing concurrency indefinitely
@@ -303,6 +303,7 @@ worker_concurrency = concurrent_tasks * 1.2  # 20% buffer
 ### Deployment Strategies
 
 **Blue-green deployments:**
+
 ```bash
 # Deploy new workers with different name
 docket worker --name orders-worker-v2 --tasks myapp.tasks:v2_tasks
@@ -316,6 +317,7 @@ docket strike old_task_function
 ### Error Handling
 
 **Configure appropriate retries:**
+
 ```python
 # Transient failures - short delays
 async def api_call(
@@ -338,6 +340,7 @@ async def financial_transaction(
 ```
 
 **Dead letter handling:**
+
 ```python
 async def process_order(order_id: str) -> None:
     try:
@@ -351,6 +354,7 @@ async def process_order(order_id: str) -> None:
 ### Operational Procedures
 
 **Graceful shutdown:**
+
 ```bash
 # Workers handle SIGTERM gracefully
 kill -TERM $WORKER_PID
@@ -360,6 +364,7 @@ docker stop docket-worker
 ```
 
 **Emergency task blocking:**
+
 ```bash
 # Block problematic tasks immediately
 docket strike problematic_function
@@ -372,6 +377,7 @@ docket restore problematic_function
 ```
 
 **Monitoring checklist:**
+
 - Queue depth alerts (tasks backing up)
 - Error rate alerts (> 5% failure rate)
 - Task duration alerts (P95 > expected)
@@ -381,18 +387,21 @@ docket restore problematic_function
 ### Scaling Considerations
 
 **Horizontal scaling:**
+
 - Add workers across multiple machines
 - Use consistent worker naming for monitoring
 - Monitor Redis memory usage as task volume grows
 
 **Vertical scaling:**
+
 - Increase worker concurrency for I/O bound tasks
 - Increase memory limits for large task payloads
 - Monitor CPU usage to avoid oversubscription
 
 **Redis scaling:**
-- Use Redis clustering for high availability
+
+- Use managed Redis services for high availability (Redis Cluster is not supported)
 - Monitor memory usage and eviction policies
-- Consider read replicas for metric queries
+- Scale vertically for larger workloads
 
 Running Docket in production requires attention to these operational details, but the Redis-based architecture and monitoring support can help with demanding production workloads.
