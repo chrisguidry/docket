@@ -1,6 +1,6 @@
 # Advanced Task Patterns
 
-Docket is made for building complex distributed systems, and the patterns below highlight some of the original use cases for Docket. 
+Docket is made for building complex distributed systems, and the patterns below highlight some of the original use cases for Docket.
 
 ## Perpetual Tasks
 
