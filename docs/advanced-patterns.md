@@ -1,6 +1,6 @@
 # Advanced Task Patterns
 
-Docket includes several features that support building complex distributed systems. These patterns enable recurring work, operational control, debugging capabilities, and testing support.
+Docket is made for building complex distributed systems, and the patterns below highlight some of the original use cases for Docket. 
 
 ## Perpetual Tasks
 
