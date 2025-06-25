@@ -187,10 +187,10 @@ You now know the core concepts: creating dockets, scheduling work with idempoten
 
 Ready for more? Check out:
 
-- **Dependencies Guide** - Access current docket, advanced retry patterns, timeouts, and custom dependencies
-- **Testing with Docket** - Ergonomic testing utilities for unit and integration tests
-- **Advanced Task Patterns** - Perpetual tasks, striking/restoring, logging, and task chains
-- **Docket in Production** - Redis architecture, monitoring, and deployment best practices
+- **[Dependencies Guide](dependencies.md)** - Access current docket, advanced retry patterns, timeouts, and custom dependencies
+- **[Testing with Docket](testing.md)** - Ergonomic testing utilities for unit and integration tests
+- **[Advanced Task Patterns](advanced-patterns.md)** - Perpetual tasks, striking/restoring, logging, and task chains
+- **[Docket in Production](production.md)** - Redis architecture, monitoring, and deployment best practices
 - **[API Reference](api-reference.md)** - Complete documentation of all classes and methods
 
 ## A Note on Security

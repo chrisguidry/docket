@@ -6,17 +6,6 @@ Running Docket at scale requires understanding its Redis-based architecture, con
 
 Docket uses Redis streams and sorted sets to provide reliable task delivery with at-least-once semantics.
 
-### Data Storage Model
-
-Docket creates several Redis data structures for each docket:
-
-- **Stream (`{docket}:stream`)**: Ready-to-execute tasks using Redis consumer groups
-- **Sorted Set (`{docket}:queue`)**: Future tasks ordered by scheduled execution time
-- **Hashes (`{docket}:{key}`)**: Serialized task data for scheduled tasks
-- **Set (`{docket}:workers`)**: Active worker heartbeats with timestamps
-- **Set (`{docket}:worker-tasks:{worker}`)**: Tasks each worker can execute
-- **Stream (`{docket}:strikes`)**: Strike/restore commands for operational control
-
 ### Task Lifecycle
 
 Understanding how tasks flow through the system helps with monitoring and troubleshooting:
@@ -203,7 +192,7 @@ docket worker --metrics-port 9090
 
 Available metrics include:
 
-**Task Counters:**
+#### Task Counters
 - `docket_tasks_added` - Tasks scheduled
 - `docket_tasks_started` - Tasks begun execution
 - `docket_tasks_succeeded` - Successfully completed tasks
@@ -211,11 +200,11 @@ Available metrics include:
 - `docket_tasks_retried` - Retry attempts
 - `docket_tasks_stricken` - Tasks blocked by strikes
 
-**Task Timing:**
+#### Task Timing
 - `docket_task_duration` - Histogram of task execution times
 - `docket_task_punctuality` - How close tasks run to their scheduled time
 
-**System Health:**
+#### System Health
 - `docket_queue_depth` - Tasks ready for immediate execution
 - `docket_schedule_depth` - Tasks scheduled for future execution
 - `docket_tasks_running` - Currently executing tasks
@@ -223,6 +212,17 @@ Available metrics include:
 - `docket_strikes_in_effect` - Active strike rules
 
 All metrics include labels for docket name, worker name, and task function name.
+
+### Redis Data Structures
+
+Docket creates several Redis data structures for each docket:
+
+- **Stream (`{docket}:stream`)**: Ready-to-execute tasks using Redis consumer groups
+- **Sorted Set (`{docket}:queue`)**: Future tasks ordered by scheduled execution time
+- **Hashes (`{docket}:{key}`)**: Serialized task data for scheduled tasks
+- **Set (`{docket}:workers`)**: Active worker heartbeats with timestamps
+- **Set (`{docket}:worker-tasks:{worker}`)**: Tasks each worker can execute
+- **Stream (`{docket}:strikes`)**: Strike/restore commands for operational control
 
 ### Health Checks
 
@@ -243,23 +243,7 @@ Docket automatically creates OpenTelemetry spans for task execution:
 - **Status**: Success/failure with error details
 - **Duration**: Complete task execution time
 
-Configure your OpenTelemetry exporter to send traces to your observability platform:
-
-```python
-from opentelemetry import trace
-from opentelemetry.exporter.jaeger.thrift import JaegerExporter
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-# Configure tracing before creating workers
-trace.set_tracer_provider(TracerProvider())
-jaeger_exporter = JaegerExporter(
-    agent_host_name="jaeger",
-    agent_port=6831,
-)
-span_processor = BatchSpanProcessor(jaeger_exporter)
-trace.get_tracer_provider().add_span_processor(span_processor)
-```
+Configure your OpenTelemetry exporter to send traces to your observability platform. See the [OpenTelemetry Python documentation](https://opentelemetry.io/docs/languages/python/) for configuration examples with various backends like Jaeger, Zipkin, or cloud providers.
 
 ### Structured Logging
 
@@ -327,12 +311,6 @@ docket worker --name orders-worker-v2 --tasks myapp.tasks:v2_tasks
 docket strike old_task_function
 
 # Scale down old workers after tasks drain
-```
-
-**Rolling updates:**
-```bash
-# Update worker configuration gradually
-# Workers automatically reconnect and pick up new tasks
 ```
 
 ### Error Handling
