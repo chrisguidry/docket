@@ -594,6 +594,73 @@ def relative_time(now: datetime, when: datetime) -> str:
         return f"at {local_time(when)}"
 
 
+def get_task_stats(
+    snapshot: DocketSnapshot,
+) -> dict[str, dict[str, int | datetime | None]]:
+    """Get task count statistics by function name with timestamp data."""
+    stats: dict[str, dict[str, int | datetime | None]] = {}
+
+    # Count running tasks by function
+    for execution in snapshot.running:
+        func_name = execution.function.__name__
+        if func_name not in stats:
+            stats[func_name] = {
+                "running": 0,
+                "queued": 0,
+                "total": 0,
+                "oldest_queued": None,
+                "latest_queued": None,
+                "oldest_started": None,
+                "latest_started": None,
+            }
+        stats[func_name]["running"] += 1
+        stats[func_name]["total"] += 1
+
+        # Track oldest/latest started times for running tasks
+        started = execution.started
+        if (
+            stats[func_name]["oldest_started"] is None
+            or started < stats[func_name]["oldest_started"]
+        ):
+            stats[func_name]["oldest_started"] = started
+        if (
+            stats[func_name]["latest_started"] is None
+            or started > stats[func_name]["latest_started"]
+        ):
+            stats[func_name]["latest_started"] = started
+
+    # Count future tasks by function
+    for execution in snapshot.future:
+        func_name = execution.function.__name__
+        if func_name not in stats:
+            stats[func_name] = {
+                "running": 0,
+                "queued": 0,
+                "total": 0,
+                "oldest_queued": None,
+                "latest_queued": None,
+                "oldest_started": None,
+                "latest_started": None,
+            }
+        stats[func_name]["queued"] += 1
+        stats[func_name]["total"] += 1
+
+        # Track oldest/latest queued times for future tasks
+        when = execution.when
+        if (
+            stats[func_name]["oldest_queued"] is None
+            or when < stats[func_name]["oldest_queued"]
+        ):
+            stats[func_name]["oldest_queued"] = when
+        if (
+            stats[func_name]["latest_queued"] is None
+            or when > stats[func_name]["latest_queued"]
+        ):
+            stats[func_name]["latest_queued"] = when
+
+    return stats
+
+
 @app.command(help="Shows a snapshot of what's on the docket right now")
 def snapshot(
     tasks: Annotated[
@@ -623,6 +690,13 @@ def snapshot(
             envvar="DOCKET_URL",
         ),
     ] = "redis://localhost:6379/0",
+    stats: Annotated[
+        bool,
+        typer.Option(
+            "--stats",
+            help="Show task count statistics by function name",
+        ),
+    ] = False,
 ) -> None:
     async def run() -> DocketSnapshot:
         async with Docket(name=docket_, url=url) as docket:
@@ -671,6 +745,44 @@ def snapshot(
         )
 
     console.print(table)
+
+    # Display task statistics if requested
+    if stats:
+        task_stats = get_task_stats(snapshot)
+        if task_stats:
+            console.print()  # Add spacing between tables
+            stats_table = Table(title="Task Count Statistics by Function")
+            stats_table.add_column("Function", style="cyan")
+            stats_table.add_column("Total", style="bold magenta", justify="right")
+            stats_table.add_column("Running", style="green", justify="right")
+            stats_table.add_column("Queued", style="yellow", justify="right")
+            stats_table.add_column("Oldest Queued", style="dim yellow", justify="right")
+            stats_table.add_column("Latest Queued", style="dim yellow", justify="right")
+
+            # Sort by total count descending to highlight potential runaway tasks
+            for func_name in sorted(
+                task_stats.keys(), key=lambda x: task_stats[x]["total"], reverse=True
+            ):
+                counts = task_stats[func_name]
+
+                # Format timestamp columns
+                oldest_queued = ""
+                latest_queued = ""
+                if counts["oldest_queued"] is not None:
+                    oldest_queued = relative(counts["oldest_queued"])
+                if counts["latest_queued"] is not None:
+                    latest_queued = relative(counts["latest_queued"])
+
+                stats_table.add_row(
+                    func_name,
+                    str(counts["total"]),
+                    str(counts["running"]),
+                    str(counts["queued"]),
+                    oldest_queued,
+                    latest_queued,
+                )
+
+            console.print(stats_table)
 
 
 workers_app: typer.Typer = typer.Typer(
