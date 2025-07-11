@@ -505,6 +505,78 @@ def Depends(dependency: DependencyFunction[R]) -> R:
     return cast(R, _Depends(dependency))
 
 
+class ConcurrencyLimit(Dependency):
+    """Configures concurrency limits for a task based on specific argument values.
+    
+    This allows fine-grained control over task execution by limiting concurrent 
+    tasks based on the value of specific arguments.
+    
+    Example:
+    
+    ```python
+    @task
+    async def process_customer(
+        customer_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit("customer_id", max_concurrent=1)
+    ) -> None:
+        # Only one task per customer_id will run at a time
+        ...
+    
+    @task
+    async def backup_db(
+        db_name: str,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit("db_name", max_concurrent=3)
+    ) -> None:
+        # Only 3 backup tasks per database name will run at a time
+        ...
+    ```
+    """
+    
+    single: bool = True
+    
+    def __init__(
+        self, 
+        argument_name: str, 
+        max_concurrent: int = 1,
+        scope: str | None = None
+    ) -> None:
+        """
+        Args:
+            argument_name: The name of the task argument to use for concurrency grouping
+            max_concurrent: Maximum number of concurrent tasks per unique argument value
+            scope: Optional scope prefix for Redis keys (defaults to docket name)
+        """
+        self.argument_name = argument_name
+        self.max_concurrent = max_concurrent
+        self.scope = scope
+        self._concurrency_key: str | None = None
+        
+    async def __aenter__(self) -> "ConcurrencyLimit":
+        execution = self.execution.get()
+        docket = self.docket.get()
+        
+        # Get the argument value to group by
+        try:
+            argument_value = execution.get_argument(self.argument_name)
+        except KeyError:
+            raise ValueError(f"Argument '{self.argument_name}' not found in task arguments")
+        
+        # Create a concurrency key for this specific argument value
+        scope = self.scope or docket.name
+        self._concurrency_key = f"{scope}:concurrency:{self.argument_name}:{argument_value}"
+        
+        limit = ConcurrencyLimit(self.argument_name, self.max_concurrent, self.scope)
+        limit._concurrency_key = self._concurrency_key
+        return limit
+    
+    @property 
+    def concurrency_key(self) -> str:
+        """Redis key used for tracking concurrency for this specific argument value."""
+        if self._concurrency_key is None:
+            raise RuntimeError("ConcurrencyLimit not initialized - use within task context")
+        return self._concurrency_key
+
+
 D = TypeVar("D", bound=Dependency)
 
 

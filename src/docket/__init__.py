@@ -10,6 +10,7 @@ __version__ = version("pydocket")
 
 from .annotations import Logged
 from .dependencies import (
+    ConcurrencyLimit,
     CurrentDocket,
     CurrentExecution,
     CurrentWorker,
@@ -28,6 +29,7 @@ from .worker import Worker
 
 __all__ = [
     "__version__",
+    "ConcurrencyLimit",
     "CurrentDocket",
     "CurrentExecution",
     "CurrentWorker",

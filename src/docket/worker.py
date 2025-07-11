@@ -20,6 +20,7 @@ from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError
 
 from .dependencies import (
+    ConcurrencyLimit,
     Dependency,
     FailedDependency,
     Perpetual,
@@ -248,6 +249,7 @@ class Worker:
         )
 
         active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
+        task_executions: dict[asyncio.Task[None], Execution] = {}
         available_slots = self.concurrency
 
         log_context = self._log_context()
@@ -284,7 +286,7 @@ class Worker:
                 count=available_slots,
             )
 
-        def start_task(message_id: RedisMessageID, message: RedisMessage) -> bool:
+        async def start_task(message_id: RedisMessageID, message: RedisMessage) -> bool:
             function_name = message[b"function"].decode()
             if not (function := self.docket.tasks.get(function_name)):
                 logger.warning(
@@ -296,8 +298,19 @@ class Worker:
 
             execution = Execution.from_message(function, message)
 
+            # Check concurrency limits before starting the task
+            if not await self._can_start_task(redis, execution):
+                # Task cannot start due to concurrency limits - put it back in queue
+                logger.debug(
+                    "Task %s blocked by concurrency limit",
+                    execution.key,
+                    extra=log_context,
+                )
+                return False
+
             task = asyncio.create_task(self._execute(execution), name=execution.key)
             active_tasks[task] = message_id
+            task_executions[task] = execution
 
             nonlocal available_slots
             available_slots -= 1
@@ -308,7 +321,10 @@ class Worker:
             completed_tasks = {task for task in active_tasks if task.done()}
             for task in completed_tasks:
                 message_id = active_tasks.pop(task)
+                execution = task_executions.pop(task)
                 await task
+                # Release concurrency slot for this task
+                await self._release_concurrency_slot(redis, execution)
                 await ack_message(redis, message_id)
 
         async def ack_message(redis: Redis, message_id: RedisMessageID) -> None:
@@ -343,7 +359,24 @@ class Worker:
                             if not message:  # pragma: no cover
                                 continue
 
-                            if not start_task(message_id, message):
+                            task_started = await start_task(message_id, message)
+                            if not task_started:
+                                # Check if this was due to concurrency limits or other issues
+                                function_name = message[b"function"].decode()
+                                if function := self.docket.tasks.get(function_name):
+                                    execution = Execution.from_message(function, message)
+                                    concurrency_limit = get_single_dependency_parameter_of_type(
+                                        execution.function, ConcurrencyLimit
+                                    )
+                                    if concurrency_limit:
+                                        # Task blocked by concurrency - requeue with small delay
+                                        # Reschedule for a few milliseconds in the future with new key
+                                        when = datetime.now(timezone.utc) + timedelta(milliseconds=50)
+                                        await self.docket.add(execution.function, when=when)(*execution.args, **execution.kwargs)
+                                        await ack_message(redis, message_id)
+                                        continue
+                                        
+                                # Other errors - delete and ack
                                 await self._delete_known_task(redis, message)
                                 await ack_message(redis, message_id)
 
@@ -761,6 +794,78 @@ class Worker:
                     exc_info=True,
                     extra=self._log_context(),
                 )
+
+    async def _can_start_task(self, redis: Redis, execution: Execution) -> bool:
+        """Check if a task can start based on concurrency limits."""
+        # Check if task has a concurrency limit dependency
+        concurrency_limit = get_single_dependency_parameter_of_type(
+            execution.function, ConcurrencyLimit
+        )
+        
+        if not concurrency_limit:
+            return True  # No concurrency limit, can always start
+            
+        # Get the concurrency key for this task
+        try:
+            argument_value = execution.get_argument(concurrency_limit.argument_name)
+        except KeyError:
+            # If argument not found, let the task fail naturally in execution
+            return True
+            
+        scope = concurrency_limit.scope or self.docket.name
+        concurrency_key = f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
+        
+        # Use Redis to atomically check and increment the counter
+        lua_script = """
+        local key = KEYS[1]
+        local max_concurrent = tonumber(ARGV[1])
+        local worker_id = ARGV[2]
+        local task_key = ARGV[3]
+        
+        -- Get current count
+        local current = redis.call('SCARD', key)
+        
+        if current < max_concurrent then
+            -- Add this worker's task to the set
+            redis.call('SADD', key, worker_id .. ':' .. task_key)
+            return 1
+        else
+            return 0
+        end
+        """
+        
+        result = await redis.eval(  # type: ignore
+            lua_script,
+            1,
+            concurrency_key,
+            str(concurrency_limit.max_concurrent),
+            self.name,
+            execution.key
+        )
+        
+        return bool(result)
+    
+    async def _release_concurrency_slot(self, redis: Redis, execution: Execution) -> None:
+        """Release a concurrency slot when task completes."""
+        # Check if task has a concurrency limit dependency
+        concurrency_limit = get_single_dependency_parameter_of_type(
+            execution.function, ConcurrencyLimit
+        )
+        
+        if not concurrency_limit:
+            return  # No concurrency limit to release
+            
+        # Get the concurrency key for this task
+        try:
+            argument_value = execution.get_argument(concurrency_limit.argument_name)
+        except KeyError:
+            return  # If argument not found, nothing to release
+            
+        scope = concurrency_limit.scope or self.docket.name
+        concurrency_key = f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
+        
+        # Remove this worker's task from the set
+        await redis.srem(concurrency_key, f"{self.name}:{execution.key}")  # type: ignore
 
 
 def ms(seconds: float) -> str:
