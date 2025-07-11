@@ -88,6 +88,12 @@ class Worker:
     scheduling_resolution: timedelta
     schedule_automatic_tasks: bool
 
+    # Concurrency refresh management
+    _concurrency_refresh_threshold: timedelta
+    _concurrency_refresh_interval: timedelta
+    _concurrency_slots_needing_refresh: dict[str, tuple[str, float]]
+    _concurrency_refresh_manager_task: asyncio.Task[None] | None
+
     def __init__(
         self,
         docket: Docket,
@@ -108,9 +114,20 @@ class Worker:
         self.scheduling_resolution = scheduling_resolution
         self.schedule_automatic_tasks = schedule_automatic_tasks
 
+        # Concurrency refresh settings
+        self._concurrency_refresh_threshold = timedelta(
+            seconds=self.redelivery_timeout.total_seconds() * 0.5
+        )
+        self._concurrency_refresh_interval = timedelta(seconds=30)
+        self._concurrency_slots_needing_refresh = {}
+        self._concurrency_refresh_manager_task = None
+
     async def __aenter__(self) -> Self:
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
         self._execution_counts = {}
+        self._concurrency_refresh_manager_task = asyncio.create_task(
+            self._concurrency_refresh_manager()
+        )
         return self
 
     async def __aexit__(
@@ -127,6 +144,14 @@ class Worker:
         except asyncio.CancelledError:
             pass
         del self._heartbeat_task
+
+        if self._concurrency_refresh_manager_task:
+            self._concurrency_refresh_manager_task.cancel()
+            try:
+                await self._concurrency_refresh_manager_task
+            except asyncio.CancelledError:
+                pass
+            del self._concurrency_refresh_manager_task
 
     def labels(self) -> Mapping[str, str]:
         return {
@@ -298,16 +323,6 @@ class Worker:
 
             execution = Execution.from_message(function, message)
 
-            # Check concurrency limits before starting the task
-            if not await self._can_start_task(redis, execution):
-                # Task cannot start due to concurrency limits - put it back in queue
-                logger.debug(
-                    "Task %s blocked by concurrency limit",
-                    execution.key,
-                    extra=log_context,
-                )
-                return False
-
             task = asyncio.create_task(self._execute(execution), name=execution.key)
             active_tasks[task] = message_id
             task_executions[task] = execution
@@ -321,10 +336,8 @@ class Worker:
             completed_tasks = {task for task in active_tasks if task.done()}
             for task in completed_tasks:
                 message_id = active_tasks.pop(task)
-                execution = task_executions.pop(task)
+                task_executions.pop(task)
                 await task
-                # Release concurrency slot for this task
-                await self._release_concurrency_slot(redis, execution)
                 await ack_message(redis, message_id)
 
         async def ack_message(redis: Redis, message_id: RedisMessageID) -> None:
@@ -361,21 +374,6 @@ class Worker:
 
                             task_started = await start_task(message_id, message)
                             if not task_started:
-                                # Check if this was due to concurrency limits or other issues
-                                function_name = message[b"function"].decode()
-                                if function := self.docket.tasks.get(function_name):
-                                    execution = Execution.from_message(function, message)
-                                    concurrency_limit = get_single_dependency_parameter_of_type(
-                                        execution.function, ConcurrencyLimit
-                                    )
-                                    if concurrency_limit:
-                                        # Task blocked by concurrency - requeue with small delay
-                                        # Reschedule for a few milliseconds in the future with new key
-                                        when = datetime.now(timezone.utc) + timedelta(milliseconds=50)
-                                        await self.docket.add(execution.function, when=when)(*execution.args, **execution.kwargs)
-                                        await ack_message(redis, message_id)
-                                        continue
-                                        
                                 # Other errors - delete and ack
                                 await self._delete_known_task(redis, message)
                                 await ack_message(redis, message_id)
@@ -567,6 +565,37 @@ class Worker:
         ) as span:
             try:
                 async with resolved_dependencies(self, execution) as dependencies:
+                    # Check concurrency limits after dependency resolution
+                    concurrency_limit = get_single_dependency_of_type(
+                        dependencies, ConcurrencyLimit
+                    )
+                    concurrency_key = None
+                    if concurrency_limit:
+                        async with self.docket.redis() as redis:
+                            # Check if we can acquire a concurrency slot
+                            if not await self._can_start_task(redis, execution):
+                                # Task cannot start due to concurrency limits - reschedule
+                                logger.debug(
+                                    "🔒 Task %s blocked by concurrency limit, rescheduling",
+                                    execution.key,
+                                    extra=log_context,
+                                )
+                                # Reschedule for a few milliseconds in the future
+                                when = datetime.now(timezone.utc) + timedelta(
+                                    milliseconds=50
+                                )
+                                await self.docket.add(execution.function, when=when)(
+                                    *execution.args, **execution.kwargs
+                                )
+                                return
+                            else:
+                                # Successfully acquired slot - register for refresh management
+                                concurrency_key = self._get_concurrency_key(execution)
+                                member = f"{self.name}:{execution.key}"
+                                self._concurrency_slots_needing_refresh[
+                                    concurrency_key
+                                ] = (member, start)
+
                     # Preemptively reschedule the perpetual task for the future, or clear
                     # the known task key for this task
                     rescheduled = await self._perpetuate_if_requested(
@@ -637,6 +666,19 @@ class Worker:
                     "%s [%s] %s", arrow, ms(duration), call, extra=log_context
                 )
             finally:
+                # Release concurrency slot if we acquired one
+                if "dependencies" in locals():
+                    concurrency_limit = get_single_dependency_of_type(
+                        dependencies, ConcurrencyLimit
+                    )
+                    if concurrency_limit and concurrency_key:
+                        # Remove from refresh management
+                        self._concurrency_slots_needing_refresh.pop(
+                            concurrency_key, None
+                        )
+                        async with self.docket.redis() as redis:
+                            await self._release_concurrency_slot(redis, execution)
+
                 TASKS_RUNNING.add(-1, counter_labels)
                 TASKS_COMPLETED.add(1, counter_labels)
                 TASK_DURATION.record(duration, counter_labels)
@@ -728,6 +770,21 @@ class Worker:
     def workers_set(self) -> str:
         return self.docket.workers_set
 
+    @property
+    def concurrency_refresh_interval(self) -> timedelta:
+        """Get the concurrency refresh interval for testing purposes."""
+        return self._concurrency_refresh_interval
+
+    @concurrency_refresh_interval.setter
+    def concurrency_refresh_interval(self, value: timedelta) -> None:
+        """Set the concurrency refresh interval for testing purposes."""
+        self._concurrency_refresh_interval = value
+
+    @property
+    def concurrency_slots_needing_refresh(self) -> dict[str, tuple[str, float]]:
+        """Get the concurrency slots needing refresh for testing purposes."""
+        return self._concurrency_slots_needing_refresh
+
     def worker_tasks_set(self, worker_name: str) -> str:
         return self.docket.worker_tasks_set(worker_name)
 
@@ -801,71 +858,145 @@ class Worker:
         concurrency_limit = get_single_dependency_parameter_of_type(
             execution.function, ConcurrencyLimit
         )
-        
+
         if not concurrency_limit:
             return True  # No concurrency limit, can always start
-            
+
         # Get the concurrency key for this task
         try:
             argument_value = execution.get_argument(concurrency_limit.argument_name)
         except KeyError:
             # If argument not found, let the task fail naturally in execution
             return True
-            
+
         scope = concurrency_limit.scope or self.docket.name
-        concurrency_key = f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
-        
-        # Use Redis to atomically check and increment the counter
+        concurrency_key = (
+            f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
+        )
+
+        # Use Redis sorted set with timestamps to track concurrency and handle expiration
         lua_script = """
         local key = KEYS[1]
         local max_concurrent = tonumber(ARGV[1])
         local worker_id = ARGV[2]
         local task_key = ARGV[3]
-        
+        local current_time = tonumber(ARGV[4])
+        local expiration_time = tonumber(ARGV[5])
+
+        -- Remove expired entries
+        local expired_cutoff = current_time - expiration_time
+        redis.call('ZREMRANGEBYSCORE', key, 0, expired_cutoff)
+
         -- Get current count
-        local current = redis.call('SCARD', key)
-        
+        local current = redis.call('ZCARD', key)
+
         if current < max_concurrent then
-            -- Add this worker's task to the set
-            redis.call('SADD', key, worker_id .. ':' .. task_key)
+            -- Add this worker's task to the sorted set with current timestamp
+            redis.call('ZADD', key, current_time, worker_id .. ':' .. task_key)
             return 1
         else
             return 0
         end
         """
-        
+
+        current_time = datetime.now(timezone.utc).timestamp()
+        expiration_seconds = self.redelivery_timeout.total_seconds()
+
         result = await redis.eval(  # type: ignore
             lua_script,
             1,
             concurrency_key,
             str(concurrency_limit.max_concurrent),
             self.name,
-            execution.key
+            execution.key,
+            current_time,
+            expiration_seconds,
         )
-        
+
         return bool(result)
-    
-    async def _release_concurrency_slot(self, redis: Redis, execution: Execution) -> None:
+
+    async def _release_concurrency_slot(
+        self, redis: Redis, execution: Execution
+    ) -> None:
         """Release a concurrency slot when task completes."""
         # Check if task has a concurrency limit dependency
         concurrency_limit = get_single_dependency_parameter_of_type(
             execution.function, ConcurrencyLimit
         )
-        
+
         if not concurrency_limit:
             return  # No concurrency limit to release
-            
+
         # Get the concurrency key for this task
         try:
             argument_value = execution.get_argument(concurrency_limit.argument_name)
         except KeyError:
             return  # If argument not found, nothing to release
-            
+
         scope = concurrency_limit.scope or self.docket.name
-        concurrency_key = f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
-        
-        # Remove this worker's task from the set
-        await redis.srem(concurrency_key, f"{self.name}:{execution.key}")  # type: ignore
+        concurrency_key = (
+            f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
+        )
+
+        # Remove this worker's task from the sorted set
+        await redis.zrem(concurrency_key, f"{self.name}:{execution.key}")  # type: ignore
+
+    def _get_concurrency_key(self, execution: Execution) -> str:
+        """Get the Redis key for concurrency tracking."""
+        concurrency_limit = get_single_dependency_parameter_of_type(
+            execution.function, ConcurrencyLimit
+        )
+        if not concurrency_limit:
+            raise ValueError("No concurrency limit found for execution")
+
+        try:
+            argument_value = execution.get_argument(concurrency_limit.argument_name)
+        except KeyError:
+            raise ValueError(
+                f"Argument '{concurrency_limit.argument_name}' not found in task arguments"
+            )
+
+        scope = concurrency_limit.scope or self.docket.name
+        return f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
+
+    async def _concurrency_refresh_manager(self) -> None:
+        """Single coroutine that manages all concurrency slot refreshes."""
+        while True:
+            try:
+                await asyncio.sleep(self._concurrency_refresh_interval.total_seconds())
+
+                current_time = time.time()
+                slots_to_refresh = []
+
+                # Find slots that need refreshing (running longer than threshold)
+                for slot_key, (
+                    member,
+                    start_time,
+                ) in self._concurrency_slots_needing_refresh.items():
+                    elapsed = current_time - start_time
+                    if elapsed >= self._concurrency_refresh_threshold.total_seconds():
+                        slots_to_refresh.append((slot_key, member))
+
+                # Batch refresh in a single Redis operation
+                if slots_to_refresh:
+                    async with self.docket.redis() as redis:
+                        async with redis.pipeline() as pipe:
+                            for slot_key, member in slots_to_refresh:
+                                pipe.zadd(slot_key, {member: current_time})
+                            await pipe.execute()
+
+                    logger.debug(
+                        "Refreshed %d concurrency slots",
+                        len(slots_to_refresh),
+                        extra=self._log_context(),
+                    )
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception(
+                    "Error in concurrency refresh manager", extra=self._log_context()
+                )
 
 
 def ms(seconds: float) -> str:

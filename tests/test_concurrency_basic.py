@@ -1,15 +1,16 @@
 import asyncio
-import pytest
 from docket import ConcurrencyLimit, Docket, Worker
 
 
 async def test_basic_concurrency_limit(docket: Docket, worker: Worker):
     """Test basic concurrency limiting functionality."""
-    results = []
+    results: list[str] = []
 
     async def test_task(
         customer_id: int,
-        concurrency: ConcurrencyLimit = ConcurrencyLimit("customer_id", max_concurrent=1)
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id", max_concurrent=1
+        ),
     ):
         results.append(f"start_{customer_id}")
         await asyncio.sleep(0.01)  # Short delay

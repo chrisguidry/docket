@@ -468,7 +468,7 @@ async def process_media_file(
 
 # Different operation types can run concurrently, but each type is limited
 await docket.add(process_media_file)("/videos/movie1.mp4", "video_transcode")
-await docket.add(process_media_file)("/videos/movie2.mp4", "video_transcode") 
+await docket.add(process_media_file)("/videos/movie2.mp4", "video_transcode")
 await docket.add(process_media_file)("/images/photo1.jpg", "image_resize")  # Runs in parallel
 ```
 
@@ -481,8 +481,8 @@ async def process_tenant_data(
     tenant_id: str,
     operation: str,
     concurrency: ConcurrencyLimit = ConcurrencyLimit(
-        "tenant_id", 
-        max_concurrent=2, 
+        "tenant_id",
+        max_concurrent=2,
         scope="tenant_operations"
     )
 ) -> None:
@@ -533,7 +533,7 @@ async def monitor_concurrency_usage() -> None:
         # Check how many tasks are running for a specific limit
         active_count = await redis.scard("docket:concurrency:customer_id:1001")
         print(f"Customer 1001 has {active_count} active tasks")
-        
+
         # List all active concurrency keys
         keys = await redis.keys("docket:concurrency:*")
         for key in keys:
