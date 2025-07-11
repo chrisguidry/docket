@@ -514,7 +514,6 @@ class ConcurrencyLimit(Dependency):
     Example:
 
     ```python
-    @task
     async def process_customer(
         customer_id: int,
         concurrency: ConcurrencyLimit = ConcurrencyLimit("customer_id", max_concurrent=1)
@@ -522,7 +521,6 @@ class ConcurrencyLimit(Dependency):
         # Only one task per customer_id will run at a time
         ...
 
-    @task
     async def backup_db(
         db_name: str,
         concurrency: ConcurrencyLimit = ConcurrencyLimit("db_name", max_concurrent=3)
