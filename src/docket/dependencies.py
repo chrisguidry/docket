@@ -39,9 +39,9 @@ class Dependency(abc.ABC):
 
     async def __aexit__(
         self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
     ) -> bool: ...  # pragma: no cover
 
 
@@ -545,6 +545,7 @@ class ConcurrencyLimit(Dependency):
         self.max_concurrent = max_concurrent
         self.scope = scope
         self._concurrency_key: str | None = None
+        self._initialized: bool = False
 
     async def __aenter__(self) -> "ConcurrencyLimit":
         execution = self.execution.get()
@@ -554,9 +555,13 @@ class ConcurrencyLimit(Dependency):
         try:
             argument_value = execution.get_argument(self.argument_name)
         except KeyError:
-            raise ValueError(
-                f"Argument '{self.argument_name}' not found in task arguments"
+            # If argument not found, create a bypass limit that doesn't apply concurrency control
+            limit = ConcurrencyLimit(
+                self.argument_name, self.max_concurrent, self.scope
             )
+            limit._concurrency_key = None  # Special marker for bypassed concurrency
+            limit._initialized = True  # Mark as initialized but bypassed
+            return limit
 
         # Create a concurrency key for this specific argument value
         scope = self.scope or docket.name
@@ -566,16 +571,24 @@ class ConcurrencyLimit(Dependency):
 
         limit = ConcurrencyLimit(self.argument_name, self.max_concurrent, self.scope)
         limit._concurrency_key = self._concurrency_key
+        limit._initialized = True  # Mark as initialized
         return limit
 
     @property
-    def concurrency_key(self) -> str:
-        """Redis key used for tracking concurrency for this specific argument value."""
-        if self._concurrency_key is None:
+    def concurrency_key(self) -> str | None:
+        """Redis key used for tracking concurrency for this specific argument value.
+        Returns None when concurrency control is bypassed due to missing arguments.
+        Raises RuntimeError if accessed before initialization."""
+        if not self._initialized:
             raise RuntimeError(
                 "ConcurrencyLimit not initialized - use within task context"
             )
         return self._concurrency_key
+
+    @property
+    def is_bypassed(self) -> bool:
+        """Returns True if concurrency control is bypassed due to missing arguments."""
+        return self._initialized and self._concurrency_key is None
 
 
 D = TypeVar("D", bound=Dependency)

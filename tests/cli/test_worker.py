@@ -55,12 +55,14 @@ def test_worker_command_exposes_all_the_options_of_worker():
         )
 
 
-def test_worker_command(
+async def test_worker_command(
     runner: CliRunner,
     docket: Docket,
 ):
     """Should run a worker until there are no more tasks to process"""
-    result = runner.invoke(
+    result = await asyncio.get_running_loop().run_in_executor(
+        None,
+        runner.invoke,
         app,
         [
             "worker",
@@ -70,7 +72,6 @@ def test_worker_command(
             "--docket",
             docket.name,
         ],
-        color=True,
     )
     assert result.exit_code == 0
 

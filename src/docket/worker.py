@@ -88,12 +88,6 @@ class Worker:
     scheduling_resolution: timedelta
     schedule_automatic_tasks: bool
 
-    # Concurrency refresh management
-    _concurrency_refresh_threshold: timedelta
-    _concurrency_refresh_interval: timedelta
-    _concurrency_slots_needing_refresh: dict[str, tuple[str, float]]
-    _concurrency_refresh_manager_task: asyncio.Task[None] | None
-
     def __init__(
         self,
         docket: Docket,
@@ -114,20 +108,9 @@ class Worker:
         self.scheduling_resolution = scheduling_resolution
         self.schedule_automatic_tasks = schedule_automatic_tasks
 
-        # Concurrency refresh settings
-        self._concurrency_refresh_threshold = timedelta(
-            seconds=self.redelivery_timeout.total_seconds() * 0.5
-        )
-        self._concurrency_refresh_interval = timedelta(seconds=30)
-        self._concurrency_slots_needing_refresh = {}
-        self._concurrency_refresh_manager_task = None
-
     async def __aenter__(self) -> Self:
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
         self._execution_counts = {}
-        self._concurrency_refresh_manager_task = asyncio.create_task(
-            self._concurrency_refresh_manager()
-        )
         return self
 
     async def __aexit__(
@@ -144,14 +127,6 @@ class Worker:
         except asyncio.CancelledError:
             pass
         del self._heartbeat_task
-
-        if self._concurrency_refresh_manager_task:
-            self._concurrency_refresh_manager_task.cancel()
-            try:
-                await self._concurrency_refresh_manager_task
-            except asyncio.CancelledError:
-                pass
-            del self._concurrency_refresh_manager_task
 
     def labels(self) -> Mapping[str, str]:
         return {
@@ -569,8 +544,7 @@ class Worker:
                     concurrency_limit = get_single_dependency_of_type(
                         dependencies, ConcurrencyLimit
                     )
-                    concurrency_key = None
-                    if concurrency_limit:
+                    if concurrency_limit and not concurrency_limit.is_bypassed:
                         async with self.docket.redis() as redis:
                             # Check if we can acquire a concurrency slot
                             if not await self._can_start_task(redis, execution):
@@ -589,12 +563,8 @@ class Worker:
                                 )
                                 return
                             else:
-                                # Successfully acquired slot - register for refresh management
-                                concurrency_key = self._get_concurrency_key(execution)
-                                member = f"{self.name}:{execution.key}"
-                                self._concurrency_slots_needing_refresh[
-                                    concurrency_key
-                                ] = (member, start)
+                                # Successfully acquired slot
+                                pass
 
                     # Preemptively reschedule the perpetual task for the future, or clear
                     # the known task key for this task
@@ -622,17 +592,34 @@ class Worker:
                             ],
                         )
 
-                    if timeout := get_single_dependency_of_type(dependencies, Timeout):
-                        await self._run_function_with_timeout(
-                            execution, dependencies, timeout
-                        )
+                    # Apply timeout logic - either user's timeout or redelivery timeout
+                    user_timeout = get_single_dependency_of_type(dependencies, Timeout)
+                    if user_timeout:
+                        # If user timeout is longer than redelivery timeout, limit it
+                        if user_timeout.base > self.redelivery_timeout:
+                            # Create a new timeout limited by redelivery timeout
+                            # Remove the user timeout from dependencies to avoid conflicts
+                            limited_dependencies = {
+                                k: v
+                                for k, v in dependencies.items()
+                                if not isinstance(v, Timeout)
+                            }
+                            limited_timeout = Timeout(self.redelivery_timeout)
+                            limited_timeout.start()
+                            await self._run_function_with_timeout(
+                                execution, limited_dependencies, limited_timeout
+                            )
+                        else:
+                            # User timeout is within redelivery timeout, use as-is
+                            await self._run_function_with_timeout(
+                                execution, dependencies, user_timeout
+                            )
                     else:
-                        await execution.function(
-                            *execution.args,
-                            **{
-                                **execution.kwargs,
-                                **dependencies,
-                            },
+                        # No user timeout - apply redelivery timeout as hard limit
+                        redelivery_timeout = Timeout(self.redelivery_timeout)
+                        redelivery_timeout.start()
+                        await self._run_function_with_timeout(
+                            execution, dependencies, redelivery_timeout
                         )
 
                     duration = log_context["duration"] = time.time() - start
@@ -667,15 +654,11 @@ class Worker:
                 )
             finally:
                 # Release concurrency slot if we acquired one
-                if "dependencies" in locals():
+                if dependencies:
                     concurrency_limit = get_single_dependency_of_type(
                         dependencies, ConcurrencyLimit
                     )
-                    if concurrency_limit and concurrency_key:
-                        # Remove from refresh management
-                        self._concurrency_slots_needing_refresh.pop(
-                            concurrency_key, None
-                        )
+                    if concurrency_limit and not concurrency_limit.is_bypassed:
                         async with self.docket.redis() as redis:
                             await self._release_concurrency_slot(redis, execution)
 
@@ -691,7 +674,13 @@ class Worker:
     ) -> None:
         task_coro = cast(
             Coroutine[None, None, None],
-            execution.function(*execution.args, **execution.kwargs, **dependencies),
+            execution.function(
+                *execution.args,
+                **{
+                    **execution.kwargs,
+                    **dependencies,
+                },
+            ),
         )
         task = asyncio.create_task(task_coro)
         try:
@@ -769,21 +758,6 @@ class Worker:
     @property
     def workers_set(self) -> str:
         return self.docket.workers_set
-
-    @property
-    def concurrency_refresh_interval(self) -> timedelta:
-        """Get the concurrency refresh interval for testing purposes."""
-        return self._concurrency_refresh_interval
-
-    @concurrency_refresh_interval.setter
-    def concurrency_refresh_interval(self, value: timedelta) -> None:
-        """Set the concurrency refresh interval for testing purposes."""
-        self._concurrency_refresh_interval = value
-
-    @property
-    def concurrency_slots_needing_refresh(self) -> dict[str, tuple[str, float]]:
-        """Get the concurrency slots needing refresh for testing purposes."""
-        return self._concurrency_slots_needing_refresh
 
     def worker_tasks_set(self, worker_name: str) -> str:
         return self.docket.worker_tasks_set(worker_name)
@@ -940,63 +914,6 @@ class Worker:
 
         # Remove this worker's task from the sorted set
         await redis.zrem(concurrency_key, f"{self.name}:{execution.key}")  # type: ignore
-
-    def _get_concurrency_key(self, execution: Execution) -> str:
-        """Get the Redis key for concurrency tracking."""
-        concurrency_limit = get_single_dependency_parameter_of_type(
-            execution.function, ConcurrencyLimit
-        )
-        if not concurrency_limit:
-            raise ValueError("No concurrency limit found for execution")
-
-        try:
-            argument_value = execution.get_argument(concurrency_limit.argument_name)
-        except KeyError:
-            raise ValueError(
-                f"Argument '{concurrency_limit.argument_name}' not found in task arguments"
-            )
-
-        scope = concurrency_limit.scope or self.docket.name
-        return f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
-
-    async def _concurrency_refresh_manager(self) -> None:
-        """Single coroutine that manages all concurrency slot refreshes."""
-        while True:
-            try:
-                await asyncio.sleep(self._concurrency_refresh_interval.total_seconds())
-
-                current_time = time.time()
-                slots_to_refresh = []
-
-                # Find slots that need refreshing (running longer than threshold)
-                for slot_key, (
-                    member,
-                    start_time,
-                ) in self._concurrency_slots_needing_refresh.items():
-                    elapsed = current_time - start_time
-                    if elapsed >= self._concurrency_refresh_threshold.total_seconds():
-                        slots_to_refresh.append((slot_key, member))
-
-                # Batch refresh in a single Redis operation
-                if slots_to_refresh:
-                    async with self.docket.redis() as redis:
-                        async with redis.pipeline() as pipe:
-                            for slot_key, member in slots_to_refresh:
-                                pipe.zadd(slot_key, {member: current_time})
-                            await pipe.execute()
-
-                    logger.debug(
-                        "Refreshed %d concurrency slots",
-                        len(slots_to_refresh),
-                        extra=self._log_context(),
-                    )
-
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                logger.exception(
-                    "Error in concurrency refresh manager", extra=self._log_context()
-                )
 
 
 def ms(seconds: float) -> str:
