@@ -151,7 +151,7 @@ def redis_url(redis_port: int, redis_db: int) -> str:
 
 
 @pytest.fixture
-async def docket(redis_url: str, aiolib: str) -> AsyncGenerator[Docket, None]:
+async def docket(redis_url: str) -> AsyncGenerator[Docket, None]:
     async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
         yield docket
 
