@@ -286,7 +286,7 @@ class Worker:
                 count=available_slots,
             )
 
-        async def start_task(message_id: RedisMessageID, message: RedisMessage) -> bool:
+        def start_task(message_id: RedisMessageID, message: RedisMessage) -> bool:
             function_name = message[b"function"].decode()
             if not (function := self.docket.tasks.get(function_name)):
                 logger.warning(
@@ -347,7 +347,7 @@ class Worker:
                             if not message:  # pragma: no cover
                                 continue
 
-                            task_started = await start_task(message_id, message)
+                            task_started = start_task(message_id, message)
                             if not task_started:
                                 # Other errors - delete and ack
                                 await self._delete_known_task(redis, message)
