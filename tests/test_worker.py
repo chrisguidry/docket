@@ -2,8 +2,9 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 from redis.asyncio import Redis
@@ -1427,3 +1428,79 @@ async def test_finally_block_releases_concurrency_on_success(docket: Docket):
 
     # If both tasks completed, the finally block successfully released slots
     assert task_completed
+
+
+async def test_replacement_race_condition_stream_tasks(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """Test that replace() properly cancels tasks already in the stream.
+
+    This reproduces the race condition where:
+    1. Task is scheduled for immediate execution
+    2. Scheduler moves it to stream
+    3. replace() tries to cancel but only checks queue/hash, not stream
+    4. Both original and replacement tasks execute
+    """
+    key = f"my-cool-task:{uuid4()}"
+
+    # Schedule a task immediately (will be moved to stream quickly)
+    await docket.add(the_task, now(), key=key)("a", "b", c="c")
+
+    # Let the scheduler move the task to the stream
+    # The scheduler runs every 250ms by default
+    await asyncio.sleep(0.3)
+
+    # Now replace the task - this should cancel the one in the stream
+    later = now() + timedelta(milliseconds=100)
+    await docket.replace(the_task, later, key=key)("b", "c", c="d")
+
+    # Run the worker to completion
+    await worker.run_until_finished()
+
+    # Should only execute the replacement task, not both
+    the_task.assert_awaited_once_with("b", "c", c="d")
+    assert the_task.await_count == 1, (
+        f"Task was called {the_task.await_count} times, expected 1"
+    )
+
+
+async def test_replace_task_in_queue_before_stream(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """Test that replace() works correctly when task is still in queue."""
+    key = f"my-cool-task:{uuid4()}"
+
+    # Schedule a task slightly in the future (stays in queue)
+    soon = now() + timedelta(seconds=1)
+    await docket.add(the_task, soon, key=key)("a", "b", c="c")
+
+    # Replace immediately (before scheduler can move it)
+    later = now() + timedelta(milliseconds=100)
+    await docket.replace(the_task, later, key=key)("b", "c", c="d")
+
+    await worker.run_until_finished()
+
+    # Should only execute the replacement
+    the_task.assert_awaited_once_with("b", "c", c="d")
+    assert the_task.await_count == 1
+
+
+async def test_rapid_replace_operations(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """Test multiple rapid replace operations."""
+    key = f"my-cool-task:{uuid4()}"
+
+    # Schedule initial task
+    await docket.add(the_task, now(), key=key)("a", "b", c="c")
+
+    # Rapid replacements
+    for i in range(5):
+        when = now() + timedelta(milliseconds=50 + i * 10)
+        await docket.replace(the_task, when, key=key)(f"arg{i}", b=f"b{i}")
+
+    await worker.run_until_finished()
+
+    # Should only execute the last replacement
+    the_task.assert_awaited_once_with("arg4", b="b4")
+    assert the_task.await_count == 1

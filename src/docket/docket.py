@@ -16,6 +16,7 @@ from typing import (
     Mapping,
     NoReturn,
     ParamSpec,
+    Protocol,
     Self,
     Sequence,
     TypedDict,
@@ -27,7 +28,6 @@ from typing import (
 import redis.exceptions
 from opentelemetry import propagate, trace
 from redis.asyncio import ConnectionPool, Redis
-from redis.asyncio.client import Pipeline
 from uuid_extensions import uuid7
 
 from .execution import (
@@ -53,6 +53,18 @@ from .instrumentation import (
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: trace.Tracer = trace.get_tracer(__name__)
+
+
+class _schedule_task(Protocol):
+    async def __call__(
+        self, keys: list[str], args: list[str | float | bytes]
+    ) -> str: ...  # pragma: no cover
+
+
+class _cancel_task(Protocol):
+    async def __call__(
+        self, keys: list[str], args: list[str]
+    ) -> str: ...  # pragma: no cover
 
 
 P = ParamSpec("P")
@@ -131,6 +143,8 @@ class Docket:
 
     _monitor_strikes_task: asyncio.Task[None]
     _connection_pool: ConnectionPool
+    _schedule_task_script: _schedule_task | None
+    _cancel_task_script: _cancel_task | None
 
     def __init__(
         self,
@@ -156,6 +170,8 @@ class Docket:
         self.url = url
         self.heartbeat_interval = heartbeat_interval
         self.missed_heartbeats = missed_heartbeats
+        self._schedule_task_script = None
+        self._cancel_task_script = None
 
     @property
     def worker_group_name(self) -> str:
@@ -300,9 +316,7 @@ class Docket:
             execution = Execution(function, args, kwargs, when, key, attempt=1)
 
             async with self.redis() as redis:
-                async with redis.pipeline() as pipeline:
-                    await self._schedule(redis, pipeline, execution, replace=False)
-                    await pipeline.execute()
+                await self._schedule(redis, execution, replace=False)
 
             TASKS_ADDED.add(1, {**self.labels(), **execution.general_labels()})
             TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
@@ -361,9 +375,7 @@ class Docket:
             execution = Execution(function, args, kwargs, when, key, attempt=1)
 
             async with self.redis() as redis:
-                async with redis.pipeline() as pipeline:
-                    await self._schedule(redis, pipeline, execution, replace=True)
-                    await pipeline.execute()
+                await self._schedule(redis, execution, replace=True)
 
             TASKS_REPLACED.add(1, {**self.labels(), **execution.general_labels()})
             TASKS_CANCELLED.add(1, {**self.labels(), **execution.general_labels()})
@@ -383,9 +395,7 @@ class Docket:
             },
         ):
             async with self.redis() as redis:
-                async with redis.pipeline() as pipeline:
-                    await self._schedule(redis, pipeline, execution, replace=False)
-                    await pipeline.execute()
+                await self._schedule(redis, execution, replace=False)
 
         TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
 
@@ -400,9 +410,7 @@ class Docket:
             attributes={**self.labels(), "docket.key": key},
         ):
             async with self.redis() as redis:
-                async with redis.pipeline() as pipeline:
-                    await self._cancel(pipeline, key)
-                    await pipeline.execute()
+                await self._cancel(redis, key)
 
         TASKS_CANCELLED.add(1, self.labels())
 
@@ -423,10 +431,17 @@ class Docket:
     async def _schedule(
         self,
         redis: Redis,
-        pipeline: Pipeline,
         execution: Execution,
         replace: bool = False,
     ) -> None:
+        """Schedule a task atomically.
+
+        Handles:
+        - Checking for task existence
+        - Cancelling existing tasks when replacing
+        - Adding tasks to stream (immediate) or queue (future)
+        - Tracking stream message IDs for later cancellation
+        """
         if self.strike_list.is_stricken(execution):
             logger.warning(
                 "%r is stricken, skipping schedule of %r",
@@ -449,32 +464,133 @@ class Docket:
         key = execution.key
         when = execution.when
         known_task_key = self.known_task_key(key)
+        is_immediate = when <= datetime.now(timezone.utc)
 
+        # Lock per task key to prevent race conditions between concurrent operations
         async with redis.lock(f"{known_task_key}:lock", timeout=10):
-            if replace:
-                await self._cancel(pipeline, key)
-            else:
-                # if the task is already in the queue or stream, retain it
-                if await redis.exists(known_task_key):
-                    logger.debug(
-                        "Task %r is already in the queue or stream, not scheduling",
-                        key,
-                        extra=self.labels(),
-                    )
-                    return
+            if self._schedule_task_script is None:
+                self._schedule_task_script = cast(
+                    _schedule_task,
+                    redis.register_script(
+                        # KEYS: stream_key, known_key, parked_key, queue_key
+                        # ARGV: task_key, when_timestamp, is_immediate, replace, ...message_fields
+                        """
+                        local stream_key = KEYS[1]
+                        local known_key = KEYS[2]
+                        local parked_key = KEYS[3]
+                        local queue_key = KEYS[4]
 
-            pipeline.set(known_task_key, when.timestamp())
+                        local task_key = ARGV[1]
+                        local when_timestamp = ARGV[2]
+                        local is_immediate = ARGV[3] == '1'
+                        local replace = ARGV[4] == '1'
 
-            if when <= datetime.now(timezone.utc):
-                pipeline.xadd(self.stream_key, message)  # type: ignore[arg-type]
-            else:
-                pipeline.hset(self.parked_task_key(key), mapping=message)  # type: ignore[arg-type]
-                pipeline.zadd(self.queue_key, {key: when.timestamp()})
+                        -- Extract message fields from ARGV[5] onwards
+                        local message = {}
+                        for i = 5, #ARGV, 2 do
+                            message[#message + 1] = ARGV[i]     -- field name
+                            message[#message + 1] = ARGV[i + 1] -- field value
+                        end
 
-    async def _cancel(self, pipeline: Pipeline, key: str) -> None:
-        pipeline.delete(self.known_task_key(key))
-        pipeline.delete(self.parked_task_key(key))
-        pipeline.zrem(self.queue_key, key)
+                        -- Handle replacement: cancel existing task if needed
+                        if replace then
+                            local existing_message_id = redis.call('HGET', known_key, 'stream_message_id')
+                            if existing_message_id then
+                                redis.call('XDEL', stream_key, existing_message_id)
+                            end
+                            redis.call('DEL', known_key, parked_key)
+                            redis.call('ZREM', queue_key, task_key)
+                        else
+                            -- Check if task already exists
+                            if redis.call('EXISTS', known_key) == 1 then
+                                return 'EXISTS'
+                            end
+                        end
+
+                        if is_immediate then
+                            -- Add to stream and store message ID for later cancellation
+                            local message_id = redis.call('XADD', stream_key, '*', unpack(message))
+                            redis.call('HSET', known_key, 'when', when_timestamp, 'stream_message_id', message_id)
+                            return message_id
+                        else
+                            -- Add to queue with task data in parked hash
+                            redis.call('HSET', known_key, 'when', when_timestamp)
+                            redis.call('HSET', parked_key, unpack(message))
+                            redis.call('ZADD', queue_key, when_timestamp, task_key)
+                            return 'QUEUED'
+                        end
+                        """
+                    ),
+                )
+            schedule_task = self._schedule_task_script
+
+            await schedule_task(
+                keys=[
+                    self.stream_key,
+                    known_task_key,
+                    self.parked_task_key(key),
+                    self.queue_key,
+                ],
+                args=[
+                    key,
+                    str(when.timestamp()),
+                    "1" if is_immediate else "0",
+                    "1" if replace else "0",
+                    *[
+                        item
+                        for field, value in message.items()
+                        for item in (field, value)
+                    ],
+                ],
+            )
+
+    async def _cancel(self, redis: Redis, key: str) -> None:
+        """Cancel a task atomically.
+
+        Handles cancellation regardless of task location:
+        - From the stream (using stored message ID)
+        - From the queue (scheduled tasks)
+        - Cleans up all associated metadata keys
+        """
+        if self._cancel_task_script is None:
+            self._cancel_task_script = cast(
+                _cancel_task,
+                redis.register_script(
+                    # KEYS: stream_key, known_key, parked_key, queue_key
+                    # ARGV: task_key
+                    """
+                    local stream_key = KEYS[1]
+                    local known_key = KEYS[2]
+                    local parked_key = KEYS[3]
+                    local queue_key = KEYS[4]
+                    local task_key = ARGV[1]
+
+                    -- Delete from stream if message ID exists
+                    local message_id = redis.call('HGET', known_key, 'stream_message_id')
+                    if message_id then
+                        redis.call('XDEL', stream_key, message_id)
+                    end
+
+                    -- Clean up all task-related keys
+                    redis.call('DEL', known_key, parked_key)
+                    redis.call('ZREM', queue_key, task_key)
+
+                    return 'OK'
+                    """
+                ),
+            )
+        cancel_task = self._cancel_task_script
+
+        # Execute the cancellation script
+        await cancel_task(
+            keys=[
+                self.stream_key,
+                self.known_task_key(key),
+                self.parked_task_key(key),
+                self.queue_key,
+            ],
+            args=[key],
+        )
 
     @property
     def strike_key(self) -> str:

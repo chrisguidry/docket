@@ -406,7 +406,7 @@ class Worker:
                             task[task_data[j]] = task_data[j+1]
                         end
 
-                        redis.call('XADD', KEYS[2], '*',
+                        local message_id = redis.call('XADD', KEYS[2], '*',
                             'key', task['key'],
                             'when', task['when'],
                             'function', task['function'],
@@ -414,6 +414,9 @@ class Worker:
                             'kwargs', task['kwargs'],
                             'attempt', task['attempt']
                         )
+                        -- Store the message ID in the known task key
+                        local known_key = ARGV[2] .. ":known:" .. key
+                        redis.call('HSET', known_key, 'stream_message_id', message_id)
                         redis.call('DEL', hash_key)
                         due_work = due_work + 1
                     end
