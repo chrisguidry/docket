@@ -110,7 +110,7 @@ async def test_adding_is_idempotent(
 )
 async def test_rescheduling_later(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
-):
+):  # pragma: no cover
     """docket should allow for rescheduling a task for later"""
 
     key = f"my-cool-task:{uuid4()}"
