@@ -1753,18 +1753,6 @@ async def test_replace_task_with_legacy_known_key(
         await redis.set(known_task_key, str(when.timestamp()))
 
     # Now try to replace - this should work without WRONGTYPE error
-    # The key point is that this call succeeds, not that cancellation works perfectly
-    try:
-        replacement_time = now() + timedelta(seconds=1)
-        await docket.replace("trace", replacement_time, key=key)("replacement message")
-        # If we get here without error, the fix worked
-        replace_succeeded = True
-    except Exception as e:
-        if "WRONGTYPE" in str(e):
-            replace_succeeded = False
-        else:
-            raise  # Re-raise unexpected errors
-
-    assert replace_succeeded, (
-        "replace() should not get WRONGTYPE error with legacy known_key"
-    )
+    # The key point is that this call succeeds without throwing WRONGTYPE
+    replacement_time = now() + timedelta(seconds=1)
+    await docket.replace("trace", replacement_time, key=key)("replacement message")
