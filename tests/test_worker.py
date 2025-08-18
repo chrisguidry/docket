@@ -1731,3 +1731,40 @@ async def test_redis_key_cleanup_cancelled_task(docket: Docket, worker: Worker) 
 
         # Verify cleanup after cancellation
         await checker.verify_keys_returned_to_baseline("task cancellation")
+
+
+async def test_replace_task_with_legacy_known_key(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """Test that replace() works with legacy string known_keys.
+
+    This reproduces the exact production scenario where replace() would get
+    WRONGTYPE errors when trying to HGET on legacy string known_keys.
+    The main goal is to verify no WRONGTYPE error occurs.
+    """
+    key = f"legacy-replace-task:{uuid4()}"
+
+    # Simulate legacy state: create known_key as string (old format)
+    async with docket.redis() as redis:
+        known_task_key = docket.known_task_key(key)
+        when = now()
+
+        # Create legacy known_key as STRING (what old code did)
+        await redis.set(known_task_key, str(when.timestamp()))
+
+    # Now try to replace - this should work without WRONGTYPE error
+    # The key point is that this call succeeds, not that cancellation works perfectly
+    try:
+        replacement_time = now() + timedelta(seconds=1)
+        await docket.replace("trace", replacement_time, key=key)("replacement message")
+        # If we get here without error, the fix worked
+        replace_succeeded = True
+    except Exception as e:
+        if "WRONGTYPE" in str(e):
+            replace_succeeded = False
+        else:
+            raise  # Re-raise unexpected errors
+
+    assert replace_succeeded, (
+        "replace() should not get WRONGTYPE error with legacy known_key"
+    )

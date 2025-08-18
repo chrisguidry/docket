@@ -428,6 +428,9 @@ class Docket:
     def parked_task_key(self, key: str) -> str:
         return f"{self.name}:{key}"
 
+    def stream_id_key(self, key: str) -> str:
+        return f"{self.name}:stream-id:{key}"
+
     async def _schedule(
         self,
         redis: Redis,
@@ -472,13 +475,14 @@ class Docket:
                 self._schedule_task_script = cast(
                     _schedule_task,
                     redis.register_script(
-                        # KEYS: stream_key, known_key, parked_key, queue_key
+                        # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key
                         # ARGV: task_key, when_timestamp, is_immediate, replace, ...message_fields
                         """
                         local stream_key = KEYS[1]
                         local known_key = KEYS[2]
                         local parked_key = KEYS[3]
                         local queue_key = KEYS[4]
+                        local stream_id_key = KEYS[5]
 
                         local task_key = ARGV[1]
                         local when_timestamp = ARGV[2]
@@ -494,11 +498,11 @@ class Docket:
 
                         -- Handle replacement: cancel existing task if needed
                         if replace then
-                            local existing_message_id = redis.call('HGET', known_key, 'stream_message_id')
+                            local existing_message_id = redis.call('GET', stream_id_key)
                             if existing_message_id then
                                 redis.call('XDEL', stream_key, existing_message_id)
                             end
-                            redis.call('DEL', known_key, parked_key)
+                            redis.call('DEL', known_key, parked_key, stream_id_key)
                             redis.call('ZREM', queue_key, task_key)
                         else
                             -- Check if task already exists
@@ -510,11 +514,12 @@ class Docket:
                         if is_immediate then
                             -- Add to stream and store message ID for later cancellation
                             local message_id = redis.call('XADD', stream_key, '*', unpack(message))
-                            redis.call('HSET', known_key, 'when', when_timestamp, 'stream_message_id', message_id)
+                            redis.call('SET', known_key, when_timestamp)
+                            redis.call('SET', stream_id_key, message_id)
                             return message_id
                         else
                             -- Add to queue with task data in parked hash
-                            redis.call('HSET', known_key, 'when', when_timestamp)
+                            redis.call('SET', known_key, when_timestamp)
                             redis.call('HSET', parked_key, unpack(message))
                             redis.call('ZADD', queue_key, when_timestamp, task_key)
                             return 'QUEUED'
@@ -530,6 +535,7 @@ class Docket:
                     known_task_key,
                     self.parked_task_key(key),
                     self.queue_key,
+                    self.stream_id_key(key),
                 ],
                 args=[
                     key,
@@ -556,23 +562,24 @@ class Docket:
             self._cancel_task_script = cast(
                 _cancel_task,
                 redis.register_script(
-                    # KEYS: stream_key, known_key, parked_key, queue_key
+                    # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key
                     # ARGV: task_key
                     """
                     local stream_key = KEYS[1]
                     local known_key = KEYS[2]
                     local parked_key = KEYS[3]
                     local queue_key = KEYS[4]
+                    local stream_id_key = KEYS[5]
                     local task_key = ARGV[1]
 
                     -- Delete from stream if message ID exists
-                    local message_id = redis.call('HGET', known_key, 'stream_message_id')
+                    local message_id = redis.call('GET', stream_id_key)
                     if message_id then
                         redis.call('XDEL', stream_key, message_id)
                     end
 
                     -- Clean up all task-related keys
-                    redis.call('DEL', known_key, parked_key)
+                    redis.call('DEL', known_key, parked_key, stream_id_key)
                     redis.call('ZREM', queue_key, task_key)
 
                     return 'OK'
@@ -588,6 +595,7 @@ class Docket:
                 self.known_task_key(key),
                 self.parked_task_key(key),
                 self.queue_key,
+                self.stream_id_key(key),
             ],
             args=[key],
         )
@@ -897,6 +905,7 @@ class Docket:
                         key = key_bytes.decode()
                         pipeline.delete(self.parked_task_key(key))
                         pipeline.delete(self.known_task_key(key))
+                        pipeline.delete(self.stream_id_key(key))
 
                     await pipeline.execute()
 
