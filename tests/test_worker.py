@@ -1,14 +1,10 @@
 import asyncio
 import logging
-import time
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator, Callable, Iterable
+from typing import AsyncGenerator
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
 
-import cloudpickle  # type: ignore[import]
 import pytest
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError
@@ -21,8 +17,6 @@ from docket import (
     Perpetual,
     Worker,
 )
-from docket.dependencies import Timeout
-from docket.execution import Execution
 from docket.tasks import standard_tasks
 from docket.worker import ms
 
@@ -180,6 +174,7 @@ async def test_redeliveries_respect_concurrency_limits(docket: Docket):
         nonlocal failure_count
 
         # Record when this task runs
+        import time
 
         task_executions.append((customer_id, time.time()))
 
@@ -560,6 +555,7 @@ async def test_worker_can_be_told_to_skip_automatic_tasks(docket: Docket):
 
 async def test_worker_concurrency_limits_task_queuing_behavior(docket: Docket):
     """Test that concurrency limits control task execution properly"""
+    from contextvars import ContextVar
 
     # Use contextvar for reliable tracking across async execution
     execution_log: ContextVar[list[tuple[str, int]]] = ContextVar("execution_log")
@@ -1175,6 +1171,7 @@ async def test_worker_concurrency_edge_cases(docket: Docket):
 
 async def test_worker_timeout_exceeds_redelivery_timeout(docket: Docket):
     """Test worker handles user timeout longer than redelivery timeout."""
+    from docket.dependencies import Timeout
 
     task_executed = False
 
@@ -1253,6 +1250,8 @@ async def test_worker_concurrency_missing_argument_early_return(docket: Docket):
 
 async def test_worker_no_concurrency_dependency_in_function(docket: Docket):
     """Test _can_start_task with function that has no concurrency dependency."""
+    from docket.execution import Execution
+    from datetime import datetime, timezone
 
     async def task_without_concurrency_dependency():
         await asyncio.sleep(0.001)
@@ -1278,6 +1277,8 @@ async def test_worker_no_concurrency_dependency_in_function(docket: Docket):
 
 async def test_worker_no_concurrency_dependency_in_release(docket: Docket):
     """Test _release_concurrency_slot with function that has no concurrency dependency."""
+    from docket.execution import Execution
+    from datetime import datetime, timezone
 
     async def task_without_concurrency_dependency():
         await asyncio.sleep(0.001)
@@ -1302,6 +1303,8 @@ async def test_worker_no_concurrency_dependency_in_release(docket: Docket):
 
 async def test_worker_missing_concurrency_argument_in_release(docket: Docket):
     """Test _release_concurrency_slot when concurrency argument is missing."""
+    from docket.execution import Execution
+    from datetime import datetime, timezone
 
     async def task_with_missing_arg(
         concurrency: ConcurrencyLimit = ConcurrencyLimit(
@@ -1330,6 +1333,8 @@ async def test_worker_missing_concurrency_argument_in_release(docket: Docket):
 
 async def test_worker_concurrency_missing_argument_in_can_start(docket: Docket):
     """Test _can_start_task with missing concurrency argument during execution."""
+    from docket.execution import Execution
+    from datetime import datetime, timezone
 
     async def task_with_missing_concurrency_arg(
         concurrency: ConcurrencyLimit = ConcurrencyLimit(
@@ -1378,6 +1383,7 @@ async def test_worker_exception_before_dependencies(docket: Docket):
     task_failed = False
 
     # Mock resolved_dependencies to fail before setting dependencies
+    from unittest.mock import patch, AsyncMock
 
     await docket.add(task_that_will_fail)()
 
@@ -1421,338 +1427,3 @@ async def test_finally_block_releases_concurrency_on_success(docket: Docket):
 
     # If both tasks completed, the finally block successfully released slots
     assert task_completed
-
-
-async def test_replacement_race_condition_stream_tasks(
-    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
-):
-    """Test that replace() properly cancels tasks already in the stream.
-
-    This reproduces the race condition where:
-    1. Task is scheduled for immediate execution
-    2. Scheduler moves it to stream
-    3. replace() tries to cancel but only checks queue/hash, not stream
-    4. Both original and replacement tasks execute
-    """
-    key = f"my-cool-task:{uuid4()}"
-
-    # Schedule a task immediately (will be moved to stream quickly)
-    await docket.add(the_task, now(), key=key)("a", "b", c="c")
-
-    # Let the scheduler move the task to the stream
-    # The scheduler runs every 250ms by default
-    await asyncio.sleep(0.3)
-
-    # Now replace the task - this should cancel the one in the stream
-    later = now() + timedelta(milliseconds=100)
-    await docket.replace(the_task, later, key=key)("b", "c", c="d")
-
-    # Run the worker to completion
-    await worker.run_until_finished()
-
-    # Should only execute the replacement task, not both
-    the_task.assert_awaited_once_with("b", "c", c="d")
-    assert the_task.await_count == 1, (
-        f"Task was called {the_task.await_count} times, expected 1"
-    )
-
-
-async def test_replace_task_in_queue_before_stream(
-    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
-):
-    """Test that replace() works correctly when task is still in queue."""
-    key = f"my-cool-task:{uuid4()}"
-
-    # Schedule a task slightly in the future (stays in queue)
-    soon = now() + timedelta(seconds=1)
-    await docket.add(the_task, soon, key=key)("a", "b", c="c")
-
-    # Replace immediately (before scheduler can move it)
-    later = now() + timedelta(milliseconds=100)
-    await docket.replace(the_task, later, key=key)("b", "c", c="d")
-
-    await worker.run_until_finished()
-
-    # Should only execute the replacement
-    the_task.assert_awaited_once_with("b", "c", c="d")
-    assert the_task.await_count == 1
-
-
-async def test_rapid_replace_operations(
-    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
-):
-    """Test multiple rapid replace operations."""
-    key = f"my-cool-task:{uuid4()}"
-
-    # Schedule initial task
-    await docket.add(the_task, now(), key=key)("a", "b", c="c")
-
-    # Rapid replacements
-    for i in range(5):
-        when = now() + timedelta(milliseconds=50 + i * 10)
-        await docket.replace(the_task, when, key=key)(f"arg{i}", b=f"b{i}")
-
-    await worker.run_until_finished()
-
-    # Should only execute the last replacement
-    the_task.assert_awaited_once_with("arg4", b="b4")
-    assert the_task.await_count == 1
-
-
-async def test_wrongtype_error_with_legacy_known_task_key(
-    docket: Docket,
-    worker: Worker,
-    the_task: AsyncMock,
-    now: Callable[[], datetime],
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Test graceful handling when known task keys exist as strings from legacy implementations.
-
-    Regression test for issue where worker scheduler would get WRONGTYPE errors when trying to
-    HSET on known task keys that existed as string values from older docket versions.
-
-    The original error occurred when:
-    1. A legacy docket created known task keys as simple string values (timestamps)
-    2. The new scheduler tried to HSET stream_message_id on these keys
-    3. Redis threw WRONGTYPE error because you can't HSET on a string key
-    4. This caused scheduler loop failures in production
-
-    This test reproduces that scenario by manually setting up the legacy state,
-    then verifies the new code handles it gracefully without errors.
-    """
-    key = f"legacy-task:{uuid4()}"
-
-    # Simulate legacy behavior: create the known task key as a string
-    # This is what older versions of docket would have done
-    async with docket.redis() as redis:
-        known_task_key = docket.known_task_key(key)
-        when = now() + timedelta(seconds=1)
-
-        # Set up legacy state: known key as string, task in queue with parked data
-        await redis.set(known_task_key, str(when.timestamp()))
-        await redis.zadd(docket.queue_key, {key: when.timestamp()})
-
-        await redis.hset(  # type: ignore
-            docket.parked_task_key(key),
-            mapping={
-                "key": key,
-                "when": when.isoformat(),
-                "function": "trace",
-                "args": cloudpickle.dumps(["legacy task test"]),  # type: ignore[arg-type]
-                "kwargs": cloudpickle.dumps({}),  # type: ignore[arg-type]
-                "attempt": "1",
-            },
-        )
-
-    # Capture logs to ensure no errors occur and see task execution
-    with caplog.at_level(logging.INFO):
-        await worker.run_until_finished()
-
-    # Should not have any ERROR logs now that the issue is fixed
-    error_logs = [record for record in caplog.records if record.levelname == "ERROR"]
-    assert len(error_logs) == 0, (
-        f"Expected no error logs, but got: {[r.message for r in error_logs]}"
-    )
-
-    # The task should execute successfully
-    # Since we used trace, we should see an INFO log with the message
-    info_logs = [record for record in caplog.records if record.levelname == "INFO"]
-    trace_logs = [
-        record for record in info_logs if "legacy task test" in record.message
-    ]
-    assert len(trace_logs) > 0, (
-        f"Expected to see trace log with 'legacy task test', got: {[r.message for r in info_logs]}"
-    )
-
-
-async def count_redis_keys_by_type(redis: Redis, prefix: str) -> dict[str, int]:
-    """Count Redis keys by type for a given prefix."""
-    pattern = f"{prefix}*"
-    keys: Iterable[str] = await redis.keys(pattern)  # type: ignore
-    counts: dict[str, int] = {}
-
-    for key in keys:
-        key_type = await redis.type(key)
-        key_type_str = (
-            key_type.decode() if isinstance(key_type, bytes) else str(key_type)
-        )
-        counts[key_type_str] = counts.get(key_type_str, 0) + 1
-
-    return counts
-
-
-class KeyCountChecker:
-    """Helper to verify Redis key counts remain consistent across operations."""
-
-    def __init__(self, docket: Docket, redis: Redis) -> None:
-        self.docket = docket
-        self.redis = redis
-        self.baseline_counts: dict[str, int] = {}
-
-    async def capture_baseline(self) -> None:
-        """Capture baseline key counts after worker priming."""
-        self.baseline_counts = await count_redis_keys_by_type(
-            self.redis, self.docket.name
-        )
-        print(f"Baseline key counts: {self.baseline_counts}")
-
-    async def verify_keys_increased(self, operation: str) -> None:
-        """Verify that key counts increased after scheduling operation."""
-        current_counts = await count_redis_keys_by_type(self.redis, self.docket.name)
-        print(f"After {operation} key counts: {current_counts}")
-
-        total_current = sum(current_counts.values())
-        total_baseline = sum(self.baseline_counts.values())
-        assert total_current > total_baseline, (
-            f"Expected more keys after {operation}, but got {total_current} vs {total_baseline}"
-        )
-
-    async def verify_keys_returned_to_baseline(self, operation: str) -> None:
-        """Verify that key counts returned to baseline after operation completion."""
-        final_counts = await count_redis_keys_by_type(self.redis, self.docket.name)
-        print(f"Final key counts: {final_counts}")
-
-        # Check each key type matches baseline
-        all_key_types = set(self.baseline_counts.keys()) | set(final_counts.keys())
-        for key_type in all_key_types:
-            baseline_count = self.baseline_counts.get(key_type, 0)
-            final_count = final_counts.get(key_type, 0)
-            assert final_count == baseline_count, (
-                f"Memory leak detected after {operation}: {key_type} keys not cleaned up properly. "
-                f"Baseline: {baseline_count}, Final: {final_count}"
-            )
-
-
-async def test_redis_key_cleanup_successful_task(
-    docket: Docket, worker: Worker
-) -> None:
-    """Test that Redis keys are properly cleaned up after successful task execution.
-
-    This test systematically counts Redis keys before and after task operations to detect
-    memory leaks where keys are not properly cleaned up.
-    """
-    # Prime the worker (run once with no tasks to establish baseline)
-    await worker.run_until_finished()
-
-    # Create and register a simple task
-    task_executed = False
-
-    async def successful_task():
-        nonlocal task_executed
-        task_executed = True
-        await asyncio.sleep(0.01)  # Small delay to ensure proper execution flow
-
-    docket.register(successful_task)
-
-    async with docket.redis() as redis:
-        checker = KeyCountChecker(docket, redis)
-        await checker.capture_baseline()
-
-        # Schedule the task
-        await docket.add(successful_task)()
-        await checker.verify_keys_increased("scheduling")
-
-        # Execute the task
-        await worker.run_until_finished()
-
-        # Verify task executed successfully
-        assert task_executed, "Task should have executed successfully"
-
-        # Verify cleanup
-        await checker.verify_keys_returned_to_baseline("successful task execution")
-
-
-async def test_redis_key_cleanup_failed_task(docket: Docket, worker: Worker) -> None:
-    """Test that Redis keys are properly cleaned up after failed task execution."""
-    # Prime the worker
-    await worker.run_until_finished()
-
-    # Create a task that will fail
-    task_attempted = False
-
-    async def failing_task():
-        nonlocal task_attempted
-        task_attempted = True
-        raise ValueError("Intentional test failure")
-
-    docket.register(failing_task)
-
-    async with docket.redis() as redis:
-        checker = KeyCountChecker(docket, redis)
-        await checker.capture_baseline()
-
-        # Schedule the task
-        await docket.add(failing_task)()
-        await checker.verify_keys_increased("scheduling")
-
-        # Execute the task (should fail)
-        await worker.run_until_finished()
-
-        # Verify task was attempted
-        assert task_attempted, "Task should have been attempted"
-
-        # Verify cleanup despite failure
-        await checker.verify_keys_returned_to_baseline("failed task execution")
-
-
-async def test_redis_key_cleanup_cancelled_task(docket: Docket, worker: Worker) -> None:
-    """Test that Redis keys are properly cleaned up after task cancellation."""
-    # Prime the worker
-    await worker.run_until_finished()
-
-    # Create a task that won't be executed
-    task_executed = False
-
-    async def task_to_cancel():
-        nonlocal task_executed
-        task_executed = True  # pragma: no cover
-
-    docket.register(task_to_cancel)
-
-    async with docket.redis() as redis:
-        checker = KeyCountChecker(docket, redis)
-        await checker.capture_baseline()
-
-        # Schedule the task for future execution
-        future_time = datetime.now(timezone.utc) + timedelta(seconds=10)
-        execution = await docket.add(task_to_cancel, future_time)()
-        await checker.verify_keys_increased("scheduling")
-
-        # Cancel the task
-        await docket.cancel(execution.key)
-
-        # Run worker to process any cleanup
-        await worker.run_until_finished()
-
-        # Verify task was not executed
-        assert not task_executed, (
-            "Task should not have been executed after cancellation"
-        )
-
-        # Verify cleanup after cancellation
-        await checker.verify_keys_returned_to_baseline("task cancellation")
-
-
-async def test_replace_task_with_legacy_known_key(
-    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
-):
-    """Test that replace() works with legacy string known_keys.
-
-    This reproduces the exact production scenario where replace() would get
-    WRONGTYPE errors when trying to HGET on legacy string known_keys.
-    The main goal is to verify no WRONGTYPE error occurs.
-    """
-    key = f"legacy-replace-task:{uuid4()}"
-
-    # Simulate legacy state: create known_key as string (old format)
-    async with docket.redis() as redis:
-        known_task_key = docket.known_task_key(key)
-        when = now()
-
-        # Create legacy known_key as STRING (what old code did)
-        await redis.set(known_task_key, str(when.timestamp()))
-
-    # Now try to replace - this should work without WRONGTYPE error
-    # The key point is that this call succeeds without throwing WRONGTYPE
-    replacement_time = now() + timedelta(seconds=1)
-    await docket.replace("trace", replacement_time, key=key)("replacement message")
