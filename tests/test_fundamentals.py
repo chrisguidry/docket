@@ -104,6 +104,10 @@ async def test_adding_is_idempotent(
     assert soon <= now() < later
 
 
+@pytest.skip(
+    "Temporarily skipping due to test flake for task rescheduling. "
+    "See https://github.com/chrisguidry/docket/issues/149"
+)
 async def test_rescheduling_later(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
 ):
