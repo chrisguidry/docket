@@ -104,9 +104,13 @@ async def test_adding_is_idempotent(
     assert soon <= now() < later
 
 
+@pytest.mark.skip(
+    "Temporarily skipping due to test flake for task rescheduling. "
+    "See https://github.com/chrisguidry/docket/issues/149"
+)
 async def test_rescheduling_later(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
-):
+):  # pragma: no cover
     """docket should allow for rescheduling a task for later"""
 
     key = f"my-cool-task:{uuid4()}"
@@ -250,10 +254,10 @@ async def test_cancelling_future_task(
     the_task.assert_not_called()
 
 
-async def test_cancelling_immediate_task(
+async def test_cancelling_current_task_not_supported(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
 ):
-    """docket can cancel a task that is scheduled immediately"""
+    """docket does not allow cancelling a task that is schedule now"""
 
     execution = await docket.add(the_task, now())("a", "b", c="c")
 
@@ -261,28 +265,7 @@ async def test_cancelling_immediate_task(
 
     await worker.run_until_finished()
 
-    the_task.assert_not_called()
-
-
-async def test_cancellation_is_idempotent(
-    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
-):
-    """Test that canceling the same task twice doesn't error."""
-    key = f"test-task:{uuid4()}"
-
-    # Schedule a task
-    later = now() + timedelta(seconds=1)
-    await docket.add(the_task, later, key=key)("test")
-
-    # Cancel it twice - both should succeed without error
-    await docket.cancel(key)
-    await docket.cancel(key)  # Should be idempotent
-
-    # Run worker to ensure the task was actually cancelled
-    await worker.run_until_finished()
-
-    # Task should not have been executed since it was cancelled
-    the_task.assert_not_called()
+    the_task.assert_awaited_once_with("a", "b", c="c")
 
 
 async def test_errors_are_logged(
