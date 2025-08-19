@@ -47,6 +47,7 @@ from .instrumentation import (
     TASKS_COMPLETED,
     TASKS_FAILED,
     TASKS_PERPETUATED,
+    TASKS_REDELIVERED,
     TASKS_RETRIED,
     TASKS_RUNNING,
     TASKS_STARTED,
@@ -286,7 +287,11 @@ class Worker:
                 count=available_slots,
             )
 
-        def start_task(message_id: RedisMessageID, message: RedisMessage) -> bool:
+        def start_task(
+            message_id: RedisMessageID,
+            message: RedisMessage,
+            is_redelivery: bool = False,
+        ) -> bool:
             function_name = message[b"function"].decode()
             if not (function := self.docket.tasks.get(function_name)):
                 logger.warning(
@@ -297,6 +302,7 @@ class Worker:
                 return False
 
             execution = Execution.from_message(function, message)
+            execution.redelivered = is_redelivery
 
             task = asyncio.create_task(self._execute(execution), name=execution.key)
             active_tasks[task] = message_id
@@ -342,12 +348,15 @@ class Worker:
                     continue
 
                 for source in [get_redeliveries, get_new_deliveries]:
-                    for _, messages in await source(redis):
+                    for stream_key, messages in await source(redis):
+                        is_redelivery = stream_key == b"__redelivery__"
                         for message_id, message in messages:
                             if not message:  # pragma: no cover
                                 continue
 
-                            task_started = start_task(message_id, message)
+                            task_started = start_task(
+                                message_id, message, is_redelivery
+                            )
                             if not task_started:
                                 # Other errors - delete and ack
                                 await self._delete_known_task(redis, message)
@@ -521,6 +530,8 @@ class Worker:
         duration = 0.0
 
         TASKS_STARTED.add(1, counter_labels)
+        if execution.redelivered:
+            TASKS_REDELIVERED.add(1, counter_labels)
         TASKS_RUNNING.add(1, counter_labels)
         TASK_PUNCTUALITY.record(punctuality, counter_labels)
 

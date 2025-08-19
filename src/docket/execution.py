@@ -51,6 +51,7 @@ class Execution:
         key: str,
         attempt: int,
         trace_context: opentelemetry.context.Context | None = None,
+        redelivered: bool = False,
     ) -> None:
         self.function = function
         self.args = args
@@ -59,6 +60,7 @@ class Execution:
         self.key = key
         self.attempt = attempt
         self.trace_context = trace_context
+        self.redelivered = redelivered
 
     def as_message(self) -> Message:
         return {
@@ -80,6 +82,7 @@ class Execution:
             key=message[b"key"].decode(),
             attempt=int(message[b"attempt"].decode()),
             trace_context=propagate.extract(message, getter=message_getter),
+            redelivered=False,  # Default to False, will be set to True in worker if it's a redelivery
         )
 
     def general_labels(self) -> Mapping[str, str]:

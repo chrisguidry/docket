@@ -40,6 +40,12 @@ TASKS_STARTED = meter.create_counter(
     unit="1",
 )
 
+TASKS_REDELIVERED = meter.create_counter(
+    "docket_tasks_redelivered",
+    description="How many tasks started that were redelivered from another worker",
+    unit="1",
+)
+
 TASKS_STRICKEN = meter.create_counter(
     "docket_tasks_stricken",
     description="How many tasks have been stricken from executing",

@@ -376,6 +376,14 @@ def TASKS_RETRIED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     return mock
 
 
+@pytest.fixture
+def TASKS_REDELIVERED(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Mock for the TASKS_REDELIVERED counter."""
+    mock = Mock(spec=Counter.add)
+    monkeypatch.setattr("docket.instrumentation.TASKS_REDELIVERED.add", mock)
+    return mock
+
+
 async def test_worker_execution_increments_task_counters(
     docket: Docket,
     worker: Worker,
@@ -386,6 +394,7 @@ async def test_worker_execution_increments_task_counters(
     TASKS_SUCCEEDED: Mock,
     TASKS_FAILED: Mock,
     TASKS_RETRIED: Mock,
+    TASKS_REDELIVERED: Mock,
 ):
     """Should increment the appropriate task counters when a worker executes a task."""
     await docket.add(the_task)()
@@ -397,6 +406,7 @@ async def test_worker_execution_increments_task_counters(
     TASKS_SUCCEEDED.assert_called_once_with(1, worker_labels)
     TASKS_FAILED.assert_not_called()
     TASKS_RETRIED.assert_not_called()
+    TASKS_REDELIVERED.assert_not_called()
 
 
 async def test_failed_task_increments_failure_counter(
@@ -409,6 +419,7 @@ async def test_failed_task_increments_failure_counter(
     TASKS_SUCCEEDED: Mock,
     TASKS_FAILED: Mock,
     TASKS_RETRIED: Mock,
+    TASKS_REDELIVERED: Mock,
 ):
     """Should increment the TASKS_FAILED counter when a task fails."""
     the_task.side_effect = ValueError("Womp")
@@ -422,6 +433,7 @@ async def test_failed_task_increments_failure_counter(
     TASKS_FAILED.assert_called_once_with(1, worker_labels)
     TASKS_SUCCEEDED.assert_not_called()
     TASKS_RETRIED.assert_not_called()
+    TASKS_REDELIVERED.assert_not_called()
 
 
 async def test_retried_task_increments_retry_counter(
@@ -433,6 +445,7 @@ async def test_retried_task_increments_retry_counter(
     TASKS_SUCCEEDED: Mock,
     TASKS_FAILED: Mock,
     TASKS_RETRIED: Mock,
+    TASKS_REDELIVERED: Mock,
 ):
     """Should increment the TASKS_RETRIED counter when a task is retried."""
 
@@ -448,6 +461,7 @@ async def test_retried_task_increments_retry_counter(
     assert TASKS_FAILED.call_count == 2
     assert TASKS_RETRIED.call_count == 1
     TASKS_SUCCEEDED.assert_not_called()
+    TASKS_REDELIVERED.assert_not_called()
 
 
 async def test_exhausted_retried_task_increments_retry_counter(
@@ -459,6 +473,7 @@ async def test_exhausted_retried_task_increments_retry_counter(
     TASKS_SUCCEEDED: Mock,
     TASKS_FAILED: Mock,
     TASKS_RETRIED: Mock,
+    TASKS_REDELIVERED: Mock,
 ):
     """Should increment the appropriate counters when retries are exhausted."""
 
@@ -474,6 +489,41 @@ async def test_exhausted_retried_task_increments_retry_counter(
     TASKS_FAILED.assert_called_once_with(1, worker_labels)
     TASKS_RETRIED.assert_not_called()
     TASKS_SUCCEEDED.assert_not_called()
+    TASKS_REDELIVERED.assert_not_called()
+
+
+async def test_redelivered_tasks_increment_redelivered_counter(
+    docket: Docket,
+    worker_labels: dict[str, str],
+    TASKS_STARTED: Mock,
+    TASKS_COMPLETED: Mock,
+    TASKS_SUCCEEDED: Mock,
+    TASKS_FAILED: Mock,
+    TASKS_RETRIED: Mock,
+    TASKS_REDELIVERED: Mock,
+):
+    """Should increment the TASKS_REDELIVERED counter for redelivered tasks."""
+
+    async def test_task():
+        await asyncio.sleep(0.01)
+
+    await docket.add(test_task)()
+
+    worker = Worker(docket, redelivery_timeout=timedelta(milliseconds=50))
+
+    async with worker:
+        worker._execute = AsyncMock(side_effect=Exception("Simulated worker failure"))  # type: ignore[assignment]
+
+        with pytest.raises(Exception, match="Simulated worker failure"):
+            await worker.run_until_finished()
+
+    await asyncio.sleep(0.075)
+
+    worker2 = Worker(docket, redelivery_timeout=timedelta(milliseconds=100))
+    async with worker2:
+        await worker2.run_until_finished()
+
+    assert TASKS_REDELIVERED.call_count >= 1
 
 
 @pytest.fixture
