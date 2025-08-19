@@ -38,5 +38,5 @@ jobs:
 
           additional_permissions: |
             actions: read
-          
+
           model: "claude-opus-4-1-20250805"
