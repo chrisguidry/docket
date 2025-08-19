@@ -495,7 +495,8 @@ class Worker:
 
         logger.debug("Deleting known task", extra=self._log_context())
         known_task_key = self.docket.known_task_key(key)
-        await redis.delete(known_task_key)
+        stream_id_key = self.docket.stream_id_key(key)
+        await redis.delete(known_task_key, stream_id_key)
 
     async def _execute(self, execution: Execution) -> None:
         log_context = {**self._log_context(), **execution.specific_labels()}
