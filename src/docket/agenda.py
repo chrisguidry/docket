@@ -155,9 +155,7 @@ class Agenda:
                     )
                 )
                 # Ensure the jittered time doesn't go before start
-                jittered_time = schedule_time + offset
-                if jittered_time < start:
-                    jittered_time = start
+                jittered_time = max(schedule_time + offset, start)
                 jittered_times.append(jittered_time)
             schedule_times = jittered_times
 
