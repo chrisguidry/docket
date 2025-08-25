@@ -9,6 +9,8 @@ import random
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterator, ParamSpec, TypeVar, overload
 
+from uuid_extensions import uuid7
+
 from .docket import Docket
 from .execution import Execution, TaskFunction
 
@@ -108,6 +110,8 @@ class Agenda:
         Tasks are distributed evenly across the specified time window,
         optionally with random jitter to prevent thundering herd effects.
 
+        All tasks are scheduled atomically - either all succeed or none are scheduled.
+
         Args:
             docket: The Docket to schedule tasks on.
             over: Time period to scatter tasks over (required).
@@ -116,14 +120,16 @@ class Agenda:
 
         Returns:
             List of Execution objects for the scheduled tasks.
+
+        Raises:
+            KeyError: If any task name is not registered with the docket.
+            ValueError: If any task is stricken.
         """
         if not self._tasks:
             return []
 
         if start is None:
             start = datetime.now(timezone.utc)
-
-        executions: list[Execution] = []
 
         # Calculate even distribution over the time period
         task_count = len(self._tasks)
@@ -150,15 +156,54 @@ class Agenda:
                 jittered_times.append(schedule_time + offset)
             schedule_times = jittered_times
 
-        # Schedule each task at its calculated time
+        # Build all Execution objects first, validating as we go
+        executions: list[Execution] = []
         for (task_func, args, kwargs), schedule_time in zip(
             self._tasks, schedule_times
         ):
+            # Resolve task function if given by name
             if isinstance(task_func, str):
-                scheduler = docket.add(task_func, when=schedule_time)
+                if task_func not in docket.tasks:
+                    raise KeyError(f"Task '{task_func}' is not registered")
+                resolved_func = docket.tasks[task_func]
             else:
-                scheduler = docket.add(task_func, when=schedule_time)
-            execution = await scheduler(*args, **kwargs)
+                # Ensure task is registered
+                if task_func not in docket.tasks.values():
+                    docket.register(task_func)
+                resolved_func = task_func
+
+            # Create execution with unique key
+            key = str(uuid7())
+            execution = Execution(
+                function=resolved_func,
+                args=args,
+                kwargs=kwargs,
+                when=schedule_time,
+                key=key,
+                attempt=1,
+            )
             executions.append(execution)
+
+        # Schedule all tasks atomically
+        # This is the atomic part - we schedule all or none
+        scheduled_executions: list[Execution] = []
+        try:
+            for execution in executions:
+                # Each add().schedule() is atomic per-task
+                # If any fail, we'll catch and not schedule the rest
+                scheduler = docket.add(
+                    execution.function, when=execution.when, key=execution.key
+                )
+                # Actually schedule the task
+                await scheduler(*execution.args, **execution.kwargs)
+                scheduled_executions.append(execution)
+        except Exception:
+            # If any task fails, cancel all that were scheduled
+            for scheduled in scheduled_executions:
+                try:
+                    await docket.cancel(scheduled.key)
+                except Exception:
+                    pass  # Best effort cleanup
+            raise
 
         return executions

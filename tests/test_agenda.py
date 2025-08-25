@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -255,18 +256,35 @@ async def test_agenda_scatter_with_task_by_name(
 async def test_agenda_scatter_atomicity(
     docket: Docket, agenda: Agenda, the_task: AsyncMock, another_task: AsyncMock
 ):
-    """Should verify that all tasks are scheduled successfully."""
+    """Should schedule all tasks atomically - all succeed or none are scheduled."""
     docket.register(the_task)
-    docket.register(another_task)
+    # Don't register another_task initially
 
-    # Add multiple tasks
+    # Test failure case - unregistered task should cause all to fail
     agenda.add(the_task)("task1")
     agenda.add(the_task)("task2")
-    agenda.add(another_task)("task3")
-    agenda.add(the_task)("task4")
+    agenda.add("unregistered_task")("will_fail")  # This will fail
+    agenda.add(the_task)("task3")
+
+    # The scatter should fail when it hits the unregistered task
+    with pytest.raises(KeyError, match="Task 'unregistered_task' is not registered"):
+        await agenda.scatter(docket, over=timedelta(seconds=60))
+
+    # Verify NO tasks were scheduled (atomicity)
+    snapshot = await docket.snapshot()
+    assert len(snapshot.future) == 0
+
+    # Now test successful case with all registered tasks
+    agenda2 = Agenda()
+    docket.register(another_task)
+
+    agenda2.add(the_task)("task1")
+    agenda2.add(the_task)("task2")
+    agenda2.add(another_task)("task3")
+    agenda2.add(the_task)("task4")
 
     # All tasks should be scheduled successfully
-    executions = await agenda.scatter(docket, over=timedelta(seconds=60))
+    executions = await agenda2.scatter(docket, over=timedelta(seconds=60))
     assert len(executions) == 4
 
     # Verify all tasks are in the docket
@@ -276,17 +294,33 @@ async def test_agenda_scatter_atomicity(
     # Clear for next test
     await docket.clear()
 
-    # Test with task by name
-    agenda2 = Agenda()
-    agenda2.add("the_task")("named1")
-    agenda2.add(the_task)("direct1")
-    agenda2.add("the_task")("named2")
+    # Test partial failure with rollback
+    # This tests that if scheduling fails partway through, earlier tasks are cancelled
+    from unittest.mock import patch
 
-    executions2 = await agenda2.scatter(docket, over=timedelta(minutes=5))
-    assert len(executions2) == 3
+    agenda3 = Agenda()
+    agenda3.add(the_task)("task1")
+    agenda3.add(the_task)("task2")
+    agenda3.add(the_task)("task3")
 
-    snapshot2 = await docket.snapshot()
-    assert len(snapshot2.future) == 3
+    call_count = 0
+    original_add = docket.add
+
+    def failing_add(*args: Any, **kwargs: Any) -> Any:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            # Fail on the second task
+            raise RuntimeError("Simulated scheduling failure")
+        return original_add(*args, **kwargs)
+
+    with patch.object(docket, "add", side_effect=failing_add):
+        with pytest.raises(RuntimeError, match="Simulated scheduling failure"):
+            await agenda3.scatter(docket, over=timedelta(seconds=60))
+
+    # Verify no tasks remain scheduled (rollback worked)
+    snapshot = await docket.snapshot()
+    assert len(snapshot.future) == 0
 
 
 async def test_agenda_clear(agenda: Agenda, the_task: AsyncMock):
