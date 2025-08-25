@@ -110,7 +110,8 @@ class Agenda:
         Tasks are distributed evenly across the specified time window,
         optionally with random jitter to prevent thundering herd effects.
 
-        All tasks are scheduled atomically - either all succeed or none are scheduled.
+        If an error occurs during scheduling, some tasks may have already been
+        scheduled successfully before the failure occurred.
 
         Args:
             docket: The Docket to schedule tasks on.
@@ -184,26 +185,12 @@ class Agenda:
             )
             executions.append(execution)
 
-        # Schedule all tasks atomically
-        # This is the atomic part - we schedule all or none
-        scheduled_executions: list[Execution] = []
-        try:
-            for execution in executions:
-                # Each add().schedule() is atomic per-task
-                # If any fail, we'll catch and not schedule the rest
-                scheduler = docket.add(
-                    execution.function, when=execution.when, key=execution.key
-                )
-                # Actually schedule the task
-                await scheduler(*execution.args, **execution.kwargs)
-                scheduled_executions.append(execution)
-        except Exception:
-            # If any task fails, cancel all that were scheduled
-            for scheduled in scheduled_executions:
-                try:
-                    await docket.cancel(scheduled.key)
-                except Exception:
-                    pass  # Best effort cleanup
-            raise
+        # Schedule all tasks - if any fail, some tasks may have been scheduled
+        for execution in executions:
+            scheduler = docket.add(
+                execution.function, when=execution.when, key=execution.key
+            )
+            # Actually schedule the task - if this fails, earlier tasks remain scheduled
+            await scheduler(*execution.args, **execution.kwargs)
 
         return executions

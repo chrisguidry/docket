@@ -140,6 +140,154 @@ async def process_single_order(order_id: int) -> None:
 
 This pattern separates discovery (finding work) from execution (doing work), allowing for better load distribution and fault isolation. The perpetual task stays lightweight and fast, while the actual work is distributed across many workers.
 
+## Task Scattering with Agenda
+
+For "find-and-flood" workloads, you often want to distribute a batch of tasks over time rather than scheduling them all immediately. The `Agenda` class provides an elegant way to collect related tasks and scatter them evenly across a time window.
+
+### Basic Scattering
+
+```python
+from datetime import timedelta
+from docket import Agenda, Docket
+
+async def process_item(item_id: int) -> None:
+    await perform_expensive_operation(item_id)
+    await update_database(item_id)
+
+async with Docket() as docket:
+    # Build an agenda of tasks
+    agenda = Agenda()
+    for item_id in range(1, 101):  # 100 items to process
+        agenda.add(process_item)(item_id)
+
+    # Scatter them evenly over 50 minutes to avoid overwhelming the system
+    executions = await agenda.scatter(docket, over=timedelta(minutes=50))
+    print(f"Scheduled {len(executions)} tasks over 50 minutes")
+```
+
+Tasks are distributed evenly across the time window. For 100 tasks over 50 minutes, they'll be scheduled approximately 30 seconds apart.
+
+### Jitter for Thundering Herd Prevention
+
+Add random jitter to prevent multiple processes from scheduling identical work at exactly the same times:
+
+```python
+# Scatter with ±30 second jitter around each scheduled time
+await agenda.scatter(
+    docket,
+    over=timedelta(minutes=50),
+    jitter=timedelta(seconds=30)
+)
+```
+
+### Future Scatter Windows
+
+Schedule the entire batch to start at a specific time in the future:
+
+```python
+from datetime import datetime, timezone
+
+# Start scattering in 2 hours, spread over 30 minutes
+start_time = datetime.now(timezone.utc) + timedelta(hours=2)
+await agenda.scatter(
+    docket,
+    start=start_time,
+    over=timedelta(minutes=30)
+)
+```
+
+### Mixed Task Types
+
+Agendas can contain different types of tasks:
+
+```python
+async def send_email(user_id: str, template: str) -> None:
+    await email_service.send(user_id, template)
+
+async def update_analytics(event_data: dict[str, str]) -> None:
+    await analytics_service.track(event_data)
+
+# Create a mixed agenda
+agenda = Agenda()
+agenda.add(process_item)(item_id=1001)
+agenda.add(send_email)("user123", "welcome")
+agenda.add(update_analytics)({"event": "signup", "user": "user123"})
+agenda.add(process_item)(item_id=1002)
+
+# All tasks will be scattered in the order they were added
+await agenda.scatter(docket, over=timedelta(minutes=10))
+```
+
+### Single Task Positioning
+
+When scattering a single task, it's positioned at the midpoint of the time window:
+
+```python
+agenda = Agenda()
+agenda.add(process_item)(item_id=42)
+
+# This task will be scheduled 5 minutes from now (middle of 10-minute window)
+await agenda.scatter(docket, over=timedelta(minutes=10))
+```
+
+### Agenda Reusability
+
+Agendas can be reused for multiple scatter operations:
+
+```python
+# Create a reusable template
+daily_cleanup_agenda = Agenda()
+daily_cleanup_agenda.add(cleanup_temp_files)()
+daily_cleanup_agenda.add(compress_old_logs)()
+daily_cleanup_agenda.add(update_metrics)()
+
+# Use it multiple times with different timing
+await daily_cleanup_agenda.scatter(docket, over=timedelta(hours=1))
+
+# Later, scatter the same tasks over a different window
+tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
+await daily_cleanup_agenda.scatter(
+    docket,
+    start=tomorrow,
+    over=timedelta(minutes=30)
+)
+```
+
+### Failure Behavior
+
+If an error occurs during scheduling, some tasks may have already been scheduled successfully:
+
+```python
+agenda = Agenda()
+agenda.add(valid_task)("arg1")
+agenda.add(valid_task)("arg2")
+agenda.add("nonexistent_task")("arg3")  # This will cause an error
+agenda.add(valid_task)("arg4")
+
+try:
+    await agenda.scatter(docket, over=timedelta(minutes=10))
+except KeyError:
+    # The first two tasks were scheduled successfully
+    # The error prevented the fourth task from being scheduled
+    pass
+```
+
+This behavior is by design - it's simpler and more predictable than trying to provide strong atomicity guarantees.
+
+### Best Practices
+
+1. **Use appropriate time windows**: Scatter over enough time to prevent overwhelming downstream systems, but not so long that work becomes stale.
+
+2. **Add jitter for coordination**: When multiple processes might schedule similar work, use jitter to avoid synchronized load spikes.
+
+3. **Group related work**: Put related tasks in the same agenda so they're scheduled together with consistent timing.
+
+4. **Handle failures gracefully**: Be prepared for partial scheduling if validation or individual task scheduling fails.
+
+5. **Monitor scattered work**: Since tasks are spread over time, ensure your monitoring can track the progress of the entire batch.
+
+The Agenda pattern is particularly effective for ETL pipelines, batch processing, gradual rollouts, and any scenario where you need to distribute load over time while maintaining the relationships between related tasks.
+
 ## Striking and Restoring Tasks
 
 Striking allows you to temporarily disable tasks without redeploying code. This is invaluable for incident response, gradual rollouts, or handling problematic customers.
