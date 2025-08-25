@@ -142,7 +142,7 @@ This pattern separates discovery (finding work) from execution (doing work), all
 
 ## Task Scattering with Agenda
 
-For "find-and-flood" workloads, you often want to distribute a batch of tasks over time rather than scheduling them all immediately. The `Agenda` class provides an elegant way to collect related tasks and scatter them evenly across a time window.
+For "find-and-flood" workloads, you often want to distribute a batch of tasks over time rather than scheduling them all immediately. The `Agenda` class collects related tasks and scatters them evenly across a time window.
 
 ### Basic Scattering
 
@@ -255,7 +255,7 @@ await daily_cleanup_agenda.scatter(
 
 ### Failure Behavior
 
-If an error occurs during scheduling, some tasks may have already been scheduled successfully:
+Keep in mind that, if an error occurs during scheduling, some tasks may have already been scheduled successfully:
 
 ```python
 agenda = Agenda()
@@ -271,22 +271,6 @@ except KeyError:
     # The error prevented the fourth task from being scheduled
     pass
 ```
-
-This behavior is by design - it's simpler and more predictable than trying to provide strong atomicity guarantees.
-
-### Best Practices
-
-1. **Use appropriate time windows**: Scatter over enough time to prevent overwhelming downstream systems, but not so long that work becomes stale.
-
-2. **Add jitter for coordination**: When multiple processes might schedule similar work, use jitter to avoid synchronized load spikes.
-
-3. **Group related work**: Put related tasks in the same agenda so they're scheduled together with consistent timing.
-
-4. **Handle failures gracefully**: Be prepared for partial scheduling if validation or individual task scheduling fails.
-
-5. **Monitor scattered work**: Since tasks are spread over time, ensure your monitoring can track the progress of the entire batch.
-
-The Agenda pattern is particularly effective for ETL pipelines, batch processing, gradual rollouts, and any scenario where you need to distribute load over time while maintaining the relationships between related tasks.
 
 ## Striking and Restoring Tasks
 
