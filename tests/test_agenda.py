@@ -135,14 +135,11 @@ async def test_agenda_scatter_with_large_jitter(
         agenda.add(the_task)(f"task{i}")
 
     start_time = datetime.now(timezone.utc)
-    
+
     # Use a very large jitter (5 minutes) on a short window (1 minute)
     # This could potentially push times before start without our safety check
     executions = await agenda.scatter(
-        docket, 
-        start=start_time,
-        over=timedelta(minutes=1), 
-        jitter=timedelta(minutes=5)
+        docket, start=start_time, over=timedelta(minutes=1), jitter=timedelta(minutes=5)
     )
 
     assert len(executions) == 3
