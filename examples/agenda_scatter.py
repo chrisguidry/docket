@@ -17,14 +17,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-async def process_item(item_id: int, execution: CurrentExecution) -> None:
+async def process_item(
+    item_id: int, execution: CurrentExecution = CurrentExecution()
+) -> None:
     """Process a single item from a batch."""
     logger.info(
         f"Processing item {item_id} at {datetime.now(timezone.utc).isoformat()} "
         f"(scheduled for {execution.when.isoformat()})"
     )
     # Simulate some work
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.1)
     logger.info(f"Completed processing item {item_id}")
 
 
@@ -32,7 +34,7 @@ async def send_notification(user_id: str, message: str) -> None:
     """Send a notification to a user."""
     logger.info(f"Sending notification to user {user_id}: {message}")
     # Simulate sending notification
-    await asyncio.sleep(0.2)
+    await asyncio.sleep(0.1)
     logger.info(f"Notification sent to user {user_id}")
 
 
@@ -53,8 +55,8 @@ async def main() -> None:
         for i in range(1, 6):
             agenda.add(process_item)(i)
 
-        # Scatter them over 30 seconds (tasks at 0s, 7.5s, 15s, 22.5s, 30s)
-        executions = await agenda.scatter(docket, over=timedelta(seconds=30))
+        # Scatter them over 10 seconds
+        executions = await agenda.scatter(docket, over=timedelta(seconds=10))
         logger.info(f"Scheduled {len(executions)} tasks:")
         for i, exec in enumerate(executions):
             logger.info(f"  Task {i + 1} scheduled for {exec.when.isoformat()}")
@@ -68,9 +70,9 @@ async def main() -> None:
         for user in users:
             agenda2.add(send_notification)(user, "System maintenance in 1 hour")
 
-        # Scatter over 20 seconds with ±3 second jitter
+        # Scatter over 10 seconds with ±2 second jitter
         executions2 = await agenda2.scatter(
-            docket, over=timedelta(seconds=20), jitter=timedelta(seconds=3)
+            docket, over=timedelta(seconds=10), jitter=timedelta(seconds=2)
         )
         logger.info(f"Scheduled {len(executions2)} notifications with jitter:")
         for i, exec in enumerate(executions2):
@@ -87,10 +89,10 @@ async def main() -> None:
         agenda3.add(send_notification)("admin", "Batch processing halfway")
         agenda3.add(process_item)(102)
 
-        # Schedule to run 1 minute from now, scattered over 2 minutes
-        start_time = datetime.now(timezone.utc) + timedelta(minutes=1)
+        # Schedule to run 15 seconds from now, scattered over 30 seconds
+        start_time = datetime.now(timezone.utc) + timedelta(seconds=15)
         executions3 = await agenda3.scatter(
-            docket, start=start_time, over=timedelta(minutes=2)
+            docket, start=start_time, over=timedelta(seconds=30)
         )
         logger.info(
             f"Scheduled {len(executions3)} mixed tasks starting at {start_time.isoformat()}:"
@@ -114,16 +116,15 @@ async def main() -> None:
 
         # Run a worker to process the tasks
         logger.info("\n=== Starting Worker ===")
-        worker = Worker(docket, concurrency=3)
-
-        # Run for a limited time to demonstrate
-        try:
-            await asyncio.wait_for(
-                worker.run_until_finished(),
-                timeout=180,  # Run for up to 3 minutes
-            )
-        except asyncio.TimeoutError:
-            logger.info("Worker timeout reached, stopping...")
+        async with Worker(docket, concurrency=3) as worker:
+            # Run for a limited time to demonstrate
+            try:
+                await asyncio.wait_for(
+                    worker.run_until_finished(),
+                    timeout=90,  # Run for up to 1.5 minutes
+                )
+            except asyncio.TimeoutError:
+                logger.info("Worker timeout reached, stopping...")
 
         logger.info("Example completed!")
 
