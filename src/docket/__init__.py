@@ -8,6 +8,7 @@ from importlib.metadata import version
 
 __version__ = version("pydocket")
 
+from .agenda import Agenda
 from .annotations import Logged
 from .dependencies import (
     ConcurrencyLimit,
@@ -29,6 +30,7 @@ from .worker import Worker
 
 __all__ = [
     "__version__",
+    "Agenda",
     "ConcurrencyLimit",
     "CurrentDocket",
     "CurrentExecution",

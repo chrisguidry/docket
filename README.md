@@ -41,6 +41,30 @@ Hello, Jane at 2025-03-05 13:58:21.552644!
 Howdy, John at 2025-03-05 13:58:24.550773!
 ```
 
+### Task Scattering with Agenda
+
+For "find-and-flood" workloads where you want to distribute tasks over time rather than schedule them all immediately, use the `Agenda` class:
+
+```python
+from datetime import timedelta
+from docket import Agenda, Docket
+
+async def process_item(item_id: int) -> None:
+    print(f"Processing item {item_id}")
+
+async with Docket() as docket:
+    # Build an agenda of tasks
+    agenda = Agenda()
+    for item_id in range(1, 11):
+        agenda.add(process_item)(item_id)
+
+    # Scatter them evenly over 50 minutes (required parameter)
+    await agenda.scatter(docket, over=timedelta(minutes=50))
+
+    # Or add jitter to prevent thundering herd
+    await agenda.scatter(docket, over=timedelta(minutes=50), jitter=timedelta(seconds=30))
+```
+
 Check out our docs for more [details](http://chrisguidry.github.io/docket/),
 [examples](https://chrisguidry.github.io/docket/getting-started/), and the [API
 reference](https://chrisguidry.github.io/docket/api-reference/).
