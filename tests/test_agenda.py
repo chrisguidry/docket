@@ -124,6 +124,36 @@ async def test_agenda_scatter_with_jitter(
         assert diff <= 30
 
 
+async def test_agenda_scatter_with_large_jitter(
+    docket: Docket, agenda: Agenda, the_task: AsyncMock
+):
+    """Should ensure jittered times never go before start even with large jitter."""
+    docket.register(the_task)
+
+    # Add tasks that will be scheduled close to start
+    for i in range(3):
+        agenda.add(the_task)(f"task{i}")
+
+    start_time = datetime.now(timezone.utc)
+    
+    # Use a very large jitter (5 minutes) on a short window (1 minute)
+    # This could potentially push times before start without our safety check
+    executions = await agenda.scatter(
+        docket, 
+        start=start_time,
+        over=timedelta(minutes=1), 
+        jitter=timedelta(minutes=5)
+    )
+
+    assert len(executions) == 3
+
+    # All scheduled times should be at or after start_time
+    for execution in executions:
+        assert execution.when >= start_time, (
+            f"Task scheduled at {execution.when} is before start {start_time}"
+        )
+
+
 async def test_agenda_scatter_single_task(
     docket: Docket, agenda: Agenda, the_task: AsyncMock
 ):

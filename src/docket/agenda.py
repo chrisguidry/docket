@@ -154,7 +154,11 @@ class Agenda:
                         -jitter.total_seconds(), jitter.total_seconds()
                     )
                 )
-                jittered_times.append(schedule_time + offset)
+                # Ensure the jittered time doesn't go before start
+                jittered_time = schedule_time + offset
+                if jittered_time < start:
+                    jittered_time = start
+                jittered_times.append(jittered_time)
             schedule_times = jittered_times
 
         # Build all Execution objects first, validating as we go
