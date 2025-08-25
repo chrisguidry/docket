@@ -323,6 +323,63 @@ async def test_agenda_scatter_atomicity(
     assert len(snapshot.future) == 0
 
 
+async def test_agenda_scatter_auto_registers_unregistered_functions(
+    docket: Docket, agenda: Agenda, the_task: AsyncMock
+):
+    """Should automatically register task functions that aren't already registered."""
+    # the_task is NOT registered yet
+    assert the_task not in docket.tasks.values()
+
+    agenda.add(the_task)("task1")
+    agenda.add(the_task)("task2")
+
+    # scatter should auto-register the task
+    executions = await agenda.scatter(docket, over=timedelta(seconds=30))
+    assert len(executions) == 2
+
+    # Now the task should be registered
+    assert the_task in docket.tasks.values()
+
+    # Verify tasks were scheduled
+    snapshot = await docket.snapshot()
+    assert len(snapshot.future) == 2
+
+
+async def test_agenda_scatter_rollback_with_cancel_failure(
+    docket: Docket, agenda: Agenda, the_task: AsyncMock
+):
+    """Should handle cancel failures during rollback gracefully."""
+    from unittest.mock import patch, AsyncMock as MockAsync
+
+    docket.register(the_task)
+
+    agenda.add(the_task)("task1")
+    agenda.add(the_task)("task2")
+    agenda.add(the_task)("task3")
+
+    call_count = 0
+    original_add = docket.add
+
+    def failing_add(*args: Any, **kwargs: Any) -> Any:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 3:
+            # Fail on the third task
+            raise RuntimeError("Simulated scheduling failure")
+        return original_add(*args, **kwargs)
+
+    # Mock cancel to fail
+    mock_cancel = MockAsync(side_effect=Exception("Cancel failed"))
+
+    with patch.object(docket, "add", side_effect=failing_add):
+        with patch.object(docket, "cancel", mock_cancel):
+            with pytest.raises(RuntimeError, match="Simulated scheduling failure"):
+                await agenda.scatter(docket, over=timedelta(seconds=60))
+
+    # Verify cancel was attempted for the scheduled tasks (best effort)
+    assert mock_cancel.call_count == 2  # Two tasks were scheduled before failure
+
+
 async def test_agenda_clear(agenda: Agenda, the_task: AsyncMock):
     """Should support clearing all tasks from agenda."""
     agenda.add(the_task)("task1")
