@@ -11,15 +11,13 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from docket import Agenda, CurrentExecution, Docket, Worker
+from docket import Agenda, CurrentExecution, Docket, Execution, Worker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-async def process_item(
-    item_id: int, execution: CurrentExecution = CurrentExecution()
-) -> None:
+async def process_item(item_id: int, execution: Execution = CurrentExecution()) -> None:
     """Process a single item from a batch."""
     logger.info(
         f"Processing item {item_id} at {datetime.now(timezone.utc).isoformat()} "
