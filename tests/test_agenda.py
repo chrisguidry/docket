@@ -290,11 +290,15 @@ async def test_agenda_scatter_with_non_positive_over_parameter(
     agenda.add(the_task)("task2")
 
     # Test with zero duration
-    with pytest.raises(ValueError, match="'over' parameter must be a positive duration"):
+    with pytest.raises(
+        ValueError, match="'over' parameter must be a positive duration"
+    ):
         await agenda.scatter(docket, over=timedelta(seconds=0))
 
     # Test with negative duration
-    with pytest.raises(ValueError, match="'over' parameter must be a positive duration"):
+    with pytest.raises(
+        ValueError, match="'over' parameter must be a positive duration"
+    ):
         await agenda.scatter(docket, over=timedelta(seconds=-60))
 
 
