@@ -124,8 +124,11 @@ class Agenda:
 
         Raises:
             KeyError: If any task name is not registered with the docket.
-            ValueError: If any task is stricken.
+            ValueError: If any task is stricken or 'over' is not positive.
         """
+        if over.total_seconds() <= 0:
+            raise ValueError("'over' parameter must be a positive duration")
+
         if not self._tasks:
             return []
 

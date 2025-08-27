@@ -280,6 +280,24 @@ async def test_agenda_scatter_with_task_by_name(
     assert executions[0].kwargs == {"key": "value"}
 
 
+async def test_agenda_scatter_with_non_positive_over_parameter(
+    docket: Docket, agenda: Agenda, the_task: AsyncMock
+):
+    """Should raise ValueError if 'over' parameter is not positive."""
+    docket.register(the_task)
+
+    agenda.add(the_task)("task1")
+    agenda.add(the_task)("task2")
+
+    # Test with zero duration
+    with pytest.raises(ValueError, match="'over' parameter must be a positive duration"):
+        await agenda.scatter(docket, over=timedelta(seconds=0))
+
+    # Test with negative duration
+    with pytest.raises(ValueError, match="'over' parameter must be a positive duration"):
+        await agenda.scatter(docket, over=timedelta(seconds=-60))
+
+
 async def test_agenda_scatter_partial_scheduling_behavior(
     docket: Docket, agenda: Agenda, the_task: AsyncMock, another_task: AsyncMock
 ):
