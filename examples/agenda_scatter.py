@@ -1,10 +1,16 @@
 #!/usr/bin/env python
 """
-Example demonstrating the Agenda scatter functionality.
+Example demonstrating the Agenda scatter functionality for rate-limited workloads.
 
-This example shows how to use Agenda to distribute tasks evenly over a time period,
-which is useful for "find-and-flood" workloads where you want to avoid scheduling
-all work immediately.
+This example shows a real-world scenario: sending bulk notifications while respecting
+rate limits to avoid overwhelming your notification service or triggering spam filters.
+
+Without scatter: All 26 notifications would try to send immediately, potentially:
+- Overwhelming your notification service
+- Triggering rate limits or spam detection
+- Creating a poor user experience with delayed/failed sends
+
+With scatter: Notifications are distributed evenly over time, respecting limits.
 """
 
 import asyncio
@@ -13,118 +19,109 @@ from datetime import datetime, timedelta, timezone
 
 from docket import Agenda, CurrentExecution, Docket, Execution, Worker
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
-async def process_item(item_id: int, execution: Execution = CurrentExecution()) -> None:
-    """Process a single item from a batch."""
-    logger.info(
-        f"Processing item {item_id} at {datetime.now(timezone.utc).isoformat()} "
-        f"(scheduled for {execution.when.isoformat()})"
-    )
-    # Simulate some work
-    await asyncio.sleep(0.1)
-    logger.info(f"Completed processing item {item_id}")
-
-
-async def send_notification(user_id: str, message: str) -> None:
+async def send_notification(
+    user: str, message: str, execution: Execution = CurrentExecution()
+) -> None:
     """Send a notification to a user."""
-    logger.info(f"Sending notification to user {user_id}: {message}")
-    # Simulate sending notification
-    await asyncio.sleep(0.1)
-    logger.info(f"Notification sent to user {user_id}")
+    delay = (execution.when - datetime.now(timezone.utc)).total_seconds()
+    if delay > 0.1:
+        logger.info(f"📅 Notification for {user} scheduled {delay:.1f}s from now")
+    else:
+        logger.info(f"📧 Sending to {user}: '{message}'")
+        # Simulate API call to notification service
+        await asyncio.sleep(0.2)
+        logger.info(f"✓ Delivered to {user}")
 
 
 async def main() -> None:
-    """Demonstrate agenda scattering."""
+    """Demonstrate scatter for rate-limited notification sending."""
 
-    # Initialize docket with Redis
-    async with Docket(name="agenda-example") as docket:
-        # Register our task functions
-        docket.register(process_item)
+    async with Docket(name="notification-scatter") as docket:
         docket.register(send_notification)
 
-        # Example 1: Scatter items over 30 seconds
-        logger.info("=== Example 1: Basic Scattering ===")
+        logger.info("=== Bulk Notification Campaign ===")
+        logger.info("Scenario: Alert 26 users about a flash sale")
+        logger.info("Constraint: Notification service allows max 30 messages/minute")
+        logger.info("Strategy: Scatter over 60 seconds (~1 message every 2.3 seconds)")
+        logger.info("")
+
+        # Build the list of users to notify (e.g., from a database query)
+        users = [
+            "alice@example.com",
+            "bob@example.com",
+            "charlie@example.com",
+            "diana@example.com",
+            "eve@example.com",
+            "frank@example.com",
+            "grace@example.com",
+            "henry@example.com",
+            "iris@example.com",
+            "jack@example.com",
+            "kate@example.com",
+            "liam@example.com",
+            "maya@example.com",
+            "noah@example.com",
+            "olivia@example.com",
+            "peter@example.com",
+            "quinn@example.com",
+            "ruby@example.com",
+            "sam@example.com",
+            "tara@example.com",
+            "uma@example.com",
+            "victor@example.com",
+            "wendy@example.com",
+            "xavier@example.com",
+            "yara@example.com",
+            "zoe@example.com",
+        ]
+
         agenda = Agenda()
 
-        # Add 5 items to process
-        for i in range(1, 6):
-            agenda.add(process_item)(i)
-
-        # Scatter them over 10 seconds
-        executions = await agenda.scatter(docket, over=timedelta(seconds=10))
-        logger.info(f"Scheduled {len(executions)} tasks:")
-        for i, exec in enumerate(executions):
-            logger.info(f"  Task {i + 1} scheduled for {exec.when.isoformat()}")
-
-        # Example 2: Scatter with jitter to prevent thundering herd
-        logger.info("\n=== Example 2: Scattering with Jitter ===")
-        agenda2 = Agenda()
-
-        # Add notifications to send
-        users = ["alice", "bob", "charlie", "dave", "eve"]
+        # Queue all notifications
+        logger.info(f"📋 Preparing notifications for {len(users)} users...")
         for user in users:
-            agenda2.add(send_notification)(user, "System maintenance in 1 hour")
+            agenda.add(send_notification)(user, "Flash Sale: 50% off for next hour!")
 
-        # Scatter over 10 seconds with ±2 second jitter
-        executions2 = await agenda2.scatter(
-            docket, over=timedelta(seconds=10), jitter=timedelta(seconds=2)
+        # Scatter over 60 seconds to respect rate limit
+        logger.info("🎯 Scattering notifications over 60 seconds...")
+        logger.info("")
+
+        executions = await agenda.scatter(
+            docket,
+            over=timedelta(seconds=60),
+            jitter=timedelta(seconds=0.5),  # Small jitter for natural spacing
         )
-        logger.info(f"Scheduled {len(executions2)} notifications with jitter:")
-        for i, exec in enumerate(executions2):
-            logger.info(f"  Notification {i + 1} scheduled for {exec.when.isoformat()}")
 
-        # Example 3: Future scatter window
-        logger.info("\n=== Example 3: Future Scatter Window ===")
-        agenda3 = Agenda()
+        # Show the distribution preview
+        first_three = executions[:3]
+        last_three = executions[-3:]
+        for i, exec in enumerate(first_three, 1):
+            delay = (exec.when - datetime.now(timezone.utc)).total_seconds()
+            logger.info(f"   Message #{i} scheduled for +{delay:.1f}s")
+        logger.info(f"   ... {len(executions) - 6} more evenly distributed ...")
+        for i, exec in enumerate(last_three, len(executions) - 2):
+            delay = (exec.when - datetime.now(timezone.utc)).total_seconds()
+            logger.info(f"   Message #{i} scheduled for +{delay:.1f}s")
+        logger.info("")
 
-        # Add mixed task types
-        agenda3.add(process_item)(100)
-        agenda3.add(send_notification)("admin", "Batch processing started")
-        agenda3.add(process_item)(101)
-        agenda3.add(send_notification)("admin", "Batch processing halfway")
-        agenda3.add(process_item)(102)
+        # Run worker to process the scattered notifications
+        logger.info("🚀 Starting notification sender...")
+        logger.info("   Watch how notifications flow steadily, not in a flood!")
+        logger.info("")
 
-        # Schedule to run 15 seconds from now, scattered over 30 seconds
-        start_time = datetime.now(timezone.utc) + timedelta(seconds=15)
-        executions3 = await agenda3.scatter(
-            docket, start=start_time, over=timedelta(seconds=30)
-        )
-        logger.info(
-            f"Scheduled {len(executions3)} mixed tasks starting at {start_time.isoformat()}:"
-        )
-        for i, exec in enumerate(executions3):
-            time_from_now = (exec.when - datetime.now(timezone.utc)).total_seconds()
-            logger.info(
-                f"  Task {i + 1} scheduled for {exec.when.isoformat()} ({time_from_now:.1f}s from now)"
-            )
+        start_time = datetime.now(timezone.utc)
+        async with Worker(docket, concurrency=2) as worker:
+            await worker.run_until_finished()
 
-        # Example 4: Minimal scatter window
-        logger.info("\n=== Example 4: Minimal Scatter Window ===")
-        agenda4 = Agenda()
-
-        for i in range(200, 203):
-            agenda4.add(process_item)(i)
-
-        # Use a very small window for near-immediate scheduling
-        executions4 = await agenda4.scatter(docket, over=timedelta(seconds=1))
-        logger.info(f"Scheduled {len(executions4)} tasks over 1 second")
-
-        # Run a worker to process the tasks
-        logger.info("\n=== Starting Worker ===")
-        async with Worker(docket, concurrency=3) as worker:
-            # Run for a limited time to demonstrate
-            try:
-                await asyncio.wait_for(
-                    worker.run_until_finished(),
-                    timeout=90,  # Run for up to 1.5 minutes
-                )
-            except asyncio.TimeoutError:
-                logger.info("Worker timeout reached, stopping...")
-
-        logger.info("Example completed!")
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        logger.info("")
+        logger.info(f"✅ All {len(users)} notifications sent in {elapsed:.1f} seconds")
 
 
 if __name__ == "__main__":
