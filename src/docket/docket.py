@@ -455,7 +455,7 @@ class Docket:
                 1,
                 {
                     **self.labels(),
-                    **execution.specific_labels(),
+                    **execution.general_labels(),
                     "docket.where": "docket",
                 },
             )
