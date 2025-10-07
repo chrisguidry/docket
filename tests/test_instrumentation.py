@@ -13,7 +13,7 @@ from opentelemetry.sdk.trace import Span, TracerProvider
 from opentelemetry.trace import StatusCode
 
 from docket import Docket, Worker
-from docket.dependencies import Retry
+from docket.dependencies import Perpetual, Retry
 from docket.instrumentation import (
     healthcheck_server,
     message_getter,
@@ -377,6 +377,14 @@ def TASKS_RETRIED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 
 
 @pytest.fixture
+def TASKS_PERPETUATED(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Mock for the TASKS_PERPETUATED counter."""
+    mock = Mock(spec=Counter.add)
+    monkeypatch.setattr("docket.instrumentation.TASKS_PERPETUATED.add", mock)
+    return mock
+
+
+@pytest.fixture
 def TASKS_REDELIVERED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_REDELIVERED counter."""
     mock = Mock(spec=Counter.add)
@@ -490,6 +498,58 @@ async def test_exhausted_retried_task_increments_retry_counter(
     TASKS_RETRIED.assert_not_called()
     TASKS_SUCCEEDED.assert_not_called()
     TASKS_REDELIVERED.assert_not_called()
+
+
+async def test_retried_task_metric_uses_bounded_labels(
+    docket: Docket,
+    worker: Worker,
+    worker_labels: dict[str, str],
+    TASKS_RETRIED: Mock,
+):
+    """TASKS_RETRIED should only use bounded-cardinality labels (not task keys)."""
+
+    async def the_task(retry: Retry = Retry(attempts=2)):
+        raise ValueError("Always fails")
+
+    await docket.add(the_task)()
+    await worker.run_until_finished()
+
+    assert TASKS_RETRIED.call_count == 1
+    call_labels = TASKS_RETRIED.call_args.args[1]
+
+    assert "docket.name" in call_labels
+    assert "docket.worker" in call_labels
+    assert "docket.task" in call_labels
+    assert "docket.key" not in call_labels
+    assert "docket.when" not in call_labels
+    assert "docket.attempt" not in call_labels
+
+
+async def test_perpetuated_task_metric_uses_bounded_labels(
+    docket: Docket,
+    worker: Worker,
+    worker_labels: dict[str, str],
+    TASKS_PERPETUATED: Mock,
+):
+    """TASKS_PERPETUATED should only use bounded-cardinality labels (not task keys)."""
+
+    async def the_task(
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=50)),
+    ):
+        pass
+
+    execution = await docket.add(the_task)()
+    await worker.run_at_most({execution.key: 2})
+
+    assert TASKS_PERPETUATED.call_count >= 1
+    call_labels = TASKS_PERPETUATED.call_args.args[1]
+
+    assert "docket.name" in call_labels
+    assert "docket.worker" in call_labels
+    assert "docket.task" in call_labels
+    assert "docket.key" not in call_labels
+    assert "docket.when" not in call_labels
+    assert "docket.attempt" not in call_labels
 
 
 async def test_redelivered_tasks_increment_redelivered_counter(

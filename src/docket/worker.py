@@ -732,7 +732,7 @@ class Worker:
         execution.attempt += 1
         await self.docket.schedule(execution)
 
-        TASKS_RETRIED.add(1, {**self.labels(), **execution.specific_labels()})
+        TASKS_RETRIED.add(1, {**self.labels(), **execution.general_labels()})
         return True
 
     async def _perpetuate_if_requested(
@@ -758,7 +758,7 @@ class Worker:
         )
 
         if duration is not None:
-            TASKS_PERPETUATED.add(1, {**self.labels(), **execution.specific_labels()})
+            TASKS_PERPETUATED.add(1, {**self.labels(), **execution.general_labels()})
 
         return True
 
