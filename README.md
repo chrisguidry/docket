@@ -33,6 +33,7 @@ from docket import Docket, Worker
 
 async with Docket() as docket:
     async with Worker(docket) as worker:
+        worker.register(greet)
         await worker.run_until_finished()
 ```
 
