@@ -197,7 +197,7 @@ class Docket:
             except ImportError as e:
                 raise ImportError(
                     "fakeredis is required for DOCKET_BACKEND=fake. "
-                    "Install it with: pip install 'pydocket[fake]'"
+                    "Install fakeredis[lua]"
                 ) from e
         else:
             self._connection_pool = ConnectionPool.from_url(self.url)  # type: ignore

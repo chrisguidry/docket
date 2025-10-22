@@ -5,6 +5,9 @@ from pytest import MonkeyPatch
 
 from docket import Docket
 
+# Skip all tests in this file if fakeredis is not installed
+pytest.importorskip("fakeredis")
+
 
 async def test_docket_backend_fake(monkeypatch: MonkeyPatch):
     """Test using fakeredis backend via DOCKET_BACKEND env var."""
