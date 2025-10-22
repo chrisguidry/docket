@@ -162,7 +162,7 @@ class Docket:
                 - "redis://user:password@localhost:6379/0?ssl=true"
                 - "rediss://localhost:6379/0"
                 - "unix:///path/to/redis.sock"
-                - "memory://my-docket" (in-memory backend for testing)
+                - "memory://" (in-memory backend for testing)
             heartbeat_interval: How often workers send heartbeat messages to the docket.
             missed_heartbeats: How many heartbeats a worker can miss before it is
                 considered dead.
@@ -190,17 +190,13 @@ class Docket:
             try:
                 from fakeredis.aioredis import FakeConnection, FakeServer
 
-                # Extract docket name from URL (e.g., memory://my-docket)
-                # Multiple dockets can share the same FakeServer by using a shared server instance
-                # Store servers in a class-level dict keyed by the URL path
-                if not hasattr(Docket, "_memory_servers"):
-                    Docket._memory_servers = {}  # type: ignore
+                # All memory:// URLs share a single FakeServer instance
+                # Multiple dockets with different names are isolated by Redis key prefixes
+                # (e.g., docket1:stream vs docket2:stream)
+                if not hasattr(Docket, "_memory_server"):
+                    Docket._memory_server = FakeServer()  # type: ignore
 
-                # Use the full URL as the key to support multiple in-memory dockets
-                if self.url not in Docket._memory_servers:  # type: ignore
-                    Docket._memory_servers[self.url] = FakeServer()  # type: ignore
-
-                server = Docket._memory_servers[self.url]  # type: ignore
+                server = Docket._memory_server  # type: ignore
                 self._connection_pool = ConnectionPool(
                     connection_class=FakeConnection, server=server
                 )

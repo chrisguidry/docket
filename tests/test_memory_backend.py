@@ -10,7 +10,7 @@ pytest.importorskip("fakeredis")
 
 async def test_docket_memory_backend():
     """Test using in-memory backend via memory:// URL."""
-    async with Docket(name="test-memory-docket", url="memory://test") as docket:
+    async with Docket(name="test-memory-docket", url="memory://") as docket:
         result_value = None
 
         async def simple_task(value: str) -> str:
@@ -43,15 +43,15 @@ async def test_docket_memory_backend_missing_dependency():
         with pytest.raises(
             ImportError, match="fakeredis is required for memory:// URLs"
         ):
-            async with Docket(name="test-memory-docket", url="memory://test"):
+            async with Docket(name="test-memory-docket", url="memory://"):
                 pass  # pragma: no cover
 
 
 async def test_multiple_memory_dockets():
     """Test that multiple in-memory dockets can coexist with separate data."""
     async with (
-        Docket(name="docket-1", url="memory://one") as docket1,
-        Docket(name="docket-2", url="memory://two") as docket2,
+        Docket(name="docket-1", url="memory://") as docket1,
+        Docket(name="docket-2", url="memory://") as docket2,
     ):
         result1 = None
         result2 = None
@@ -86,7 +86,7 @@ async def test_multiple_memory_dockets():
 
 
 async def test_memory_backend_reuses_server():
-    """Test that dockets with the same memory:// URL share the same FakeServer."""
+    """Test that all memory:// URLs share the same FakeServer instance."""
     result = None
 
     async def shared_task(value: str) -> str:
@@ -95,7 +95,7 @@ async def test_memory_backend_reuses_server():
         return value
 
     # Create first docket and run a task
-    async with Docket(name="docket-shared", url="memory://shared") as docket1:
+    async with Docket(name="docket-shared", url="memory://") as docket1:
         docket1.register(shared_task)
         await docket1.add(shared_task)("shared-value")
 
@@ -104,9 +104,10 @@ async def test_memory_backend_reuses_server():
 
         assert result == "shared-value"
 
-    # Now create another docket with the same URL - should reuse the server
-    async with Docket(name="docket-shared-2", url="memory://shared") as docket2:
-        # The server should be reused (hitting the cached branch in docket.py)
-        # Verify we can still interact with the shared server
+    # Create another docket - all memory:// URLs share the same server
+    # but dockets are isolated by name-based key prefixes
+    async with Docket(name="docket-shared-2", url="memory://") as docket2:
+        # Verify we can interact with the shared server
+        # This docket's tasks are isolated from docket1's by name prefix
         snapshot = await docket2.snapshot()
-        assert snapshot.total_tasks == 0  # All tasks from docket1 are complete
+        assert snapshot.total_tasks == 0

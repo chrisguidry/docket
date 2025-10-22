@@ -164,8 +164,8 @@ def redis_db(worker_id: str) -> int:
 def redis_url(redis_port: int, redis_db: int, worker_id: str) -> str:
     if REDIS_VERSION == "memory":  # pragma: no branch
         # Use memory:// URL for in-memory backend
-        # Include worker_id to ensure each test worker has isolated data
-        return f"memory://test-{worker_id}-{uuid4()}"  # pragma: no cover
+        # All memory:// URLs share the same FakeServer; dockets are isolated by name
+        return "memory://"  # pragma: no cover
 
     url = f"redis://localhost:{redis_port}/{redis_db}"  # pragma: no cover
     with _sync_redis(url) as r:  # pragma: no cover
