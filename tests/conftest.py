@@ -67,9 +67,9 @@ def redis_server(
     testrun_uid: str, worker_id: str
 ) -> Generator[Container | None, None, None]:
     # Skip Redis container setup for memory backend
-    if REDIS_VERSION == "memory":
-        yield None
-        return
+    if REDIS_VERSION == "memory":  # pragma: no branch
+        yield None  # pragma: no cover
+        return  # pragma: no cover
 
     client = DockerClient.from_env()  # pragma: no cover
 
@@ -143,9 +143,9 @@ def redis_server(
 
 @pytest.fixture
 def redis_port(redis_server: Container | None) -> int:
-    if redis_server is None:
+    if redis_server is None:  # pragma: no branch
         # Memory backend - return dummy port
-        return 0
+        return 0  # pragma: no cover
     port_bindings = redis_server.attrs["HostConfig"]["PortBindings"][
         "6379/tcp"
     ]  # pragma: no cover
@@ -162,10 +162,10 @@ def redis_db(worker_id: str) -> int:
 
 @pytest.fixture
 def redis_url(redis_port: int, redis_db: int, worker_id: str) -> str:
-    if REDIS_VERSION == "memory":
+    if REDIS_VERSION == "memory":  # pragma: no branch
         # Use memory:// URL for in-memory backend
         # Include worker_id to ensure each test worker has isolated data
-        return f"memory://test-{worker_id}-{uuid4()}"
+        return f"memory://test-{worker_id}-{uuid4()}"  # pragma: no cover
 
     url = f"redis://localhost:{redis_port}/{redis_db}"  # pragma: no cover
     with _sync_redis(url) as r:  # pragma: no cover
