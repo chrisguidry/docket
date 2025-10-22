@@ -361,7 +361,10 @@ class Worker:
                             if not message:  # pragma: no cover
                                 continue
 
-                            if not start_task(message_id, message, is_redelivery):
+                            task_started = start_task(
+                                message_id, message, is_redelivery
+                            )
+                            if not task_started:
                                 # Other errors - delete and ack
                                 await self._delete_known_task(redis, message)
                                 await ack_message(redis, message_id)
