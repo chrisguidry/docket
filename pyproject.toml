@@ -21,6 +21,9 @@ classifiers = [
 ]
 dependencies = [
     "cloudpickle>=3.1.1",
+    # TEMPORARY: Using fork until https://github.com/cunla/fakeredis-py/pull/427 is merged
+    # This fixes xpending_range to return all 4 required fields (message_id, consumer,
+    # time_since_delivered, times_delivered) instead of just 2, matching Redis behavior
     "fakeredis[lua] @ git+https://github.com/zzstoatzz/fakeredis-py.git@fix-xpending-range-fields",
     "opentelemetry-api>=1.30.0",
     "opentelemetry-exporter-prometheus>=0.51b0",
