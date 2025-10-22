@@ -13,66 +13,64 @@ For the fastest tests and simplest setup, Docket supports an in-memory backend u
 
 ### Installation
 
-Install the optional `fake` extra:
-
-```bash
-pip install pydocket[fake]
-# or with uv
-uv add pydocket --extra fake
-```
+Fakeredis is included as a standard dependency, so no extra installation is needed.
 
 ### Usage
 
-Enable the fakeredis backend by setting the `DOCKET_BACKEND` environment variable:
+Use the `memory://` URL scheme to enable the in-memory backend:
 
 ```python
-import os
-os.environ["DOCKET_BACKEND"] = "fake"
+from docket import Docket
 
-async with Docket(name="test-docket") as docket:
+async with Docket(name="test-docket", url="memory://test") as docket:
     # Use docket normally - all operations are in-memory
     docket.register(my_task)
     await docket.add(my_task)("arg")
 ```
 
-Or set it in your shell:
+### Multiple In-Memory Dockets
 
-```bash
-export DOCKET_BACKEND=fake
-pytest tests/
+You can run multiple independent in-memory dockets simultaneously by using different URLs:
+
+```python
+async with (
+    Docket(name="service-a", url="memory://service-a") as docket_a,
+    Docket(name="service-b", url="memory://service-b") as docket_b,
+):
+    # Each docket has its own isolated in-memory data
+    await docket_a.add(task_a)()
+    await docket_b.add(task_b)()
 ```
+
+This is useful for testing multi-service scenarios in a single process.
 
 ### Pytest Fixture Example
 
 ```python
-import os
 import pytest
 from docket import Docket, Worker
-
-@pytest.fixture(autouse=True)
-def use_fake_backend():
-    """Use in-memory backend for all tests."""
-    os.environ["DOCKET_BACKEND"] = "fake"
-    yield
-    os.environ.pop("DOCKET_BACKEND", None)
+from uuid import uuid4
 
 @pytest.fixture
 async def test_docket() -> AsyncGenerator[Docket, None]:
     """Create a test docket with in-memory backend."""
-    async with Docket(name=f"test-{uuid4()}") as docket:
+    async with Docket(
+        name=f"test-{uuid4()}",
+        url=f"memory://test-{uuid4()}"
+    ) as docket:
         yield docket
 ```
 
 ### Limitations
 
-The fakeredis backend has some limitations compared to real Redis:
+The in-memory backend has some limitations compared to real Redis:
 
-- **Single process only** - Cannot distribute work across multiple workers
+- **Single process only** - Cannot distribute work across multiple processes/machines
 - **Data is ephemeral** - Lost when the process exits
 - **Performance may differ** - Timing-sensitive tests may behave differently
-- **Async polling behavior** - Uses non-blocking reads with manual sleeps (see implementation notes)
+- **Async polling behavior** - Uses non-blocking reads with manual sleeps for proper asyncio integration
 
-For integration tests or multi-worker scenarios, use a real Redis instance.
+For integration tests or multi-worker scenarios across processes, use a real Redis instance.
 
 ## Testing Tasks as Simple Functions
 

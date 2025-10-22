@@ -1,7 +1,6 @@
 import asyncio
 import importlib
 import logging
-import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -157,12 +156,13 @@ class Docket:
         """
         Args:
             name: The name of the docket.
-            url: The URL of the Redis server.  For example:
+            url: The URL of the Redis server or in-memory backend.  For example:
                 - "redis://localhost:6379/0"
                 - "redis://user:password@localhost:6379/0"
                 - "redis://user:password@localhost:6379/0?ssl=true"
                 - "rediss://localhost:6379/0"
                 - "unix:///path/to/redis.sock"
+                - "memory://my-docket" (in-memory backend for testing)
             heartbeat_interval: How often workers send heartbeat messages to the docket.
             missed_heartbeats: How many heartbeats a worker can miss before it is
                 considered dead.
@@ -184,20 +184,30 @@ class Docket:
         self.tasks = {fn.__name__: fn for fn in standard_tasks}
         self.strike_list = StrikeList()
 
-        # Check if we should use fakeredis for testing
-        if os.environ.get("DOCKET_BACKEND") == "fake":
+        # Check if we should use in-memory backend (fakeredis)
+        # Support memory:// URLs for in-memory dockets
+        if self.url.startswith("memory://"):
             try:
                 from fakeredis.aioredis import FakeConnection, FakeServer
 
-                # Create a shared FakeServer so all connections share data
-                server = FakeServer()
+                # Extract docket name from URL (e.g., memory://my-docket)
+                # Multiple dockets can share the same FakeServer by using a shared server instance
+                # Store servers in a class-level dict keyed by the URL path
+                if not hasattr(Docket, "_memory_servers"):
+                    Docket._memory_servers = {}  # type: ignore
+
+                # Use the full URL as the key to support multiple in-memory dockets
+                if self.url not in Docket._memory_servers:  # type: ignore
+                    Docket._memory_servers[self.url] = FakeServer()  # type: ignore
+
+                server = Docket._memory_servers[self.url]  # type: ignore
                 self._connection_pool = ConnectionPool(
                     connection_class=FakeConnection, server=server
                 )
             except ImportError as e:
                 raise ImportError(
-                    "fakeredis is required for DOCKET_BACKEND=fake. "
-                    "Install fakeredis[lua]"
+                    "fakeredis is required for memory:// URLs. "
+                    "Install with: pip install pydocket[memory]"
                 ) from e
         else:
             self._connection_pool = ConnectionPool.from_url(self.url)  # type: ignore

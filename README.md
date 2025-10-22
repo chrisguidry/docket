@@ -83,11 +83,14 @@ pip install pydocket
 Docket requires a [Redis](http://redis.io/) server with Streams support (which was
 introduced in Redis 5.0.0). Docket is tested with Redis 6 and 7.
 
-For testing without Redis, Docket supports an optional in-memory backend using [fakeredis](https://github.com/cunla/fakeredis-py):
+For testing without Redis, Docket includes [fakeredis](https://github.com/cunla/fakeredis-py) for in-memory operation:
 
-```bash
-pip install pydocket[fake]
-export DOCKET_BACKEND=fake
+```python
+from docket import Docket
+
+async with Docket(name="my-docket", url="memory://my-docket") as docket:
+    # Use docket normally - all operations are in-memory
+    ...
 ```
 
 See [Testing with Docket](https://chrisguidry.github.io/docket/testing/#using-in-memory-backend-no-redis-required) for more details.

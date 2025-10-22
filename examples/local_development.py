@@ -2,7 +2,7 @@
 """
 Example: Local Development Without Redis
 
-This example demonstrates using Docket with the fakeredis backend for
+This example demonstrates using Docket with the in-memory backend for
 local development, prototyping, or situations where you don't have Redis
 available but still want to use Docket's task scheduling features.
 
@@ -20,11 +20,10 @@ Limitations:
 - Performance may differ from real Redis
 
 To run:
-    DOCKET_BACKEND=fake uv run --extra fake examples/local_development.py
+    uv run examples/local_development.py
 """
 
 import asyncio
-import os
 from datetime import datetime, timedelta, timezone
 
 from docket import Docket, Worker
@@ -53,12 +52,10 @@ async def health_check(
 
 
 async def main():
-    # Enable fakeredis backend
-    os.environ["DOCKET_BACKEND"] = "fake"
-
     print("🚀 Starting Docket with in-memory backend (no Redis required!)\n")
 
-    async with Docket(name="local-dev") as docket:
+    # Use memory:// URL for in-memory operation
+    async with Docket(name="local-dev", url="memory://local-dev") as docket:
         # Register tasks
         docket.register(process_file)
         docket.register(backup_data)
