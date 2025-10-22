@@ -228,15 +228,11 @@ wheels = [
 
 [[package]]
 name = "fakeredis"
-version = "2.32.0"
-source = { registry = "https://pypi.org/simple" }
+version = "2.32.2"
+source = { git = "https://github.com/zzstoatzz/fakeredis-py.git?rev=fix-xpending-range-fields#ff60c300e2a7d34a293f7549f2b9e24ce7928564" }
 dependencies = [
     { name = "redis" },
     { name = "sortedcontainers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/e1/2e/94ca3f2ff35f086d7d3eeb924054e328b2ac851f0a20302d942c8d29726c/fakeredis-2.32.0.tar.gz", hash = "sha256:63d745b40eb6c8be4899cf2a53187c097ccca3afbca04fdbc5edc8b936cd1d59", size = 171097, upload-time = "2025-10-07T10:46:58.876Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/1b/84ab7fd197eba5243b6625c78fbcffaa4cf6ac7dda42f95d22165f52187e/fakeredis-2.32.0-py3-none-any.whl", hash = "sha256:c9da8228de84060cfdb72c3cf4555c18c59ba7a5ae4d273f75e4822d6f01ecf8", size = 118422, upload-time = "2025-10-07T10:46:57.643Z" },
 ]
 
 [package.optional-dependencies]
@@ -1052,7 +1048,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "cloudpickle", specifier = ">=3.1.1" },
-    { name = "fakeredis", extras = ["lua"], specifier = ">=2.32.0" },
+    { name = "fakeredis", extras = ["lua"], git = "https://github.com/zzstoatzz/fakeredis-py.git?rev=fix-xpending-range-fields" },
     { name = "opentelemetry-api", specifier = ">=1.30.0" },
     { name = "opentelemetry-exporter-prometheus", specifier = ">=0.51b0" },
     { name = "prometheus-client", specifier = ">=0.21.1" },

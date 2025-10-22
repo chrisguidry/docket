@@ -87,22 +87,26 @@ async def test_multiple_memory_dockets():
 
 async def test_memory_backend_reuses_server():
     """Test that dockets with the same memory:// URL share the same FakeServer."""
-    # Create two dockets with the same URL - they should share data
+    result = None
+
+    async def shared_task(value: str) -> str:
+        nonlocal result
+        result = value
+        return value
+
+    # Create first docket and run a task
     async with Docket(name="docket-shared", url="memory://shared") as docket1:
-        result = None
-
-        async def shared_task(value: str) -> str:
-            nonlocal result
-            result = value
-            return value
-
         docket1.register(shared_task)
         await docket1.add(shared_task)("shared-value")
 
+        async with Worker(docket1, concurrency=1) as worker:
+            await worker.run_until_finished()
+
+        assert result == "shared-value"
+
     # Now create another docket with the same URL - should reuse the server
     async with Docket(name="docket-shared-2", url="memory://shared") as docket2:
-        docket2.register(shared_task)
-        # The server should be reused (hitting the cached branch)
+        # The server should be reused (hitting the cached branch in docket.py)
+        # Verify we can still interact with the shared server
         snapshot = await docket2.snapshot()
-        # Data should have persisted since we're using the same server
-        assert snapshot.total_tasks >= 0  # Server was reused
+        assert snapshot.total_tasks == 0  # All tasks from docket1 are complete
