@@ -2,6 +2,78 @@
 
 Docket includes the utilities you need to test all your background task systems in realistic ways. The ergonomic design supports testing complex workflows with minimal setup.
 
+## Using In-Memory Backend (No Redis Required)
+
+For the fastest tests and simplest setup, Docket supports an in-memory backend using [fakeredis](https://github.com/cunla/fakeredis-py). This is perfect for:
+
+- **CI/CD environments** - No need to spin up Redis containers
+- **Local development** - Test without installing/running Redis
+- **Unit tests** - Fast, isolated tests without external dependencies
+- **Educational environments** - Workshops and tutorials without infrastructure
+
+### Installation
+
+Install the optional `fake` extra:
+
+```bash
+pip install pydocket[fake]
+# or with uv
+uv add pydocket --extra fake
+```
+
+### Usage
+
+Enable the fakeredis backend by setting the `DOCKET_BACKEND` environment variable:
+
+```python
+import os
+os.environ["DOCKET_BACKEND"] = "fake"
+
+async with Docket(name="test-docket") as docket:
+    # Use docket normally - all operations are in-memory
+    docket.register(my_task)
+    await docket.add(my_task)("arg")
+```
+
+Or set it in your shell:
+
+```bash
+export DOCKET_BACKEND=fake
+pytest tests/
+```
+
+### Pytest Fixture Example
+
+```python
+import os
+import pytest
+from docket import Docket, Worker
+
+@pytest.fixture(autouse=True)
+def use_fake_backend():
+    """Use in-memory backend for all tests."""
+    os.environ["DOCKET_BACKEND"] = "fake"
+    yield
+    os.environ.pop("DOCKET_BACKEND", None)
+
+@pytest.fixture
+async def test_docket() -> AsyncGenerator[Docket, None]:
+    """Create a test docket with in-memory backend."""
+    async with Docket(name=f"test-{uuid4()}") as docket:
+        yield docket
+```
+
+### Limitations
+
+The fakeredis backend has some limitations compared to real Redis:
+
+- **Single process only** - Cannot distribute work across multiple workers
+- **Data is ephemeral** - Lost when the process exits
+- **Performance may differ** - Timing-sensitive tests may behave differently
+- **Async polling behavior** - Uses non-blocking reads with manual sleeps (see implementation notes)
+
+For integration tests or multi-worker scenarios, use a real Redis instance.
+
 ## Testing Tasks as Simple Functions
 
 Often you can test your tasks without running a worker at all! Docket tasks are just Python functions, so you can call them directly and pass test values for dependency parameters:
