@@ -279,13 +279,20 @@ class Worker:
 
         async def get_new_deliveries(redis: Redis) -> RedisReadGroupResponse:
             logger.debug("Getting new deliveries", extra=log_context)
-            return await redis.xreadgroup(
+            # Use non-blocking read with fakeredis + manual sleep
+            is_fake = os.environ.get("DOCKET_BACKEND") == "fake"
+            result = await redis.xreadgroup(
                 groupname=self.docket.worker_group_name,
                 consumername=self.name,
                 streams={self.docket.stream_key: ">"},
-                block=int(self.minimum_check_interval.total_seconds() * 1000),
+                block=0
+                if is_fake
+                else int(self.minimum_check_interval.total_seconds() * 1000),
                 count=available_slots,
             )
+            if is_fake and not result:
+                await asyncio.sleep(self.minimum_check_interval.total_seconds())
+            return result
 
         def start_task(
             message_id: RedisMessageID,
@@ -354,10 +361,7 @@ class Worker:
                             if not message:  # pragma: no cover
                                 continue
 
-                            task_started = start_task(
-                                message_id, message, is_redelivery
-                            )
-                            if not task_started:
+                            if not start_task(message_id, message, is_redelivery):
                                 # Other errors - delete and ack
                                 await self._delete_known_task(redis, message)
                                 await ack_message(redis, message_id)

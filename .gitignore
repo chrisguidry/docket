@@ -9,3 +9,5 @@ __pycache__/
 build/
 dist/
 wheels/
+
+.coverage.*

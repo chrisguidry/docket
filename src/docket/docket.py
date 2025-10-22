@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import logging
+import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -183,7 +184,24 @@ class Docket:
         self.tasks = {fn.__name__: fn for fn in standard_tasks}
         self.strike_list = StrikeList()
 
-        self._connection_pool = ConnectionPool.from_url(self.url)  # type: ignore
+        # Check if we should use fakeredis for testing
+        if os.environ.get("DOCKET_BACKEND") == "fake":
+            try:
+                from fakeredis.aioredis import FakeConnection, FakeServer
+
+                # Create a shared FakeServer so all connections share data
+                server = FakeServer()
+                self._connection_pool = ConnectionPool(
+                    connection_class=FakeConnection, server=server
+                )
+            except ImportError as e:
+                raise ImportError(
+                    "fakeredis is required for DOCKET_BACKEND=fake. "
+                    "Install it with: pip install 'pydocket[fake]'"
+                ) from e
+        else:
+            self._connection_pool = ConnectionPool.from_url(self.url)  # type: ignore
+
         self._monitor_strikes_task = asyncio.create_task(self._monitor_strikes())
 
         # Ensure that the stream and worker group exist

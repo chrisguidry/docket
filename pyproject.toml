@@ -31,6 +31,11 @@ dependencies = [
     "uuid7>=0.1.0",
 ]
 
+[project.optional-dependencies]
+fake = [
+    "fakeredis[lua]>=2.32.0",
+]
+
 [dependency-groups]
 dev = [
     "codespell>=2.4.1",
@@ -69,6 +74,7 @@ docket = "docket.__main__:app"
 [tool.hatch.version]
 source = "vcs"
 
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/docket"]
 
@@ -91,3 +97,8 @@ include = ["src", "tests"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
+
+[tool.uv.workspace]
+members = [
+    "sandbox/memory-streams",
+]
