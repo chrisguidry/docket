@@ -229,7 +229,7 @@ wheels = [
 [[package]]
 name = "fakeredis"
 version = "2.32.2"
-source = { git = "https://github.com/zzstoatzz/fakeredis-py.git?rev=fix-xpending-range-fields#ff60c300e2a7d34a293f7549f2b9e24ce7928564" }
+source = { git = "https://github.com/zzstoatzz/fakeredis-py.git?rev=fix-xpending-range-fields#cdf60baa566b392cb2c10b4a9b9a23e67d5b18ea" }
 dependencies = [
     { name = "redis" },
     { name = "sortedcontainers" },
