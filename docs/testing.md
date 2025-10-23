@@ -2,6 +2,76 @@
 
 Docket includes the utilities you need to test all your background task systems in realistic ways. The ergonomic design supports testing complex workflows with minimal setup.
 
+## Using In-Memory Backend (No Redis Required)
+
+For the fastest tests and simplest setup, Docket supports an in-memory backend using [fakeredis](https://github.com/cunla/fakeredis-py). This is perfect for:
+
+- **CI/CD environments** - No need to spin up Redis containers
+- **Local development** - Test without installing/running Redis
+- **Unit tests** - Fast, isolated tests without external dependencies
+- **Educational environments** - Workshops and tutorials without infrastructure
+
+### Installation
+
+Fakeredis is included as a standard dependency, so no extra installation is needed.
+
+### Usage
+
+Use the `memory://` URL scheme to enable the in-memory backend:
+
+```python
+from docket import Docket
+
+async with Docket(name="test-docket", url="memory://test") as docket:
+    # Use docket normally - all operations are in-memory
+    docket.register(my_task)
+    await docket.add(my_task)("arg")
+```
+
+### Multiple In-Memory Dockets
+
+You can run multiple independent in-memory dockets simultaneously by using different URLs:
+
+```python
+async with (
+    Docket(name="service-a", url="memory://service-a") as docket_a,
+    Docket(name="service-b", url="memory://service-b") as docket_b,
+):
+    # Each docket has its own isolated in-memory data
+    await docket_a.add(task_a)()
+    await docket_b.add(task_b)()
+```
+
+This is useful for testing multi-service scenarios in a single process.
+
+### Pytest Fixture Example
+
+```python
+import pytest
+from docket import Docket, Worker
+from uuid import uuid4
+
+@pytest.fixture
+async def test_docket() -> AsyncGenerator[Docket, None]:
+    """Create a test docket with in-memory backend."""
+    async with Docket(
+        name=f"test-{uuid4()}",
+        url=f"memory://test-{uuid4()}"
+    ) as docket:
+        yield docket
+```
+
+### Limitations
+
+The in-memory backend has some limitations compared to real Redis:
+
+- **Single process only** - Cannot distribute work across multiple processes/machines
+- **Data is ephemeral** - Lost when the process exits
+- **Performance may differ** - Timing-sensitive tests may behave differently
+- **Async polling behavior** - Uses non-blocking reads with manual sleeps for proper asyncio integration
+
+For integration tests or multi-worker scenarios across processes, use a real Redis instance.
+
 ## Testing Tasks as Simple Functions
 
 Often you can test your tasks without running a worker at all! Docket tasks are just Python functions, so you can call them directly and pass test values for dependency parameters:

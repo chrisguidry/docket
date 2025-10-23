@@ -156,12 +156,13 @@ class Docket:
         """
         Args:
             name: The name of the docket.
-            url: The URL of the Redis server.  For example:
+            url: The URL of the Redis server or in-memory backend.  For example:
                 - "redis://localhost:6379/0"
                 - "redis://user:password@localhost:6379/0"
                 - "redis://user:password@localhost:6379/0?ssl=true"
                 - "rediss://localhost:6379/0"
                 - "unix:///path/to/redis.sock"
+                - "memory://" (in-memory backend for testing)
             heartbeat_interval: How often workers send heartbeat messages to the docket.
             missed_heartbeats: How many heartbeats a worker can miss before it is
                 considered dead.
@@ -183,7 +184,30 @@ class Docket:
         self.tasks = {fn.__name__: fn for fn in standard_tasks}
         self.strike_list = StrikeList()
 
-        self._connection_pool = ConnectionPool.from_url(self.url)  # type: ignore
+        # Check if we should use in-memory backend (fakeredis)
+        # Support memory:// URLs for in-memory dockets
+        if self.url.startswith("memory://"):
+            try:
+                from fakeredis.aioredis import FakeConnection, FakeServer
+
+                # All memory:// URLs share a single FakeServer instance
+                # Multiple dockets with different names are isolated by Redis key prefixes
+                # (e.g., docket1:stream vs docket2:stream)
+                if not hasattr(Docket, "_memory_server"):
+                    Docket._memory_server = FakeServer()  # type: ignore
+
+                server = Docket._memory_server  # type: ignore
+                self._connection_pool = ConnectionPool(
+                    connection_class=FakeConnection, server=server
+                )
+            except ImportError as e:
+                raise ImportError(
+                    "fakeredis is required for memory:// URLs. "
+                    "Install with: pip install pydocket[memory]"
+                ) from e
+        else:
+            self._connection_pool = ConnectionPool.from_url(self.url)  # type: ignore
+
         self._monitor_strikes_task = asyncio.create_task(self._monitor_strikes())
 
         # Ensure that the stream and worker group exist

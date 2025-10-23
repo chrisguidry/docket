@@ -279,13 +279,22 @@ class Worker:
 
         async def get_new_deliveries(redis: Redis) -> RedisReadGroupResponse:
             logger.debug("Getting new deliveries", extra=log_context)
-            return await redis.xreadgroup(
+            # Use non-blocking read with in-memory backend + manual sleep
+            # This is necessary because fakeredis's async blocking operations don't
+            # properly yield control to the asyncio event loop
+            is_memory = self.docket.url.startswith("memory://")
+            result = await redis.xreadgroup(
                 groupname=self.docket.worker_group_name,
                 consumername=self.name,
                 streams={self.docket.stream_key: ">"},
-                block=int(self.minimum_check_interval.total_seconds() * 1000),
+                block=0
+                if is_memory
+                else int(self.minimum_check_interval.total_seconds() * 1000),
                 count=available_slots,
             )
+            if is_memory and not result:
+                await asyncio.sleep(self.minimum_check_interval.total_seconds())
+            return result
 
         def start_task(
             message_id: RedisMessageID,
