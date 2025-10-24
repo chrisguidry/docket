@@ -1,4 +1,5 @@
 import abc
+import inspect
 import logging
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -12,6 +13,7 @@ from typing import (
     AsyncGenerator,
     Awaitable,
     Callable,
+    ContextManager,
     Counter,
     Generic,
     NoReturn,
@@ -403,7 +405,9 @@ class Timeout(Dependency):
 
 R = TypeVar("R")
 
-DependencyFunction = Callable[..., Awaitable[R] | AsyncContextManager[R]]
+DependencyFunction = Callable[
+    ..., R | Awaitable[R] | ContextManager[R] | AsyncContextManager[R]
+]
 
 
 _parameter_cache: dict[
@@ -441,7 +445,10 @@ class _Depends(Dependency, Generic[R]):
     stack: ContextVar[AsyncExitStack] = ContextVar("stack")
 
     def __init__(
-        self, dependency: Callable[[], Awaitable[R] | AsyncContextManager[R]]
+        self,
+        dependency: Callable[
+            [], R | Awaitable[R] | ContextManager[R] | AsyncContextManager[R]
+        ],
     ) -> None:
         self.dependency = dependency
 
@@ -473,33 +480,80 @@ class _Depends(Dependency, Generic[R]):
         stack = self.stack.get()
         arguments = await self._resolve_parameters(self.dependency)
 
-        value = self.dependency(**arguments)
+        raw_value: R | Awaitable[R] | ContextManager[R] | AsyncContextManager[R] = (
+            self.dependency(**arguments)
+        )
 
-        if isinstance(value, AsyncContextManager):
-            value = await stack.enter_async_context(value)
+        # Handle different return types from the dependency function
+        resolved_value: R
+        if isinstance(raw_value, AsyncContextManager):
+            # Async context manager: await enter_async_context
+            resolved_value = await stack.enter_async_context(raw_value)
+        elif isinstance(raw_value, ContextManager):
+            # Sync context manager: use enter_context (no await needed)
+            resolved_value = stack.enter_context(raw_value)
+        elif inspect.iscoroutine(raw_value) or isinstance(raw_value, Awaitable):
+            # Async function returning awaitable: await it
+            resolved_value = await cast(Awaitable[R], raw_value)
         else:
-            value = await value
+            # Sync function returning a value directly, use as-is
+            resolved_value = cast(R, raw_value)
 
-        cache[self.dependency] = value
-        return value
+        cache[self.dependency] = resolved_value
+        return resolved_value
 
 
 def Depends(dependency: DependencyFunction[R]) -> R:
-    """Include a user-defined function as a dependency.  Dependencies may either return
-    a value or an async context manager.  If it returns a context manager, the
-    dependency will be entered and exited around the task, giving an opportunity to
-    control the lifetime of a resource, like a database connection.
+    """Include a user-defined function as a dependency.  Dependencies may be:
+    - Synchronous functions returning a value
+    - Asynchronous functions returning a value (awaitable)
+    - Synchronous context managers (using @contextmanager)
+    - Asynchronous context managers (using @asynccontextmanager)
 
-    Example:
+    If a dependency returns a context manager, it will be entered and exited around
+    the task, giving an opportunity to control the lifetime of a resource, like a
+    database connection.
+
+    Examples:
 
     ```python
+    # Sync function dependency
+    def get_config() -> dict:
+        return {"setting": "value"}
 
-    async def my_dependency() -> str:
-        return "Hello, world!"
+    # Async function dependency
+    async def get_user(user_id: int = TaskArgument()) -> User:
+        return await fetch_user(user_id)
 
-    @task async def my_task(dependency: str = Depends(my_dependency)) -> None:
-        print(dependency)
+    # Sync context manager dependency
+    from contextlib import contextmanager
 
+    @contextmanager
+    def get_file_handle():
+        f = open("data.txt")
+        try:
+            yield f
+        finally:
+            f.close()
+
+    # Async context manager dependency
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def get_db_connection():
+        conn = await db.connect()
+        try:
+            yield conn
+        finally:
+            await conn.close()
+
+    @task
+    async def my_task(
+        config: dict = Depends(get_config),
+        db: Connection = Depends(get_db_connection),
+    ) -> None:
+        print(config)
+        await db.execute("SELECT 1")
     ```
     """
     return cast(R, _Depends(dependency))

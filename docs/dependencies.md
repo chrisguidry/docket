@@ -160,7 +160,24 @@ Timeouts work alongside retries. If a task times out, it can be retried accordin
 
 ## Custom Dependencies
 
-Create your own dependencies using `Depends()` for reusable resources and patterns:
+Create your own dependencies using `Depends()` for reusable resources and patterns. Dependencies can be either synchronous or asynchronous:
+
+### Synchronous Dependencies
+
+```python
+from docket import Depends
+
+def get_config() -> dict:
+    """Simple sync dependency that returns configuration."""
+    return {"api_key": "secret", "timeout": 30}
+
+async def call_api(config: dict = Depends(get_config)) -> None:
+    # Config is provided automatically
+    api_key = config["api_key"]
+    # ... make API call ...
+```
+
+### Asynchronous Dependencies
 
 ```python
 from contextlib import asynccontextmanager
@@ -168,30 +185,74 @@ from docket import Depends
 
 @asynccontextmanager
 async def get_database_connection():
-    """Simple dependency that returns a database connection."""
+    """Async dependency that returns a database connection."""
     conn = await database.connect()
     try:
         yield conn
     finally:
         await conn.close()
 
-@asynccontextmanager
-async def get_redis_client():
-    """Another dependency for Redis operations."""
-    client = redis.Redis(host='localhost', port=6379)
-    try:
-        yield client
-    finally:
-        client.close()
-
 async def process_user_data(
     user_id: int,
-    db=Depends(get_database_connection),
-    cache=Depends(get_redis_client)
+    db=Depends(get_database_connection)
 ) -> None:
-    # Both dependencies are automatically provided and cleaned up
+    # Database connection is automatically provided and cleaned up
     user = await db.fetch_user(user_id)
-    await cache.set(f"user:{user_id}", user.to_json())
+    await db.update_user(user_id, {"last_seen": datetime.now()})
+```
+
+### Synchronous Context Managers
+
+```python
+from contextlib import contextmanager
+from docket import Depends
+
+@contextmanager
+def get_file_lock(filename: str = "data.txt"):
+    """Sync context manager for file locking."""
+    lock = acquire_lock(filename)
+    try:
+        yield lock
+    finally:
+        release_lock(filename)
+
+async def write_data(
+    data: str,
+    lock=Depends(lambda: get_file_lock("shared.txt"))
+) -> None:
+    # File is locked before task starts, unlocked after completion
+    with open("shared.txt", "a") as f:
+        f.write(data)
+```
+
+### Mixed Sync and Async Dependencies
+
+You can freely mix synchronous and asynchronous dependencies in the same task:
+
+```python
+def get_local_config() -> dict:
+    """Sync dependency - no I/O needed."""
+    return {"setting": "value"}
+
+async def get_remote_config() -> dict:
+    """Async dependency - requires network I/O."""
+    response = await http_client.get("/config")
+    return await response.json()
+
+@contextmanager
+def get_temp_file():
+    """Sync context manager."""
+    with tempfile.NamedTemporaryFile() as f:
+        yield f
+
+async def complex_task(
+    local: dict = Depends(get_local_config),
+    remote: dict = Depends(get_remote_config),
+    temp_file=Depends(get_temp_file)
+) -> None:
+    # All dependencies are resolved correctly
+    config = {**local, **remote}
+    temp_file.write(json.dumps(config).encode())
 ```
 
 ### Nested Dependencies
@@ -220,31 +281,7 @@ async def update_user_profile(
     await user_service.update_profile(user_id, profile_data)
 ```
 
-Dependencies are resolved once per task execution and cached, so if multiple parameters depend on the same resource, only one instance is created.
-
-### Context Manager Dependencies
-
-Dependencies can be async context managers for automatic resource cleanup:
-
-```python
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def get_file_lock(filename: str):
-    """A dependency that provides file locking."""
-    lock = await acquire_file_lock(filename)
-    try:
-        yield lock
-    finally:
-        await release_file_lock(filename)
-
-async def process_shared_file(
-    filename: str,
-    file_lock=Depends(lambda: get_file_lock("shared.txt"))
-) -> None:
-    # File is locked before task starts, unlocked after task completes
-    await process_file_safely(filename)
-```
+Dependencies are resolved once per task execution and cached, so if multiple parameters depend on the same resource, only one instance is created. This caching works across both sync and async dependencies.
 
 ### Dependencies with Built-in Context
 
