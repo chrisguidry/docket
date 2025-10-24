@@ -32,7 +32,7 @@ jobs:
           # use a lower threshold to compensate
           - python-version: "3.10"
             cov-threshold: 75
-            pytest-ignore: "--ignore tests/cli"
+            pytest-ignore: ""
           # Python 3.11 coverage reporting is unstable, so use 98% threshold
           - python-version: "3.11"
             cov-threshold: 98
@@ -63,7 +63,7 @@ jobs:
       - name: Run tests
         env:
           REDIS_VERSION: ${{ matrix.backend.redis-version }}
-        run: uv run pytest --cov-branch --cov-fail-under=${{ matrix.cov-threshold }} --cov-report=xml --cov-report=term-missing:skip-covered ${{ matrix.pytest-ignore }}
+        run: uv run pytest --cov-branch --cov-fail-under=${{ matrix.cov-threshold }} --cov-report=xml --cov-report=term-missing:skip-covered ${{ matrix.pytest-ignore }} -v
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
