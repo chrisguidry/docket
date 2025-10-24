@@ -41,6 +41,9 @@ Architecture:
 - Web requests return immediately after scheduling tasks
 - Background tasks are processed concurrently by the embedded worker
 
+Required dependencies:
+    uv pip install pydocket fastapi uvicorn
+
 To run:
     uv run -s examples/fastapi_background_tasks.py
 
