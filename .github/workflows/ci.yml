@@ -27,22 +27,6 @@ jobs:
           - name: "Memory (in-memory backend)"
             redis-version: "memory"
             redis-py-version: ">=5"
-        include:
-          # Python 3.10 hangs when we include the CLI tests, so ignore it and
-          # use a lower threshold to compensate
-          - python-version: "3.10"
-            cov-threshold: 75
-            pytest-ignore: "--ignore tests/cli"
-          # Python 3.11 coverage reporting is unstable, so use 98% threshold
-          - python-version: "3.11"
-            cov-threshold: 98
-            pytest-ignore: ""
-          - python-version: "3.12"
-            cov-threshold: 100
-            pytest-ignore: ""
-          - python-version: "3.13"
-            cov-threshold: 100
-            pytest-ignore: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -60,7 +44,7 @@ jobs:
       - name: Run tests
         env:
           REDIS_VERSION: ${{ matrix.backend.redis-version }}
-        run: uv run pytest --cov-branch --cov-fail-under=${{ matrix.cov-threshold }} --cov-report=xml --cov-report=term-missing:skip-covered ${{ matrix.pytest-ignore }}
+        run: uv run pytest --cov-branch --cov-fail-under=100 --cov-report=xml --cov-report=term-missing:skip-covered
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
