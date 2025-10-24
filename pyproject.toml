@@ -97,6 +97,7 @@ addopts = [
     "--numprocesses=logical",
     "--maxprocesses=4",
     "--cov=src/docket",
+    "--cov=tests",
     "--cov-report=term-missing",
     "--cov-branch",
 ]
