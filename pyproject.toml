@@ -101,7 +101,11 @@ addopts = [
     "--cov-report=term-missing",
     "--cov-branch",
 ]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    "ignore:'asyncio.DefaultEventLoopPolicy' is deprecated:DeprecationWarning:pytest_aio",
+    "ignore:'asyncio.set_event_loop_policy' is deprecated:DeprecationWarning:pytest_aio",
+]
 
 [tool.coverage.run]
 omit = ["src/docket/__main__.py"]
