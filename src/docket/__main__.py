@@ -1,3 +1,3 @@
-from .cli import app
+from .cli import app  # pragma: no cover
 
-app()
+app()  # pragma: no cover
