@@ -1,3 +1,3 @@
 from .cli import app
 
-app()
+app()  # pragma: no cover
