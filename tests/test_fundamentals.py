@@ -38,8 +38,11 @@ from docket import (
 
 @pytest.fixture
 def the_task() -> AsyncMock:
+    import inspect
+
     task = AsyncMock()
     task.__name__ = "the_task"
+    task.__signature__ = inspect.signature(lambda *args, **kwargs: None)
     return task
 
 
@@ -665,7 +668,7 @@ async def test_logging_inside_of_task(
     called = False
 
     async def the_task(
-        a: str, b: str, logger: LoggerAdapter[logging.Logger] = TaskLogger()
+        a: str, b: str, logger: "LoggerAdapter[logging.Logger]" = TaskLogger()
     ):
         assert a == "a"
         assert b == "c"

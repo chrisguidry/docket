@@ -16,7 +16,7 @@ from .worker import Worker
 
 async def trace(
     message: str,
-    logger: logging.LoggerAdapter[logging.Logger] = TaskLogger(),
+    logger: "logging.LoggerAdapter[logging.Logger]" = TaskLogger(),
     docket: Docket = CurrentDocket(),
     worker: Worker = CurrentWorker(),
     execution: Execution = CurrentExecution(),
@@ -46,7 +46,7 @@ async def fail(
 
 
 async def sleep(
-    seconds: float, logger: logging.LoggerAdapter[logging.Logger] = TaskLogger()
+    seconds: float, logger: "logging.LoggerAdapter[logging.Logger]" = TaskLogger()
 ) -> None:
     logger.info("Sleeping for %s seconds", seconds)
     await asyncio.sleep(seconds)

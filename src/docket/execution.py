@@ -3,16 +3,9 @@ import enum
 import inspect
 import logging
 from datetime import datetime
-from typing import (
-    Any,
-    Awaitable,
-    Callable,
-    Hashable,
-    Literal,
-    Mapping,
-    Self,
-    cast,
-)
+from typing import Any, Awaitable, Callable, Hashable, Literal, Mapping, cast
+
+from typing_extensions import Self
 
 import cloudpickle  # type: ignore[import]
 import opentelemetry.context
@@ -34,6 +27,12 @@ def get_signature(function: Callable[..., Any]) -> inspect.Signature:
     if function in _signature_cache:
         CACHE_SIZE.set(len(_signature_cache), {"cache": "signature"})
         return _signature_cache[function]
+
+    signature_attr = getattr(function, "__signature__", None)
+    if isinstance(signature_attr, inspect.Signature):
+        _signature_cache[function] = signature_attr
+        CACHE_SIZE.set(len(_signature_cache), {"cache": "signature"})
+        return signature_attr
 
     signature = inspect.signature(function)
     _signature_cache[function] = signature
@@ -161,7 +160,7 @@ def compact_signature(signature: inspect.Signature) -> str:
     return ", ".join(parameters)
 
 
-class Operator(enum.StrEnum):
+class Operator(str, enum.Enum):
     EQUAL = "=="
     NOT_EQUAL = "!="
     GREATER_THAN = ">"

@@ -193,7 +193,14 @@ def metrics_server(
         yield
         return
 
-    from wsgiref.types import WSGIApplication
+    import sys
+    from typing import Any
+
+    # wsgiref.types was added in Python 3.11
+    if sys.version_info >= (3, 11):  # pragma: no cover
+        from wsgiref.types import WSGIApplication
+    else:  # pragma: no cover
+        WSGIApplication = Any  # type: ignore[misc,assignment]
 
     from prometheus_client import REGISTRY
     from prometheus_client.exposition import (

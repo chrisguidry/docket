@@ -1,13 +1,16 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+from types import TracebackType
 
 import pytest
 from pytest import MonkeyPatch
+from rich.table import Table
 from typer.testing import CliRunner
 
 from docket import tasks
-from docket.cli import app, relative_time
-from docket.docket import Docket
+from docket.cli import app, relative_time, snapshot as snapshot_command
+from docket.docket import Docket, DocketSnapshot, RunningExecution, WorkerInfo
+from docket.execution import Execution
 from docket.worker import Worker
 
 
@@ -326,3 +329,142 @@ async def test_snapshot_stats_with_running_tasks_only(
 
         worker_running.cancel()
         await worker_running
+
+
+def _build_mock_snapshot(now: datetime) -> DocketSnapshot:
+    async def dummy_task(*_: object, **__: object) -> None:
+        return None
+
+    running_execution = Execution(
+        dummy_task,
+        args=(),
+        kwargs={},
+        when=now - timedelta(seconds=30),
+        key="running-task",
+        attempt=1,
+    )
+    running = RunningExecution(
+        execution=running_execution,
+        worker="worker-1",
+        started=now - timedelta(seconds=5),
+    )
+
+    queued_execution = Execution(
+        dummy_task,
+        args=(),
+        kwargs={},
+        when=now + timedelta(seconds=10),
+        key="future-task",
+        attempt=1,
+    )
+
+    return DocketSnapshot(
+        taken=now,
+        total_tasks=2,
+        future=[queued_execution],
+        running=[running],
+        workers=[
+            WorkerInfo(
+                name="worker-1",
+                last_seen=now - timedelta(seconds=2),
+                tasks={"dummy_task"},
+            )
+        ],
+    )
+
+
+class _RecordingConsole:
+    def __init__(self) -> None:
+        self.objects: list[object] = []
+
+    def print(self, obj: object = "") -> None:
+        self.objects.append(obj)
+
+
+def test_snapshot_cli_renders_stats_without_backend(monkeypatch: MonkeyPatch) -> None:
+    """Ensure snapshot stats table renders even when using a stubbed docket."""
+
+    now = datetime(2023, 1, 1, 12, 0, tzinfo=timezone.utc)
+    snapshot_obj = _build_mock_snapshot(now)
+    registered: list[str] = []
+
+    class FakeDocket:
+        def __init__(self, name: str, url: str) -> None:
+            self.name = name
+            self.url = url
+
+        async def __aenter__(self) -> "FakeDocket":
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def register_collection(self, task_path: str) -> None:
+            registered.append(task_path)
+
+        async def snapshot(self) -> DocketSnapshot:
+            return snapshot_obj
+
+    monkeypatch.setattr("docket.cli.Docket", FakeDocket)
+
+    recorder = _RecordingConsole()
+    monkeypatch.setattr("docket.cli.Console", lambda: recorder)
+
+    snapshot_command(stats=True, docket_="demo", url="memory://")
+
+    assert registered == ["docket.tasks:standard_tasks"]
+    tables = [obj for obj in recorder.objects if isinstance(obj, Table)]
+    titles = [str(table.title) for table in tables]
+    assert any(title.startswith("Docket:") for title in titles)
+    assert "Task Count Statistics by Function" in titles
+
+
+def test_snapshot_cli_stats_skips_table_when_empty(monkeypatch: MonkeyPatch) -> None:
+    """If stats requested but no tasks, the stats table should not render."""
+
+    now = datetime(2023, 1, 1, 12, 0, tzinfo=timezone.utc)
+    snapshot_obj = DocketSnapshot(
+        taken=now,
+        total_tasks=0,
+        future=[],
+        running=[],
+        workers=[],
+    )
+
+    class EmptyDocket:
+        def __init__(self, name: str, url: str) -> None:
+            self.name = name
+            self.url = url
+
+        async def __aenter__(self) -> "EmptyDocket":
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def register_collection(self, task_path: str) -> None:
+            pass
+
+        async def snapshot(self) -> DocketSnapshot:
+            return snapshot_obj
+
+    monkeypatch.setattr("docket.cli.Docket", EmptyDocket)
+
+    recorder = _RecordingConsole()
+    monkeypatch.setattr("docket.cli.Console", lambda: recorder)
+
+    snapshot_command(stats=True, docket_="demo", url="memory://")
+
+    tables = [obj for obj in recorder.objects if isinstance(obj, Table)]
+    assert len(tables) == 1
+    assert str(tables[0].title).startswith("Docket:")
