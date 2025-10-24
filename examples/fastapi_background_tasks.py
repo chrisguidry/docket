@@ -153,6 +153,7 @@ app = FastAPI(lifespan=lifespan)
 
 class User(BaseModel):
     """User registration data."""
+
     name: str
     email: str
     password: str
