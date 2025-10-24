@@ -103,6 +103,9 @@ addopts = [
 ]
 filterwarnings = ["error"]
 
+[tool.coverage.run]
+omit = ["src/docket/__main__.py"]
+
 [tool.pyright]
 include = ["src", "tests"]
 typeCheckingMode = "strict"
