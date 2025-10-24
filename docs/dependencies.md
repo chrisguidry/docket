@@ -160,7 +160,43 @@ Timeouts work alongside retries. If a task times out, it can be retried accordin
 
 ## Custom Dependencies
 
-Create your own dependencies using `Depends()` for reusable resources and patterns:
+Create your own dependencies using `Depends()` for reusable resources and patterns. Dependencies can be either synchronous or asynchronous.
+
+### Synchronous Dependencies
+
+Use sync dependencies for pure computations and in-memory operations:
+
+```python
+from docket import Depends
+
+# In-memory config lookup - no I/O
+def get_config() -> dict:
+    """Access configuration from memory."""
+    return {"api_url": "https://api.example.com", "timeout": 30}
+
+# Pure computation - no I/O
+def build_request_headers(config: dict = Depends(get_config)) -> dict:
+    """Construct headers from config."""
+    return {
+        "User-Agent": "MyApp/1.0",
+        "Timeout": str(config["timeout"])
+    }
+
+async def call_api(
+    headers: dict = Depends(build_request_headers)
+) -> None:
+    # Headers are computed without blocking
+    # Network I/O happens here (async)
+    response = await http_client.get(url, headers=headers)
+```
+
+**Important**: Synchronous dependencies should **NOT** include blocking I/O operations (file access, network calls, database queries, etc.) as it will block the event loop and prevent tasks from being executed. Use async dependencies for any I/O. Sync dependencies are best for:
+- Pure computations
+- In-memory data structure access
+- Configuration lookups from memory
+- Non-blocking transformations
+
+### Asynchronous Dependencies
 
 ```python
 from contextlib import asynccontextmanager
@@ -168,30 +204,78 @@ from docket import Depends
 
 @asynccontextmanager
 async def get_database_connection():
-    """Simple dependency that returns a database connection."""
+    """Async dependency that returns a database connection."""
     conn = await database.connect()
     try:
         yield conn
     finally:
         await conn.close()
 
-@asynccontextmanager
-async def get_redis_client():
-    """Another dependency for Redis operations."""
-    client = redis.Redis(host='localhost', port=6379)
-    try:
-        yield client
-    finally:
-        client.close()
-
 async def process_user_data(
     user_id: int,
-    db=Depends(get_database_connection),
-    cache=Depends(get_redis_client)
+    db=Depends(get_database_connection)
 ) -> None:
-    # Both dependencies are automatically provided and cleaned up
+    # Database connection is automatically provided and cleaned up
     user = await db.fetch_user(user_id)
-    await cache.set(f"user:{user_id}", user.to_json())
+    await db.update_user(user_id, {"last_seen": datetime.now()})
+```
+
+### Synchronous Context Managers
+
+Use sync context managers only for managing in-memory resources or quick non-blocking operations:
+
+```python
+from contextlib import contextmanager
+from docket import Depends
+
+# In-memory resource tracking - no I/O
+@contextmanager
+def track_operation(operation_name: str):
+    """Track operation execution without blocking."""
+    operations_in_progress.add(operation_name)  # In-memory set
+    try:
+        yield operation_name
+    finally:
+        operations_in_progress.remove(operation_name)
+
+async def process_data(
+    tracker=Depends(lambda: track_operation("data_processing"))
+) -> None:
+    # Operation tracked in memory, no blocking
+    await perform_async_work()
+```
+
+### Mixed Sync and Async Dependencies
+
+You can freely mix synchronous and asynchronous dependencies in the same task. Use sync for computations, async for I/O:
+
+```python
+# Sync - in-memory config lookup
+def get_local_config() -> dict:
+    """Access local config from memory - no I/O."""
+    return {"retry_count": 3, "batch_size": 100}
+
+# Async - network I/O
+async def get_remote_config() -> dict:
+    """Fetch remote config via network - requires I/O."""
+    response = await http_client.get("/api/config")
+    return await response.json()
+
+# Sync - pure computation
+def merge_configs(
+    local: dict = Depends(get_local_config),
+    remote: dict = Depends(get_remote_config)
+) -> dict:
+    """Merge configs without blocking - pure computation."""
+    return {**local, **remote}
+
+async def process_batch(
+    config: dict = Depends(merge_configs)
+) -> None:
+    # Config is computed/fetched appropriately
+    # Now do the actual I/O work
+    for i in range(config["batch_size"]):
+        await process_item(i, retries=config["retry_count"])
 ```
 
 ### Nested Dependencies
@@ -220,31 +304,7 @@ async def update_user_profile(
     await user_service.update_profile(user_id, profile_data)
 ```
 
-Dependencies are resolved once per task execution and cached, so if multiple parameters depend on the same resource, only one instance is created.
-
-### Context Manager Dependencies
-
-Dependencies can be async context managers for automatic resource cleanup:
-
-```python
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def get_file_lock(filename: str):
-    """A dependency that provides file locking."""
-    lock = await acquire_file_lock(filename)
-    try:
-        yield lock
-    finally:
-        await release_file_lock(filename)
-
-async def process_shared_file(
-    filename: str,
-    file_lock=Depends(lambda: get_file_lock("shared.txt"))
-) -> None:
-    # File is locked before task starts, unlocked after task completes
-    await process_file_safely(filename)
-```
+Dependencies are resolved once per task execution and cached, so if multiple parameters depend on the same resource, only one instance is created. This caching works across both sync and async dependencies.
 
 ### Dependencies with Built-in Context
 
@@ -336,6 +396,41 @@ async def dependent_task(
 If `unreliable_dependency` fails, the task won't execute and the error will be logged with context about which dependency failed. This prevents tasks from running with incomplete or invalid dependencies.
 
 ## Dependency Guidelines
+
+### Choose Sync vs Async Appropriately
+
+**Use synchronous dependencies for:**
+- Pure computations (math, string manipulation, data transformations)
+- In-memory data structure access (dicts, lists, sets)
+- Configuration lookups from memory
+- Non-blocking operations that complete instantly
+
+**Use asynchronous dependencies for:**
+- Network I/O (HTTP requests, API calls)
+- File I/O (reading/writing files)
+- Database queries
+- Any operation that involves `await`
+- Resource management requiring async cleanup
+
+```python
+# ✅ Good: Sync for pure computation
+def calculate_batch_size(item_count: int) -> int:
+    return min(item_count, 1000)
+
+# ✅ Good: Async for I/O
+async def fetch_user_data(user_id: int) -> dict:
+    return await api_client.get(f"/users/{user_id}")
+
+# ❌ Bad: Sync with blocking I/O
+def load_config_from_file() -> dict:
+    with open("config.json") as f:  # Blocks the event loop!
+        return json.load(f)
+
+# ✅ Good: Use async for file I/O instead
+async def load_config_from_file() -> dict:
+    async with aiofiles.open("config.json") as f:
+        return json.loads(await f.read())
+```
 
 ### Design for Reusability
 

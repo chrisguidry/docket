@@ -1,4 +1,5 @@
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -260,3 +261,191 @@ async def test_a_task_argument_cannot_ask_for_itself(
 
     assert "Failed to resolve dependencies for parameter(s): a" in caplog.text
     assert "ValueError: No parameter name specified" in caplog.text
+
+
+async def test_sync_function_dependency(docket: Docket, worker: Worker):
+    """A task can depend on a synchronous function"""
+    called = False
+
+    def sync_dependency() -> str:
+        return "sync-value"
+
+    async def dependent_task(value: str = Depends(sync_dependency)):
+        assert value == "sync-value"
+        nonlocal called
+        called = True
+
+    await docket.add(dependent_task)()
+    await worker.run_until_finished()
+
+    assert called
+
+
+async def test_sync_context_manager_dependency(docket: Docket, worker: Worker):
+    """A task can depend on a synchronous context manager"""
+    called = False
+    stages: list[str] = []
+
+    @contextmanager
+    def sync_cm_dependency():
+        stages.append("before")
+        yield "sync-cm-value"
+        stages.append("after")
+
+    async def dependent_task(value: str = Depends(sync_cm_dependency)):
+        assert value == "sync-cm-value"
+        stages.append("during")
+        nonlocal called
+        called = True
+
+    await docket.add(dependent_task)()
+    await worker.run_until_finished()
+
+    assert called
+    assert stages == ["before", "during", "after"]
+
+
+async def test_mixed_sync_and_async_dependencies(docket: Docket, worker: Worker):
+    """A task can depend on both sync and async dependencies"""
+    called = False
+
+    def sync_dependency() -> str:
+        return "sync"
+
+    async def async_dependency() -> str:
+        return "async"
+
+    @contextmanager
+    def sync_cm():
+        yield "sync-cm"
+
+    async def dependent_task(
+        sync_val: str = Depends(sync_dependency),
+        async_val: str = Depends(async_dependency),
+        sync_cm_val: str = Depends(sync_cm),
+    ):
+        assert sync_val == "sync"
+        assert async_val == "async"
+        assert sync_cm_val == "sync-cm"
+        nonlocal called
+        called = True
+
+    await docket.add(dependent_task)()
+    await worker.run_until_finished()
+
+    assert called
+
+
+async def test_nested_sync_dependencies(docket: Docket, worker: Worker):
+    """A sync dependency can depend on another sync dependency"""
+    called = False
+
+    def base_dependency() -> int:
+        return 10
+
+    def derived_dependency(base: int = Depends(base_dependency)) -> int:
+        return base * 2
+
+    async def dependent_task(value: int = Depends(derived_dependency)):
+        assert value == 20
+        nonlocal called
+        called = True
+
+    await docket.add(dependent_task)()
+    await worker.run_until_finished()
+
+    assert called
+
+
+async def test_sync_dependency_with_docket_context(docket: Docket, worker: Worker):
+    """A sync dependency can access docket context"""
+    called = False
+
+    def sync_dep_with_context(d: Docket = CurrentDocket()) -> str:
+        assert d is docket
+        return d.name
+
+    async def dependent_task(name: str = Depends(sync_dep_with_context)):
+        assert name == docket.name
+        nonlocal called
+        called = True
+
+    await docket.add(dependent_task)()
+    await worker.run_until_finished()
+
+    assert called
+
+
+async def test_sync_context_manager_cleanup_on_exception(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """A sync context manager's cleanup runs even when the task fails"""
+    stages: list[str] = []
+
+    @contextmanager
+    def sync_cm_with_cleanup():
+        stages.append("enter")
+        try:
+            yield "value"
+        finally:
+            stages.append("exit")
+
+    async def failing_task(value: str = Depends(sync_cm_with_cleanup)):
+        stages.append("task")
+        raise ValueError("Task failed")
+
+    await docket.add(failing_task)()
+
+    with caplog.at_level(logging.ERROR):
+        await worker.run_until_finished()
+
+    assert stages == ["enter", "task", "exit"]
+    assert "ValueError: Task failed" in caplog.text
+
+
+async def test_sync_dependency_caching(docket: Docket, worker: Worker):
+    """Sync dependencies are cached and only called once per task"""
+    call_count = 0
+
+    def counted_dependency() -> str:
+        nonlocal call_count
+        call_count += 1
+        return f"call-{call_count}"
+
+    async def dependent_task(
+        val_a: str = Depends(counted_dependency),
+        val_b: str = Depends(counted_dependency),
+    ):
+        # Both should be the same value since it's cached
+        assert val_a == val_b
+        assert val_a == "call-1"
+
+    await docket.add(dependent_task)()
+    await worker.run_until_finished()
+
+    assert call_count == 1
+
+
+async def test_mixed_nested_dependencies(docket: Docket, worker: Worker):
+    """Complex nesting with mixed sync and async dependencies"""
+    called = False
+
+    def sync_base() -> int:
+        return 5
+
+    async def async_multiplier(base: int = Depends(sync_base)) -> int:
+        return base * 3
+
+    def sync_adder(multiplied: int = Depends(async_multiplier)) -> int:
+        return multiplied + 10
+
+    async def dependent_task(result: int = Depends(sync_adder)):
+        # 5 * 3 + 10 = 25
+        assert result == 25
+        nonlocal called
+        called = True
+
+    await docket.add(dependent_task)()
+    await worker.run_until_finished()
+
+    assert called
