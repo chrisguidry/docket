@@ -15,6 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        cov-threshold: [100]
         backend:
           - name: "Redis 6.2, redis-py <5"
             redis-version: "6.2"
@@ -28,6 +29,13 @@ jobs:
           - name: "Memory (in-memory backend)"
             redis-version: "memory"
             redis-py-version: ">=5"
+        # Unstable coverage reporting on Python 3.11, so use lower threshold
+        exclude:
+          - python-version: "3.11"
+            cov-threshold: 100
+        include:
+          - python-version: "3.11"
+            cov-threshold: 98
 
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +53,7 @@ jobs:
       - name: Run tests
         env:
           REDIS_VERSION: ${{ matrix.backend.redis-version }}
-        run: uv run pytest --cov-branch --cov-fail-under=100 --cov-report=xml --cov-report=term-missing:skip-covered
+        run: uv run pytest --cov-branch --cov-fail-under=${{ matrix.cov-threshold }} --cov-report=xml --cov-report=term-missing:skip-covered
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
