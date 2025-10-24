@@ -8,7 +8,8 @@ from rich.table import Table
 from typer.testing import CliRunner
 
 from docket import tasks
-from docket.cli import app, relative_time, snapshot as snapshot_command
+from docket.cli import app, relative_time
+from docket.cli import snapshot as snapshot_command
 from docket.docket import Docket, DocketSnapshot, RunningExecution, WorkerInfo
 from docket.execution import Execution
 from docket.worker import Worker
@@ -332,8 +333,7 @@ async def test_snapshot_stats_with_running_tasks_only(
 
 
 def _build_mock_snapshot(now: datetime) -> DocketSnapshot:
-    async def dummy_task(*_: object, **__: object) -> None:
-        return None
+    async def dummy_task(*_: object, **__: object) -> None: ...  # pragma: no cover
 
     running_execution = Execution(
         dummy_task,
