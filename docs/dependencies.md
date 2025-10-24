@@ -160,21 +160,40 @@ Timeouts work alongside retries. If a task times out, it can be retried accordin
 
 ## Custom Dependencies
 
-Create your own dependencies using `Depends()` for reusable resources and patterns. Dependencies can be either synchronous or asynchronous:
+Create your own dependencies using `Depends()` for reusable resources and patterns. Dependencies can be either synchronous or asynchronous.
+
+**Important**: Synchronous dependencies should **NOT** include blocking I/O operations (file access, network calls, database queries, etc.). Use async dependencies for any I/O. Sync dependencies are best for:
+- Pure computations
+- In-memory data structure access
+- Configuration lookups from memory
+- Non-blocking transformations
 
 ### Synchronous Dependencies
+
+Use sync dependencies for pure computations and in-memory operations:
 
 ```python
 from docket import Depends
 
+# In-memory config lookup - no I/O
 def get_config() -> dict:
-    """Simple sync dependency that returns configuration."""
-    return {"api_key": "secret", "timeout": 30}
+    """Access configuration from memory."""
+    return {"api_url": "https://api.example.com", "timeout": 30}
 
-async def call_api(config: dict = Depends(get_config)) -> None:
-    # Config is provided automatically
-    api_key = config["api_key"]
-    # ... make API call ...
+# Pure computation - no I/O
+def build_request_headers(config: dict = Depends(get_config)) -> dict:
+    """Construct headers from config."""
+    return {
+        "User-Agent": "MyApp/1.0",
+        "Timeout": str(config["timeout"])
+    }
+
+async def call_api(
+    headers: dict = Depends(build_request_headers)
+) -> None:
+    # Headers are computed without blocking
+    # Network I/O happens here (async)
+    response = await http_client.get(url, headers=headers)
 ```
 
 ### Asynchronous Dependencies
@@ -203,56 +222,60 @@ async def process_user_data(
 
 ### Synchronous Context Managers
 
+Use sync context managers only for managing in-memory resources or quick non-blocking operations:
+
 ```python
 from contextlib import contextmanager
 from docket import Depends
 
+# In-memory resource tracking - no I/O
 @contextmanager
-def get_file_lock(filename: str = "data.txt"):
-    """Sync context manager for file locking."""
-    lock = acquire_lock(filename)
+def track_operation(operation_name: str):
+    """Track operation execution without blocking."""
+    operations_in_progress.add(operation_name)  # In-memory set
     try:
-        yield lock
+        yield operation_name
     finally:
-        release_lock(filename)
+        operations_in_progress.remove(operation_name)
 
-async def write_data(
-    data: str,
-    lock=Depends(lambda: get_file_lock("shared.txt"))
+async def process_data(
+    tracker=Depends(lambda: track_operation("data_processing"))
 ) -> None:
-    # File is locked before task starts, unlocked after completion
-    with open("shared.txt", "a") as f:
-        f.write(data)
+    # Operation tracked in memory, no blocking
+    await perform_async_work()
 ```
 
 ### Mixed Sync and Async Dependencies
 
-You can freely mix synchronous and asynchronous dependencies in the same task:
+You can freely mix synchronous and asynchronous dependencies in the same task. Use sync for computations, async for I/O:
 
 ```python
+# Sync - in-memory config lookup
 def get_local_config() -> dict:
-    """Sync dependency - no I/O needed."""
-    return {"setting": "value"}
+    """Access local config from memory - no I/O."""
+    return {"retry_count": 3, "batch_size": 100}
 
+# Async - network I/O
 async def get_remote_config() -> dict:
-    """Async dependency - requires network I/O."""
-    response = await http_client.get("/config")
+    """Fetch remote config via network - requires I/O."""
+    response = await http_client.get("/api/config")
     return await response.json()
 
-@contextmanager
-def get_temp_file():
-    """Sync context manager."""
-    with tempfile.NamedTemporaryFile() as f:
-        yield f
-
-async def complex_task(
+# Sync - pure computation
+def merge_configs(
     local: dict = Depends(get_local_config),
-    remote: dict = Depends(get_remote_config),
-    temp_file=Depends(get_temp_file)
+    remote: dict = Depends(get_remote_config)
+) -> dict:
+    """Merge configs without blocking - pure computation."""
+    return {**local, **remote}
+
+async def process_batch(
+    config: dict = Depends(merge_configs)
 ) -> None:
-    # All dependencies are resolved correctly
-    config = {**local, **remote}
-    temp_file.write(json.dumps(config).encode())
+    # Config is computed/fetched appropriately
+    # Now do the actual I/O work
+    for i in range(config["batch_size"]):
+        await process_item(i, retries=config["retry_count"])
 ```
 
 ### Nested Dependencies
@@ -373,6 +396,41 @@ async def dependent_task(
 If `unreliable_dependency` fails, the task won't execute and the error will be logged with context about which dependency failed. This prevents tasks from running with incomplete or invalid dependencies.
 
 ## Dependency Guidelines
+
+### Choose Sync vs Async Appropriately
+
+**Use synchronous dependencies for:**
+- Pure computations (math, string manipulation, data transformations)
+- In-memory data structure access (dicts, lists, sets)
+- Configuration lookups from memory
+- Non-blocking operations that complete instantly
+
+**Use asynchronous dependencies for:**
+- Network I/O (HTTP requests, API calls)
+- File I/O (reading/writing files)
+- Database queries
+- Any operation that involves `await`
+- Resource management requiring async cleanup
+
+```python
+# ✅ Good: Sync for pure computation
+def calculate_batch_size(item_count: int) -> int:
+    return min(item_count, 1000)
+
+# ✅ Good: Async for I/O
+async def fetch_user_data(user_id: int) -> dict:
+    return await api_client.get(f"/users/{user_id}")
+
+# ❌ Bad: Sync with blocking I/O
+def load_config_from_file() -> dict:
+    with open("config.json") as f:  # Blocks the event loop!
+        return json.load(f)
+
+# ✅ Good: Use async for file I/O instead
+async def load_config_from_file() -> dict:
+    async with aiofiles.open("config.json") as f:
+        return json.loads(await f.read())
+```
 
 ### Design for Reusability
 

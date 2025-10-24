@@ -511,36 +511,43 @@ def Depends(dependency: DependencyFunction[R]) -> R:
     - Asynchronous context managers (using @asynccontextmanager)
 
     If a dependency returns a context manager, it will be entered and exited around
-    the task, giving an opportunity to control the lifetime of a resource, like a
-    database connection.
+    the task, giving an opportunity to control the lifetime of a resource.
+
+    **Important**: Synchronous dependencies should NOT include blocking I/O operations
+    (file access, network calls, database queries, etc.). Use async dependencies for
+    any I/O. Sync dependencies are best for:
+    - Pure computations
+    - In-memory data structure access
+    - Configuration lookups from memory
+    - Non-blocking transformations
 
     Examples:
 
     ```python
-    # Sync function dependency
+    # Sync dependency - pure computation, no I/O
     def get_config() -> dict:
-        return {"setting": "value"}
+        # Access in-memory config, no I/O
+        return {"api_url": "https://api.example.com", "timeout": 30}
 
-    # Async function dependency
+    # Sync dependency - compute value from arguments
+    def build_query_params(
+        user_id: int = TaskArgument(),
+        config: dict = Depends(get_config)
+    ) -> dict:
+        # Pure computation, no I/O
+        return {"user_id": user_id, "timeout": config["timeout"]}
+
+    # Async dependency - I/O operations
     async def get_user(user_id: int = TaskArgument()) -> User:
-        return await fetch_user(user_id)
+        # Network I/O - must be async
+        return await fetch_user_from_api(user_id)
 
-    # Sync context manager dependency
-    from contextlib import contextmanager
-
-    @contextmanager
-    def get_file_handle():
-        f = open("data.txt")
-        try:
-            yield f
-        finally:
-            f.close()
-
-    # Async context manager dependency
+    # Async context manager - I/O resource management
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
     async def get_db_connection():
+        # I/O operations - must be async
         conn = await db.connect()
         try:
             yield conn
@@ -549,11 +556,11 @@ def Depends(dependency: DependencyFunction[R]) -> R:
 
     @task
     async def my_task(
-        config: dict = Depends(get_config),
+        params: dict = Depends(build_query_params),
+        user: User = Depends(get_user),
         db: Connection = Depends(get_db_connection),
     ) -> None:
-        print(config)
-        await db.execute("SELECT 1")
+        await db.execute("UPDATE users SET ...", params)
     ```
     """
     return cast(R, _Depends(dependency))
