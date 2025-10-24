@@ -28,10 +28,10 @@ jobs:
           - name: "Memory (in-memory backend)"
             redis-version: "memory"
             redis-py-version: ">=5"
-        # Unstable coverage reporting on Python 3.11, so use 98% threshold
         include:
           - python-version: "3.10"
             cov-threshold: 100
+          # Python 3.11 coverage reporting is unstable, so use 98% threshold
           - python-version: "3.11"
             cov-threshold: 98
           - python-version: "3.12"
