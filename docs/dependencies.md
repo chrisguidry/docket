@@ -162,12 +162,6 @@ Timeouts work alongside retries. If a task times out, it can be retried accordin
 
 Create your own dependencies using `Depends()` for reusable resources and patterns. Dependencies can be either synchronous or asynchronous.
 
-**Important**: Synchronous dependencies should **NOT** include blocking I/O operations (file access, network calls, database queries, etc.). Use async dependencies for any I/O. Sync dependencies are best for:
-- Pure computations
-- In-memory data structure access
-- Configuration lookups from memory
-- Non-blocking transformations
-
 ### Synchronous Dependencies
 
 Use sync dependencies for pure computations and in-memory operations:
@@ -195,6 +189,12 @@ async def call_api(
     # Network I/O happens here (async)
     response = await http_client.get(url, headers=headers)
 ```
+
+**Important**: Synchronous dependencies should **NOT** include blocking I/O operations (file access, network calls, database queries, etc.) as it will block the event loop and prevent tasks from being executed. Use async dependencies for any I/O. Sync dependencies are best for:
+- Pure computations
+- In-memory data structure access
+- Configuration lookups from memory
+- Non-blocking transformations
 
 ### Asynchronous Dependencies
 
