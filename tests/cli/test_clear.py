@@ -15,7 +15,7 @@ async def empty_docket(docket: Docket):
     await docket.clear()
 
 
-async def test_clear_command_empty_docket(runner: CliRunner, docket: Docket):
+async def test_clear_command_empty_docket(docket: Docket, runner: CliRunner):
     """Should clear empty docket and report 0 tasks cleared"""
     result = await asyncio.get_running_loop().run_in_executor(
         None,
@@ -34,7 +34,7 @@ async def test_clear_command_empty_docket(runner: CliRunner, docket: Docket):
 
 
 async def test_clear_command_with_immediate_tasks(
-    runner: CliRunner, docket: Docket, the_task: AsyncMock
+    docket: Docket, runner: CliRunner, the_task: AsyncMock
 ):
     """Should clear immediate tasks and report count"""
     docket.register(the_task)
@@ -64,7 +64,7 @@ async def test_clear_command_with_immediate_tasks(
 
 
 async def test_clear_command_with_scheduled_tasks(
-    runner: CliRunner, docket: Docket, the_task: AsyncMock
+    docket: Docket, runner: CliRunner, the_task: AsyncMock
 ):
     """Should clear scheduled tasks and report count"""
     docket.register(the_task)
@@ -94,7 +94,7 @@ async def test_clear_command_with_scheduled_tasks(
 
 
 async def test_clear_command_with_mixed_tasks(
-    runner: CliRunner, docket: Docket, the_task: AsyncMock, another_task: AsyncMock
+    docket: Docket, runner: CliRunner, the_task: AsyncMock, another_task: AsyncMock
 ):
     """Should clear both immediate and scheduled tasks"""
     docket.register(the_task)
@@ -128,7 +128,7 @@ async def test_clear_command_with_mixed_tasks(
 
 
 async def test_clear_command_with_keyed_tasks(
-    runner: CliRunner, docket: Docket, the_task: AsyncMock
+    docket: Docket, runner: CliRunner, the_task: AsyncMock
 ):
     """Should clear tasks with keys"""
     docket.register(the_task)
@@ -156,7 +156,7 @@ async def test_clear_command_with_keyed_tasks(
 
 
 async def test_clear_command_basic_functionality(
-    runner: CliRunner, docket: Docket, the_task: AsyncMock
+    docket: Docket, runner: CliRunner, the_task: AsyncMock
 ):
     """Should clear tasks via CLI command"""
     docket.register(the_task)
@@ -186,7 +186,7 @@ async def test_clear_command_basic_functionality(
 
 
 async def test_clear_command_preserves_strikes(
-    runner: CliRunner, docket: Docket, the_task: AsyncMock
+    docket: Docket, runner: CliRunner, the_task: AsyncMock
 ):
     """Should not affect strikes when clearing"""
     docket.register(the_task)
@@ -231,7 +231,7 @@ async def test_clear_command_with_custom_url(runner: CliRunner):
 
 
 async def test_clear_command_with_custom_docket_name(
-    runner: CliRunner, docket: Docket, the_task: AsyncMock
+    docket: Docket, runner: CliRunner, the_task: AsyncMock
 ):
     """Should handle custom docket name"""
     docket.register(the_task)
