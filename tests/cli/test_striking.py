@@ -226,7 +226,7 @@ async def test_strike_with_no_function_or_parameter(
         ),
     ],
 )
-async def test_interpret_python_value(input_value: str | None, expected_result: Any):
+def test_interpret_python_value(input_value: str | None, expected_result: Any):
     """Should interpret Python values correctly from strings"""
     result = interpret_python_value(input_value)
     assert result == expected_result

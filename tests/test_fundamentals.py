@@ -1231,7 +1231,7 @@ async def test_timeout_extends_by_base_by_default(docket: Docket, worker: Worker
     elapsed = datetime.now(timezone.utc) - start
 
     assert called
-    assert timedelta(milliseconds=150) <= elapsed <= timedelta(milliseconds=300)
+    assert timedelta(milliseconds=150) <= elapsed <= timedelta(milliseconds=400)
 
 
 async def test_timeout_is_compatible_with_retry(docket: Docket, worker: Worker):

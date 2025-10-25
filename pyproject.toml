@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Typing :: Typed",
@@ -54,7 +55,7 @@ dev = [
     "pre-commit>=4.1.0",
     "pyright>=1.1.398",
     "pytest>=8.3.4",
-    "pytest-aio>=1.9.0",
+    "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
     "pytest-xdist>=3.6.1",
     "ruff>=0.9.7",
@@ -101,11 +102,10 @@ addopts = [
     "--cov-report=term-missing",
     "--cov-branch",
 ]
-filterwarnings = [
-    "error",
-    "ignore:'asyncio.DefaultEventLoopPolicy' is deprecated:DeprecationWarning:pytest_aio",
-    "ignore:'asyncio.set_event_loop_policy' is deprecated:DeprecationWarning:pytest_aio",
-]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+filterwarnings = ["error"]
 
 [tool.coverage.run]
 omit = ["src/docket/__main__.py"]

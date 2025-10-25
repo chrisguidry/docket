@@ -16,7 +16,7 @@ from docket.worker import Worker
 
 
 @pytest.fixture(autouse=True)
-async def empty_docket(docket: Docket, aiolib: str):
+async def empty_docket(docket: Docket):
     """Ensure that the docket has been created"""
     future = datetime.now(timezone.utc) + timedelta(seconds=60)
     await docket.add(tasks.trace, key="initial", when=future)("hi")
