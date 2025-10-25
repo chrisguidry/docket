@@ -63,7 +63,7 @@ jobs:
       - name: Run tests
         env:
           REDIS_VERSION: ${{ matrix.backend.redis-version }}
-        run: uv run pytest --cov-branch --cov-fail-under=${{ matrix.cov-threshold }} --cov-report=xml --cov-report=term-missing:skip-covered ${{ matrix.pytest-ignore }} -v
+        run: uv run pytest --cov-branch --cov-fail-under=${{ matrix.cov-threshold }} --cov-report=xml --cov-report=term-missing:skip-covered ${{ matrix.pytest-ignore }}
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5

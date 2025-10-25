@@ -108,6 +108,9 @@ asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"
 filterwarnings = ["error"]
 
+[tool.coverage.run]
+omit = ["src/docket/__main__.py"]
+
 [tool.pyright]
 include = ["src", "tests"]
 typeCheckingMode = "strict"
