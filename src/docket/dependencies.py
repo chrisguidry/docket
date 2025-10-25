@@ -163,7 +163,7 @@ def TaskArgument(parameter: str | None = None, optional: bool = False) -> Any:
 
 
 class _TaskLogger(Dependency):
-    async def __aenter__(self) -> logging.LoggerAdapter[logging.Logger]:
+    async def __aenter__(self) -> "logging.LoggerAdapter[logging.Logger]":
         execution = self.execution.get()
         logger = logging.getLogger(f"docket.task.{execution.function.__name__}")
         return logging.LoggerAdapter(
@@ -176,7 +176,7 @@ class _TaskLogger(Dependency):
         )
 
 
-def TaskLogger() -> logging.LoggerAdapter[logging.Logger]:
+def TaskLogger() -> "logging.LoggerAdapter[logging.Logger]":
     """A dependency to access a logger for the currently executing task.  The logger
     will automatically inject contextual information such as the worker and docket
     name, the task key, and the current execution attempt number.
@@ -185,11 +185,11 @@ def TaskLogger() -> logging.LoggerAdapter[logging.Logger]:
 
     ```python
     @task
-    async def my_task(logger: LoggerAdapter[Logger] = TaskLogger()) -> None:
+    async def my_task(logger: "LoggerAdapter[Logger]" = TaskLogger()) -> None:
         logger.info("Hello, world!")
     ```
     """
-    return cast(logging.LoggerAdapter[logging.Logger], _TaskLogger())
+    return cast("logging.LoggerAdapter[logging.Logger]", _TaskLogger())
 
 
 class ForcedRetry(Exception):

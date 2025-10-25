@@ -191,13 +191,19 @@ async def worker(docket: Docket) -> AsyncGenerator[Worker, None]:
 
 @pytest.fixture
 def the_task() -> AsyncMock:
+    import inspect
+
     task = AsyncMock()
     task.__name__ = "the_task"
+    task.__signature__ = inspect.signature(lambda *args, **kwargs: None)
     return task
 
 
 @pytest.fixture
 def another_task() -> AsyncMock:
+    import inspect
+
     task = AsyncMock()
     task.__name__ = "another_task"
+    task.__signature__ = inspect.signature(lambda *args, **kwargs: None)
     return task

@@ -1756,3 +1756,15 @@ async def test_replace_task_with_legacy_known_key(
     # The key point is that this call succeeds without throwing WRONGTYPE
     replacement_time = now() + timedelta(seconds=1)
     await docket.replace("trace", replacement_time, key=key)("replacement message")
+
+
+async def test_worker_run_classmethod_memory_backend() -> None:
+    """Worker.run should complete immediately when there is no work queued."""
+
+    await Worker.run(
+        docket_name=f"test-run-{uuid4()}",
+        url="memory://",
+        tasks=[],
+        schedule_automatic_tasks=False,
+        until_finished=True,
+    )

@@ -17,13 +17,14 @@ from typing import (
     NoReturn,
     ParamSpec,
     Protocol,
-    Self,
     Sequence,
     TypedDict,
     TypeVar,
     cast,
     overload,
 )
+
+from typing_extensions import Self
 
 import redis.exceptions
 from opentelemetry import propagate, trace

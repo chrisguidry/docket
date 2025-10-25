@@ -1,6 +1,8 @@
 import abc
 import inspect
-from typing import Any, Iterable, Mapping, Self
+from typing import Any, Iterable, Mapping
+
+from typing_extensions import Self
 
 from .instrumentation import CACHE_SIZE
 
