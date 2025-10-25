@@ -3,9 +3,10 @@ from datetime import timedelta
 
 from typer.testing import CliRunner
 
-from docket.cli import app
 from docket.docket import Docket
 from docket.worker import Worker
+
+from tests.cli.utils import run_cli
 
 
 async def test_list_workers_command(docket: Docket, runner: CliRunner):
@@ -17,18 +18,13 @@ async def test_list_workers_command(docket: Docket, runner: CliRunner):
     async with Worker(docket, name="worker-1"), Worker(docket, name="worker-2"):
         await asyncio.sleep(heartbeat.total_seconds() * 5)
 
-        result = await asyncio.get_running_loop().run_in_executor(
-            None,
-            runner.invoke,
-            app,
-            [
-                "workers",
-                "ls",
-                "--url",
-                docket.url,
-                "--docket",
-                docket.name,
-            ],
+        result = await run_cli(
+            "workers",
+            "ls",
+            "--url",
+            docket.url,
+            "--docket",
+            docket.name,
         )
         assert result.exit_code == 0, result.output
 
@@ -45,19 +41,14 @@ async def test_list_workers_for_task(docket: Docket, runner: CliRunner):
     async with Worker(docket, name="worker-1"), Worker(docket, name="worker-2"):
         await asyncio.sleep(heartbeat.total_seconds() * 5)
 
-        result = await asyncio.get_running_loop().run_in_executor(
-            None,
-            runner.invoke,
-            app,
-            [
-                "workers",
-                "for-task",
-                "trace",
-                "--url",
-                docket.url,
-                "--docket",
-                docket.name,
-            ],
+        result = await run_cli(
+            "workers",
+            "for-task",
+            "trace",
+            "--url",
+            docket.url,
+            "--docket",
+            docket.name,
         )
         assert result.exit_code == 0, result.output
 

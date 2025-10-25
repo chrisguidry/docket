@@ -13,6 +13,7 @@ from docket.cli import snapshot as snapshot_command
 from docket.docket import Docket, DocketSnapshot, RunningExecution, WorkerInfo
 from docket.execution import Execution
 from docket.worker import Worker
+from tests.cli.utils import run_cli
 
 
 @pytest.fixture(autouse=True)
@@ -23,11 +24,9 @@ async def empty_docket(docket: Docket):
     await docket.cancel("initial")
 
 
-async def test_snapshot_empty_docket(docket: Docket, runner: CliRunner):
+def test_snapshot_empty_docket(docket: Docket, runner: CliRunner):
     """Should show an empty snapshot when no tasks are scheduled"""
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        runner.invoke,
+    result = runner.invoke(
         app,
         [
             "snapshot",
@@ -47,17 +46,12 @@ async def test_snapshot_with_scheduled_tasks(docket: Docket, runner: CliRunner):
     when = datetime.now(timezone.utc) + timedelta(seconds=5)
     await docket.add(tasks.trace, when=when, key="future-task")("hiya!")
 
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        runner.invoke,
-        app,
-        [
-            "snapshot",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-        ],
+    result = await run_cli(
+        "snapshot",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
     )
     assert result.exit_code == 0, result.output
 
@@ -77,17 +71,12 @@ async def test_snapshot_with_running_tasks(docket: Docket, runner: CliRunner):
 
         await asyncio.sleep(0.1)
 
-        result = await asyncio.get_running_loop().run_in_executor(
-            None,
-            runner.invoke,
-            app,
-            [
-                "snapshot",
-                "--url",
-                docket.url,
-                "--docket",
-                docket.name,
-            ],
+        result = await run_cli(
+            "snapshot",
+            "--url",
+            docket.url,
+            "--docket",
+            docket.name,
         )
         assert result.exit_code == 0, result.output
 
@@ -114,17 +103,12 @@ async def test_snapshot_with_mixed_tasks(docket: Docket, runner: CliRunner):
 
         await asyncio.sleep(0.1)
 
-        result = await asyncio.get_running_loop().run_in_executor(
-            None,
-            runner.invoke,
-            app,
-            [
-                "snapshot",
-                "--url",
-                docket.url,
-                "--docket",
-                docket.name,
-            ],
+        result = await run_cli(
+            "snapshot",
+            "--url",
+            docket.url,
+            "--docket",
+            docket.name,
         )
         assert result.exit_code == 0, result.output
 
@@ -181,18 +165,13 @@ def test_relative_time(
 
 async def test_snapshot_with_stats_flag_empty(docket: Docket, runner: CliRunner):
     """Should show empty stats when no tasks are scheduled"""
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        runner.invoke,
-        app,
-        [
-            "snapshot",
-            "--stats",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-        ],
+    result = await run_cli(
+        "snapshot",
+        "--stats",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
     )
     assert result.exit_code == 0, result.output
 
@@ -218,18 +197,13 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket, runner: CliR
 
         await asyncio.sleep(0.1)
 
-        result = await asyncio.get_running_loop().run_in_executor(
-            None,
-            runner.invoke,
-            app,
-            [
-                "snapshot",
-                "--stats",
-                "--url",
-                docket.url,
-                "--docket",
-                docket.name,
-            ],
+        result = await run_cli(
+            "snapshot",
+            "--stats",
+            "--url",
+            docket.url,
+            "--docket",
+            docket.name,
         )
         assert result.exit_code == 0, result.output
 
@@ -266,18 +240,13 @@ async def test_snapshot_with_stats_shows_timestamp_columns(
     await docket.add(tasks.trace, when=late_time)("late task")
     await docket.add(tasks.sleep, when=early_time)(1)
 
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        runner.invoke,
-        app,
-        [
-            "snapshot",
-            "--stats",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-        ],
+    result = await run_cli(
+        "snapshot",
+        "--stats",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
     )
     assert result.exit_code == 0, result.output
 
@@ -307,19 +276,15 @@ async def test_snapshot_stats_with_running_tasks_only(
 
         await asyncio.sleep(0.1)  # Let tasks start running
 
-        result = await asyncio.get_running_loop().run_in_executor(
-            None,
-            runner.invoke,
-            app,
-            [
-                "snapshot",
-                "--stats",
-                "--url",
-                docket.url,
-                "--docket",
-                docket.name,
-            ],
+        result = await run_cli(
+            "snapshot",
+            "--stats",
+            "--url",
+            docket.url,
+            "--docket",
+            docket.name,
         )
+
         assert result.exit_code == 0, result.output
 
         # Should show stats table even with no queued tasks

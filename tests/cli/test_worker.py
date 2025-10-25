@@ -1,9 +1,7 @@
-import asyncio
 import inspect
 import json
 import logging
 from datetime import datetime, timezone
-from functools import partial
 
 import pytest
 from typer.testing import CliRunner
@@ -12,6 +10,7 @@ from docket.cli import app
 from docket.docket import Docket
 from docket.tasks import trace
 from docket.worker import Worker
+from tests.cli.utils import run_cli
 
 
 @pytest.fixture(autouse=True)
@@ -55,53 +54,33 @@ def test_worker_command_exposes_all_the_options_of_worker():
         )
 
 
-async def test_worker_command(
-    runner: CliRunner,
-    docket: Docket,
-):
+def test_worker_command(runner: CliRunner, docket: Docket):
     """Should run a worker until there are no more tasks to process"""
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        runner.invoke,
+    result = runner.invoke(
         app,
-        [
-            "worker",
-            "--until-finished",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-        ],
+        ["worker", "--until-finished", "--url", docket.url, "--docket", docket.name],
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
 
     assert "Starting worker" in result.output
     assert "trace" in result.output
 
 
-async def test_rich_logging_format(runner: CliRunner, docket: Docket):
+async def test_rich_logging_format(docket: Docket):
     """Should use rich formatting for logs by default"""
     await docket.add(trace)("hello")
 
     logging.basicConfig(force=True)
 
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        partial(
-            runner.invoke,
-            app,
-            [
-                "worker",
-                "--until-finished",
-                "--url",
-                docket.url,
-                "--docket",
-                docket.name,
-                "--logging-format",
-                "rich",
-            ],
-            color=True,
-        ),
+    result = await run_cli(
+        "worker",
+        "--until-finished",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "--logging-format",
+        "rich",
     )
 
     assert result.exit_code == 0, result.output
@@ -110,27 +89,19 @@ async def test_rich_logging_format(runner: CliRunner, docket: Docket):
     assert "trace" in result.output
 
 
-async def test_plain_logging_format(runner: CliRunner, docket: Docket):
+async def test_plain_logging_format(docket: Docket):
     """Should use plain formatting for logs when specified"""
     await docket.add(trace)("hello")
 
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        partial(
-            runner.invoke,
-            app,
-            [
-                "worker",
-                "--until-finished",
-                "--url",
-                docket.url,
-                "--docket",
-                docket.name,
-                "--logging-format",
-                "plain",
-            ],
-            color=True,
-        ),
+    result = await run_cli(
+        "worker",
+        "--until-finished",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "--logging-format",
+        "plain",
     )
 
     assert result.exit_code == 0, result.output
@@ -139,26 +110,21 @@ async def test_plain_logging_format(runner: CliRunner, docket: Docket):
     assert "trace" in result.output
 
 
-async def test_json_logging_format(runner: CliRunner, docket: Docket):
+async def test_json_logging_format(docket: Docket):
     """Should use JSON formatting for logs when specified"""
     await docket.add(trace)("hello")
 
     start = datetime.now(timezone.utc)
 
-    result = await asyncio.get_running_loop().run_in_executor(
-        None,
-        runner.invoke,
-        app,
-        [
-            "worker",
-            "--until-finished",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "--logging-format",
-            "json",
-        ],
+    result = await run_cli(
+        "worker",
+        "--until-finished",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "--logging-format",
+        "json",
     )
 
     assert result.exit_code == 0, result.output

@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Typing :: Typed",
@@ -111,3 +112,7 @@ include = ["src", "tests"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
+
+[tool.coverage.run]
+branch = true
+parallel = true
