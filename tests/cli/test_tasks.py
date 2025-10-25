@@ -1,27 +1,34 @@
+import asyncio
 import logging
 
 import pytest
 from typer.testing import CliRunner
 
+from docket.cli import app
 from docket.docket import Docket
 from docket.worker import Worker
-from tests.cli.utils import run_cli
 
 
 async def test_trace_command(
+    runner: CliRunner,
     docket: Docket,
     worker: Worker,
     caplog: pytest.LogCaptureFixture,
 ):
     """Should add a trace task to the docket"""
-    result = await run_cli(
-        "tasks",
-        "trace",
-        "hiya!",
-        "--url",
-        docket.url,
-        "--docket",
-        docket.name,
+    result = await asyncio.get_running_loop().run_in_executor(
+        None,
+        runner.invoke,
+        app,
+        [
+            "tasks",
+            "trace",
+            "hiya!",
+            "--url",
+            docket.url,
+            "--docket",
+            docket.name,
+        ],
     )
     assert result.exit_code == 0
     assert "Added trace task" in result.stdout.strip()
@@ -40,14 +47,19 @@ async def test_fail_command(
     caplog: pytest.LogCaptureFixture,
 ):
     """Should add a trace task to the docket"""
-    result = await run_cli(
-        "tasks",
-        "fail",
-        "hiya!",
-        "--url",
-        docket.url,
-        "--docket",
-        docket.name,
+    result = await asyncio.get_running_loop().run_in_executor(
+        None,
+        runner.invoke,
+        app,
+        [
+            "tasks",
+            "fail",
+            "hiya!",
+            "--url",
+            docket.url,
+            "--docket",
+            docket.name,
+        ],
     )
     assert result.exit_code == 0
     assert "Added fail task" in result.stdout.strip()
@@ -60,19 +72,25 @@ async def test_fail_command(
 
 
 async def test_sleep_command(
+    runner: CliRunner,
     docket: Docket,
     worker: Worker,
     caplog: pytest.LogCaptureFixture,
 ):
     """Should add a trace task to the docket"""
-    result = await run_cli(
-        "tasks",
-        "sleep",
-        "0.1",
-        "--url",
-        docket.url,
-        "--docket",
-        docket.name,
+    result = await asyncio.get_running_loop().run_in_executor(
+        None,
+        runner.invoke,
+        app,
+        [
+            "tasks",
+            "sleep",
+            "0.1",
+            "--url",
+            docket.url,
+            "--docket",
+            docket.name,
+        ],
     )
     assert result.exit_code == 0
     assert "Added sleep task" in result.stdout.strip()

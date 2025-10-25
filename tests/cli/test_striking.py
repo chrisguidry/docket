@@ -7,25 +7,28 @@ from uuid import UUID, uuid4
 import pytest
 from typer.testing import CliRunner
 
-from docket.cli import interpret_python_value
+from docket.cli import app, interpret_python_value
 from docket.docket import Docket
 
-from tests.cli.utils import run_cli
 
-
-async def test_strike(redis_url: str):
+async def test_strike(runner: CliRunner, redis_url: str):
     """Should strike a task"""
     async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        result = await run_cli(
-            "strike",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "example_task",
-            "some_parameter",
-            "==",
-            "some_value",
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                "strike",
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+                "example_task",
+                "some_parameter",
+                "==",
+                "some_value",
+            ],
         )
 
         assert result.exit_code == 0, result.output
@@ -43,16 +46,21 @@ async def test_restore(runner: CliRunner, redis_url: str):
         await docket.strike("example_task", "some_parameter", "==", "some_value")
         assert "example_task" in docket.strike_list.task_strikes
 
-        result = await run_cli(
-            "restore",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "example_task",
-            "some_parameter",
-            "==",
-            "some_value",
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                "restore",
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+                "example_task",
+                "some_parameter",
+                "==",
+                "some_value",
+            ],
         )
 
         assert result.exit_code == 0, result.output
@@ -67,13 +75,18 @@ async def test_restore(runner: CliRunner, redis_url: str):
 async def test_task_only_strike(runner: CliRunner, redis_url: str):
     """Should strike a task without specifying parameter conditions"""
     async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        result = await run_cli(
-            "strike",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "example_task",
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                "strike",
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+                "example_task",
+            ],
         )
 
         assert result.exit_code == 0, result.output
@@ -90,13 +103,18 @@ async def test_task_only_restore(runner: CliRunner, redis_url: str):
         await docket.strike("example_task")
 
     async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        result = await run_cli(
-            "restore",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "example_task",
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                "restore",
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+                "example_task",
+            ],
         )
 
         assert result.exit_code == 0, result.output
@@ -110,16 +128,21 @@ async def test_task_only_restore(runner: CliRunner, redis_url: str):
 async def test_parameter_only_strike(runner: CliRunner, redis_url: str):
     """Should strike tasks with matching parameter conditions regardless of task name"""
     async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        result = await run_cli(
-            "strike",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "",
-            "some_parameter",
-            "==",
-            "some_value",
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                "strike",
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+                "",
+                "some_parameter",
+                "==",
+                "some_value",
+            ],
         )
 
         assert result.exit_code == 0, result.output
@@ -138,16 +161,21 @@ async def test_parameter_only_restore(runner: CliRunner, redis_url: str):
     async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
         await docket.strike("", "some_parameter", "==", "some_value")
 
-        result = await run_cli(
-            "restore",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "",
-            "some_parameter",
-            "==",
-            "some_value",
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                "restore",
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+                "",
+                "some_parameter",
+                "==",
+                "some_value",
+            ],
         )
 
         assert result.exit_code == 0, result.output
@@ -164,13 +192,18 @@ async def test_strike_with_no_function_or_parameter(
 ):
     """Should fail when neither function nor parameter is provided"""
     async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        result = await run_cli(
-            operation,
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "",
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            runner.invoke,
+            app,
+            [
+                operation,
+                "--url",
+                docket.url,
+                "--docket",
+                docket.name,
+                "",
+            ],
         )
 
         assert result.exit_code != 0, result.output
