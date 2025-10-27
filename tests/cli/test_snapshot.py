@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import os
 from types import TracebackType
 
 import asyncio
@@ -13,6 +14,12 @@ from docket.docket import Docket, DocketSnapshot, RunningExecution, WorkerInfo
 from docket.execution import Execution
 from docket.worker import Worker
 from tests.cli.utils import run_cli
+
+# Skip CLI tests when using memory backend since CLI rejects memory:// URLs
+pytestmark = pytest.mark.skipif(
+    os.environ.get("REDIS_VERSION") == "memory",
+    reason="CLI commands require a persistent Redis backend",
+)
 
 
 @pytest.fixture(autouse=True)

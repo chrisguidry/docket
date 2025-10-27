@@ -1,10 +1,17 @@
 from datetime import datetime, timedelta, timezone
+import os
 from unittest.mock import AsyncMock
 
 import pytest
 
 from docket.docket import Docket
 from tests.cli.utils import run_cli
+
+# Skip CLI tests when using memory backend since CLI rejects memory:// URLs
+pytestmark = pytest.mark.skipif(
+    os.environ.get("REDIS_VERSION") == "memory",
+    reason="CLI commands require a persistent Redis backend",
+)
 
 
 @pytest.fixture(autouse=True)

@@ -1,6 +1,7 @@
 import inspect
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 import pytest
@@ -9,6 +10,12 @@ from docket.docket import Docket
 from docket.tasks import trace
 from docket.worker import Worker
 from tests.cli.utils import run_cli
+
+# Skip CLI tests when using memory backend since CLI rejects memory:// URLs
+pytestmark = pytest.mark.skipif(
+    os.environ.get("REDIS_VERSION") == "memory",
+    reason="CLI commands require a persistent Redis backend",
+)
 
 
 @pytest.fixture(autouse=True)

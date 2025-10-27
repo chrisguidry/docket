@@ -1,6 +1,7 @@
 import asyncio
 import decimal
 from datetime import timedelta
+import os
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -9,6 +10,12 @@ import pytest
 from docket.cli import interpret_python_value
 from docket.docket import Docket
 from tests.cli.utils import run_cli
+
+# Skip CLI tests when using memory backend since CLI rejects memory:// URLs
+pytestmark = pytest.mark.skipif(
+    os.environ.get("REDIS_VERSION") == "memory",
+    reason="CLI commands require a persistent Redis backend",
+)
 
 
 async def test_strike(redis_url: str):

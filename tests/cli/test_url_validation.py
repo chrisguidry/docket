@@ -50,16 +50,10 @@ async def test_memory_url_rejected(cli_args: list[str]):
         "unix:///var/run/redis.sock",
     ],
 )
-async def test_valid_urls_accepted(valid_url: str, redis_url: str):
-    """Should accept valid Redis URL schemes"""
-    # We're just testing that the validation doesn't reject valid URLs
-    # We'll use the worker command with --until-finished so it exits quickly
-    result = await run_cli(
-        "worker",
-        "--until-finished",
-        "--url",
-        redis_url,  # Use actual working redis URL
-        "--docket",
-        "test-docket-validation",
-    )
-    assert result.exit_code == 0
+def test_valid_urls_accepted(valid_url: str):
+    """Should accept valid Redis URL schemes without raising validation errors"""
+    from docket.cli import validate_url
+
+    # Should not raise any exceptions - just testing validation logic
+    result = validate_url(valid_url)
+    assert result == valid_url

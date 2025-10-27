@@ -1,10 +1,17 @@
 import logging
+import os
 
 import pytest
 
 from docket.docket import Docket
 from docket.worker import Worker
 from tests.cli.utils import run_cli
+
+# Skip CLI tests when using memory backend since CLI rejects memory:// URLs
+pytestmark = pytest.mark.skipif(
+    os.environ.get("REDIS_VERSION") == "memory",
+    reason="CLI commands require a persistent Redis backend",
+)
 
 
 async def test_trace_command(
