@@ -114,6 +114,22 @@ def set_logging_level(level: LogLevel) -> None:
     logging.getLogger().setLevel(level.value)
 
 
+def validate_url(url: str) -> str:
+    """
+    Validate that the provided URL is compatible with the CLI.
+
+    The memory:// backend is not compatible with the CLI as it doesn't persist
+    across processes.
+    """
+    if url.startswith("memory://"):
+        raise typer.BadParameter(
+            "The memory:// URL scheme is not supported by the CLI.\n"
+            "The memory backend does not persist across processes.\n"
+            "Please use a persistent backend like Redis or Valkey."
+        )
+    return url
+
+
 def handle_strike_wildcard(value: str) -> str | None:
     if value in ("", "*"):
         return None
@@ -178,6 +194,7 @@ def worker(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
     name: Annotated[
@@ -336,6 +353,7 @@ def strike(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:
@@ -373,6 +391,7 @@ def clear(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:
@@ -425,6 +444,7 @@ def restore(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:
@@ -468,6 +488,7 @@ def trace(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
     message: Annotated[
@@ -511,6 +532,7 @@ def fail(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
     message: Annotated[
@@ -554,6 +576,7 @@ def sleep(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
     seconds: Annotated[
@@ -688,6 +711,7 @@ def snapshot(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
     stats: Annotated[
@@ -840,6 +864,7 @@ def list_workers(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:
@@ -876,6 +901,7 @@ def workers_for_task(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:

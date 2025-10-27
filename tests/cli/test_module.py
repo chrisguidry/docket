@@ -1,22 +1,10 @@
-import asyncio
-import subprocess
-import sys
-
 import docket
+from tests.cli.utils import run_cli
 
 
 async def test_module_invocation_as_cli_entrypoint():
     """Should allow invoking docket as a module with python -m docket."""
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "docket",
-        "version",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    result = await run_cli("version")
 
-    stdout, stderr = await process.communicate()
-
-    assert process.returncode == 0, stderr.decode()
-    assert stdout.decode().strip() == docket.__version__
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == docket.__version__
