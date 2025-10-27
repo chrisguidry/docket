@@ -66,12 +66,10 @@ async def test_snapshot_with_running_tasks(docket: Docket):
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
 
-    await docket.add(tasks.sleep)(1)
+    await docket.add(tasks.sleep)(5)
 
     async with Worker(docket, name="test-worker") as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
-
-        await asyncio.sleep(0.1)
 
         result = await run_cli(
             "snapshot",
@@ -197,8 +195,6 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
 
-        await asyncio.sleep(0.1)
-
         result = await run_cli(
             "snapshot",
             "--stats",
@@ -266,8 +262,8 @@ async def test_snapshot_stats_with_running_tasks_only(docket: Docket):
     docket.heartbeat_interval = heartbeat
 
     # Add tasks that will be picked up immediately by worker
-    await docket.add(tasks.sleep)(1)
-    await docket.add(tasks.sleep)(1)
+    await docket.add(tasks.sleep)(5)
+    await docket.add(tasks.sleep)(5)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
