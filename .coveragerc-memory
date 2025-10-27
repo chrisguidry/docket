@@ -1,0 +1,10 @@
+# Coverage configuration for memory backend testing
+# CLI tests are skipped with memory:// URLs, so exclude CLI from coverage
+
+[run]
+branch = true
+parallel = true
+omit =
+    src/docket/__main__.py
+    src/docket/cli.py
+    tests/cli/test_*.py

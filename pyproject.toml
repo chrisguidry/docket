@@ -67,11 +67,7 @@ docs = [
     "mkdocstrings>=0.24.1",
     "mkdocstrings-python>=1.8.0",
 ]
-examples = [
-    "fastapi>=0.120.0",
-    "pydantic>=2.11.10",
-    "uvicorn>=0.38.0",
-]
+examples = ["fastapi>=0.120.0", "pydantic>=2.11.10", "uvicorn>=0.38.0"]
 
 [project.scripts]
 docket = "docket.__main__:app"
@@ -109,6 +105,8 @@ filterwarnings = ["error"]
 
 [tool.coverage.run]
 omit = ["src/docket/__main__.py"]
+branch = true
+parallel = true
 
 [tool.pyright]
 include = ["src", "tests"]
