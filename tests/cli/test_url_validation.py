@@ -62,10 +62,4 @@ async def test_valid_urls_accepted(valid_url: str, redis_url: str):
         "--docket",
         "test-docket-validation",
     )
-
-    # Should succeed (or fail for legitimate reasons, not URL validation)
-    # The key is that it doesn't fail with the validation error message
-    if result.exit_code != 0:
-        # If it failed, make sure it's not because of URL validation
-        assert "not supported" not in result.output.lower()
-        assert "memory://" not in result.output.lower()
+    assert result.exit_code == 0
