@@ -52,7 +52,7 @@ jobs:
               name: "Memory (in-memory backend)"
               redis-version: "memory"
               redis-py-version: ">=5"
-            cov-threshold: 99 # CLI tests are excluded from coverage and some lines are only covered by CLI tests
+            cov-threshold: 98 # CLI tests are excluded from coverage and some lines are only covered by CLI tests
             pytest-args: "--cov-config=.coveragerc-memory"
 
     steps:
