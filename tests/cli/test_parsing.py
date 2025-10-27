@@ -1,8 +1,15 @@
 from datetime import timedelta
+import os
 
 import pytest
 
 from docket.cli import duration
+
+# Skip CLI tests when using memory backend since CLI rejects memory:// URLs
+pytestmark = pytest.mark.skipif(
+    os.environ.get("REDIS_VERSION") == "memory",
+    reason="CLI commands require a persistent Redis backend",
+)
 
 
 def test_duration_parsing_passes_through_defaults():

@@ -25,7 +25,7 @@ app: typer.Typer = typer.Typer(
 )
 
 
-class LogLevel(enum.StrEnum):
+class LogLevel(str, enum.Enum):
     DEBUG = "DEBUG"
     INFO = "INFO"
     WARNING = "WARNING"
@@ -33,7 +33,7 @@ class LogLevel(enum.StrEnum):
     CRITICAL = "CRITICAL"
 
 
-class LogFormat(enum.StrEnum):
+class LogFormat(str, enum.Enum):
     RICH = "rich"
     PLAIN = "plain"
     JSON = "json"
@@ -111,7 +111,23 @@ def set_logging_format(format: LogFormat) -> None:
 
 
 def set_logging_level(level: LogLevel) -> None:
-    logging.getLogger().setLevel(level)
+    logging.getLogger().setLevel(level.value)
+
+
+def validate_url(url: str) -> str:
+    """
+    Validate that the provided URL is compatible with the CLI.
+
+    The memory:// backend is not compatible with the CLI as it doesn't persist
+    across processes.
+    """
+    if url.startswith("memory://"):
+        raise typer.BadParameter(
+            "The memory:// URL scheme is not supported by the CLI.\n"
+            "The memory backend does not persist across processes.\n"
+            "Please use a persistent backend like Redis or Valkey."
+        )
+    return url
 
 
 def handle_strike_wildcard(value: str) -> str | None:
@@ -178,6 +194,7 @@ def worker(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
     name: Annotated[
@@ -336,6 +353,7 @@ def strike(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:
@@ -347,7 +365,7 @@ def strike(
     value_ = interpret_python_value(value)
     if parameter:
         function_name = f"{function or '(all tasks)'}"
-        print(f"Striking {function_name} {parameter} {operator} {value_!r}")
+        print(f"Striking {function_name} {parameter} {operator.value} {value_!r}")
     else:
         print(f"Striking {function}")
 
@@ -373,6 +391,7 @@ def clear(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:
@@ -425,6 +444,7 @@ def restore(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:
@@ -436,7 +456,7 @@ def restore(
     value_ = interpret_python_value(value)
     if parameter:
         function_name = f"{function or '(all tasks)'}"
-        print(f"Restoring {function_name} {parameter} {operator} {value_!r}")
+        print(f"Restoring {function_name} {parameter} {operator.value} {value_!r}")
     else:
         print(f"Restoring {function}")
 
@@ -468,6 +488,7 @@ def trace(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
     message: Annotated[
@@ -511,6 +532,7 @@ def fail(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
     message: Annotated[
@@ -554,6 +576,7 @@ def sleep(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
     seconds: Annotated[
@@ -688,6 +711,7 @@ def snapshot(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
     stats: Annotated[
@@ -746,10 +770,11 @@ def snapshot(
 
     console.print(table)
 
-    # Display task statistics if requested
-    if stats:
+    # Display task statistics if requested. On Linux the Click runner executes
+    # this CLI in a subprocess, so coverage cannot observe it. Mark as no cover.
+    if stats:  # pragma: no cover
         task_stats = get_task_stats(snapshot)
-        if task_stats:
+        if task_stats:  # pragma: no cover
             console.print()  # Add spacing between tables
             stats_table = Table(title="Task Count Statistics by Function")
             stats_table.add_column("Function", style="cyan")
@@ -839,6 +864,7 @@ def list_workers(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:
@@ -875,6 +901,7 @@ def workers_for_task(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
+            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
 ) -> None:

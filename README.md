@@ -63,7 +63,7 @@ reference](https://chrisguidry.github.io/docket/api-reference/).
 ## Installing `docket`
 
 Docket is [available on PyPI](https://pypi.org/project/pydocket/) under the package name
-`pydocket`. It targets Python 3.12 or above.
+`pydocket`. It targets Python 3.10 or above.
 
 With [`uv`](https://docs.astral.sh/uv/):
 

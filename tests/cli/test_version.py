@@ -1,20 +1,19 @@
 from packaging.version import Version
-from typer.testing import CliRunner
 
 from docket import __version__
-from docket.cli import app
+from tests.cli.utils import run_cli
 
 
-def test_version_command(runner: CliRunner):
+async def test_version_command():
     """Should print the current version of Docket."""
-    result = runner.invoke(app, ["version"])
+    result = await run_cli("version")
     assert result.exit_code == 0
     assert result.stdout.strip() == __version__
 
 
-def test_version_matches_semantic_versioning(runner: CliRunner):
+async def test_version_matches_semantic_versioning():
     """Should ensure the version follows semantic versioning format."""
-    result = runner.invoke(app, ["version"])
+    result = await run_cli("version")
     version = result.stdout.strip()
 
     parsed_version = Version(version)

@@ -6,13 +6,12 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import (
-    Coroutine,
-    Mapping,
-    Protocol,
-    Self,
-    cast,
-)
+from typing import Coroutine, Mapping, Protocol, cast
+
+if sys.version_info < (3, 11):  # pragma: no cover
+    from exceptiongroup import ExceptionGroup
+
+from typing_extensions import Self
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
@@ -167,16 +166,18 @@ class Worker:
                 for task_path in tasks:
                     docket.register_collection(task_path)
 
-                async with Worker(
-                    docket=docket,
-                    name=name,
-                    concurrency=concurrency,
-                    redelivery_timeout=redelivery_timeout,
-                    reconnection_delay=reconnection_delay,
-                    minimum_check_interval=minimum_check_interval,
-                    scheduling_resolution=scheduling_resolution,
-                    schedule_automatic_tasks=schedule_automatic_tasks,
-                ) as worker:
+                async with (
+                    Worker(  # pragma: no branch - context manager exit varies across interpreters
+                        docket=docket,
+                        name=name,
+                        concurrency=concurrency,
+                        redelivery_timeout=redelivery_timeout,
+                        reconnection_delay=reconnection_delay,
+                        minimum_check_interval=minimum_check_interval,
+                        scheduling_resolution=scheduling_resolution,
+                        schedule_automatic_tasks=schedule_automatic_tasks,
+                    ) as worker
+                ):
                     if until_finished:
                         await worker.run_until_finished()
                     else:

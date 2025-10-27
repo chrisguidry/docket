@@ -7,20 +7,24 @@ name = "pydocket"
 dynamic = ["version"]
 description = "A distributed background task system for Python functions"
 readme = { file = "README.md", content-type = "text/markdown" }
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Chris Guidry", email = "guid@omg.lol" }]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Typing :: Typed",
 ]
 dependencies = [
     "cloudpickle>=3.1.1",
+    "exceptiongroup>=1.2.0; python_version < '3.11'",
     "opentelemetry-api>=1.30.0",
     "opentelemetry-exporter-prometheus>=0.51b0",
     "prometheus-client>=0.21.1",
@@ -28,6 +32,7 @@ dependencies = [
     "redis>=4.6",
     "rich>=13.9.4",
     "typer>=0.15.1",
+    "typing_extensions>=4.12.0",
     "uuid7>=0.1.0",
 ]
 
@@ -39,7 +44,7 @@ dev = [
     # This fixes xpending_range to return all 4 required fields (message_id, consumer,
     # time_since_delivered, times_delivered) instead of just 2, matching Redis behavior
     "fakeredis[lua] @ git+https://github.com/zzstoatzz/fakeredis-py.git@fix-xpending-range-fields",
-    "ipython>=9.0.1",
+    "ipython>=8.0.0",
     "mypy>=1.14.1",
     "opentelemetry-distro>=0.51b0",
     "opentelemetry-exporter-otlp>=1.30.0",
@@ -50,7 +55,7 @@ dev = [
     "pre-commit>=4.1.0",
     "pyright>=1.1.398",
     "pytest>=8.3.4",
-    "pytest-aio>=1.9.0",
+    "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
     "pytest-xdist>=3.6.1",
     "ruff>=0.9.7",
@@ -62,11 +67,7 @@ docs = [
     "mkdocstrings>=0.24.1",
     "mkdocstrings-python>=1.8.0",
 ]
-examples = [
-    "fastapi>=0.120.0",
-    "pydantic>=2.11.10",
-    "uvicorn>=0.38.0",
-]
+examples = ["fastapi>=0.120.0", "pydantic>=2.11.10", "uvicorn>=0.38.0"]
 
 [project.scripts]
 docket = "docket.__main__:app"
@@ -86,7 +87,7 @@ allow-direct-references = true
 packages = ["src/docket"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py310"
 
 [tool.pytest.ini_options]
 addopts = [
@@ -97,7 +98,15 @@ addopts = [
     "--cov-report=term-missing",
     "--cov-branch",
 ]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
 filterwarnings = ["error"]
+
+[tool.coverage.run]
+omit = ["src/docket/__main__.py"]
+branch = true
+parallel = true
 
 [tool.pyright]
 include = ["src", "tests"]
