@@ -27,9 +27,14 @@ jobs:
           - name: "Memory (in-memory backend)"
             redis-version: "memory"
             redis-py-version: ">=5"
+        exclude:
+          # Python 3.10 + Redis 6.2 + redis-py <5 combination is skipped
+          - python-version: "3.10"
+            backend:
+              name: "Redis 6.2, redis-py <5"
+              redis-version: "6.2"
+              redis-py-version: ">=4.6,<5"
         include:
-          # Python 3.10 hangs when we include the CLI tests, so ignore it and
-          # use a lower threshold to compensate
           - python-version: "3.10"
             cov-threshold: 100
             pytest-args: ""
