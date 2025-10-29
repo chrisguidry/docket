@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import Coroutine, Mapping, Protocol, cast
 
+from docket.state import TaskStateStore
+
 if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
 
@@ -683,6 +685,11 @@ class Worker:
                     if concurrency_limit and not concurrency_limit.is_bypassed:
                         async with self.docket.redis() as redis:
                             await self._release_concurrency_slot(redis, execution)
+
+                # Mark progress as completed
+                async with self.docket.redis() as redis:
+                    progress_store = TaskStateStore(self.docket, self.docket.record_ttl)
+                    await progress_store.mark_task_completed(execution.key)
 
                 TASKS_RUNNING.add(-1, counter_labels)
                 TASKS_COMPLETED.add(1, counter_labels)

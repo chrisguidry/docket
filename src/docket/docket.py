@@ -31,6 +31,8 @@ from opentelemetry import propagate, trace
 from redis.asyncio import ConnectionPool, Redis
 from uuid_extensions import uuid7
 
+from docket.state import ProgressInfo, TaskStateStore
+
 from .execution import (
     Execution,
     LiteralOperator,
@@ -153,6 +155,7 @@ class Docket:
         url: str = "redis://localhost:6379/0",
         heartbeat_interval: timedelta = timedelta(seconds=2),
         missed_heartbeats: int = 5,
+        record_ttl: int = 86400,
     ) -> None:
         """
         Args:
@@ -167,11 +170,14 @@ class Docket:
             heartbeat_interval: How often workers send heartbeat messages to the docket.
             missed_heartbeats: How many heartbeats a worker can miss before it is
                 considered dead.
+            record_ttl: Time-to-live in seconds for task records like progress and state
+                (default: 86400 = 24 hours).
         """
         self.name = name
         self.url = url
         self.heartbeat_interval = heartbeat_interval
         self.missed_heartbeats = missed_heartbeats
+        self.record_ttl = record_ttl
         self._schedule_task_script = None
         self._cancel_task_script = None
 
@@ -731,6 +737,18 @@ class Docket:
                 logger.exception("Error monitoring strikes")
                 await asyncio.sleep(1)
 
+    async def get_progress(self, key: str) -> "ProgressInfo | None":
+        """Get progress information for a task.
+
+        Args:
+            key: Task key
+
+        Returns:
+            ProgressInfo if progress exists, None otherwise
+        """
+        store = TaskStateStore(self, self.record_ttl)
+        return await store.get_task_progress(key)
+
     async def snapshot(self) -> DocketSnapshot:
         """Get a snapshot of the Docket, including which tasks are scheduled or currently
         running, as well as which workers are active.
@@ -806,6 +824,14 @@ class Docket:
             function = self.tasks[message[b"function"].decode()]
             execution = Execution.from_message(function, message)
             future.append(execution)
+
+        # Attach progress information to all executions
+        async with self.redis() as r:
+            progress_store = TaskStateStore(self, self.record_ttl)
+            for execution in future + running:
+                progress_info = await progress_store.get_task_progress(execution.key)
+                if progress_info:
+                    execution.with_progress(progress_info)
 
         workers = await self.workers()
 

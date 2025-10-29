@@ -6,6 +6,7 @@ import pytest
 import redis.exceptions
 
 from docket.docket import Docket
+from docket.state import ProgressInfo, TaskStateStore
 
 
 async def test_docket_aenter_propagates_connection_errors():
@@ -166,3 +167,52 @@ async def test_clear_no_redis_key_leaks(docket: Docket, the_task: AsyncMock):
     snapshot = await docket.snapshot()
     assert len(snapshot.future) == 0
     assert len(snapshot.running) == 0
+
+
+async def test_get_progress_nonexistent(docket: Docket):
+    """Getting progress for nonexistent task should return None."""
+    progress = await docket.get_progress("nonexistent-key")
+    assert progress is None
+
+
+async def test_get_progress(docket: Docket, the_task: AsyncMock):
+    """Getting progress for a task should return ProgressInfo."""
+    docket.register(the_task)
+    execution = await docket.add(the_task, key="test-key")()
+
+    # Create progress for this task
+    store = TaskStateStore(docket, docket.record_ttl)
+    await store.create_task_state(execution.key)
+    await store.set_task_progress(execution.key, ProgressInfo(current=50, total=100))
+
+    # Get progress via docket method
+    progress = await docket.get_progress(execution.key)
+    assert progress is not None
+    assert progress.current == 50
+    assert progress.total == 100
+
+
+async def test_snapshot_with_progress(docket: Docket, the_task: AsyncMock):
+    """Snapshot should include progress info when available."""
+    docket.register(the_task)
+    execution = await docket.add(the_task, key="test-key")()
+
+    # Create progress for this task
+    store = TaskStateStore(docket, docket.record_ttl)
+    await store.create_task_state(execution.key)
+    await store.set_task_progress(execution.key, ProgressInfo(current=75, total=100))
+
+    # Get snapshot
+    snapshot = await docket.snapshot()
+
+    # Find our execution in the snapshot
+    found = False
+    for exec in snapshot.future:
+        if exec.key == execution.key:  # pragma: no cover
+            found = True
+            assert exec.progress is not None
+            assert exec.progress.current == 75
+            assert exec.progress.total == 100
+            break
+
+    assert found, "Execution with progress should be in snapshot"

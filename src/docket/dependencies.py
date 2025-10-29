@@ -24,6 +24,8 @@ from typing import (
 from .docket import Docket
 from .execution import Execution, TaskFunction, get_signature
 from .instrumentation import CACHE_SIZE
+from .state import ProgressInfo, TaskStateStore
+
 
 if TYPE_CHECKING:  # pragma: no cover
     from .worker import Worker
@@ -650,6 +652,95 @@ class ConcurrencyLimit(Dependency):
     def is_bypassed(self) -> bool:
         """Returns True if concurrency control is bypassed due to missing arguments."""
         return self._initialized and self._concurrency_key is None
+
+
+class Progress(Dependency):
+    """Allows a task to report intermediate progress during execution.
+
+    Progress is stored in Redis and persists after task completion as a tombstone
+    record (with TTL). Visible via snapshots or get_progress().
+
+    Example:
+
+    ```python
+    @task
+    async def long_running(progress: Progress = Progress()) -> None:
+        batch = get_some_work()
+        await progress.set_total(len(batch))
+        for item in batch:
+            do_some_work(item)
+            await progress.increment()  # default 1
+    ```
+    """
+
+    single: bool = True
+
+    def __init__(self) -> None:
+        # Track current state
+        self._current: int = 0
+
+    async def __aenter__(self) -> "Progress":
+        execution = self.execution.get()
+        docket = self.docket.get()
+
+        self._key = execution.key
+        self._docket = docket
+        self._total = 100
+        self._current = 0
+        self._store = TaskStateStore(docket, docket.record_ttl)
+
+        await self._store.set_task_progress(
+            self._key, ProgressInfo(current=self._current, total=self._total)
+        )
+
+        return self
+
+    async def __aexit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> bool:
+        """No cleanup needed - updates are applied immediately."""
+        return False
+
+    async def set_total(self, total: int) -> None:
+        """Set the total expected progress value.
+
+        Args:
+            total: Total expected progress value
+        """
+        self._total = total
+        await self._store.set_task_progress(
+            self._key, ProgressInfo(current=self._current, total=self._total)
+        )
+
+    async def increment(self, amount: int = 1) -> None:
+        """Increment progress by the given amount (default 1).
+
+        Args:
+            amount: Amount to increment by (default 1)
+        """
+        self._current = await self._store.increment_task_progress(self._key, amount)
+
+    async def set(self, current: int) -> None:
+        """Set the current progress value directly.
+
+        Args:
+            current: Current progress value
+        """
+        self._current = current
+        await self._store.set_task_progress(
+            self._key, ProgressInfo(current=self._current, total=self._total)
+        )
+
+    async def get(self) -> "ProgressInfo | None":
+        """Get current progress info.
+
+        Returns:
+            ProgressInfo if progress exists, None otherwise
+        """
+        return await self._store.get_task_progress(self._key)
 
 
 D = TypeVar("D", bound=Dependency)

@@ -18,6 +18,7 @@ from .dependencies import (
     Depends,
     ExponentialRetry,
     Perpetual,
+    Progress,
     Retry,
     TaskArgument,
     TaskKey,
@@ -26,6 +27,7 @@ from .dependencies import (
 )
 from .docket import Docket
 from .execution import Execution
+from .state import ProgressInfo
 from .worker import Worker
 
 __all__ = [
@@ -41,6 +43,8 @@ __all__ = [
     "ExponentialRetry",
     "Logged",
     "Perpetual",
+    "Progress",
+    "ProgressInfo",
     "Retry",
     "TaskArgument",
     "TaskKey",

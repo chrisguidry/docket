@@ -3,7 +3,16 @@ import enum
 import inspect
 import logging
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Hashable, Literal, Mapping, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Hashable,
+    Literal,
+    Mapping,
+    cast,
+)
 
 from typing_extensions import Self
 
@@ -13,6 +22,9 @@ from opentelemetry import propagate, trace
 
 from .annotations import Logged
 from .instrumentation import CACHE_SIZE, message_getter
+
+if TYPE_CHECKING:
+    from .state import ProgressInfo
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -60,6 +72,7 @@ class Execution:
         self.attempt = attempt
         self.trace_context = trace_context
         self.redelivered = redelivered
+        self.progress: "ProgressInfo | None" = None
 
     def as_message(self) -> Message:
         return {
@@ -99,6 +112,18 @@ class Execution:
         signature = get_signature(self.function)
         bound_args = signature.bind(*self.args, **self.kwargs)
         return bound_args.arguments[parameter]
+
+    def with_progress(self, progress: "ProgressInfo") -> Self:
+        """Attach progress information to this execution.
+
+        Args:
+            progress: Progress information to attach
+
+        Returns:
+            Self for method chaining
+        """
+        self.progress = progress
+        return self
 
     def call_repr(self) -> str:
         arguments: list[str] = []

@@ -449,3 +449,69 @@ async def test_mixed_nested_dependencies(docket: Docket, worker: Worker):
     await worker.run_until_finished()
 
     assert called
+
+
+async def test_progress_dependency(docket: Docket, worker: Worker):
+    """Progress dependency should track task progress"""
+    from docket.dependencies import Progress
+    from docket.state import ProgressInfo, TaskStateStore
+
+    progress_values: list[ProgressInfo] = []
+
+    async def task_with_progress(progress: Progress = Progress()):
+        # Set total
+        await progress.set_total(200)
+
+        # Increment progress
+        await progress.increment(50)
+        await progress.increment(50)
+
+        # Set progress directly
+        await progress.set(150)
+
+        # Get current progress
+        current = await progress.get()
+        if current:
+            progress_values.append(current)
+
+    docket.register(task_with_progress)
+    execution = await docket.add(task_with_progress, key="progress-test")()
+    await worker.run_until_finished()
+
+    # Verify progress was tracked during execution
+    assert len(progress_values) == 1
+    assert progress_values[0] is not None
+    assert progress_values[0].current == 150
+    assert progress_values[0].total == 200
+
+    # Note: After task completion, progress may be marked complete (current=total)
+    # This is expected behavior for the Progress tracking system
+    store = TaskStateStore(docket, docket.record_ttl)
+    final_progress = await store.get_task_progress(execution.key)
+    assert final_progress is not None
+    assert final_progress.total == 200
+    # Progress completion tracking may set current to total
+    assert final_progress.current in [150, 200]
+
+
+async def test_progress_dependency_context_manager(docket: Docket, worker: Worker):
+    """Progress dependency should work as async context manager"""
+    from docket.dependencies import Progress
+
+    entered = False
+    exited = False
+
+    async def task_with_progress_context(progress: Progress = Progress()):
+        nonlocal entered, exited
+        entered = True
+        # Progress context is already entered when injected
+        await progress.set_total(100)
+        await progress.increment(25)
+        exited = True  # Will be set before __aexit__
+
+    docket.register(task_with_progress_context)
+    await docket.add(task_with_progress_context, key="progress-ctx-test")()
+    await worker.run_until_finished()
+
+    assert entered
+    assert exited
