@@ -536,6 +536,10 @@ class Worker:
         if execution.key in self._execution_counts:
             self._execution_counts[execution.key] += 1
 
+        # Create task state record for progress tracking
+        store = TaskStateStore(self.docket, self.docket.record_ttl)
+        await store.create_task_state(execution.key)
+
         start = time.time()
         punctuality = start - execution.when.timestamp()
         log_context = {**log_context, "punctuality": punctuality}

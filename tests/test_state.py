@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 
 
-from docket import Docket
+from docket import Docket, Worker
 from docket.state import ProgressInfo, TaskState, TaskStateStore
 
 
@@ -439,3 +439,45 @@ class TestTaskStateStore:
         assert progress.current == 500
         assert progress.total == 500
         assert progress.percentage == 100.0
+
+
+class TestWorkerStateIntegration:
+    """Tests for worker integration with task state."""
+
+    async def test_worker_creates_state_before_execution(
+        self, docket: Docket, worker: Worker
+    ):
+        """Worker should create task state record before starting execution."""
+        task_started = False
+        state_checked = False
+
+        async def tracked_task():
+            nonlocal task_started, state_checked
+            task_started = True
+
+            # Verify state was created before task execution
+            store = TaskStateStore(docket, docket.record_ttl)
+            state = await store.get_task_state("tracked-task")
+
+            assert state is not None, "Task state should exist during execution"
+            assert state.progress.current == 0
+            assert state.progress.total == 100
+            assert state.started_at is not None
+            assert state.completed_at is None
+
+            state_checked = True
+
+        docket.register(tracked_task)
+        await docket.add(tracked_task, key="tracked-task")()
+
+        await worker.run_until_finished()
+
+        assert task_started, "Task should have been executed"
+        assert state_checked, "State should have been checked during execution"
+
+        # Verify state was marked complete after execution
+        store = TaskStateStore(docket, docket.record_ttl)
+        final_state = await store.get_task_state("tracked-task")
+        assert final_state is not None
+        assert final_state.completed_at is not None
+        assert final_state.progress.current == final_state.progress.total
