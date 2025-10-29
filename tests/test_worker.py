@@ -1658,8 +1658,8 @@ async def test_redis_key_cleanup_successful_task(
         # Verify task executed successfully
         assert task_executed, "Task should have executed successfully"
 
-        # Verify cleanup
-        await checker.verify_keys_returned_to_baseline("successful task execution")
+        # Verify state and progress keys were created
+        await checker.verify_keys_increased("successful task execution")
 
 
 async def test_redis_key_cleanup_failed_task(docket: Docket, worker: Worker) -> None:
@@ -1691,8 +1691,8 @@ async def test_redis_key_cleanup_failed_task(docket: Docket, worker: Worker) -> 
         # Verify task was attempted
         assert task_attempted, "Task should have been attempted"
 
-        # Verify cleanup despite failure
-        await checker.verify_keys_returned_to_baseline("failed task execution")
+        # Verify state and progress keys were created
+        await checker.verify_keys_increased("failed task execution")
 
 
 async def test_redis_key_cleanup_cancelled_task(docket: Docket, worker: Worker) -> None:
