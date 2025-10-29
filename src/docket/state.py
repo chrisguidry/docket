@@ -173,7 +173,9 @@ class TaskStateStore:
         async with TaskStateStore._script_load_lock:
             # Double-check: another task may have loaded it while we waited
             if TaskStateStore._completion_script_sha is not None:
-                return TaskStateStore._completion_script_sha
+                return (
+                    TaskStateStore._completion_script_sha  # pragma: no cover difficult to cover race condition
+                )
 
             # Load script
             logger.debug("Loading Lua completion script")
