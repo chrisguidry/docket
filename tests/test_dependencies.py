@@ -515,3 +515,88 @@ async def test_progress_dependency_context_manager(docket: Docket, worker: Worke
 
     assert entered
     assert exited
+
+
+async def test_progress_set_total_validation(docket: Docket, worker: Worker):
+    """Progress.set_total() should validate input."""
+    from docket.dependencies import Progress
+
+    validation_error = None
+
+    async def task_with_invalid_total(progress: Progress = Progress()):
+        nonlocal validation_error
+        try:
+            await progress.set_total(-10)
+        except ValueError as e:
+            validation_error = e
+
+    docket.register(task_with_invalid_total)
+    await docket.add(task_with_invalid_total, key="validation-test")()
+    await worker.run_until_finished()
+
+    assert validation_error is not None
+    assert "must be positive" in str(validation_error)
+
+
+async def test_progress_set_total_zero_validation(docket: Docket, worker: Worker):
+    """Progress.set_total() should reject zero."""
+    from docket.dependencies import Progress
+
+    validation_error = None
+
+    async def task_with_zero_total(progress: Progress = Progress()):
+        nonlocal validation_error
+        try:
+            await progress.set_total(0)
+        except ValueError as e:
+            validation_error = e
+
+    docket.register(task_with_zero_total)
+    await docket.add(task_with_zero_total, key="zero-validation-test")()
+    await worker.run_until_finished()
+
+    assert validation_error is not None
+    assert "must be positive" in str(validation_error)
+
+
+async def test_progress_set_negative_validation(docket: Docket, worker: Worker):
+    """Progress.set() should validate negative values."""
+    from docket.dependencies import Progress
+
+    validation_error = None
+
+    async def task_with_negative_current(progress: Progress = Progress()):
+        nonlocal validation_error
+        try:
+            await progress.set(-5)
+        except ValueError as e:
+            validation_error = e
+
+    docket.register(task_with_negative_current)
+    await docket.add(task_with_negative_current, key="negative-validation-test")()
+    await worker.run_until_finished()
+
+    assert validation_error is not None
+    assert "must be non-negative" in str(validation_error)
+
+
+async def test_progress_set_exceeds_total_validation(docket: Docket, worker: Worker):
+    """Progress.set() should validate current doesn't exceed total."""
+    from docket.dependencies import Progress
+
+    validation_error = None
+
+    async def task_with_exceeding_current(progress: Progress = Progress()):
+        nonlocal validation_error
+        await progress.set_total(100)
+        try:
+            await progress.set(150)
+        except ValueError as e:
+            validation_error = e
+
+    docket.register(task_with_exceeding_current)
+    await docket.add(task_with_exceeding_current, key="exceeds-validation-test")()
+    await worker.run_until_finished()
+
+    assert validation_error is not None
+    assert "cannot exceed total" in str(validation_error)

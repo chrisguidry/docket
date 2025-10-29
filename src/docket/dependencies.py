@@ -680,12 +680,14 @@ class Progress(Dependency):
         self._current: int = 0
 
     async def __aenter__(self) -> "Progress":
+        from docket.state import DEFAULT_PROGRESS_TOTAL
+
         execution = self.execution.get()
         docket = self.docket.get()
 
         self._key = execution.key
         self._docket = docket
-        self._total = 100
+        self._total = DEFAULT_PROGRESS_TOTAL
         self._current = 0
         self._store = TaskStateStore(docket, docket.record_ttl)
 
@@ -708,8 +710,13 @@ class Progress(Dependency):
         """Set the total expected progress value.
 
         Args:
-            total: Total expected progress value
+            total: Total expected progress value (must be positive)
+
+        Raises:
+            ValueError: If total is not positive
         """
+        if total <= 0:
+            raise ValueError(f"Progress total must be positive, got {total}")
         self._total = total
         await self._store.set_task_progress(
             self._key, ProgressInfo(current=self._current, total=self._total)
@@ -727,8 +734,17 @@ class Progress(Dependency):
         """Set the current progress value directly.
 
         Args:
-            current: Current progress value
+            current: Current progress value (must be non-negative and <= total)
+
+        Raises:
+            ValueError: If current is negative or exceeds total
         """
+        if current < 0:
+            raise ValueError(f"Progress current must be non-negative, got {current}")
+        if current > self._total:
+            raise ValueError(
+                f"Progress current ({current}) cannot exceed total ({self._total})"
+            )
         self._current = current
         await self._store.set_task_progress(
             self._key, ProgressInfo(current=self._current, total=self._total)

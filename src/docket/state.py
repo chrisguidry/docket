@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
@@ -6,6 +7,12 @@ from redis.exceptions import NoScriptError
 
 if TYPE_CHECKING:
     from docket import Docket
+
+logger: logging.Logger = logging.getLogger(__name__)
+
+
+# Default total value for progress tracking
+DEFAULT_PROGRESS_TOTAL = 100
 
 
 @dataclass
@@ -18,7 +25,7 @@ class ProgressInfo:
     """
 
     current: int = field(default=0)
-    total: int = field(default=100)
+    total: int = field(default=DEFAULT_PROGRESS_TOTAL)
 
     @property
     def percentage(self) -> float:
@@ -34,7 +41,7 @@ class ProgressInfo:
     def from_record(cls, record: dict[str, int]) -> "ProgressInfo":
         return cls(
             current=record.get("current", 0),
-            total=record.get("total", 100),
+            total=record.get("total", DEFAULT_PROGRESS_TOTAL),
         )
 
 
@@ -286,7 +293,7 @@ class TaskStateStore:
 
             try:
                 # Execute using cached SHA
-                await redis.evalsha(  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
+                result = await redis.evalsha(  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
                     TaskStateStore._completion_script_sha,
                     2,  # number of keys
                     progress_key,
@@ -295,15 +302,27 @@ class TaskStateStore:
                     self.record_ttl,
                 )
             except NoScriptError:
+                # Script was evicted from Redis, reload and retry
+                logger.debug("Lua script evicted from Redis, reloading for key %s", key)
                 TaskStateStore._completion_script_sha = cast(
                     str,
                     await redis.script_load(self._COMPLETION_SCRIPT),  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
                 )
-                await redis.evalsha(  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
+                result = await redis.evalsha(  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
                     TaskStateStore._completion_script_sha,
                     2,  # number of keys
                     progress_key,
                     state_key,
                     now,
                     self.record_ttl,
+                )
+
+            # Log if task state didn't exist (script returns 0)
+            if result == 0:
+                logger.warning(
+                    "Task state not found when marking completed: %s "
+                    "(progress key: %s, state key: %s)",
+                    key,
+                    progress_key,
+                    state_key,
                 )

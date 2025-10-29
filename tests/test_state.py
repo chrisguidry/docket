@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 
+import pytest
 
 from docket import Docket, Worker
 from docket.state import ProgressInfo, TaskState, TaskStateStore
@@ -290,12 +291,21 @@ class TestTaskStateStore:
         state = await store.get_task_state("test-task-key")
         assert state is None
 
-    async def test_mark_task_completed_nonexistent(self, docket: Docket):
-        """Marking nonexistent task as completed should not error."""
+    async def test_mark_task_completed_nonexistent(
+        self, docket: Docket, caplog: pytest.LogCaptureFixture
+    ):
+        """Marking nonexistent task as completed should not error but should log warning."""
+        import logging
+
         store = TaskStateStore(docket, record_ttl=3600)
 
         # Should not raise an exception
-        await store.mark_task_completed("nonexistent-key")
+        with caplog.at_level(logging.WARNING):
+            await store.mark_task_completed("nonexistent-key")
+
+        # Should log a warning about missing task state
+        assert "Task state not found when marking completed" in caplog.text
+        assert "nonexistent-key" in caplog.text
 
     async def test_mark_task_completed_missing_total(self, docket: Docket):
         """Marking task completed with missing total field should not error."""
