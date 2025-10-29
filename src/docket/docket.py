@@ -827,9 +827,9 @@ class Docket:
 
         # Attach progress information to all executions
         async with self.redis() as r:
-            progress_store = TaskStateStore(self, self.record_ttl)
+            state_store = TaskStateStore(self, self.record_ttl)
             for execution in future + running:
-                progress_info = await progress_store.get_task_progress(execution.key)
+                progress_info = await state_store.get_task_progress(execution.key)
                 if progress_info:
                     execution.with_progress(progress_info)
 

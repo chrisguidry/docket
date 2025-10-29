@@ -471,8 +471,8 @@ async def test_progress_dependency(docket: Docket, worker: Worker):
 
         # Get current progress
         current = await progress.get()
-        if current:
-            progress_values.append(current)
+        assert current is not None
+        progress_values.append(current)
 
     docket.register(task_with_progress)
     execution = await docket.add(task_with_progress, key="progress-test")()

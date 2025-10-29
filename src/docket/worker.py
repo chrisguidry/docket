@@ -688,8 +688,8 @@ class Worker:
 
                 # Mark progress as completed
                 async with self.docket.redis() as redis:
-                    progress_store = TaskStateStore(self.docket, self.docket.record_ttl)
-                    await progress_store.mark_task_completed(execution.key)
+                    state_store = TaskStateStore(self.docket, self.docket.record_ttl)
+                    await state_store.mark_task_completed(execution.key)
 
                 TASKS_RUNNING.add(-1, counter_labels)
                 TASKS_COMPLETED.add(1, counter_labels)
