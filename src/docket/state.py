@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -11,7 +12,6 @@ if TYPE_CHECKING:
 logger: logging.Logger = logging.getLogger(__name__)
 
 
-# Default total value for progress tracking
 DEFAULT_PROGRESS_TOTAL = 100
 
 
@@ -128,6 +128,9 @@ class TaskStateStore:
     # Cached script SHA (class variable shared across instances)
     _completion_script_sha: str | None = None
 
+    # Lock for protecting script loading operations (created lazily per process)
+    _script_load_lock: asyncio.Lock | None = None
+
     def __init__(self, docket: "Docket", record_ttl: int) -> None:
         """
         Args:
@@ -144,6 +147,42 @@ class TaskStateStore:
     def _progress_key(self, key: str) -> str:
         """Generate Redis key for task progress."""
         return f"{self.docket.name}:progress:{key}"
+
+    async def _ensure_script_loaded(self, redis: Any) -> str:
+        """Ensure the completion script is loaded, with proper locking.
+
+        Uses double-checked locking pattern to minimize lock contention.
+        Multiple concurrent tasks can safely call this method without
+        redundantly loading the script.
+
+        Args:
+            redis: Redis connection
+
+        Returns:
+            Script SHA hash
+        """
+        # Fast path: script already loaded (no lock needed)
+        if TaskStateStore._completion_script_sha is not None:
+            return TaskStateStore._completion_script_sha
+
+        # Lazily initialize lock (ensures process-safe operation)
+        if TaskStateStore._script_load_lock is None:
+            TaskStateStore._script_load_lock = asyncio.Lock()
+
+        # Acquire lock for loading
+        async with TaskStateStore._script_load_lock:
+            # Double-check: another task may have loaded it while we waited
+            if TaskStateStore._completion_script_sha is not None:
+                return TaskStateStore._completion_script_sha
+
+            # Load script
+            logger.debug("Loading Lua completion script")
+            sha = cast(
+                str,
+                await redis.script_load(self._COMPLETION_SCRIPT),  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
+            )
+            TaskStateStore._completion_script_sha = sha
+            return sha
 
     async def create_task_state(self, key: str) -> None:
         """Create a task state for a task.
@@ -284,17 +323,13 @@ class TaskStateStore:
         now = datetime.now(timezone.utc).isoformat()
 
         async with self.docket.redis() as redis:
-            # Load script if not already cached
-            if TaskStateStore._completion_script_sha is None:
-                TaskStateStore._completion_script_sha = cast(
-                    str,
-                    await redis.script_load(self._COMPLETION_SCRIPT),  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
-                )
-
             try:
+                # Ensure script is loaded and get SHA
+                script_sha = await self._ensure_script_loaded(redis)
+
                 # Execute using cached SHA
                 result = await redis.evalsha(  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
-                    TaskStateStore._completion_script_sha,
+                    script_sha,
                     2,  # number of keys
                     progress_key,
                     state_key,
@@ -304,12 +339,11 @@ class TaskStateStore:
             except NoScriptError:
                 # Script was evicted from Redis, reload and retry
                 logger.debug("Lua script evicted from Redis, reloading for key %s", key)
-                TaskStateStore._completion_script_sha = cast(
-                    str,
-                    await redis.script_load(self._COMPLETION_SCRIPT),  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
-                )
+                # Reset cached SHA so _ensure_script_loaded will reload
+                TaskStateStore._completion_script_sha = None
+                script_sha = await self._ensure_script_loaded(redis)
                 result = await redis.evalsha(  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
-                    TaskStateStore._completion_script_sha,
+                    script_sha,
                     2,  # number of keys
                     progress_key,
                     state_key,
