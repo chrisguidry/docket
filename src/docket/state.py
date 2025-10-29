@@ -210,10 +210,12 @@ class TaskStateStore:
         state_dict_filtered = {k: v for k, v in state_dict.items() if v is not None}
 
         async with self.docket.redis() as redis:
-            await redis.hset(progress_key, mapping=progress_dict_str)  # pyright: ignore[reportGeneralTypeIssues,reportUnknownMemberType]
-            await redis.expire(progress_key, self.record_ttl)
-            await redis.hset(state_key, mapping=state_dict_filtered)  # pyright: ignore[reportGeneralTypeIssues,reportUnknownMemberType]
-            await redis.expire(state_key, self.record_ttl)
+            pipe = redis.pipeline(transaction=True)
+            pipe.hset(progress_key, mapping=progress_dict_str)  # pyright: ignore[reportGeneralTypeIssues,reportUnknownMemberType]
+            pipe.expire(progress_key, self.record_ttl)
+            pipe.hset(state_key, mapping=state_dict_filtered)  # pyright: ignore[reportGeneralTypeIssues,reportUnknownMemberType]
+            pipe.expire(state_key, self.record_ttl)
+            await pipe.execute()
 
     async def set_task_progress(self, key: str, progress: ProgressInfo) -> None:
         """Set progress for a task.

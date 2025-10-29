@@ -691,9 +691,7 @@ class Worker:
                             await self._release_concurrency_slot(redis, execution)
 
                 # Mark progress as completed
-                async with self.docket.redis() as redis:
-                    state_store = TaskStateStore(self.docket, self.docket.record_ttl)
-                    await state_store.mark_task_completed(execution.key)
+                await store.mark_task_completed(execution.key)
 
                 TASKS_RUNNING.add(-1, counter_labels)
                 TASKS_COMPLETED.add(1, counter_labels)
