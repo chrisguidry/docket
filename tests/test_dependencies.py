@@ -600,3 +600,103 @@ async def test_progress_set_exceeds_total_validation(docket: Docket, worker: Wor
 
     assert validation_error is not None
     assert "cannot exceed total" in str(validation_error)
+
+
+async def test_progress_publishes_events_when_enabled(  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType,reportUnknownArgumentType]
+    docket: Docket, worker: Worker
+):
+    """Progress should publish events to Redis Pub/Sub when publish_events=True."""
+    import json
+    from docket.dependencies import Progress
+
+    received_messages: list[dict] = []  # pyright: ignore[reportMissingTypeArgument,reportUnknownVariableType]
+
+    async def task_with_progress(progress: Progress = Progress(publish_events=True)):
+        await progress.set_total(10)
+        for _i in range(10):
+            await progress.increment()
+
+    # Subscribe to progress events channel
+    async with docket.redis() as redis:
+        pubsub = redis.pubsub()
+        await pubsub.subscribe(f"{docket.name}:progress-events")
+
+        # Register and execute task
+        docket.register(task_with_progress)
+        execution = await docket.add(task_with_progress, key="progress-event-test")()
+
+        # Run task in background
+        import asyncio
+
+        task = asyncio.create_task(worker.run_until_finished())
+
+        # Collect messages
+        try:
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    data = json.loads(message["data"])
+                    received_messages.append(data)
+
+                    # Exit after receiving completion message
+                    if data["current"] == data["total"]:
+                        break
+        finally:
+            await pubsub.unsubscribe()
+            await pubsub.aclose()
+            await task
+
+    # Verify we received progress updates
+    assert len(received_messages) > 0
+
+    # Check message format
+    last_message = received_messages[-1]
+    assert last_message["key"] == execution.key
+    assert last_message["current"] == 10
+    assert last_message["total"] == 10
+
+
+async def test_progress_no_events_when_disabled(  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType,reportUnknownArgumentType]
+    docket: Docket, worker: Worker
+):
+    """Progress should not publish events when publish_events=False (default)."""
+    import json
+    from docket.dependencies import Progress
+
+    received_messages: list[dict] = []  # pyright: ignore[reportMissingTypeArgument,reportUnknownVariableType]
+
+    async def task_without_events(progress: Progress = Progress(publish_events=False)):
+        await progress.set_total(5)
+        for _i in range(5):
+            await progress.increment()
+
+    # Subscribe to progress events channel
+    async with docket.redis() as redis:
+        pubsub = redis.pubsub()
+        await pubsub.subscribe(f"{docket.name}:progress-events")
+
+        # Register and execute task
+        docket.register(task_without_events)
+        await docket.add(task_without_events, key="no-events-test")()
+
+        # Run task
+        await worker.run_until_finished()
+
+        # Try to receive messages (should timeout quickly with none)
+        import asyncio
+
+        async def collect_messages():
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    data = json.loads(message["data"])
+                    received_messages.append(data)
+
+        try:
+            await asyncio.wait_for(collect_messages(), timeout=0.5)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            await pubsub.unsubscribe()
+            await pubsub.aclose()
+
+    # Verify no messages were received
+    assert len(received_messages) == 0

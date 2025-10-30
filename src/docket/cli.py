@@ -11,11 +11,13 @@ from typing import Annotated, Any, Collection
 
 import typer
 from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from . import __version__, tasks
 from .docket import Docket, DocketSnapshot, WorkerInfo
 from .execution import Operator
+from .state import TaskStateStore
 from .worker import Worker
 
 app: typer.Typer = typer.Typer(
@@ -808,6 +810,144 @@ def snapshot(
                 )
 
             console.print(stats_table)
+
+
+@app.command(help="Watch real-time progress for one or more tasks")
+def watch(
+    task_keys: Annotated[
+        list[str],
+        typer.Argument(help="Task key(s) to monitor. You can specify multiple keys."),
+    ],
+    docket_: Annotated[
+        str,
+        typer.Option(
+            "--docket",
+            help="The name of the docket",
+            envvar="DOCKET_NAME",
+        ),
+    ] = "docket",
+    url: Annotated[
+        str,
+        typer.Option(
+            help="The URL of the Redis server",
+            envvar="DOCKET_URL",
+            callback=validate_url,
+        ),
+    ] = "redis://localhost:6379/0",
+    poll_interval: Annotated[
+        float,
+        typer.Option(
+            "--poll-interval",
+            help="Seconds between progress checks for completed tasks",
+        ),
+    ] = 1.0,
+) -> None:
+    """Watch real-time progress for tasks using Redis Pub/Sub.
+
+    This command monitors progress updates in real-time for one or more tasks.
+    It polls the initial state, then subscribes to live updates via Redis Pub/Sub.
+
+    Note: Tasks must use Progress(publish_events=True) for real-time updates.
+
+    Examples:
+        docket watch task-key-123
+        docket watch task1 task2 task3
+    """
+    console = Console()
+
+    async def monitor() -> None:
+        async with Docket(name=docket_, url=url) as docket:
+            store = TaskStateStore(docket, docket.record_ttl)
+
+            # Track which tasks are completed
+            completed_tasks: set[str] = set()
+            task_bars: dict[str, Any] = {}
+
+            # Create Rich progress display
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                console=console,
+            ) as progress:
+                # Initialize progress bars for each task
+                for key in task_keys:
+                    state = await store.get_task_state(key)
+                    if state is None:
+                        console.print(f"[yellow]Task {key!r} not found[/yellow]")
+                        continue
+
+                    # Create progress bar
+                    description = f"{key}"
+                    if state.completed_at:
+                        description += " (completed)"
+                        completed_tasks.add(key)
+
+                    task_bar = progress.add_task(
+                        description,
+                        total=state.progress.total,
+                        completed=state.progress.current,
+                    )
+                    task_bars[key] = task_bar
+
+                    # Show timestamp info
+                    console.print(
+                        f"[dim]{key}: Started at {local_time(state.started_at)}[/dim]"
+                    )
+
+                if not task_bars:
+                    console.print("[red]No valid tasks found[/red]")
+                    return
+
+                # Monitor progress updates
+                try:
+                    async for key, progress_info in docket.monitor_progress(task_keys):
+                        if key not in task_bars:
+                            continue
+
+                        task_bar = task_bars[key]
+                        progress.update(
+                            task_bar,
+                            completed=progress_info.current,
+                            total=progress_info.total,
+                        )
+
+                        # Check if task completed (current == total)
+                        if (
+                            progress_info.current == progress_info.total
+                            and key not in completed_tasks
+                        ):
+                            completed_tasks.add(key)
+                            progress.update(
+                                task_bar,
+                                description=f"{key} (completed)",
+                            )
+
+                            # Show completion timestamp
+                            state = await store.get_task_state(key)
+                            if state and state.completed_at:
+                                console.print(
+                                    f"[green]{key}: Completed at {local_time(state.completed_at)}[/green]"
+                                )
+
+                        # Exit if all tasks completed
+                        if len(completed_tasks) == len(task_bars):
+                            console.print(
+                                f"[green]All {len(task_bars)} task(s) completed![/green]"
+                            )
+                            break
+
+                        # Periodically check if tasks still exist
+                        await asyncio.sleep(poll_interval)
+
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]Monitoring interrupted[/yellow]")
+
+    try:
+        asyncio.run(monitor())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Monitoring interrupted[/yellow]")
 
 
 workers_app: typer.Typer = typer.Typer(

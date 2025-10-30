@@ -675,9 +675,16 @@ class Progress(Dependency):
 
     single: bool = True
 
-    def __init__(self) -> None:
+    def __init__(self, publish_events: bool = False) -> None:
+        """Initialize Progress dependency.
+
+        Args:
+            publish_events: If True, publish progress updates to Redis Pub/Sub
+                channel for real-time monitoring (default: False)
+        """
         # Track current state
         self._current: int = 0
+        self._publish_events = publish_events
 
     async def __aenter__(self) -> "Progress":
         from docket.state import DEFAULT_PROGRESS_TOTAL
@@ -706,6 +713,26 @@ class Progress(Dependency):
         """No cleanup needed - updates are applied immediately."""
         return False
 
+    async def _publish_event(self) -> None:
+        """Publish progress update to Redis Pub/Sub channel."""
+        if not self._publish_events:
+            return
+
+        import json
+
+        message = json.dumps(
+            {
+                "key": self._key,
+                "current": self._current,
+                "total": self._total,
+            }
+        )
+
+        async with self._docket.redis() as redis:
+            await redis.publish(  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
+                f"{self._docket.name}:progress-events", message
+            )
+
     async def set_total(self, total: int) -> None:
         """Set the total expected progress value.
 
@@ -721,6 +748,7 @@ class Progress(Dependency):
         await self._store.set_task_progress(
             self._key, ProgressInfo(current=self._current, total=self._total)
         )
+        await self._publish_event()
 
     async def increment(self, amount: int = 1) -> None:
         """Increment progress by the given amount (default 1).
@@ -729,6 +757,7 @@ class Progress(Dependency):
             amount: Amount to increment by (default 1)
         """
         self._current = await self._store.increment_task_progress(self._key, amount)
+        await self._publish_event()
 
     async def set(self, current: int) -> None:
         """Set the current progress value directly.
@@ -749,6 +778,7 @@ class Progress(Dependency):
         await self._store.set_task_progress(
             self._key, ProgressInfo(current=self._current, total=self._total)
         )
+        await self._publish_event()
 
     async def get(self) -> "ProgressInfo | None":
         """Get current progress info.

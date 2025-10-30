@@ -749,6 +749,70 @@ class Docket:
         store = TaskStateStore(self, self.record_ttl)
         return await store.get_task_progress(key)
 
+    async def monitor_progress(
+        self, task_keys: list[str] | None = None
+    ) -> AsyncGenerator[tuple[str, "ProgressInfo"], None]:
+        """Monitor real-time progress updates via Redis Pub/Sub.
+
+        This method polls initial state for requested tasks, then subscribes to
+        Redis Pub/Sub for live updates. It yields (task_key, ProgressInfo) tuples
+        as progress updates arrive.
+
+        Note: Progress events are only published if tasks use Progress(publish_events=True).
+
+        Args:
+            task_keys: Optional list of task keys to filter. If None, monitors all tasks.
+
+        Yields:
+            Tuples of (task_key, ProgressInfo) for each progress update
+
+        Example:
+            ```python
+            async for key, progress in docket.monitor_progress(["task1", "task2"]):
+                print(f"{key}: {progress.percentage:.1f}%")
+                if progress.current == progress.total:
+                    print(f"{key} completed!")
+            ```
+        """
+        import json
+
+        store = TaskStateStore(self, self.record_ttl)
+
+        # Step 1: Poll initial state for requested tasks
+        if task_keys:
+            for key in task_keys:
+                state = await store.get_task_state(key)
+                if state:
+                    yield (key, state.progress)
+
+        # Step 2: Subscribe to progress events channel
+        async with self.redis() as redis:
+            pubsub = redis.pubsub()  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
+            await pubsub.subscribe(f"{self.name}:progress-events")  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
+
+            try:
+                async for message in pubsub.listen():  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
+                    if message["type"] != "message":
+                        continue
+
+                    # Parse JSON message
+                    data = json.loads(message["data"])
+                    key = data["key"]
+
+                    # Filter by task_keys if specified
+                    if task_keys and key not in task_keys:
+                        continue
+
+                    progress = ProgressInfo(
+                        current=data["current"],
+                        total=data["total"],
+                    )
+
+                    yield (key, progress)
+            finally:
+                await pubsub.unsubscribe()  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
+                await pubsub.aclose()  # pyright: ignore[reportUnknownMemberType,reportGeneralTypeIssues]
+
     async def snapshot(self) -> DocketSnapshot:
         """Get a snapshot of the Docket, including which tasks are scheduled or currently
         running, as well as which workers are active.
