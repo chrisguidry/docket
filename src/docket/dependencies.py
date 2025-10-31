@@ -697,38 +697,50 @@ class FailedDependency:
 async def resolved_dependencies(
     worker: "Worker", execution: Execution
 ) -> AsyncGenerator[dict[str, Any], None]:
-    # Set context variables once at the beginning
-    Dependency.docket.set(worker.docket)
-    Dependency.worker.set(worker)
-    Dependency.execution.set(execution)
+    # Capture tokens for all contextvar sets to ensure proper cleanup
+    docket_token = Dependency.docket.set(worker.docket)
+    worker_token = Dependency.worker.set(worker)
+    execution_token = Dependency.execution.set(execution)
+    cache_token = _Depends.cache.set({})
 
-    _Depends.cache.set({})
-
-    async with AsyncExitStack() as stack:
-        _Depends.stack.set(stack)
-
-        arguments: dict[str, Any] = {}
-
-        parameters = get_dependency_parameters(execution.function)
-        for parameter, dependency in parameters.items():
-            kwargs = execution.kwargs
-            if parameter in kwargs:
-                arguments[parameter] = kwargs[parameter]
-                continue
-
-            # Special case for TaskArguments, they are "magical" and infer the parameter
-            # they refer to from the parameter name (unless otherwise specified).  At
-            # the top-level task function call, it doesn't make sense to specify one
-            # _without_ a parameter name, so we'll call that a failed dependency.
-            if isinstance(dependency, _TaskArgument) and not dependency.parameter:
-                arguments[parameter] = FailedDependency(
-                    parameter, ValueError("No parameter name specified")
-                )
-                continue
-
+    try:
+        async with AsyncExitStack() as stack:
+            stack_token = _Depends.stack.set(stack)
             try:
-                arguments[parameter] = await stack.enter_async_context(dependency)
-            except Exception as error:
-                arguments[parameter] = FailedDependency(parameter, error)
+                arguments: dict[str, Any] = {}
 
-        yield arguments
+                parameters = get_dependency_parameters(execution.function)
+                for parameter, dependency in parameters.items():
+                    kwargs = execution.kwargs
+                    if parameter in kwargs:
+                        arguments[parameter] = kwargs[parameter]
+                        continue
+
+                    # Special case for TaskArguments, they are "magical" and infer the parameter
+                    # they refer to from the parameter name (unless otherwise specified).  At
+                    # the top-level task function call, it doesn't make sense to specify one
+                    # _without_ a parameter name, so we'll call that a failed dependency.
+                    if (
+                        isinstance(dependency, _TaskArgument)
+                        and not dependency.parameter
+                    ):
+                        arguments[parameter] = FailedDependency(
+                            parameter, ValueError("No parameter name specified")
+                        )
+                        continue
+
+                    try:
+                        arguments[parameter] = await stack.enter_async_context(
+                            dependency
+                        )
+                    except Exception as error:
+                        arguments[parameter] = FailedDependency(parameter, error)
+
+                yield arguments
+            finally:
+                _Depends.stack.reset(stack_token)
+    finally:
+        _Depends.cache.reset(cache_token)
+        Dependency.execution.reset(execution_token)
+        Dependency.worker.reset(worker_token)
+        Dependency.docket.reset(docket_token)
