@@ -27,7 +27,7 @@ from typing import (
 from typing_extensions import Self
 
 import redis.exceptions
-from opentelemetry import propagate, trace
+from opentelemetry import trace
 from redis.asyncio import ConnectionPool, Redis
 from uuid_extensions import uuid7
 
@@ -51,17 +51,10 @@ from .instrumentation import (
     TASKS_REPLACED,
     TASKS_SCHEDULED,
     TASKS_STRICKEN,
-    message_setter,
 )
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: trace.Tracer = trace.get_tracer(__name__)
-
-
-class _schedule_task(Protocol):
-    async def __call__(
-        self, keys: list[str], args: list[str | float | bytes]
-    ) -> str: ...  # pragma: no cover
 
 
 class _cancel_task(Protocol):
@@ -146,7 +139,6 @@ class Docket:
 
     _monitor_strikes_task: asyncio.Task[None]
     _connection_pool: ConnectionPool
-    _schedule_task_script: _schedule_task | None
     _cancel_task_script: _cancel_task | None
 
     def __init__(
@@ -174,7 +166,6 @@ class Docket:
         self.url = url
         self.heartbeat_interval = heartbeat_interval
         self.missed_heartbeats = missed_heartbeats
-        self._schedule_task_script = None
         self._cancel_task_script = None
 
     @property
@@ -342,14 +333,28 @@ class Docket:
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
             execution = Execution(self, function, args, kwargs, when, key, attempt=1)
 
-            async with self.redis() as redis:
-                await self._schedule(redis, execution, replace=False)
+            # Check if task is stricken before scheduling
+            if self.strike_list.is_stricken(execution):
+                logger.warning(
+                    "%r is stricken, skipping schedule of %r",
+                    execution.function.__name__,
+                    execution.key,
+                )
+                TASKS_STRICKEN.add(
+                    1,
+                    {
+                        **self.labels(),
+                        **execution.general_labels(),
+                        "docket.where": "docket",
+                    },
+                )
+                return execution
+
+            # Schedule atomically (includes state record write)
+            await execution.schedule(replace=False)
 
             TASKS_ADDED.add(1, {**self.labels(), **execution.general_labels()})
             TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
-
-            # Set scheduled state in Redis
-            await execution.set_scheduled(when)
 
             return execution
 
@@ -404,15 +409,29 @@ class Docket:
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
             execution = Execution(self, function, args, kwargs, when, key, attempt=1)
 
-            async with self.redis() as redis:
-                await self._schedule(redis, execution, replace=True)
+            # Check if task is stricken before scheduling
+            if self.strike_list.is_stricken(execution):
+                logger.warning(
+                    "%r is stricken, skipping schedule of %r",
+                    execution.function.__name__,
+                    execution.key,
+                )
+                TASKS_STRICKEN.add(
+                    1,
+                    {
+                        **self.labels(),
+                        **execution.general_labels(),
+                        "docket.where": "docket",
+                    },
+                )
+                return execution
+
+            # Schedule atomically (includes state record write)
+            await execution.schedule(replace=True)
 
             TASKS_REPLACED.add(1, {**self.labels(), **execution.general_labels()})
             TASKS_CANCELLED.add(1, {**self.labels(), **execution.general_labels()})
             TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
-
-            # Set scheduled state in Redis
-            await execution.set_scheduled(when)
 
             return execution
 
@@ -427,8 +446,25 @@ class Docket:
                 "code.function.name": execution.function.__name__,
             },
         ):
-            async with self.redis() as redis:
-                await self._schedule(redis, execution, replace=False)
+            # Check if task is stricken before scheduling
+            if self.strike_list.is_stricken(execution):
+                logger.warning(
+                    "%r is stricken, skipping schedule of %r",
+                    execution.function.__name__,
+                    execution.key,
+                )
+                TASKS_STRICKEN.add(
+                    1,
+                    {
+                        **self.labels(),
+                        **execution.general_labels(),
+                        "docket.where": "docket",
+                    },
+                )
+                return
+
+            # Schedule atomically (includes state record write)
+            await execution.schedule(replace=False)
 
         TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
 
@@ -463,125 +499,6 @@ class Docket:
 
     def stream_id_key(self, key: str) -> str:
         return f"{self.name}:stream-id:{key}"
-
-    async def _schedule(
-        self,
-        redis: Redis,
-        execution: Execution,
-        replace: bool = False,
-    ) -> None:
-        """Schedule a task atomically.
-
-        Handles:
-        - Checking for task existence
-        - Cancelling existing tasks when replacing
-        - Adding tasks to stream (immediate) or queue (future)
-        - Tracking stream message IDs for later cancellation
-        """
-        if self.strike_list.is_stricken(execution):
-            logger.warning(
-                "%r is stricken, skipping schedule of %r",
-                execution.function.__name__,
-                execution.key,
-            )
-            TASKS_STRICKEN.add(
-                1,
-                {
-                    **self.labels(),
-                    **execution.general_labels(),
-                    "docket.where": "docket",
-                },
-            )
-            return
-
-        message: dict[bytes, bytes] = execution.as_message()
-        propagate.inject(message, setter=message_setter)
-
-        key = execution.key
-        when = execution.when
-        known_task_key = self.known_task_key(key)
-        is_immediate = when <= datetime.now(timezone.utc)
-
-        # Lock per task key to prevent race conditions between concurrent operations
-        async with redis.lock(f"{known_task_key}:lock", timeout=10):
-            if self._schedule_task_script is None:
-                self._schedule_task_script = cast(
-                    _schedule_task,
-                    redis.register_script(
-                        # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key
-                        # ARGV: task_key, when_timestamp, is_immediate, replace, ...message_fields
-                        """
-                        local stream_key = KEYS[1]
-                        local known_key = KEYS[2]
-                        local parked_key = KEYS[3]
-                        local queue_key = KEYS[4]
-                        local stream_id_key = KEYS[5]
-
-                        local task_key = ARGV[1]
-                        local when_timestamp = ARGV[2]
-                        local is_immediate = ARGV[3] == '1'
-                        local replace = ARGV[4] == '1'
-
-                        -- Extract message fields from ARGV[5] onwards
-                        local message = {}
-                        for i = 5, #ARGV, 2 do
-                            message[#message + 1] = ARGV[i]     -- field name
-                            message[#message + 1] = ARGV[i + 1] -- field value
-                        end
-
-                        -- Handle replacement: cancel existing task if needed
-                        if replace then
-                            local existing_message_id = redis.call('GET', stream_id_key)
-                            if existing_message_id then
-                                redis.call('XDEL', stream_key, existing_message_id)
-                            end
-                            redis.call('DEL', known_key, parked_key, stream_id_key)
-                            redis.call('ZREM', queue_key, task_key)
-                        else
-                            -- Check if task already exists
-                            if redis.call('EXISTS', known_key) == 1 then
-                                return 'EXISTS'
-                            end
-                        end
-
-                        if is_immediate then
-                            -- Add to stream and store message ID for later cancellation
-                            local message_id = redis.call('XADD', stream_key, '*', unpack(message))
-                            redis.call('SET', known_key, when_timestamp)
-                            redis.call('SET', stream_id_key, message_id)
-                            return message_id
-                        else
-                            -- Add to queue with task data in parked hash
-                            redis.call('SET', known_key, when_timestamp)
-                            redis.call('HSET', parked_key, unpack(message))
-                            redis.call('ZADD', queue_key, when_timestamp, task_key)
-                            return 'QUEUED'
-                        end
-                        """
-                    ),
-                )
-            schedule_task = self._schedule_task_script
-
-            await schedule_task(
-                keys=[
-                    self.stream_key,
-                    known_task_key,
-                    self.parked_task_key(key),
-                    self.queue_key,
-                    self.stream_id_key(key),
-                ],
-                args=[
-                    key,
-                    str(when.timestamp()),
-                    "1" if is_immediate else "0",
-                    "1" if replace else "0",
-                    *[
-                        item
-                        for field, value in message.items()
-                        for item in (field, value)
-                    ],
-                ],
-            )
 
     async def _cancel(self, redis: Redis, key: str) -> None:
         """Cancel a task atomically.
@@ -902,7 +819,7 @@ class Docket:
         return workers
 
     async def clear(self) -> int:
-        """Clear all pending and scheduled tasks from the docket.
+        """Clear all queued and scheduled tasks from the docket.
 
         This removes all tasks from the stream (immediate tasks) and queue
         (scheduled tasks), along with their associated parked data. Running

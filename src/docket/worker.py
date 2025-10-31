@@ -437,9 +437,14 @@ class Worker:
                         )
                         redis.call('DEL', hash_key)
 
-                        -- Set run state to pending
+                        -- Set run state to queued
                         local run_key = ARGV[2] .. ":runs:" .. task['key']
-                        redis.call('HSET', run_key, 'state', 'pending')
+                        redis.call('HSET', run_key, 'state', 'queued')
+
+                        -- Publish state change event to pub/sub
+                        local channel = ARGV[2] .. ":state:" .. task['key']
+                        local payload = '{"type":"state","key":"' .. task['key'] .. '","state":"queued","when":"' .. task['when'] .. '"}'
+                        redis.call('PUBLISH', channel, payload)
 
                         due_work = due_work + 1
                     end

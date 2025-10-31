@@ -13,6 +13,7 @@ from typing import (
     Hashable,
     Literal,
     Mapping,
+    Protocol,
     cast,
 )
 
@@ -24,7 +25,7 @@ import opentelemetry.context
 from opentelemetry import propagate, trace
 
 from .annotations import Logged
-from .instrumentation import CACHE_SIZE, message_getter
+from .instrumentation import CACHE_SIZE, message_getter, message_setter
 
 if TYPE_CHECKING:
     from .docket import Docket
@@ -33,6 +34,12 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 TaskFunction = Callable[..., Awaitable[Any]]
 Message = dict[bytes, bytes]
+
+
+class _schedule_task(Protocol):
+    async def __call__(
+        self, keys: list[str], args: list[str | float | bytes]
+    ) -> str: ...  # pragma: no cover
 
 
 _signature_cache: dict[Callable[..., Any], inspect.Signature] = {}
@@ -61,7 +68,7 @@ class ExecutionState(enum.Enum):
     SCHEDULED = "scheduled"
     """Task is scheduled and waiting in the queue for its execution time."""
 
-    PENDING = "pending"
+    QUEUED = "queued"
     """Task has been moved to the stream and is ready to be claimed by a worker."""
 
     RUNNING = "running"
@@ -96,6 +103,25 @@ class ExecutionProgress:
         self.docket = docket
         self.key = key
         self._redis_key = f"{docket.name}:progress:{key}"
+        self.current: int | None = None
+        self.total: int | None = None
+        self.message: str | None = None
+        self.updated_at: datetime | None = None
+
+    @classmethod
+    async def create(cls, docket: "Docket", key: str) -> Self:
+        """Create and initialize progress tracker by reading from Redis.
+
+        Args:
+            docket: The docket instance
+            key: The task execution key
+
+        Returns:
+            ExecutionProgress instance with attributes populated from Redis
+        """
+        instance = cls(docket, key)
+        await instance.sync()
+        return instance
 
     async def set_total(self, total: int) -> None:
         """Set the total/target value for progress tracking.
@@ -103,7 +129,8 @@ class ExecutionProgress:
         Args:
             total: The total number of units to complete
         """
-        updated_at = datetime.now(timezone.utc).isoformat()
+        updated_at_dt = datetime.now(timezone.utc)
+        updated_at = updated_at_dt.isoformat()
         async with self.docket.redis() as redis:
             await redis.hset(
                 self._redis_key,
@@ -112,6 +139,9 @@ class ExecutionProgress:
                     "updated_at": updated_at,
                 },
             )
+        # Update instance attributes
+        self.total = total
+        self.updated_at = updated_at_dt
         # Publish update event
         await self._publish({"total": total, "updated_at": updated_at})
 
@@ -121,7 +151,8 @@ class ExecutionProgress:
         Args:
             amount: Amount to increment by (default: 1)
         """
-        updated_at = datetime.now(timezone.utc).isoformat()
+        updated_at_dt = datetime.now(timezone.utc)
+        updated_at = updated_at_dt.isoformat()
         async with self.docket.redis() as redis:
             new_current = await redis.hincrby(self._redis_key, "current", amount)
             await redis.hset(
@@ -129,6 +160,9 @@ class ExecutionProgress:
                 "updated_at",
                 updated_at,
             )
+        # Update instance attributes using Redis return value
+        self.current = new_current
+        self.updated_at = updated_at_dt
         # Publish update event with new current value
         await self._publish({"current": new_current, "updated_at": updated_at})
 
@@ -138,7 +172,8 @@ class ExecutionProgress:
         Args:
             message: Status message describing current progress
         """
-        updated_at = datetime.now(timezone.utc).isoformat()
+        updated_at_dt = datetime.now(timezone.utc)
+        updated_at = updated_at_dt.isoformat()
         async with self.docket.redis() as redis:
             await redis.hset(
                 self._redis_key,
@@ -147,18 +182,34 @@ class ExecutionProgress:
                     "updated_at": updated_at,
                 },
             )
+        # Update instance attributes
+        self.message = message
+        self.updated_at = updated_at_dt
         # Publish update event
         await self._publish({"message": message, "updated_at": updated_at})
 
-    async def get(self) -> dict[str, str] | None:
-        """Retrieve current progress data.
+    async def sync(self) -> None:
+        """Synchronize instance attributes with current progress data from Redis.
 
-        Returns:
-            Dictionary with progress fields, or None if no data exists
+        Updates self.current, self.total, self.message, and self.updated_at
+        with values from Redis. Sets attributes to None if no data exists.
         """
         async with self.docket.redis() as redis:
             data = await redis.hgetall(self._redis_key)
-            return data if data else None
+            if data:
+                self.current = int(data.get(b"current", b"0"))
+                self.total = int(data[b"total"]) if b"total" in data else None
+                self.message = data[b"message"].decode() if b"message" in data else None
+                self.updated_at = (
+                    datetime.fromisoformat(data[b"updated_at"].decode())
+                    if b"updated_at" in data
+                    else None
+                )
+            else:
+                self.current = None
+                self.total = None
+                self.message = None
+                self.updated_at = None
 
     async def _delete(self) -> None:
         """Delete the progress data from Redis.
@@ -167,6 +218,11 @@ class ExecutionProgress:
         """
         async with self.docket.redis() as redis:
             await redis.delete(self._redis_key)
+        # Reset instance attributes
+        self.current = None
+        self.total = None
+        self.message = None
+        self.updated_at = None
 
     async def _publish(self, data: dict) -> None:
         """Publish progress update to Redis pub/sub channel.
@@ -182,21 +238,13 @@ class ExecutionProgress:
         # Create ephemeral Redis client for publishing
         redis = Redis.from_url(self.docket.url)
         try:
-            # Get full current state to publish
-            async with self.docket.redis() as r:
-                current_data = await r.hgetall(self._redis_key)
-
-            # Merge with update data
+            # Use instance attributes for current state
             payload = {
                 "type": "progress",
                 "key": self.key,
-                "current": int(current_data.get(b"current", b"0")),
-                "total": int(current_data.get(b"total", b"0"))
-                if b"total" in current_data
-                else None,
-                "message": current_data.get(b"message", b"").decode()
-                if b"message" in current_data
-                else None,
+                "current": self.current if self.current is not None else 0,
+                "total": self.total,
+                "message": self.message,
                 "updated_at": data.get("updated_at"),
             }
 
@@ -205,7 +253,7 @@ class ExecutionProgress:
         finally:
             await redis.aclose()
 
-    async def subscribe(self) -> AsyncGenerator[dict, None]:
+    async def subscribe(self) -> AsyncGenerator[dict[str, Any], None]:
         """Subscribe to progress updates for this task.
 
         Yields:
@@ -261,7 +309,7 @@ class Execution:
         self.trace_context = trace_context
         self.redelivered = redelivered
         self.state: ExecutionState = ExecutionState.SCHEDULED
-        self.progress = ExecutionProgress(docket, key)
+        self.progress: ExecutionProgress = ExecutionProgress(docket, key)
         self._redis_key = f"{docket.name}:runs:{key}"
 
     def as_message(self) -> Message:
@@ -334,33 +382,124 @@ class Execution:
         initiating_context = initiating_span.get_span_context()
         return [trace.Link(initiating_context)] if initiating_context.is_valid else []
 
-    async def set_scheduled(self, when: datetime) -> None:
-        """Mark task as scheduled.
+    async def schedule(self, replace: bool = False) -> None:
+        """Schedule this task atomically in Redis.
+
+        This performs an atomic operation that:
+        - Adds the task to the stream (immediate) or queue (future)
+        - Writes the execution state record
+        - Tracks metadata for later cancellation
 
         Args:
-            when: The scheduled execution time
+            replace: If True, replaces any existing task with the same key.
+                    If False, raises an error if the task already exists.
         """
-        async with self.docket.redis() as redis:
-            await redis.hset(
-                self._redis_key,
-                mapping={
-                    "state": ExecutionState.SCHEDULED.value,
-                    "when": when.isoformat(),
-                },
-            )
-        self.state = ExecutionState.SCHEDULED
-        # Publish state change event
-        await self._publish_state(
-            {"state": ExecutionState.SCHEDULED.value, "when": when.isoformat()}
-        )
+        message: dict[bytes, bytes] = self.as_message()
+        propagate.inject(message, setter=message_setter)
 
-    async def set_pending(self) -> None:
-        """Mark task as pending (ready in stream)."""
+        key = self.key
+        when = self.when
+        known_task_key = self.docket.known_task_key(key)
+        is_immediate = when <= datetime.now(timezone.utc)
+
         async with self.docket.redis() as redis:
-            await redis.hset(self._redis_key, "state", ExecutionState.PENDING.value)
-        self.state = ExecutionState.PENDING
-        # Publish state change event
-        await self._publish_state({"state": ExecutionState.PENDING.value})
+            # Lock per task key to prevent race conditions between concurrent operations
+            async with redis.lock(f"{known_task_key}:lock", timeout=10):
+                # Register script for this connection (not cached to avoid event loop issues)
+                schedule_script = cast(
+                    _schedule_task,
+                    redis.register_script(
+                        # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key, runs_key
+                        # ARGV: task_key, when_timestamp, is_immediate, replace, ...message_fields
+                        """
+                            local stream_key = KEYS[1]
+                            local known_key = KEYS[2]
+                            local parked_key = KEYS[3]
+                            local queue_key = KEYS[4]
+                            local stream_id_key = KEYS[5]
+                            local runs_key = KEYS[6]
+
+                            local task_key = ARGV[1]
+                            local when_timestamp = ARGV[2]
+                            local is_immediate = ARGV[3] == '1'
+                            local replace = ARGV[4] == '1'
+
+                            -- Extract message fields from ARGV[5] onwards
+                            local message = {}
+                            for i = 5, #ARGV, 2 do
+                                message[#message + 1] = ARGV[i]     -- field name
+                                message[#message + 1] = ARGV[i + 1] -- field value
+                            end
+
+                            -- Handle replacement: cancel existing task if needed
+                            if replace then
+                                local existing_message_id = redis.call('GET', stream_id_key)
+                                if existing_message_id then
+                                    redis.call('XDEL', stream_key, existing_message_id)
+                                end
+                                redis.call('DEL', known_key, parked_key, stream_id_key)
+                                redis.call('ZREM', queue_key, task_key)
+                            else
+                                -- Check if task already exists
+                                if redis.call('EXISTS', known_key) == 1 then
+                                    return 'EXISTS'
+                                end
+                            end
+
+                            if is_immediate then
+                                -- Add to stream and store message ID for later cancellation
+                                local message_id = redis.call('XADD', stream_key, '*', unpack(message))
+                                redis.call('SET', known_key, when_timestamp)
+                                redis.call('SET', stream_id_key, message_id)
+                                -- Set run state to queued (ready for workers to claim)
+                                redis.call('HSET', runs_key, 'state', 'queued', 'when', when_timestamp)
+                            else
+                                -- Add to queue with task data in parked hash
+                                redis.call('SET', known_key, when_timestamp)
+                                redis.call('HSET', parked_key, unpack(message))
+                                redis.call('ZADD', queue_key, when_timestamp, task_key)
+                                -- Set run state to scheduled (waiting for due time)
+                                redis.call('HSET', runs_key, 'state', 'scheduled', 'when', when_timestamp)
+                            end
+
+                            return 'OK'
+                            """
+                    ),
+                )
+
+                await schedule_script(
+                    keys=[
+                        self.docket.stream_key,
+                        known_task_key,
+                        self.docket.parked_task_key(key),
+                        self.docket.queue_key,
+                        self.docket.stream_id_key(key),
+                        self._redis_key,
+                    ],
+                    args=[
+                        key,
+                        str(when.timestamp()),
+                        "1" if is_immediate else "0",
+                        "1" if replace else "0",
+                        *[
+                            item
+                            for field, value in message.items()
+                            for item in (field, value)
+                        ],
+                    ],
+                )
+
+        # Update local state based on whether task is immediate or scheduled
+        if is_immediate:
+            self.state = ExecutionState.QUEUED
+            await self._publish_state(
+                {"state": ExecutionState.QUEUED.value, "when": when.isoformat()}
+            )
+        else:
+            self.state = ExecutionState.SCHEDULED
+            await self._publish_state(
+                {"state": ExecutionState.SCHEDULED.value, "when": when.isoformat()}
+            )
 
     async def set_running(self, worker: str) -> None:
         """Mark task as running.
@@ -486,7 +625,7 @@ class Execution:
         finally:
             await redis.aclose()
 
-    async def subscribe(self) -> AsyncGenerator[dict, None]:
+    async def subscribe(self) -> AsyncGenerator[dict[str, Any], None]:
         """Subscribe to both state and progress updates for this task.
 
         Yields:

@@ -377,7 +377,7 @@ def strike(
     asyncio.run(run())
 
 
-@app.command(help="Clear all pending and scheduled tasks from the docket")
+@app.command(help="Clear all queued and scheduled tasks from the docket")
 def clear(
     docket_: Annotated[
         str,
@@ -836,7 +836,7 @@ def progress(
         # State colors for display
         state_colors = {
             ExecutionState.SCHEDULED: "yellow",
-            ExecutionState.PENDING: "cyan",
+            ExecutionState.QUEUED: "cyan",
             ExecutionState.RUNNING: "blue",
             ExecutionState.COMPLETED: "green",
             ExecutionState.FAILED: "red",
@@ -844,7 +844,7 @@ def progress(
 
         # Load initial snapshot
         initial_state = await execution.get_state()
-        initial_progress = await execution.progress.get()
+        await execution.progress.sync()
 
         if initial_state is None:
             console.print(f"[red]No state found for task key: {key}[/red]")
@@ -853,15 +853,11 @@ def progress(
         # Track current state for display
         current_state = initial_state
         current_progress = {
-            "current": int(initial_progress.get(b"current", b"0"))
-            if initial_progress
+            "current": execution.progress.current
+            if execution.progress.current is not None
             else 0,
-            "total": int(initial_progress.get(b"total", b"0"))
-            if initial_progress and b"total" in initial_progress
-            else None,
-            "message": initial_progress.get(b"message", b"").decode()
-            if initial_progress and b"message" in initial_progress
-            else None,
+            "total": execution.progress.total,
+            "message": execution.progress.message,
         }
         start_time = datetime.now(timezone.utc)
         worker_name: str | None = None
