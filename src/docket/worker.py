@@ -37,6 +37,8 @@ from .docket import (
     RedisReadGroupResponse,
 )
 from .execution import compact_signature, get_signature
+
+# Run class has been consolidated into Execution
 from .instrumentation import (
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
@@ -311,7 +313,7 @@ class Worker:
                 )
                 return False
 
-            execution = Execution.from_message(function, message)
+            execution = Execution.from_message(self.docket, function, message)
             execution.redelivered = is_redelivery
 
             task = asyncio.create_task(self._execute(execution), name=execution.key)
@@ -434,6 +436,11 @@ class Worker:
                             'attempt', task['attempt']
                         )
                         redis.call('DEL', hash_key)
+
+                        -- Set run state to pending
+                        local run_key = ARGV[2] .. ":runs:" .. task['key']
+                        redis.call('HSET', run_key, 'state', 'pending')
+
                         due_work = due_work + 1
                     end
                 end
@@ -548,6 +555,9 @@ class Worker:
         arrow = "↬" if execution.attempt > 1 else "↪"
         logger.info("%s [%s] %s", arrow, ms(punctuality), call, extra=log_context)
 
+        # Set execution to running state
+        await execution.set_running(self.name)
+
         dependencies: dict[str, Dependency] = {}
 
         with tracer.start_as_current_span(
@@ -653,6 +663,9 @@ class Worker:
                         execution, dependencies, timedelta(seconds=duration)
                     )
 
+                    # Mark execution as completed
+                    await execution.set_completed()
+
                     arrow = "↫" if rescheduled else "↩"
                     logger.info(
                         "%s [%s] %s", arrow, ms(duration), call, extra=log_context
@@ -669,6 +682,10 @@ class Worker:
                     retried = await self._perpetuate_if_requested(
                         execution, dependencies, timedelta(seconds=duration)
                     )
+
+                # Mark execution as failed with error message
+                error_msg = f"{type(e).__name__}: {str(e)}"
+                await execution.set_failed(error_msg)
 
                 arrow = "↫" if retried else "↩"
                 logger.exception(

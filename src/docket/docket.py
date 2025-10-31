@@ -41,6 +41,8 @@ from .execution import (
     StrikeList,
     TaskFunction,
 )
+
+# Run class has been consolidated into Execution
 from .instrumentation import (
     REDIS_DISRUPTIONS,
     STRIKES_IN_EFFECT,
@@ -338,13 +340,16 @@ class Docket:
             key = str(uuid7())
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
-            execution = Execution(function, args, kwargs, when, key, attempt=1)
+            execution = Execution(self, function, args, kwargs, when, key, attempt=1)
 
             async with self.redis() as redis:
                 await self._schedule(redis, execution, replace=False)
 
             TASKS_ADDED.add(1, {**self.labels(), **execution.general_labels()})
             TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
+
+            # Set scheduled state in Redis
+            await execution.set_scheduled(when)
 
             return execution
 
@@ -397,7 +402,7 @@ class Docket:
             function = self.tasks[function]
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
-            execution = Execution(function, args, kwargs, when, key, attempt=1)
+            execution = Execution(self, function, args, kwargs, when, key, attempt=1)
 
             async with self.redis() as redis:
                 await self._schedule(redis, execution, replace=True)
@@ -405,6 +410,9 @@ class Docket:
             TASKS_REPLACED.add(1, {**self.labels(), **execution.general_labels()})
             TASKS_CANCELLED.add(1, {**self.labels(), **execution.general_labels()})
             TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
+
+            # Set scheduled state in Redis
+            await execution.set_scheduled(when)
 
             return execution
 
@@ -792,7 +800,7 @@ class Docket:
 
         for message_id, message in stream_messages:
             function = self.tasks[message[b"function"].decode()]
-            execution = Execution.from_message(function, message)
+            execution = Execution.from_message(self, function, message)
             if message_id in pending_lookup:
                 worker_name = pending_lookup[message_id]["consumer"].decode()
                 started = now - timedelta(
@@ -804,7 +812,7 @@ class Docket:
 
         for message in queued_messages:
             function = self.tasks[message[b"function"].decode()]
-            execution = Execution.from_message(function, message)
+            execution = Execution.from_message(self, function, message)
             future.append(execution)
 
         workers = await self.workers()

@@ -8,6 +8,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import Annotated, Any, Collection
+from unittest.mock import AsyncMock
 
 import typer
 from rich.console import Console
@@ -15,7 +16,7 @@ from rich.table import Table
 
 from . import __version__, tasks
 from .docket import Docket, DocketSnapshot, WorkerInfo
-from .execution import Operator
+from .execution import Execution, ExecutionState, Operator
 from .worker import Worker
 
 app: typer.Typer = typer.Typer(
@@ -508,11 +509,8 @@ def trace(
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
             when = datetime.now(timezone.utc) + delay
-            execution = await docket.add(tasks.trace, when)(message)
-            print(
-                f"Added {execution.function.__name__} task {execution.key!r} to "
-                f"the docket {docket.name!r}"
-            )
+            task_run = await docket.add(tasks.trace, when)(message)
+            print(f"Added trace task {task_run.key!r} to the docket {docket.name!r}")
 
     asyncio.run(run())
 
@@ -552,11 +550,8 @@ def fail(
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
             when = datetime.now(timezone.utc) + delay
-            execution = await docket.add(tasks.fail, when)(message)
-            print(
-                f"Added {execution.function.__name__} task {execution.key!r} to "
-                f"the docket {docket.name!r}"
-            )
+            task_run = await docket.add(tasks.fail, when)(message)
+            print(f"Added fail task {task_run.key!r} to the docket {docket.name!r}")
 
     asyncio.run(run())
 
@@ -596,11 +591,8 @@ def sleep(
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
             when = datetime.now(timezone.utc) + delay
-            execution = await docket.add(tasks.sleep, when)(seconds)
-            print(
-                f"Added {execution.function.__name__} task {execution.key!r} to "
-                f"the docket {docket.name!r}"
-            )
+            task_run = await docket.add(tasks.sleep, when)(seconds)
+            print(f"Added sleep task {task_run.key!r} to the docket {docket.name!r}")
 
     asyncio.run(run())
 
@@ -808,6 +800,167 @@ def snapshot(
                 )
 
             console.print(stats_table)
+
+
+@app.command(help="Monitor progress of a specific task execution")
+def progress(
+    key: Annotated[str, typer.Argument(help="The task execution key to monitor")],
+    url: Annotated[
+        str,
+        typer.Option(
+            "--url",
+            "-u",
+            envvar="DOCKET_REDIS_URL",
+            help="Redis URL (e.g., redis://localhost:6379/0)",
+        ),
+    ] = "redis://localhost:6379/0",
+    docket_name: Annotated[
+        str,
+        typer.Option(
+            "--docket",
+            "-d",
+            envvar="DOCKET_NAME",
+            help="Docket name",
+        ),
+    ] = "docket",
+) -> None:
+    """Monitor the progress of a specific task execution in real-time using event-driven updates."""
+
+    async def monitor() -> None:
+        docket = Docket(docket_name, url)
+        execution = Execution(
+            docket, AsyncMock(), (), {}, datetime.now(timezone.utc), key, 1
+        )  # TODO: Replace AsyncMock with actual task function
+        console = Console()
+
+        # State colors for display
+        state_colors = {
+            ExecutionState.SCHEDULED: "yellow",
+            ExecutionState.PENDING: "cyan",
+            ExecutionState.RUNNING: "blue",
+            ExecutionState.COMPLETED: "green",
+            ExecutionState.FAILED: "red",
+        }
+
+        # Load initial snapshot
+        initial_state = await execution.get_state()
+        initial_progress = await execution.progress.get()
+
+        if initial_state is None:
+            console.print(f"[red]No state found for task key: {key}[/red]")
+            return
+
+        # Track current state for display
+        current_state = initial_state
+        current_progress = {
+            "current": int(initial_progress.get(b"current", b"0"))
+            if initial_progress
+            else 0,
+            "total": int(initial_progress.get(b"total", b"0"))
+            if initial_progress and b"total" in initial_progress
+            else None,
+            "message": initial_progress.get(b"message", b"").decode()
+            if initial_progress and b"message" in initial_progress
+            else None,
+        }
+        start_time = datetime.now(timezone.utc)
+        worker_name: str | None = None
+        error_message: str | None = None
+
+        def display_status() -> None:
+            """Display current task status."""
+            console.clear()
+            console.print(f"[bold]Task Key:[/bold] {key}")
+            console.print(f"[bold]Docket:[/bold] {docket_name}")
+            console.print()
+
+            # Display state with color
+            state_color = state_colors.get(current_state, "white")
+            console.print(
+                f"[bold]State:[/bold] [{state_color}]{current_state.value.upper()}[/{state_color}]"
+            )
+
+            # Display worker if running
+            if worker_name:
+                console.print(f"[bold]Worker:[/bold] {worker_name}")
+
+            # Display elapsed time
+            elapsed = datetime.now(timezone.utc) - start_time
+            elapsed_str = str(elapsed).split(".")[0]  # Remove microseconds
+            console.print(f"[bold]Elapsed:[/bold] {elapsed_str}")
+            console.print()
+
+            # Display progress if available
+            if current_progress["current"] > 0 or current_progress["total"] is not None:
+                current_val = current_progress["current"]
+                total_val = current_progress["total"]
+
+                if total_val is not None and total_val > 0:
+                    percent = current_val / total_val * 100
+                    console.print(
+                        f"[bold]Progress:[/bold] {current_val}/{total_val} ({percent:.1f}%)"
+                    )
+
+                    # Simple progress bar
+                    bar_width = 40
+                    filled = int(bar_width * percent / 100)
+                    bar = "█" * filled + "░" * (bar_width - filled)
+                    console.print(f"[cyan]{bar}[/cyan]")
+                else:
+                    console.print(f"[bold]Progress:[/bold] {current_val}")
+
+                if current_progress["message"]:
+                    console.print(
+                        f"[bold]Message:[/bold] {current_progress['message']}"
+                    )
+
+            # Display error if failed
+            if error_message:
+                console.print()
+                console.print(f"[red bold]Error:[/red bold] {error_message}")
+
+            # Display completion status
+            if current_state == ExecutionState.COMPLETED:
+                console.print()
+                console.print("[green bold]✓ Task completed successfully[/green bold]")
+            elif current_state == ExecutionState.FAILED:
+                console.print()
+                console.print("[red bold]✗ Task failed[/red bold]")
+
+        # Display initial snapshot
+        display_status()
+
+        # If already in terminal state, exit
+        if current_state in (ExecutionState.COMPLETED, ExecutionState.FAILED):
+            return
+
+        # Subscribe to events and update display
+        async for event in execution.subscribe():
+            if event["type"] == "state":
+                # Update state information
+                current_state = ExecutionState(event["state"])
+                if "worker" in event:
+                    worker_name = event["worker"]
+                if "error" in event:
+                    error_message = event["error"]
+
+                display_status()
+
+                # Exit if terminal state reached
+                if current_state in (ExecutionState.COMPLETED, ExecutionState.FAILED):
+                    break
+
+            elif event["type"] == "progress":
+                # Update progress information
+                current_progress["current"] = event["current"]
+                if event.get("total") is not None:
+                    current_progress["total"] = event["total"]
+                if event.get("message") is not None:
+                    current_progress["message"] = event["message"]
+
+                display_status()
+
+    asyncio.run(monitor())
 
 
 workers_app: typer.Typer = typer.Typer(
