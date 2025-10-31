@@ -181,6 +181,7 @@ class Agenda:
             # Create execution with unique key
             key = str(uuid7())
             execution = Execution(
+                docket=docket,
                 function=resolved_func,
                 args=args,
                 kwargs=kwargs,

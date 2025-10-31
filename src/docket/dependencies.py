@@ -22,8 +22,9 @@ from typing import (
 )
 
 from .docket import Docket
-from .execution import Execution, TaskFunction, get_signature
+from .execution import Execution, ExecutionProgress, TaskFunction, get_signature
 from .instrumentation import CACHE_SIZE
+# Run and RunProgress have been consolidated into Execution
 
 if TYPE_CHECKING:  # pragma: no cover
     from .worker import Worker
@@ -190,6 +191,33 @@ def TaskLogger() -> "logging.LoggerAdapter[logging.Logger]":
     ```
     """
     return cast("logging.LoggerAdapter[logging.Logger]", _TaskLogger())
+
+
+class _Progress(Dependency):
+    async def __aenter__(self) -> ExecutionProgress:
+        execution = self.execution.get()
+        return execution.progress
+
+
+def Progress() -> ExecutionProgress:
+    """A dependency to report progress updates for the currently executing task.
+
+    Tasks can use this to report their current progress (current/total values) and
+    status messages to external observers.
+
+    Example:
+
+    ```python
+    @task
+    async def process_records(records: list, progress: ExecutionProgress = Progress()) -> None:
+        await progress.set_total(len(records))
+        for i, record in enumerate(records):
+            await process(record)
+            await progress.increment()
+            await progress.set_message(f"Processed {record.id}")
+    ```
+    """
+    return cast(ExecutionProgress, _Progress())
 
 
 class ForcedRetry(Exception):

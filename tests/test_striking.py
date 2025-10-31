@@ -140,6 +140,7 @@ async def test_restoring_is_idempotent(docket: Docket):
     ],
 )
 def test_strike_operators(
+    docket: Docket,
     operator: Operator,
     value: Any,
     test_value: Any,
@@ -156,6 +157,7 @@ def test_strike_operators(
         pass  # pragma: no cover
 
     execution = Execution(
+        docket=docket,
         function=test_function,
         args=(),
         kwargs={"the_parameter": test_value},
