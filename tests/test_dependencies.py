@@ -476,19 +476,21 @@ async def test_contextvar_isolation_between_tasks(docket: Docket, worker: Worker
         executions_seen.append(("second", execution))
         assert b == "second"
 
-        # The execution should be different from the first task
-        first_execution = executions_seen[0][1]
-        assert execution is not first_execution
-        assert execution.kwargs["b"] == "second"
-        assert first_execution.kwargs["a"] == "first"
-
     await docket.add(first_task)(a="first")
     await docket.add(second_task)(b="second")
     await worker.run_until_finished()
 
+    # Verify we captured both executions
     assert len(executions_seen) == 2
     assert executions_seen[0][0] == "first"
     assert executions_seen[1][0] == "second"
+
+    # Verify the executions are different and have correct kwargs
+    first_execution = executions_seen[0][1]
+    second_execution = executions_seen[1][1]
+    assert first_execution is not second_execution
+    assert first_execution.kwargs["a"] == "first"
+    assert second_execution.kwargs["b"] == "second"
 
 
 async def test_contextvar_cleanup_after_task(docket: Docket, worker: Worker):
