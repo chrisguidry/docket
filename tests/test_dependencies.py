@@ -482,12 +482,14 @@ async def test_contextvar_isolation_between_tasks(docket: Docket, worker: Worker
 
     # Verify we captured both executions
     assert len(executions_seen) == 2
-    assert executions_seen[0][0] == "first"
-    assert executions_seen[1][0] == "second"
+
+    # Find first and second executions (order may vary)
+    executions_by_name = {name: exec for name, exec in executions_seen}
+    assert set(executions_by_name.keys()) == {"first", "second"}
 
     # Verify the executions are different and have correct kwargs
-    first_execution = executions_seen[0][1]
-    second_execution = executions_seen[1][1]
+    first_execution = executions_by_name["first"]
+    second_execution = executions_by_name["second"]
     assert first_execution is not second_execution
     assert first_execution.kwargs["a"] == "first"
     assert second_execution.kwargs["b"] == "second"
