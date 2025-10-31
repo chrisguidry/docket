@@ -1,5 +1,5 @@
 import logging
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -555,8 +555,6 @@ async def test_dependency_cache_isolated_between_tasks(docket: Docket, worker: W
 
 async def test_async_exit_stack_cleanup(docket: Docket, worker: Worker):
     """AsyncExitStack should be properly cleaned up after task execution"""
-    from contextlib import asynccontextmanager
-
     cleanup_called: list[str] = []
 
     @asynccontextmanager
@@ -581,11 +579,9 @@ async def test_contextvar_reset_on_reentrant_call(docket: Docket, worker: Worker
     """Contextvars should be properly reset on reentrant calls to resolved_dependencies"""
 
     # Create two mock executions
-    async def task1():
-        pass
+    async def task1(): ...
 
-    async def task2():
-        pass
+    async def task2(): ...
 
     execution1 = Execution(
         key="task1-key",
@@ -615,15 +611,8 @@ async def test_contextvar_reset_on_reentrant_call(docket: Docket, worker: Worker
         assert captured_exec1 is execution1
 
     # After exiting, contextvars should be reset (raise LookupError)
-    try:
-        current_exec = Dependency.execution.get()
-        # If we get here without LookupError, check if it's stale
-        assert current_exec is not execution1, (
-            "Contextvar still points to old execution!"
-        )
-    except LookupError:
-        # Expected - contextvar was properly reset
-        pass
+    with pytest.raises(LookupError):
+        Dependency.execution.get()
 
     # Now make a second call - should not see values from first call
     async with resolved_dependencies(worker, execution2):
@@ -641,8 +630,7 @@ async def test_contextvar_not_leaked_to_caller(docket: Docket):
     with pytest.raises(LookupError):
         Dependency.execution.get()
 
-    async def dummy_task():
-        pass
+    async def dummy_task(): ...
 
     execution = Execution(
         key="test-key",
@@ -652,8 +640,6 @@ async def test_contextvar_not_leaked_to_caller(docket: Docket):
         attempt=1,
         when=datetime.now(timezone.utc),
     )
-
-    from docket.worker import Worker
 
     async with Docket("test-contextvar-leak", url="memory://leak-test") as test_docket:
         async with Worker(test_docket) as test_worker:
@@ -669,5 +655,5 @@ async def test_contextvar_not_leaked_to_caller(docket: Docket):
             with pytest.raises(LookupError):
                 _Depends.stack.get()
 
-            with pytest.raises(LookupError):
+            with pytest.raises(LookupError):  # pragma: no branch
                 _Depends.cache.get()
