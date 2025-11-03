@@ -5,6 +5,7 @@ import logging
 import os
 import socket
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import Annotated, Any, Collection
@@ -12,6 +13,15 @@ from unittest.mock import AsyncMock
 
 import typer
 from rich.console import Console
+from rich.layout import Layout
+from rich.live import Live
+from rich.progress import (
+    BarColumn,
+    Progress,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 
 from . import __version__, tasks
@@ -509,8 +519,8 @@ def trace(
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
             when = datetime.now(timezone.utc) + delay
-            task_run = await docket.add(tasks.trace, when)(message)
-            print(f"Added trace task {task_run.key!r} to the docket {docket.name!r}")
+            execution = await docket.add(tasks.trace, when)(message)
+            print(f"Added trace task {execution.key!r} to the docket {docket.name!r}")
 
     asyncio.run(run())
 
@@ -550,8 +560,8 @@ def fail(
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
             when = datetime.now(timezone.utc) + delay
-            task_run = await docket.add(tasks.fail, when)(message)
-            print(f"Added fail task {task_run.key!r} to the docket {docket.name!r}")
+            execution = await docket.add(tasks.fail, when)(message)
+            print(f"Added fail task {execution.key!r} to the docket {docket.name!r}")
 
     asyncio.run(run())
 
@@ -591,8 +601,8 @@ def sleep(
     async def run() -> None:
         async with Docket(name=docket_, url=url) as docket:
             when = datetime.now(timezone.utc) + delay
-            task_run = await docket.add(tasks.sleep, when)(seconds)
-            print(f"Added sleep task {task_run.key!r} to the docket {docket.name!r}")
+            execution = await docket.add(tasks.sleep, when)(seconds)
+            print(f"Added sleep task {execution.key!r} to the docket {docket.name!r}")
 
     asyncio.run(run())
 
@@ -803,7 +813,7 @@ def snapshot(
 
 
 @app.command(help="Monitor progress of a specific task execution")
-def progress(
+def watch(
     key: Annotated[str, typer.Argument(help="The task execution key to monitor")],
     url: Annotated[
         str,
@@ -827,134 +837,202 @@ def progress(
     """Monitor the progress of a specific task execution in real-time using event-driven updates."""
 
     async def monitor() -> None:
-        docket = Docket(docket_name, url)
-        execution = Execution(
-            docket, AsyncMock(), (), {}, datetime.now(timezone.utc), key, 1
-        )  # TODO: Replace AsyncMock with actual task function
-        console = Console()
+        async with Docket(docket_name, url) as docket:
+            execution = Execution(
+                docket, AsyncMock(), (), {}, datetime.now(timezone.utc), key, 1
+            )  # TODO: Replace AsyncMock with actual task function
+            console = Console()
 
-        # State colors for display
-        state_colors = {
-            ExecutionState.SCHEDULED: "yellow",
-            ExecutionState.QUEUED: "cyan",
-            ExecutionState.RUNNING: "blue",
-            ExecutionState.COMPLETED: "green",
-            ExecutionState.FAILED: "red",
-        }
+            # State colors for display
+            state_colors = {
+                ExecutionState.SCHEDULED: "yellow",
+                ExecutionState.QUEUED: "cyan",
+                ExecutionState.RUNNING: "blue",
+                ExecutionState.COMPLETED: "green",
+                ExecutionState.FAILED: "red",
+            }
 
-        # Load initial snapshot
-        initial_state = await execution.get_state()
-        await execution.progress.sync()
+            # Load initial snapshot
+            await execution.sync()
 
-        if initial_state is None:
-            console.print(f"[red]No state found for task key: {key}[/red]")
-            return
+            # Track current state for display
+            current_state = execution.state
+            worker_name: str | None = execution.worker
+            error_message: str | None = execution.error
 
-        # Track current state for display
-        current_state = initial_state
-        current_progress = {
-            "current": execution.progress.current
-            if execution.progress.current is not None
-            else 0,
-            "total": execution.progress.total,
-            "message": execution.progress.message,
-        }
-        start_time = datetime.now(timezone.utc)
-        worker_name: str | None = None
-        error_message: str | None = None
+            # Initialize progress values
+            current_val = (
+                execution.progress.current
+                if execution.progress.current is not None
+                else 0
+            )
+            total_val = execution.progress.total
+            progress_message = execution.progress.message
 
-        def display_status() -> None:
-            """Display current task status."""
-            console.clear()
-            console.print(f"[bold]Task Key:[/bold] {key}")
-            console.print(f"[bold]Docket:[/bold] {docket_name}")
-            console.print()
-
-            # Display state with color
-            state_color = state_colors.get(current_state, "white")
-            console.print(
-                f"[bold]State:[/bold] [{state_color}]{current_state.value.upper()}[/{state_color}]"
+            active_progress = Progress(
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(bar_width=None),  # Auto width
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                expand=True,
             )
 
-            # Display worker if running
-            if worker_name:
-                console.print(f"[bold]Worker:[/bold] {worker_name}")
+            progress_task_id = None
 
-            # Display elapsed time
-            elapsed = datetime.now(timezone.utc) - start_time
-            elapsed_str = str(elapsed).split(".")[0]  # Remove microseconds
-            console.print(f"[bold]Elapsed:[/bold] {elapsed_str}")
-            console.print()
-
-            # Display progress if available
-            if current_progress["current"] > 0 or current_progress["total"] is not None:
-                current_val = current_progress["current"]
-                total_val = current_progress["total"]
-
-                if total_val is not None and total_val > 0:
-                    percent = current_val / total_val * 100
-                    console.print(
-                        f"[bold]Progress:[/bold] {current_val}/{total_val} ({percent:.1f}%)"
+            # Initialize progress task if we have progress data
+            if current_val > 0 and total_val > 0:
+                progress_task_id = active_progress.add_task(
+                    progress_message or "Processing...",
+                    total=total_val,
+                    completed=current_val,
+                )
+                # Set start time based on execution.started_at if available
+                if execution.started_at is not None:
+                    elapsed_since_start = (
+                        datetime.now(timezone.utc) - execution.started_at
                     )
+                    monotonic_start = (
+                        time.monotonic() - elapsed_since_start.total_seconds()
+                    )
+                    active_progress.tasks[progress_task_id].start_time = monotonic_start
 
-                    # Simple progress bar
-                    bar_width = 40
-                    filled = int(bar_width * percent / 100)
-                    bar = "█" * filled + "░" * (bar_width - filled)
-                    console.print(f"[cyan]{bar}[/cyan]")
+            def create_display_layout() -> Layout:
+                """Create the layout for watch display."""
+                layout = Layout()
+
+                # Build info lines
+                info_lines = [
+                    f"[bold]Task:[/bold] {key}",
+                    f"[bold]Docket:[/bold] {docket_name}",
+                ]
+
+                # Add state with color
+                state_color = state_colors.get(current_state, "white")
+                info_lines.append(
+                    f"[bold]State:[/bold] [{state_color}]{current_state.value.upper()}[/{state_color}]"
+                )
+
+                # Add worker if available
+                if worker_name:
+                    info_lines.append(f"[bold]Worker:[/bold] {worker_name}")
+
+                # Add error if failed
+                if error_message:
+                    info_lines.append(f"[red bold]Error:[/red bold] {error_message}")
+
+                # Add completion status
+                if current_state == ExecutionState.COMPLETED:
+                    info_lines.append(
+                        "[green bold]✓ Task completed successfully[/green bold]"
+                    )
+                elif current_state == ExecutionState.FAILED:
+                    info_lines.append("[red bold]✗ Task failed[/red bold]")
+
+                info_section = "\n".join(info_lines)
+
+                # Build layout without big gaps
+                if progress_task_id is not None:
+                    # Choose the right progress instance
+                    # Show info and progress together with minimal spacing
+                    layout.split_column(
+                        Layout(info_section, name="info", size=len(info_lines)),
+                        Layout(active_progress, name="progress", size=2),
+                    )
                 else:
-                    console.print(f"[bold]Progress:[/bold] {current_val}")
+                    # Just show info
+                    layout.update(Layout(info_section, name="info"))
 
-                if current_progress["message"]:
-                    console.print(
-                        f"[bold]Message:[/bold] {current_progress['message']}"
-                    )
+                return layout
 
-            # Display error if failed
-            if error_message:
-                console.print()
-                console.print(f"[red bold]Error:[/red bold] {error_message}")
+            # Create initial layout
+            layout = create_display_layout()
 
-            # Display completion status
-            if current_state == ExecutionState.COMPLETED:
-                console.print()
-                console.print("[green bold]✓ Task completed successfully[/green bold]")
-            elif current_state == ExecutionState.FAILED:
-                console.print()
-                console.print("[red bold]✗ Task failed[/red bold]")
+            # If already in terminal state, display once and exit
+            if current_state in (ExecutionState.COMPLETED, ExecutionState.FAILED):
+                console.print(layout)
+                return
 
-        # Display initial snapshot
-        display_status()
+            # Use Live for smooth updates
+            with Live(layout, console=console, refresh_per_second=4) as live:
+                # Subscribe to events and update display
+                async for event in execution.subscribe():
+                    if event["type"] == "state":
+                        # Update state information
+                        current_state = ExecutionState(event["state"])
+                        if "worker" in event:
+                            worker_name = event["worker"]
+                        if "error" in event:
+                            error_message = event["error"]
+                        if "started_at" in event:
+                            execution.started_at = datetime.fromisoformat(
+                                event["started_at"]
+                            )
+                            # Update progress bar start time if we have a progress task
+                            if progress_task_id is not None:
+                                elapsed_since_start = (
+                                    datetime.now(timezone.utc) - execution.started_at
+                                )
+                                monotonic_start = (
+                                    time.monotonic()
+                                    - elapsed_since_start.total_seconds()
+                                )
+                                active_progress.tasks[
+                                    progress_task_id
+                                ].start_time = monotonic_start
 
-        # If already in terminal state, exit
-        if current_state in (ExecutionState.COMPLETED, ExecutionState.FAILED):
-            return
+                        # Update layout
+                        layout = create_display_layout()
+                        live.update(layout)
 
-        # Subscribe to events and update display
-        async for event in execution.subscribe():
-            if event["type"] == "state":
-                # Update state information
-                current_state = ExecutionState(event["state"])
-                if "worker" in event:
-                    worker_name = event["worker"]
-                if "error" in event:
-                    error_message = event["error"]
+                        # Exit if terminal state reached
+                        if current_state in (
+                            ExecutionState.COMPLETED,
+                            ExecutionState.FAILED,
+                        ):
+                            break
 
-                display_status()
+                    elif event["type"] == "progress":
+                        # Update progress information
+                        current_val = event["current"]
+                        total_val: int = event.get("total", execution.progress.total)
+                        progress_message = event.get(
+                            "message", execution.progress.message
+                        )
 
-                # Exit if terminal state reached
-                if current_state in (ExecutionState.COMPLETED, ExecutionState.FAILED):
-                    break
+                        # Update or create progress task
+                        if total_val > 0 and worker_name is not None:
+                            if progress_task_id is None:
+                                # Create new progress task (first time only)
+                                progress_task_id = active_progress.add_task(
+                                    progress_message or "Processing...",
+                                    total=total_val,
+                                    completed=current_val,
+                                )
+                                # Set start time based on execution.started_at if available
+                                if execution.started_at is not None:
+                                    elapsed_since_start = (
+                                        datetime.now(timezone.utc)
+                                        - execution.started_at
+                                    )
+                                    monotonic_start = (
+                                        time.monotonic()
+                                        - elapsed_since_start.total_seconds()
+                                    )
+                                    active_progress.tasks[
+                                        progress_task_id
+                                    ].start_time = monotonic_start
+                            else:
+                                # Update existing progress task
+                                active_progress.update(
+                                    progress_task_id,
+                                    completed=current_val,
+                                    total=total_val,
+                                    description=progress_message or "Processing...",
+                                )
 
-            elif event["type"] == "progress":
-                # Update progress information
-                current_progress["current"] = event["current"]
-                if event.get("total") is not None:
-                    current_progress["total"] = event["total"]
-                if event.get("message") is not None:
-                    current_progress["message"] = event["message"]
-
-                display_status()
+                        # Update layout
+                        layout = create_display_layout()
+                        live.update(layout)
 
     asyncio.run(monitor())
 

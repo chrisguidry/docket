@@ -104,7 +104,7 @@ class ExecutionProgress:
         self.key = key
         self._redis_key = f"{docket.name}:progress:{key}"
         self.current: int | None = None
-        self.total: int | None = None
+        self.total: int = 100
         self.message: str | None = None
         self.updated_at: datetime | None = None
 
@@ -198,7 +198,7 @@ class ExecutionProgress:
             data = await redis.hgetall(self._redis_key)
             if data:
                 self.current = int(data.get(b"current", b"0"))
-                self.total = int(data[b"total"]) if b"total" in data else None
+                self.total = int(data.get(b"total", b"100"))
                 self.message = data[b"message"].decode() if b"message" in data else None
                 self.updated_at = (
                     datetime.fromisoformat(data[b"updated_at"].decode())
@@ -207,7 +207,7 @@ class ExecutionProgress:
                 )
             else:
                 self.current = None
-                self.total = None
+                self.total = 100
                 self.message = None
                 self.updated_at = None
 
@@ -309,6 +309,10 @@ class Execution:
         self.trace_context = trace_context
         self.redelivered = redelivered
         self.state: ExecutionState = ExecutionState.SCHEDULED
+        self.worker: str | None = None
+        self.started_at: datetime | None = None
+        self.completed_at: datetime | None = None
+        self.error: str | None = None
         self.progress: ExecutionProgress = ExecutionProgress(docket, key)
         self._redis_key = f"{docket.name}:runs:{key}"
 
@@ -584,20 +588,45 @@ class Execution:
             state_data["error"] = error
         await self._publish_state(state_data)
 
-    async def get_state(self) -> ExecutionState | None:
-        """Retrieve the current execution state.
+    async def sync(self) -> None:
+        """Synchronize instance attributes with current execution data from Redis.
 
-        Returns:
-            The current ExecutionState, or None if no state data exists
+        Updates self.state, execution metadata, and progress data from Redis.
+        Sets attributes to None if no data exists.
         """
         async with self.docket.redis() as redis:
-            state_value = await redis.hget(self._redis_key, "state")
-            if state_value:
-                # Decode bytes to string if necessary
-                if isinstance(state_value, bytes):
-                    state_value = state_value.decode()
-                return ExecutionState(state_value)
-            return None
+            data = await redis.hgetall(self._redis_key)
+            if data:
+                # Update state
+                state_value = data.get(b"state")
+                if state_value:
+                    if isinstance(state_value, bytes):
+                        state_value = state_value.decode()
+                    self.state = ExecutionState(state_value)
+
+                # Update metadata
+                self.worker = data[b"worker"].decode() if b"worker" in data else None
+                self.started_at = (
+                    datetime.fromisoformat(data[b"started_at"].decode())
+                    if b"started_at" in data
+                    else None
+                )
+                self.completed_at = (
+                    datetime.fromisoformat(data[b"completed_at"].decode())
+                    if b"completed_at" in data
+                    else None
+                )
+                self.error = data[b"error"].decode() if b"error" in data else None
+            else:
+                # No data exists - reset to defaults
+                self.state = ExecutionState.SCHEDULED
+                self.worker = None
+                self.started_at = None
+                self.completed_at = None
+                self.error = None
+
+        # Sync progress data
+        await self.progress.sync()
 
     async def _publish_state(self, data: dict) -> None:
         """Publish state change to Redis pub/sub channel.

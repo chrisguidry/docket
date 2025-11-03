@@ -18,8 +18,8 @@ async def test_run_state_scheduled(docket: Docket):
     execution = await docket.add(task)("arg1", "arg2")
 
     assert isinstance(execution, Execution)
-    state = await execution.get_state()
-    assert state == ExecutionState.QUEUED
+    await execution.sync()
+    assert execution.state == ExecutionState.QUEUED
 
 
 async def test_run_state_pending_to_running(docket: Docket, worker: Worker):
@@ -51,8 +51,8 @@ async def test_run_state_completed_on_success(docket: Docket, worker: Worker):
 
     await worker.run_until_finished()
 
-    state = await execution.get_state()
-    assert state == ExecutionState.COMPLETED
+    await execution.sync()
+    assert execution.state == ExecutionState.COMPLETED
 
 
 async def test_run_state_failed_on_exception(docket: Docket, worker: Worker):
@@ -65,8 +65,8 @@ async def test_run_state_failed_on_exception(docket: Docket, worker: Worker):
 
     await worker.run_until_finished()
 
-    state = await execution.get_state()
-    assert state == ExecutionState.FAILED
+    await execution.sync()
+    assert execution.state == ExecutionState.FAILED
 
 
 async def test_progress_create(docket: Docket):
@@ -179,8 +179,8 @@ async def test_run_state_ttl_after_completion(docket: Docket, worker: Worker):
     await worker.run_until_finished()
 
     # Verify state exists
-    state = await execution.get_state()
-    assert state == ExecutionState.COMPLETED
+    await execution.sync()
+    assert execution.state == ExecutionState.COMPLETED
 
     # Verify TTL is set (should be 3600 seconds = 1 hour)
     async with docket.redis() as redis:
@@ -204,17 +204,17 @@ async def test_full_lifecycle_integration(docket: Docket, worker: Worker):
     execution = await docket.add(tracking_task, when=when)()
 
     # Should be SCHEDULED
-    state = await execution.get_state()
-    assert state == ExecutionState.SCHEDULED
-    states_observed.append(state)
+    await execution.sync()
+    assert execution.state == ExecutionState.SCHEDULED
+    states_observed.append(execution.state)
 
     # Run worker
     await worker.run_until_finished()
 
     # Should be COMPLETED
-    state = await execution.get_state()
-    assert state == ExecutionState.COMPLETED
-    states_observed.append(state)
+    await execution.sync()
+    assert execution.state == ExecutionState.COMPLETED
+    states_observed.append(execution.state)
 
     # Verify we observed the expected states
     assert ExecutionState.SCHEDULED in states_observed
@@ -241,8 +241,8 @@ async def test_progress_with_multiple_increments(docket: Docket, worker: Worker)
     await worker.run_until_finished()
 
     # Verify final state
-    state = await execution.get_state()
-    assert state == ExecutionState.COMPLETED
+    await execution.sync()
+    assert execution.state == ExecutionState.COMPLETED
 
 
 async def test_progress_without_total(docket: Docket, worker: Worker):
@@ -257,8 +257,8 @@ async def test_progress_without_total(docket: Docket, worker: Worker):
 
     await worker.run_until_finished()
 
-    state = await execution.get_state()
-    assert state == ExecutionState.COMPLETED
+    await execution.sync()
+    assert execution.state == ExecutionState.COMPLETED
 
 
 async def test_run_add_returns_run_instance(docket: Docket):
@@ -284,8 +284,8 @@ async def test_error_message_stored_on_failure(docket: Docket, worker: Worker):
     await worker.run_until_finished()
 
     # Check state is FAILED
-    state = await execution.get_state()
-    assert state == ExecutionState.FAILED
+    await execution.sync()
+    assert execution.state == ExecutionState.FAILED
 
     # Verify error message is stored (would need to add get() method to Run to check this)
     # For now, just verify it failed
@@ -386,8 +386,8 @@ async def test_state_publish_events(docket: Docket):
     assert execution.state == ExecutionState.QUEUED
 
     # Verify state record exists in Redis
-    state = await execution.get_state()
-    assert state == ExecutionState.QUEUED
+    await execution.sync()
+    assert execution.state == ExecutionState.QUEUED
 
 
 async def test_run_subscribe_both_state_and_progress(docket: Docket):
