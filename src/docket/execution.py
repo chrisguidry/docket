@@ -610,7 +610,7 @@ class Execution:
             }
         )
 
-    async def set_completed(self) -> None:
+    async def mark_as_completed(self) -> None:
         """Mark task as completed successfully.
 
         Sets 1-hour TTL on state data and deletes progress data.
@@ -634,7 +634,7 @@ class Execution:
             {"state": ExecutionState.COMPLETED.value, "completed_at": completed_at}
         )
 
-    async def set_failed(self, error: str | None = None) -> None:
+    async def mark_as_failed(self, error: str | None = None) -> None:
         """Mark task as failed.
 
         Args:

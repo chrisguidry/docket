@@ -471,7 +471,7 @@ async def test_completed_state_publishes_event(docket: Docket):
     await asyncio.sleep(0.1)
 
     await execution.claim_and_run("worker-1")
-    await execution.set_completed()
+    await execution.mark_as_completed()
 
     try:
         await asyncio.wait_for(subscriber_task, timeout=2.0)
@@ -504,7 +504,7 @@ async def test_failed_state_publishes_event_with_error(docket: Docket):
     await asyncio.sleep(0.1)
 
     await execution.claim_and_run("worker-1")
-    await execution.set_failed("Something went wrong!")
+    await execution.mark_as_failed("Something went wrong!")
 
     try:
         await asyncio.wait_for(subscriber_task, timeout=2.0)

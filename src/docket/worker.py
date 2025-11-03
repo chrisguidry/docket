@@ -672,7 +672,7 @@ class Worker:
                     )
 
                     # Mark execution as completed
-                    await execution.set_completed()
+                    await execution.mark_as_completed()
 
                     arrow = "↫" if rescheduled else "↩"
                     logger.info(
@@ -693,7 +693,7 @@ class Worker:
 
                 # Mark execution as failed with error message
                 error_msg = f"{type(e).__name__}: {str(e)}"
-                await execution.set_failed(error_msg)
+                await execution.mark_as_failed(error_msg)
 
                 arrow = "↫" if retried else "↩"
                 logger.exception(
