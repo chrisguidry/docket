@@ -567,7 +567,7 @@ class Worker:
 
         # Atomically claim task and transition to running state
         # This also initializes progress and cleans up known/stream_id to allow rescheduling
-        await execution.claim_and_run(self.name)
+        await execution.claim(self.name)
 
         dependencies: dict[str, Dependency] = {}
 

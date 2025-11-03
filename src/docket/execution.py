@@ -531,10 +531,10 @@ class Execution:
                 {"state": ExecutionState.SCHEDULED.value, "when": when.isoformat()}
             )
 
-    async def claim_and_run(self, worker: str) -> None:
+    async def claim(self, worker: str) -> None:
         """Atomically claim task and transition to RUNNING state.
 
-        This consolidates worker operations when starting execution into a single
+        This consolidates worker operations when claiming a task into a single
         atomic Lua script that:
         - Sets state to RUNNING with worker name and timestamp
         - Initializes progress tracking (current=0, total=100)
@@ -542,7 +542,7 @@ class Execution:
         - Cleans up legacy keys for backwards compatibility
 
         Args:
-            worker: Name of the worker claiming and executing the task
+            worker: Name of the worker claiming the task
         """
         started_at = datetime.now(timezone.utc)
         started_at_iso = started_at.isoformat()
