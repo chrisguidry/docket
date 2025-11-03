@@ -236,8 +236,7 @@ class ExecutionProgress:
 
         channel = f"{self.docket.name}:progress:{self.key}"
         # Create ephemeral Redis client for publishing
-        redis = Redis.from_url(self.docket.url)
-        try:
+        async with self.docket.redis() as redis:
             # Use instance attributes for current state
             payload = {
                 "type": "progress",
@@ -250,8 +249,6 @@ class ExecutionProgress:
 
             # Publish JSON payload
             await redis.publish(channel, json.dumps(payload))
-        finally:
-            await redis.aclose()
 
     async def subscribe(self) -> AsyncGenerator[dict[str, Any], None]:
         """Subscribe to progress updates for this task.
@@ -417,6 +414,7 @@ class Execution:
                         # ARGV: task_key, when_timestamp, is_immediate, replace, ...message_fields
                         """
                             local stream_key = KEYS[1]
+                            -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
                             local known_key = KEYS[2]
                             local parked_key = KEYS[3]
                             local queue_key = KEYS[4]
@@ -437,33 +435,61 @@ class Execution:
 
                             -- Handle replacement: cancel existing task if needed
                             if replace then
-                                local existing_message_id = redis.call('GET', stream_id_key)
+                                -- Get stream ID from runs hash (check new location first)
+                                local existing_message_id = redis.call('HGET', runs_key, 'stream_id')
+
+                                -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
+                                if not existing_message_id then
+                                    existing_message_id = redis.call('GET', stream_id_key)
+                                end
+
                                 if existing_message_id then
                                     redis.call('XDEL', stream_key, existing_message_id)
                                 end
-                                redis.call('DEL', known_key, parked_key, stream_id_key)
+
                                 redis.call('ZREM', queue_key, task_key)
+                                redis.call('DEL', parked_key)
+
+                                -- TODO: Remove in next breaking release (v0.14.0) - clean up legacy keys
+                                redis.call('DEL', known_key, stream_id_key)
+
+                                -- Note: runs_key is updated below, not deleted
                             else
-                                -- Check if task already exists
-                                if redis.call('EXISTS', known_key) == 1 then
+                                -- Check if task already exists (check new location first, then legacy)
+                                local known_exists = redis.call('HEXISTS', runs_key, 'known') == 1
+                                if not known_exists then
+                                    -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
+                                    known_exists = redis.call('EXISTS', known_key) == 1
+                                end
+                                if known_exists then
                                     return 'EXISTS'
                                 end
                             end
 
                             if is_immediate then
-                                -- Add to stream and store message ID for later cancellation
+                                -- Add to stream for immediate execution
                                 local message_id = redis.call('XADD', stream_key, '*', unpack(message))
-                                redis.call('SET', known_key, when_timestamp)
-                                redis.call('SET', stream_id_key, message_id)
-                                -- Set run state to queued (ready for workers to claim)
-                                redis.call('HSET', runs_key, 'state', 'queued', 'when', when_timestamp)
+
+                                -- Store state and metadata in runs hash
+                                redis.call('HSET', runs_key,
+                                    'state', 'queued',
+                                    'when', when_timestamp,
+                                    'known', when_timestamp,
+                                    'stream_id', message_id
+                                )
                             else
-                                -- Add to queue with task data in parked hash
-                                redis.call('SET', known_key, when_timestamp)
+                                -- Park task data for future execution
                                 redis.call('HSET', parked_key, unpack(message))
+
+                                -- Add to sorted set queue
                                 redis.call('ZADD', queue_key, when_timestamp, task_key)
-                                -- Set run state to scheduled (waiting for due time)
-                                redis.call('HSET', runs_key, 'state', 'scheduled', 'when', when_timestamp)
+
+                                -- Store state and metadata in runs hash
+                                redis.call('HSET', runs_key,
+                                    'state', 'scheduled',
+                                    'when', when_timestamp,
+                                    'known', when_timestamp
+                                )
                             end
 
                             return 'OK'
@@ -640,19 +666,14 @@ class Execution:
 
         channel = f"{self.docket.name}:state:{self.key}"
         # Create ephemeral Redis client for publishing
-        redis = Redis.from_url(self.docket.url)
-        try:
+        async with self.docket.redis() as redis:
             # Build payload with all relevant state information
             payload = {
                 "type": "state",
                 "key": self.key,
-                **data,  # Include all state fields from caller
+                **data,
             }
-
-            # Publish JSON payload
             await redis.publish(channel, json.dumps(payload))
-        finally:
-            await redis.aclose()
 
     async def subscribe(self) -> AsyncGenerator[dict[str, Any], None]:
         """Subscribe to both state and progress updates for this task.
@@ -664,19 +685,12 @@ class Execution:
         """
         state_channel = f"{self.docket.name}:state:{self.key}"
         progress_channel = f"{self.docket.name}:progress:{self.key}"
-        redis = Redis.from_url(self.docket.url)
-        pubsub = redis.pubsub()
-
-        try:
-            # Subscribe to both channels
-            await pubsub.subscribe(state_channel, progress_channel)
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    yield json.loads(message["data"])
-        finally:
-            await pubsub.unsubscribe(state_channel, progress_channel)
-            await pubsub.aclose()
-            await redis.aclose()
+        async with self.docket.redis() as redis:
+            async with redis.pubsub() as pubsub:
+                await pubsub.subscribe(state_channel, progress_channel)
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        yield json.loads(message["data"])
 
 
 def compact_signature(signature: inspect.Signature) -> str:

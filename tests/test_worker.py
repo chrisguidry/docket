@@ -1734,7 +1734,7 @@ async def test_redis_key_cleanup_cancelled_task(docket: Docket, worker: Worker) 
         )
 
         # Verify cleanup after cancellation
-        await checker.verify_keys_increased("task cancellation")
+        await checker.verify_keys_returned_to_baseline("task cancellation")
 
 
 async def test_replace_task_with_legacy_known_key(

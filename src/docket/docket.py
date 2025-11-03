@@ -512,24 +512,33 @@ class Docket:
             self._cancel_task_script = cast(
                 _cancel_task,
                 redis.register_script(
-                    # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key
+                    # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key, runs_key
                     # ARGV: task_key
                     """
                     local stream_key = KEYS[1]
+                    -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
                     local known_key = KEYS[2]
                     local parked_key = KEYS[3]
                     local queue_key = KEYS[4]
                     local stream_id_key = KEYS[5]
+                    local runs_key = KEYS[6]
                     local task_key = ARGV[1]
 
+                    -- Get stream ID (check new location first, then legacy)
+                    local message_id = redis.call('HGET', runs_key, 'stream_id')
+
+                    -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
+                    if not message_id then
+                        message_id = redis.call('GET', stream_id_key)
+                    end
+
                     -- Delete from stream if message ID exists
-                    local message_id = redis.call('GET', stream_id_key)
                     if message_id then
                         redis.call('XDEL', stream_key, message_id)
                     end
 
-                    -- Clean up all task-related keys
-                    redis.call('DEL', known_key, parked_key, stream_id_key)
+                    -- Clean up all task-related keys (handles both new and legacy formats)
+                    redis.call('DEL', known_key, parked_key, stream_id_key, runs_key)
                     redis.call('ZREM', queue_key, task_key)
 
                     return 'OK'
@@ -546,6 +555,7 @@ class Docket:
                 self.parked_task_key(key),
                 self.queue_key,
                 self.stream_id_key(key),
+                f"{self.name}:runs:{key}",  # runs_key
             ],
             args=[key],
         )

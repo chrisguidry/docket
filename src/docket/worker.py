@@ -525,6 +525,11 @@ class Worker:
             return
 
         logger.debug("Deleting known task", extra=self._log_context())
+        # Delete known/stream_id from runs hash to allow task rescheduling
+        runs_key = f"{self.docket.name}:runs:{key}"
+        await redis.hdel(runs_key, "known", "stream_id")
+
+        # TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
         known_task_key = self.docket.known_task_key(key)
         stream_id_key = self.docket.stream_id_key(key)
         await redis.delete(known_task_key, stream_id_key)
@@ -762,7 +767,8 @@ class Worker:
 
         execution.when = datetime.now(timezone.utc) + retry.delay
         execution.attempt += 1
-        await self.docket.schedule(execution)
+        # Use replace=True since the task is being rescheduled after failure
+        await execution.schedule(replace=True)
 
         TASKS_RETRIED.add(1, {**self.labels(), **execution.general_labels()})
         return True
