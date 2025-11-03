@@ -104,7 +104,7 @@ async def test_progress_increment(docket: Docket):
     )
 
     # Initialize with set_running (which sets current=0)
-    await execution.set_running("worker-1")
+    await execution.claim_and_run("worker-1")
     progress = execution.progress
 
     # Increment multiple times
@@ -298,7 +298,7 @@ async def test_concurrent_progress_updates(docket: Docket):
     )
     progress = execution.progress
 
-    await execution.set_running("worker-1")
+    await execution.claim_and_run("worker-1")
 
     # Simulate concurrent increments
     async def increment_many():
@@ -339,7 +339,7 @@ async def test_progress_publish_events(docket: Docket):
     await asyncio.sleep(0.1)
 
     # Initialize and publish updates
-    await execution.set_running("worker-1")
+    await execution.claim_and_run("worker-1")
     await progress.set_total(100)
     await progress.increment(10)
     await progress.set_message("Processing...")
@@ -422,7 +422,7 @@ async def test_run_subscribe_both_state_and_progress(docket: Docket):
     await asyncio.sleep(0.1)
 
     # Publish mixed state and progress events
-    await execution.set_running("worker-1")
+    await execution.claim_and_run("worker-1")
     await execution.progress.set_total(50)
     await execution.progress.increment(5)
 
@@ -470,7 +470,7 @@ async def test_completed_state_publishes_event(docket: Docket):
     subscriber_task = asyncio.create_task(collect_events())
     await asyncio.sleep(0.1)
 
-    await execution.set_running("worker-1")
+    await execution.claim_and_run("worker-1")
     await execution.set_completed()
 
     try:
@@ -503,7 +503,7 @@ async def test_failed_state_publishes_event_with_error(docket: Docket):
     subscriber_task = asyncio.create_task(collect_events())
     await asyncio.sleep(0.1)
 
-    await execution.set_running("worker-1")
+    await execution.claim_and_run("worker-1")
     await execution.set_failed("Something went wrong!")
 
     try:

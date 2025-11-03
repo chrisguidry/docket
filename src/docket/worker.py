@@ -565,8 +565,9 @@ class Worker:
         arrow = "↬" if execution.attempt > 1 else "↪"
         logger.info("%s [%s] %s", arrow, ms(punctuality), call, extra=log_context)
 
-        # Set execution to running state
-        await execution.set_running(self.name)
+        # Atomically claim task and transition to running state
+        # This also initializes progress and cleans up known/stream_id to allow rescheduling
+        await execution.claim_and_run(self.name)
 
         dependencies: dict[str, Dependency] = {}
 
@@ -608,14 +609,11 @@ class Worker:
                                 # Successfully acquired slot
                                 pass
 
-                    # Preemptively reschedule the perpetual task for the future, or clear
-                    # the known task key for this task
+                    # Preemptively reschedule the perpetual task for the future
+                    # Note: known/stream_id already deleted by claim_and_run()
                     rescheduled = await self._perpetuate_if_requested(
                         execution, dependencies
                     )
-                    if not rescheduled:
-                        async with self.docket.redis() as redis:
-                            await self._delete_known_task(redis, execution)
 
                     dependency_failures = {
                         k: v

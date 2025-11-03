@@ -531,31 +531,82 @@ class Execution:
                 {"state": ExecutionState.SCHEDULED.value, "when": when.isoformat()}
             )
 
-    async def set_running(self, worker: str) -> None:
-        """Mark task as running.
+    async def claim_and_run(self, worker: str) -> None:
+        """Atomically claim task and transition to RUNNING state.
+
+        This consolidates worker operations when starting execution into a single
+        atomic Lua script that:
+        - Sets state to RUNNING with worker name and timestamp
+        - Initializes progress tracking (current=0, total=100)
+        - Deletes known/stream_id fields to allow task rescheduling
+        - Cleans up legacy keys for backwards compatibility
 
         Args:
-            worker: Name of the worker executing the task
+            worker: Name of the worker claiming and executing the task
         """
-        started_at = datetime.now(timezone.utc).isoformat()
+        started_at = datetime.now(timezone.utc)
+        started_at_iso = started_at.isoformat()
+
         async with self.docket.redis() as redis:
-            await redis.hset(
-                self._redis_key,
-                mapping={
-                    "state": ExecutionState.RUNNING.value,
-                    "worker": worker,
-                    "started_at": started_at,
-                },
+            claim_script = redis.register_script(
+                # KEYS: runs_key, progress_key, known_key, stream_id_key
+                # ARGV: worker, started_at_iso
+                """
+                local runs_key = KEYS[1]
+                local progress_key = KEYS[2]
+                -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
+                local known_key = KEYS[3]
+                local stream_id_key = KEYS[4]
+
+                local worker = ARGV[1]
+                local started_at = ARGV[2]
+
+                -- Update execution state to running
+                redis.call('HSET', runs_key,
+                    'state', 'running',
+                    'worker', worker,
+                    'started_at', started_at
+                )
+
+                -- Initialize progress tracking
+                redis.call('HSET', progress_key,
+                    'current', '0',
+                    'total', '100'
+                )
+
+                -- Delete known/stream_id fields to allow task rescheduling
+                redis.call('HDEL', runs_key, 'known', 'stream_id')
+
+                -- TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
+                redis.call('DEL', known_key, stream_id_key)
+
+                return 'OK'
+                """
             )
-            # Initialize progress current to 0
-            await redis.hset(self.progress._redis_key, "current", "0")
+
+            await claim_script(
+                keys=[
+                    self._redis_key,  # runs_key
+                    self.progress._redis_key,  # progress_key
+                    f"{self.docket.name}:known:{self.key}",  # legacy known_key
+                    f"{self.docket.name}:stream-id:{self.key}",  # legacy stream_id_key
+                ],
+                args=[worker, started_at_iso],
+            )
+
+        # Update local state
         self.state = ExecutionState.RUNNING
+        self.worker = worker
+        self.started_at = started_at
+        self.progress.current = 0
+        self.progress.total = 100
+
         # Publish state change event
         await self._publish_state(
             {
                 "state": ExecutionState.RUNNING.value,
                 "worker": worker,
-                "started_at": started_at,
+                "started_at": started_at_iso,
             }
         )
 
