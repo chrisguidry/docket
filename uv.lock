@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -405,7 +405,7 @@ wheels = [
 [[package]]
 name = "fakeredis"
 version = "2.32.1"
-source = { git = "https://github.com/zzstoatzz/fakeredis-py.git?rev=fix-xpending-range-fields#a333f0b70397a64f6fdb3e624e130bb586eac910" }
+source = { git = "https://github.com/cunla/fakeredis-py.git?rev=ad50a0de8d6dce554fb629ec284bc4ccbc6a7f12#ad50a0de8d6dce554fb629ec284bc4ccbc6a7f12" }
 dependencies = [
     { name = "redis" },
     { name = "sortedcontainers" },
@@ -1580,7 +1580,7 @@ requires-dist = [
 dev = [
     { name = "codespell", specifier = ">=2.4.1" },
     { name = "docker", specifier = ">=7.1.0" },
-    { name = "fakeredis", extras = ["lua"], git = "https://github.com/zzstoatzz/fakeredis-py.git?rev=fix-xpending-range-fields" },
+    { name = "fakeredis", extras = ["lua"], git = "https://github.com/cunla/fakeredis-py.git?rev=ad50a0de8d6dce554fb629ec284bc4ccbc6a7f12" },
     { name = "ipython", specifier = ">=8.0.0" },
     { name = "mypy", specifier = ">=1.14.1" },
     { name = "opentelemetry-distro", specifier = ">=0.51b0" },
