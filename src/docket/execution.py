@@ -219,7 +219,7 @@ class ExecutionProgress:
             await redis.delete(self._redis_key)
         # Reset instance attributes
         self.current = None
-        self.total = None
+        self.total = 100
         self.message = None
         self.updated_at = None
 
@@ -757,24 +757,20 @@ class Execution:
 
         yield initial_state
 
-        # Also emit initial progress data if available
-        # This ensures subscribers see progress state even if task completes quickly
-        # and progress data is deleted before pub/sub connection is established
-        if self.progress.current is not None or self.progress.total != 100:
-            progress_event: dict[str, Any] = {
-                "type": "progress",
-                "key": self.key,
-                "current": self.progress.current
-                if self.progress.current is not None
-                else 0,
-                "total": self.progress.total,
-            }
-            if self.progress.message:
-                progress_event["message"] = self.progress.message
-            if self.progress.updated_at:
-                progress_event["updated_at"] = self.progress.updated_at.isoformat()
+        progress_event: dict[str, Any] = {
+            "type": "progress",
+            "key": self.key,
+            "current": self.progress.current
+            if self.progress.current is not None
+            else 0,
+            "total": self.progress.total,
+        }
+        if self.progress.message:
+            progress_event["message"] = self.progress.message
+        if self.progress.updated_at:
+            progress_event["updated_at"] = self.progress.updated_at.isoformat()
 
-            yield progress_event
+        yield progress_event
 
         # Then subscribe to real-time updates
         state_channel = f"{self.docket.name}:state:{self.key}"
