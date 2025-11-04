@@ -189,11 +189,13 @@ async def test_run_state_ttl_after_completion(docket: Docket, worker: Worker):
         assert 0 < ttl <= expected_ttl  # TTL should be set and reasonable
 
 
-async def test_custom_execution_ttl():
+async def test_custom_execution_ttl(redis_url: str):
     """Docket should respect custom execution_ttl configuration."""
     # Create docket with custom 5-minute TTL
     custom_ttl = timedelta(minutes=5)
-    async with Docket(name="test-custom-ttl", execution_ttl=custom_ttl) as docket:
+    async with Docket(
+        name="test-custom-ttl", url=redis_url, execution_ttl=custom_ttl
+    ) as docket:
         async with Worker(docket) as worker:
             task = AsyncMock()
             task.__name__ = "test_task"
