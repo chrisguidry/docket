@@ -42,7 +42,6 @@ from .execution import (
     TaskFunction,
 )
 
-# Run class has been consolidated into Execution
 from .instrumentation import (
     REDIS_DISRUPTIONS,
     STRIKES_IN_EFFECT,

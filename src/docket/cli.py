@@ -960,14 +960,12 @@ def watch(
                     if event["type"] == "state":
                         # Update state information
                         current_state = ExecutionState(event["state"])
-                        if "worker" in event:
-                            worker_name = event["worker"]
-                        if "error" in event:
-                            error_message = event["error"]
-                        if "started_at" in event:
-                            execution.started_at = datetime.fromisoformat(
-                                event["started_at"]
-                            )
+                        if worker := event.get("worker"):
+                            worker_name = worker
+                        if error := event.get("error"):
+                            error_message = error
+                        if started_at := event.get("started_at"):
+                            execution.started_at = datetime.fromisoformat(started_at)
                             # Update progress bar start time if we have a progress task
                             if progress_task_id is not None:
                                 set_progress_start_time(
@@ -1000,10 +998,10 @@ def watch(
                                 progress_task_id = active_progress.add_task(
                                     progress_message or "Processing...",
                                     total=total_val,
-                                    completed=current_val,
+                                    completed=current_val or 0,
                                 )
                                 # Set start time based on execution.started_at if available
-                                if execution.started_at is not None:
+                                if started_at := execution.started_at:
                                     set_progress_start_time(
                                         progress_task_id, execution.started_at
                                     )

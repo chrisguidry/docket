@@ -14,6 +14,7 @@ from typing import (
     Literal,
     Mapping,
     Protocol,
+    TypedDict,
     cast,
 )
 
@@ -80,6 +81,26 @@ class ExecutionState(enum.Enum):
     """Task execution failed."""
 
 
+class ProgressEvent(TypedDict):
+    type: Literal["progress"]
+    key: str
+    current: int | None
+    total: int
+    message: str | None
+    updated_at: str | None
+
+
+class StateEvent(TypedDict):
+    type: Literal["state"]
+    key: str
+    state: ExecutionState
+    when: str
+    worker: str | None
+    started_at: str | None
+    completed_at: str | None
+    error: str | None
+
+
 class ExecutionProgress:
     """Manages user-reported progress for a task execution.
 
@@ -103,7 +124,7 @@ class ExecutionProgress:
         self.key = key
         self._redis_key = f"{docket.name}:progress:{key}"
         self.current: int | None = None
-        self.total: int = 100
+        self.total: int = 1
         self.message: str | None = None
         self.updated_at: datetime | None = None
 
@@ -126,8 +147,11 @@ class ExecutionProgress:
         """Set the total/target value for progress tracking.
 
         Args:
-            total: The total number of units to complete
+            total: The total number of units to complete. Must be at least 1.
         """
+        if total < 1:
+            raise ValueError("Total must be at least 1")
+
         updated_at_dt = datetime.now(timezone.utc)
         updated_at = updated_at_dt.isoformat()
         async with self.docket.redis() as redis:
@@ -148,8 +172,11 @@ class ExecutionProgress:
         """Atomically increment the current progress value.
 
         Args:
-            amount: Amount to increment by (default: 1)
+            amount: Amount to increment by. Must be at least 1.
         """
+        if amount < 1:
+            raise ValueError("Amount must be at least 1")
+
         updated_at_dt = datetime.now(timezone.utc)
         updated_at = updated_at_dt.isoformat()
         async with self.docket.redis() as redis:
@@ -165,7 +192,7 @@ class ExecutionProgress:
         # Publish update event with new current value
         await self._publish({"current": new_current, "updated_at": updated_at})
 
-    async def set_message(self, message: str) -> None:
+    async def set_message(self, message: str | None) -> None:
         """Update the progress status message.
 
         Args:
@@ -233,7 +260,7 @@ class ExecutionProgress:
         # Create ephemeral Redis client for publishing
         async with self.docket.redis() as redis:
             # Use instance attributes for current state
-            payload = {
+            payload: ProgressEvent = {
                 "type": "progress",
                 "key": self.key,
                 "current": self.current if self.current is not None else 0,
@@ -245,7 +272,7 @@ class ExecutionProgress:
             # Publish JSON payload
             await redis.publish(channel, json.dumps(payload))
 
-    async def subscribe(self) -> AsyncGenerator[dict[str, Any], None]:
+    async def subscribe(self) -> AsyncGenerator[ProgressEvent, None]:
         """Subscribe to progress updates for this task.
 
         Yields:
@@ -721,7 +748,7 @@ class Execution:
             }
             await redis.publish(channel, json.dumps(payload))
 
-    async def subscribe(self) -> AsyncGenerator[dict[str, Any], None]:
+    async def subscribe(self) -> AsyncGenerator[StateEvent | ProgressEvent, None]:
         """Subscribe to both state and progress updates for this task.
 
         Emits the current state as the first event, then subscribes to real-time
@@ -736,38 +763,31 @@ class Execution:
         await self.sync()
 
         # Build initial state event from current attributes
-        initial_state: dict[str, Any] = {
+        initial_state: StateEvent = {
             "type": "state",
             "key": self.key,
-            "state": self.state.value,
+            "state": self.state,
+            "when": self.when.isoformat(),
+            "worker": self.worker,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat()
+            if self.completed_at
+            else None,
+            "error": self.error,
         }
-
-        # Add when (always present)
-        initial_state["when"] = self.when.isoformat()
-
-        # Add optional fields if present
-        if self.worker:
-            initial_state["worker"] = self.worker
-        if self.started_at:
-            initial_state["started_at"] = self.started_at.isoformat()
-        if self.completed_at:
-            initial_state["completed_at"] = self.completed_at.isoformat()
-        if self.error:
-            initial_state["error"] = self.error
 
         yield initial_state
 
-        progress_event: dict[str, Any] = {
+        progress_event: ProgressEvent = {
             "type": "progress",
             "key": self.key,
-            "current": self.progress.current
-            if self.progress.current is not None
-            else 0,
+            "current": self.progress.current,
             "total": self.progress.total,
             "message": self.progress.message,
+            "updated_at": self.progress.updated_at.isoformat()
+            if self.progress.updated_at
+            else None,
         }
-        if self.progress.updated_at:
-            progress_event["updated_at"] = self.progress.updated_at.isoformat()
 
         yield progress_event
 
@@ -779,7 +799,12 @@ class Execution:
                 await pubsub.subscribe(state_channel, progress_channel)
                 async for message in pubsub.listen():  # pragma: no cover
                     if message["type"] == "message":
-                        yield json.loads(message["data"])
+                        message_data = json.loads(message["data"])
+                        if message_data["type"] == "state":
+                            message_data["state"] = ExecutionState(
+                                message_data["state"]
+                            )
+                        yield message_data
 
 
 def compact_signature(signature: inspect.Signature) -> str:

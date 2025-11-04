@@ -10,7 +10,7 @@ import logging
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from logging import LoggerAdapter
-from typing import Annotated, Any, AsyncGenerator, Callable, Generator
+from typing import Annotated, AsyncGenerator, Callable, Generator
 from unittest.mock import AsyncMock, call
 from uuid import uuid4
 
@@ -36,7 +36,7 @@ from docket import (
     Worker,
     tasks,
 )
-from docket.execution import ExecutionProgress
+from docket.execution import ExecutionProgress, StateEvent
 
 
 @pytest.fixture
@@ -669,13 +669,13 @@ async def test_execution_state_lifecycle(
     )()
 
     # Collect state events
-    state_events: list[dict[str, Any]] = []
+    state_events: list[StateEvent] = []
 
     async def collect_states() -> None:
         async for event in execution.subscribe():  # pragma: no cover
             if event["type"] == "state":
                 state_events.append(event)
-                if event["state"] == "completed":
+                if event["state"] == ExecutionState.COMPLETED:
                     break
 
     subscriber_task = asyncio.create_task(collect_states())
@@ -686,11 +686,16 @@ async def test_execution_state_lifecycle(
     # Verify we saw the state transitions
     # Note: subscribe() emits the initial state first, then real-time updates
     states = [e["state"] for e in state_events]
-    assert states == ["scheduled", "queued", "running", "completed"]
+    assert states == [
+        ExecutionState.SCHEDULED,
+        ExecutionState.QUEUED,
+        ExecutionState.RUNNING,
+        ExecutionState.COMPLETED,
+    ]
 
     # Verify final state has completion metadata
     final_state = state_events[-1]
-    assert final_state["state"] == "completed"
+    assert final_state["state"] == ExecutionState.COMPLETED
     assert final_state["completed_at"] is not None
     assert "error" not in final_state  # No error for successful completion
 
@@ -699,13 +704,13 @@ async def test_execution_state_lifecycle(
         failing_task, key="failure:456", when=now() + timedelta(seconds=1)
     )()
 
-    state_events = []
+    failed_state_events: list[StateEvent] = []
 
     async def collect_failed_states() -> None:
         async for event in execution.subscribe():  # pragma: no cover
             if event["type"] == "state":
-                state_events.append(event)
-                if event["state"] == "failed":
+                failed_state_events.append(event)
+                if event["state"] == ExecutionState.FAILED:
                     break
 
     subscriber_task = asyncio.create_task(collect_failed_states())
@@ -715,15 +720,20 @@ async def test_execution_state_lifecycle(
 
     # Verify we saw the state transitions
     # Note: subscribe() emits the initial state first, then real-time updates
-    states = [e["state"] for e in state_events]
-    assert states == ["scheduled", "queued", "running", "failed"]
+    states = [e["state"] for e in failed_state_events]
+    assert states == [
+        ExecutionState.SCHEDULED,
+        ExecutionState.QUEUED,
+        ExecutionState.RUNNING,
+        ExecutionState.FAILED,
+    ]
 
     # Verify final state has error information
-    final_state = state_events[-1]
-    assert final_state["state"] == "failed"
+    final_state = failed_state_events[-1]
+    assert final_state["state"] == ExecutionState.FAILED
     assert final_state["completed_at"] is not None
     assert final_state["error"] is not None
-    assert "Task failed" in final_state["error"]
+    assert final_state["error"] == "ValueError: Task failed"
 
 
 async def test_all_dockets_have_a_trace_task(

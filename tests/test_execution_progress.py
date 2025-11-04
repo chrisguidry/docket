@@ -2,12 +2,11 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from unittest.mock import AsyncMock
 
 
 from docket import Docket, Execution, ExecutionState, Progress, Worker
-from docket.execution import ExecutionProgress
+from docket.execution import ExecutionProgress, ProgressEvent, StateEvent
 
 
 async def test_run_state_scheduled(docket: Docket, the_task: AsyncMock):
@@ -342,7 +341,7 @@ async def test_progress_publish_events(docket: Docket):
     progress = execution.progress
 
     # Set up subscriber in background
-    events: list[dict[str, Any]] = []
+    events: list[ProgressEvent] = []
 
     async def collect_events():
         async for event in progress.subscribe():  # pragma: no cover
@@ -407,7 +406,7 @@ async def test_run_subscribe_both_state_and_progress(docket: Docket):
     )
 
     # Set up subscriber in background
-    all_events: list[dict[str, Any]] = []
+    all_events: list[StateEvent | ProgressEvent] = []
 
     async def collect_events():
         async for event in execution.subscribe():  # pragma: no cover
@@ -418,7 +417,7 @@ async def test_run_subscribe_both_state_and_progress(docket: Docket):
                     [
                         e
                         for e in all_events
-                        if e["type"] == "state" and e.get("state") == "running"
+                        if e["type"] == "state" and e["state"] == ExecutionState.RUNNING
                     ]
                 )
                 > 0
@@ -447,12 +446,14 @@ async def test_run_subscribe_both_state_and_progress(docket: Docket):
     assert len(progress_events) >= 2
 
     # Verify state event
-    running_event = next(e for e in state_events if e.get("state") == "running")
+    running_event = next(
+        e for e in state_events if e["state"] == ExecutionState.RUNNING
+    )
     assert running_event["worker"] == "worker-1"
 
     # Verify progress events
     total_event = next(e for e in progress_events if e.get("total") == 50)
-    assert total_event["current"] >= 0
+    assert total_event["current"] is not None and total_event["current"] >= 0
 
     increment_event = next(e for e in progress_events if e.get("current") == 5)
     assert increment_event["current"] == 5
@@ -465,13 +466,13 @@ async def test_completed_state_publishes_event(docket: Docket):
     )
 
     # Set up subscriber
-    events: list[dict[str, Any]] = []
+    events: list[StateEvent] = []
 
     async def collect_events():
         async for event in execution.subscribe():  # pragma: no cover
             if event["type"] == "state":
                 events.append(event)
-            if any(e.get("state") == "completed" for e in events):
+            if any(e["state"] == ExecutionState.COMPLETED for e in events):
                 break
 
     subscriber_task = asyncio.create_task(collect_events())
@@ -483,7 +484,7 @@ async def test_completed_state_publishes_event(docket: Docket):
     await asyncio.wait_for(subscriber_task, timeout=2.0)
 
     # Find completed event
-    completed_event = next(e for e in events if e.get("state") == "completed")
+    completed_event = next(e for e in events if e["state"] == ExecutionState.COMPLETED)
     assert completed_event["type"] == "state"
     assert "completed_at" in completed_event
 
@@ -495,13 +496,13 @@ async def test_failed_state_publishes_event_with_error(docket: Docket):
     )
 
     # Set up subscriber
-    events: list[dict[str, Any]] = []
+    events: list[StateEvent] = []
 
     async def collect_events():
         async for event in execution.subscribe():  # pragma: no cover
             if event["type"] == "state":
                 events.append(event)
-            if any(e.get("state") == "failed" for e in events):
+            if any(e["state"] == ExecutionState.FAILED for e in events):
                 break
 
     subscriber_task = asyncio.create_task(collect_events())
@@ -513,7 +514,7 @@ async def test_failed_state_publishes_event_with_error(docket: Docket):
     await asyncio.wait_for(subscriber_task, timeout=2.0)
 
     # Find failed event
-    failed_event = next(e for e in events if e.get("state") == "failed")
+    failed_event = next(e for e in events if e["state"] == ExecutionState.FAILED)
     assert failed_event["type"] == "state"
     assert failed_event["error"] == "Something went wrong!"
     assert "completed_at" in failed_event
@@ -523,7 +524,7 @@ async def test_end_to_end_progress_monitoring_with_worker(
     docket: Docket, worker: Worker
 ):
     """Test complete end-to-end progress monitoring with real worker execution."""
-    collected_events: list[dict[str, Any]] = []
+    collected_events: list[StateEvent | ProgressEvent] = []
 
     async def task_with_progress(progress: ExecutionProgress = Progress()):
         """Task that reports progress as it executes."""
@@ -545,7 +546,7 @@ async def test_end_to_end_progress_monitoring_with_worker(
         async for event in execution.subscribe():  # pragma: no cover
             collected_events.append(event)
             # Stop when we reach completed state
-            if event.get("type") == "state" and event.get("state") == "completed":
+            if event["type"] == "state" and event["state"] == ExecutionState.COMPLETED:
                 break
 
     subscriber_task = asyncio.create_task(collect_events())
@@ -563,18 +564,22 @@ async def test_end_to_end_progress_monitoring_with_worker(
     assert len(collected_events) > 0
 
     # Extract event types
-    state_events = [e for e in collected_events if e["type"] == "state"]
+    state_events: list[StateEvent] = [
+        e for e in collected_events if e["type"] == "state"
+    ]
     progress_events = [e for e in collected_events if e["type"] == "progress"]
 
     # Verify state transitions occurred
     # Note: scheduled may happen before subscriber connects
-    state_sequence = [e["state"] for e in state_events]
-    assert "queued" in state_sequence or "running" in state_sequence
-    assert "running" in state_sequence
-    assert "completed" in state_sequence
+    state_sequence: list[ExecutionState] = [e["state"] for e in state_events]
+    assert state_sequence == [
+        ExecutionState.QUEUED,
+        ExecutionState.RUNNING,
+        ExecutionState.COMPLETED,
+    ]
 
     # Verify worker was recorded
-    running_events = [e for e in state_events if e.get("state") == "running"]
+    running_events = [e for e in state_events if e["state"] == ExecutionState.RUNNING]
     assert len(running_events) > 0
     assert "worker" in running_events[0]
 
@@ -583,22 +588,26 @@ async def test_end_to_end_progress_monitoring_with_worker(
 
     # Verify progress reached total
     final_progress = progress_events[-1]
-    assert final_progress["current"] == 5
+    assert final_progress["current"] is not None and final_progress["current"] == 5
     assert final_progress["total"] == 5
 
     # Verify messages were updated
     message_events = [e for e in progress_events if e.get("message")]
     assert len(message_events) > 0
-    assert any("complete" in e["message"].lower() for e in message_events)
+    assert any(
+        "complete" in e["message"].lower()
+        for e in message_events
+        if e["message"] is not None
+    )
 
     # Verify final state is completed
-    assert state_events[-1]["state"] == "completed"
+    assert state_events[-1]["state"] == ExecutionState.COMPLETED
     assert "completed_at" in state_events[-1]
 
 
 async def test_end_to_end_failed_task_monitoring(docket: Docket, worker: Worker):
     """Test progress monitoring for a task that fails."""
-    collected_events: list[dict[str, Any]] = []
+    collected_events: list[StateEvent | ProgressEvent] = []
 
     async def failing_task(progress: ExecutionProgress = Progress()):
         """Task that reports progress then fails."""
@@ -616,7 +625,7 @@ async def test_end_to_end_failed_task_monitoring(docket: Docket, worker: Worker)
         async for event in execution.subscribe():  # pragma: no cover
             collected_events.append(event)
             # Stop when we reach failed state
-            if event.get("type") == "state" and event.get("state") == "failed":
+            if event["type"] == "state" and event["state"] == ExecutionState.FAILED:
                 break
 
     subscriber_task = asyncio.create_task(collect_events())
@@ -636,8 +645,11 @@ async def test_end_to_end_failed_task_monitoring(docket: Docket, worker: Worker)
 
     # Verify task reached running state
     state_sequence = [e["state"] for e in state_events]
-    assert "running" in state_sequence
-    assert "failed" in state_sequence
+    assert state_sequence == [
+        ExecutionState.QUEUED,
+        ExecutionState.RUNNING,
+        ExecutionState.FAILED,
+    ]
 
     # Verify progress was reported before failure
     assert len(progress_events) >= 2
@@ -651,8 +663,8 @@ async def test_end_to_end_failed_task_monitoring(docket: Docket, worker: Worker)
     assert increment_event is not None
 
     # Verify error message in failed event
-    failed_event = next(e for e in state_events if e.get("state") == "failed")
-    assert "error" in failed_event
+    failed_event = next(e for e in state_events if e["state"] == ExecutionState.FAILED)
+    assert failed_event["error"] is not None
     assert "ValueError" in failed_event["error"]
     assert "intentionally" in failed_event["error"]
 
@@ -786,8 +798,9 @@ async def test_subscribing_to_completed_execution(docket: Docket, worker: Worker
     await worker.run_until_finished()
 
     # Now subscribe to the already-completed execution
-    async def get_first_event() -> dict[str, Any] | None:
+    async def get_first_event() -> StateEvent | None:
         async for event in execution.subscribe():  # pragma: no cover
+            assert event["type"] == "state"
             return event
 
     first_event = await asyncio.wait_for(get_first_event(), timeout=1.0)
@@ -795,9 +808,9 @@ async def test_subscribing_to_completed_execution(docket: Docket, worker: Worker
 
     # Verify the initial state includes completion metadata
     assert first_event["type"] == "state"
-    assert first_event["state"] == "completed"
+    assert first_event["state"] == ExecutionState.COMPLETED
     assert first_event["completed_at"] is not None
-    assert "error" not in first_event
+    assert first_event["error"] is None
 
     # Test subscribing to a failed task
     execution = await docket.add(failed_task, key="already-failed:456")()
@@ -806,8 +819,9 @@ async def test_subscribing_to_completed_execution(docket: Docket, worker: Worker
     await worker.run_until_finished()
 
     # Now subscribe to the already-failed execution
-    async def get_first_failed_event() -> dict[str, Any] | None:
+    async def get_first_failed_event() -> StateEvent | None:
         async for event in execution.subscribe():  # pragma: no cover
+            assert event["type"] == "state"
             return event
 
     first_event = await asyncio.wait_for(get_first_failed_event(), timeout=1.0)
@@ -815,7 +829,7 @@ async def test_subscribing_to_completed_execution(docket: Docket, worker: Worker
 
     # Verify the initial state includes error metadata
     assert first_event["type"] == "state"
-    assert first_event["state"] == "failed"
+    assert first_event["state"] == ExecutionState.FAILED
     assert first_event["completed_at"] is not None
     assert first_event["error"] is not None
-    assert "Task failed" in first_event["error"]
+    assert first_event["error"] == "ValueError: Task failed"
