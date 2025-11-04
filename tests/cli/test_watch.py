@@ -257,7 +257,7 @@ async def test_watch_task_that_starts_while_watching(docket: Docket, worker: Wor
     docket.register(task_that_waits_then_progresses)
 
     # Schedule task for slightly in future so watch can connect first
-    when = datetime.now(timezone.utc) + timedelta(seconds=1)
+    when = datetime.now(timezone.utc) + timedelta(seconds=2)
     await docket.add(task_that_waits_then_progresses, when=when, key="timing-test")()
 
     worker_task = asyncio.create_task(worker.run_until_finished())
