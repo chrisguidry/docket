@@ -202,12 +202,12 @@ async def test_custom_execution_ttl(redis_url: str, the_task: AsyncMock):
 
             # Verify TTL matches custom value (300 seconds)
             expected_ttl = int(custom_ttl.total_seconds())
-        async with docket.redis() as redis:
-            ttl = await redis.ttl(execution._redis_key)  # type: ignore[reportPrivateUsage]
-            assert 0 < ttl <= expected_ttl
-            # Verify it's approximately the custom value (not the default 3600)
-            assert ttl > 200  # Should be close to 300, not near 0
-            assert ttl <= 300  # Should not exceed configured value
+            async with docket.redis() as redis:
+                ttl = await redis.ttl(execution._redis_key)  # type: ignore[reportPrivateUsage]
+                assert 0 < ttl <= expected_ttl
+                # Verify it's approximately the custom value (not the default 3600)
+                assert ttl > 200  # Should be close to 300, not near 0
+                assert ttl <= 300  # Should not exceed configured value
 
 
 async def test_full_lifecycle_integration(docket: Docket, worker: Worker):
