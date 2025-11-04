@@ -213,7 +213,7 @@ async def test_watch_task_with_worker_assignment(docket: Docket, worker: Worker)
 
     async def long_running_task():
         # Long enough for watch to definitely connect
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(3.0)
 
     docket.register(long_running_task)
     await docket.add(long_running_task, key="worker-assigned")()
