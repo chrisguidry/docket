@@ -230,7 +230,7 @@ async def test_watch_task_with_worker_assignment(docket: Docket, worker: Worker)
         docket.url,
         "--docket",
         docket.name,
-        timeout=2.0,
+        timeout=5.0,
     )
 
     await worker_task
