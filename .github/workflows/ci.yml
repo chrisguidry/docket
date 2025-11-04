@@ -71,7 +71,7 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: uv sync --dev --upgrade-package 'redis${{ matrix.backend.redis-py-version }}'
+        run: uv sync --upgrade-package 'redis${{ matrix.backend.redis-py-version }}'
 
       - name: Run tests
         env:
@@ -98,7 +98,7 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync
 
       - uses: prek-rs/prek-action@v2
         with:
