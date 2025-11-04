@@ -44,7 +44,7 @@ jobs:
             pytest-args: ""
           - python-version: "3.12"
             cov-threshold: 100
-            pytest-args: ""
+            pytest-args: "-vv"
           - python-version: "3.13"
             cov-threshold: 100
             pytest-args: ""
