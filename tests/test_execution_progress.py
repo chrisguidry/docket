@@ -305,7 +305,7 @@ async def test_error_message_stored_on_failure(docket: Docket, worker: Worker):
     # Check state is FAILED
     await execution.sync()
     assert execution.state == ExecutionState.FAILED
-    assert execution.error == "Something went wrong!"
+    assert execution.error == "RuntimeError: Something went wrong!"
 
 
 async def test_concurrent_progress_updates(docket: Docket):
