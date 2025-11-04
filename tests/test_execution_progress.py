@@ -10,12 +10,9 @@ from docket import Docket, Execution, ExecutionState, Progress, Worker
 from docket.execution import ExecutionProgress
 
 
-async def test_run_state_scheduled(docket: Docket):
+async def test_run_state_scheduled(docket: Docket, the_task: AsyncMock):
     """Execution should be set to QUEUED when an immediate task is added."""
-    task = AsyncMock()
-    task.__name__ = "test_task"
-
-    execution = await docket.add(task)("arg1", "arg2")
+    execution = await docket.add(the_task)("arg1", "arg2")
 
     assert isinstance(execution, Execution)
     await execution.sync()
@@ -42,12 +39,11 @@ async def test_run_state_pending_to_running(docket: Docket, worker: Worker):
     await worker_task
 
 
-async def test_run_state_completed_on_success(docket: Docket, worker: Worker):
+async def test_run_state_completed_on_success(
+    docket: Docket, worker: Worker, the_task: AsyncMock
+):
     """Execution should be set to COMPLETED when task succeeds."""
-    task = AsyncMock()
-    task.__name__ = "test_task"
-
-    execution = await docket.add(task)()
+    execution = await docket.add(the_task)()
 
     await worker.run_until_finished()
 
@@ -169,12 +165,11 @@ async def test_progress_deleted_on_completion(docket: Docket, worker: Worker):
     assert execution.progress.current is None
 
 
-async def test_run_state_ttl_after_completion(docket: Docket, worker: Worker):
+async def test_run_state_ttl_after_completion(
+    docket: Docket, worker: Worker, the_task: AsyncMock
+):
     """Run state should have TTL set after completion."""
-    task = AsyncMock()
-    task.__name__ = "test_task"
-
-    execution = await docket.add(task)()
+    execution = await docket.add(the_task)()
 
     await worker.run_until_finished()
 
@@ -189,7 +184,7 @@ async def test_run_state_ttl_after_completion(docket: Docket, worker: Worker):
         assert 0 < ttl <= expected_ttl  # TTL should be set and reasonable
 
 
-async def test_custom_execution_ttl(redis_url: str):
+async def test_custom_execution_ttl(redis_url: str, the_task: AsyncMock):
     """Docket should respect custom execution_ttl configuration."""
     # Create docket with custom 5-minute TTL
     custom_ttl = timedelta(minutes=5)
@@ -197,10 +192,7 @@ async def test_custom_execution_ttl(redis_url: str):
         name="test-custom-ttl", url=redis_url, execution_ttl=custom_ttl
     ) as docket:
         async with Worker(docket) as worker:
-            task = AsyncMock()
-            task.__name__ = "test_task"
-
-            execution = await docket.add(task)()
+            execution = await docket.add(the_task)()
 
             await worker.run_until_finished()
 
@@ -291,12 +283,9 @@ async def test_progress_without_total(docket: Docket, worker: Worker):
     assert execution.state == ExecutionState.COMPLETED
 
 
-async def test_run_add_returns_run_instance(docket: Docket):
+async def test_run_add_returns_run_instance(docket: Docket, the_task: AsyncMock):
     """Verify that docket.add() returns an Execution instance."""
-    task = AsyncMock()
-    task.__name__ = "test_task"
-
-    result = await docket.add(task)("arg1")
+    result = await docket.add(the_task)("arg1")
 
     assert isinstance(result, Execution)
     assert result.key is not None
@@ -397,17 +386,13 @@ async def test_progress_publish_events(docket: Docket):
     assert message_event["message"] == "Processing..."
 
 
-async def test_state_publish_events(docket: Docket):
+async def test_state_publish_events(docket: Docket, the_task: AsyncMock):
     """State changes should publish events to pub/sub channel."""
     # Note: This test verifies the pub/sub mechanism works.
     # Pub/sub is skipped for memory:// backend, so this test effectively
     # documents the expected behavior for real Redis backends.
 
-    # Create execution with immediate time (will be QUEUED)
-    task = AsyncMock()
-    task.__name__ = "test_task"
-
-    execution = await docket.add(task, key="test-key")()
+    execution = await docket.add(the_task, key="test-key")()
 
     # Verify state was set correctly
     assert execution.state == ExecutionState.QUEUED

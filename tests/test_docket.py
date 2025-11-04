@@ -168,18 +168,17 @@ async def test_clear_no_redis_key_leaks(docket: Docket, the_task: AsyncMock):
     assert len(snapshot.running) == 0
 
 
-async def test_docket_schedule_method_with_immediate_task(docket: Docket):
+async def test_docket_schedule_method_with_immediate_task(
+    docket: Docket, the_task: AsyncMock
+):
     """Test direct scheduling via docket.schedule(execution) for immediate execution."""
     from docket import Execution
 
-    task = AsyncMock()
-    task.__name__ = "test_task"
-
     # Register task so snapshot can look it up
-    docket.register(task)
+    docket.register(the_task)
 
     execution = Execution(
-        docket, task, ("arg",), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, the_task, ("arg",), {}, datetime.now(timezone.utc), "test-key", 1
     )
 
     await docket.schedule(execution)
@@ -189,21 +188,18 @@ async def test_docket_schedule_method_with_immediate_task(docket: Docket):
     assert len(snapshot.future) == 1
 
 
-async def test_docket_schedule_with_stricken_task(docket: Docket):
+async def test_docket_schedule_with_stricken_task(docket: Docket, the_task: AsyncMock):
     """Test that docket.schedule respects strike list."""
     from docket import Execution
 
-    task = AsyncMock()
-    task.__name__ = "test_task"
-
     # Register task
-    docket.register(task)
+    docket.register(the_task)
 
     # Strike the task
-    await docket.strike("test_task")
+    await docket.strike("the_task")
 
     execution = Execution(
-        docket, task, (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, the_task, (), {}, datetime.now(timezone.utc), "test-key", 1
     )
 
     # Try to schedule - should be blocked

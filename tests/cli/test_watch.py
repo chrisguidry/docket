@@ -2,12 +2,21 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import os
 from unittest.mock import AsyncMock
+
+import pytest
 
 from docket import Docket, Progress, Worker
 from docket.execution import ExecutionProgress
 
 from .utils import run_cli
+
+# Skip CLI tests when using memory backend since CLI rejects memory:// URLs
+pytestmark = pytest.mark.skipif(
+    os.environ.get("REDIS_VERSION") == "memory",
+    reason="CLI commands require a persistent Redis backend",
+)
 
 
 async def test_watch_completed_task(docket: Docket, the_task: AsyncMock):

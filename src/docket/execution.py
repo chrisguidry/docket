@@ -229,10 +229,6 @@ class ExecutionProgress:
         Args:
             data: Progress data to publish (partial update)
         """
-        # Skip pub/sub for memory:// backend
-        if self.docket.url.startswith("memory://"):
-            return
-
         channel = f"{self.docket.name}:progress:{self.key}"
         # Create ephemeral Redis client for publishing
         async with self.docket.redis() as redis:
@@ -714,10 +710,6 @@ class Execution:
         Args:
             data: State data to publish
         """
-        # Skip pub/sub for memory:// backend
-        if self.docket.url.startswith("memory://"):
-            return
-
         channel = f"{self.docket.name}:state:{self.key}"
         # Create ephemeral Redis client for publishing
         async with self.docket.redis() as redis:
