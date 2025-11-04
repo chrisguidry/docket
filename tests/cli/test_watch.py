@@ -122,9 +122,6 @@ async def test_watch_with_progress_updates(docket: Docket, worker: Worker):
 
     worker_task = asyncio.create_task(worker.run_until_finished())
 
-    # Give worker time to start the task
-    await asyncio.sleep(0.05)
-
     result = await run_cli(
         "watch",
         "progress-task",
@@ -132,7 +129,6 @@ async def test_watch_with_progress_updates(docket: Docket, worker: Worker):
         docket.url,
         "--docket",
         docket.name,
-        timeout=3.0,
     )
 
     await worker_task
@@ -263,7 +259,7 @@ async def test_watch_task_that_starts_while_watching(docket: Docket, worker: Wor
     docket.register(task_that_waits_then_progresses)
 
     # Schedule task for slightly in future so watch can connect first
-    when = datetime.now(timezone.utc) + timedelta(milliseconds=200)
+    when = datetime.now(timezone.utc) + timedelta(seconds=1)
     await docket.add(task_that_waits_then_progresses, when=when, key="timing-test")()
 
     worker_task = asyncio.create_task(worker.run_until_finished())
