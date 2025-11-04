@@ -754,3 +754,55 @@ async def test_execution_sync_with_string_state_value(docket: Docket):
     # Should handle string and set state correctly
     assert execution.state == ExecutionState.COMPLETED
     assert execution.worker == "worker-1"
+
+
+async def test_subscribing_to_completed_execution(docket: Docket, worker: Worker):
+    """Subscribing to already-completed executions should emit final state."""
+
+    async def completed_task():
+        await asyncio.sleep(0.01)
+
+    async def failed_task():
+        await asyncio.sleep(0.01)
+        raise ValueError("Task failed")
+
+    # Test subscribing to a completed task
+    execution = await docket.add(completed_task, key="already-done:123")()
+
+    # Run the task to completion first
+    await worker.run_until_finished()
+
+    # Now subscribe to the already-completed execution
+    async def get_first_event() -> dict[str, Any] | None:
+        async for event in execution.subscribe():  # pragma: no cover
+            return event
+
+    first_event = await asyncio.wait_for(get_first_event(), timeout=1.0)
+    assert first_event is not None
+
+    # Verify the initial state includes completion metadata
+    assert first_event["type"] == "state"
+    assert first_event["state"] == "completed"
+    assert first_event["completed_at"] is not None
+    assert "error" not in first_event
+
+    # Test subscribing to a failed task
+    execution = await docket.add(failed_task, key="already-failed:456")()
+
+    # Run the task to failure first
+    await worker.run_until_finished()
+
+    # Now subscribe to the already-failed execution
+    async def get_first_failed_event() -> dict[str, Any] | None:
+        async for event in execution.subscribe():  # pragma: no cover
+            return event
+
+    first_event = await asyncio.wait_for(get_first_failed_event(), timeout=1.0)
+    assert first_event is not None
+
+    # Verify the initial state includes error metadata
+    assert first_event["type"] == "state"
+    assert first_event["state"] == "failed"
+    assert first_event["completed_at"] is not None
+    assert first_event["error"] is not None
+    assert "Task failed" in first_event["error"]

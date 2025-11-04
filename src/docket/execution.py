@@ -746,6 +746,9 @@ class Execution:
             "state": self.state.value,
         }
 
+        # Add when (always present)
+        initial_state["when"] = self.when.isoformat()
+
         # Add optional fields if present
         if self.worker:
             initial_state["worker"] = self.worker
@@ -755,8 +758,6 @@ class Execution:
             initial_state["completed_at"] = self.completed_at.isoformat()
         if self.error:
             initial_state["error"] = self.error
-        if self.when:
-            initial_state["when"] = self.when.isoformat()
 
         yield initial_state
 
