@@ -305,9 +305,7 @@ async def test_error_message_stored_on_failure(docket: Docket, worker: Worker):
     # Check state is FAILED
     await execution.sync()
     assert execution.state == ExecutionState.FAILED
-
-    # Verify error message is stored (would need to add get() method to Run to check this)
-    # For now, just verify it failed
+    assert execution.error == "Something went wrong!"
 
 
 async def test_concurrent_progress_updates(docket: Docket):

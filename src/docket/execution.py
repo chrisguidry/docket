@@ -764,9 +764,8 @@ class Execution:
             if self.progress.current is not None
             else 0,
             "total": self.progress.total,
+            "message": self.progress.message,
         }
-        if self.progress.message:
-            progress_event["message"] = self.progress.message
         if self.progress.updated_at:
             progress_event["updated_at"] = self.progress.updated_at.isoformat()
 
