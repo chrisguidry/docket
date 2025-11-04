@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
+import pytest
 
 from docket import Docket, Execution, ExecutionState, Progress, Worker
 from docket.execution import ExecutionProgress, ProgressEvent, StateEvent
@@ -90,6 +91,20 @@ async def test_progress_set_total(docket: Docket):
 
     assert progress.total == 100
     assert progress.updated_at is not None
+
+
+async def test_progress_set_total_invalid(docket: Docket):
+    """Progress should raise an error if total is less than 1."""
+    progress = ExecutionProgress(docket, "test-key")
+    with pytest.raises(ValueError):
+        await progress.set_total(0)
+
+
+async def test_progress_increment_invalid(docket: Docket):
+    """Progress should raise an error if amount is less than 1."""
+    progress = ExecutionProgress(docket, "test-key")
+    with pytest.raises(ValueError):
+        await progress.increment(0)
 
 
 async def test_progress_increment(docket: Docket):
