@@ -41,6 +41,9 @@ from .execution import (
     StrikeList,
     TaskFunction,
 )
+from key_value.aio.protocols.key_value import AsyncKeyValue
+from key_value.aio.stores.redis import RedisStore
+from key_value.aio.stores.memory import MemoryStore
 
 from .instrumentation import (
     REDIS_DISRUPTIONS,
@@ -147,6 +150,7 @@ class Docket:
         heartbeat_interval: timedelta = timedelta(seconds=2),
         missed_heartbeats: int = 5,
         execution_ttl: timedelta = timedelta(hours=1),
+        result_storage: AsyncKeyValue | None = None,
     ) -> None:
         """
         Args:
@@ -170,6 +174,12 @@ class Docket:
         self.missed_heartbeats = missed_heartbeats
         self.execution_ttl = execution_ttl
         self._cancel_task_script = None
+        if url.startswith("memory://"):
+            self.result_storage = MemoryStore()
+        else:
+            self.result_storage = RedisStore(
+                url=url, default_collection=f"{name}:results"
+            )
 
     @property
     def worker_group_name(self) -> str:

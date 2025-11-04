@@ -1,4 +1,5 @@
 import abc
+import base64
 import enum
 import inspect
 import json
@@ -60,6 +61,29 @@ def get_signature(function: Callable[..., Any]) -> inspect.Signature:
     _signature_cache[function] = signature
     CACHE_SIZE.set(len(_signature_cache), {"cache": "signature"})
     return signature
+
+
+def returns_none(function: Callable[..., Any]) -> bool:
+    """Check if a function is annotated with -> None return type.
+
+    Args:
+        function: The function to check
+
+    Returns:
+        True if the function is annotated with -> None, False otherwise
+    """
+    signature = get_signature(function)
+    return_annotation = signature.return_annotation
+
+    # Check if annotation is None or type(None)
+    if return_annotation is None or return_annotation is type(None):
+        return True
+
+    # Handle string annotations
+    if isinstance(return_annotation, str):
+        return return_annotation.strip() == "None"
+
+    return False
 
 
 class ExecutionState(enum.Enum):
@@ -326,6 +350,7 @@ class Execution:
         self.started_at: datetime | None = None
         self.completed_at: datetime | None = None
         self.error: str | None = None
+        self.result: str | None = None
         self.progress: ExecutionProgress = ExecutionProgress(docket, key)
         self._redis_key = f"{docket.name}:runs:{key}"
 
@@ -632,25 +657,32 @@ class Execution:
             }
         )
 
-    async def mark_as_completed(self) -> None:
+    async def mark_as_completed(self, result_key: str | None = None) -> None:
         """Mark task as completed successfully.
+
+        Args:
+            result_key: Optional key where the task result is stored
 
         Sets TTL on state data (from docket.execution_ttl) and deletes progress data.
         """
         completed_at = datetime.now(timezone.utc).isoformat()
         async with self.docket.redis() as redis:
+            mapping: dict[str, str] = {
+                "state": ExecutionState.COMPLETED.value,
+                "completed_at": completed_at,
+            }
+            if result_key is not None:
+                mapping["result"] = result_key
             await redis.hset(
                 self._redis_key,
-                mapping={
-                    "state": ExecutionState.COMPLETED.value,
-                    "completed_at": completed_at,
-                },
+                mapping=mapping,
             )
             # Set TTL from docket configuration
             await redis.expire(
                 self._redis_key, int(self.docket.execution_ttl.total_seconds())
             )
         self.state = ExecutionState.COMPLETED
+        self.result = result_key
         # Delete progress data
         await self.progress._delete()
         # Publish state change event
@@ -658,11 +690,14 @@ class Execution:
             {"state": ExecutionState.COMPLETED.value, "completed_at": completed_at}
         )
 
-    async def mark_as_failed(self, error: str | None = None) -> None:
+    async def mark_as_failed(
+        self, error: str | None = None, result_key: str | None = None
+    ) -> None:
         """Mark task as failed.
 
         Args:
             error: Optional error message describing the failure
+            result_key: Optional key where the exception is stored
 
         Sets TTL on state data (from docket.execution_ttl) and deletes progress data.
         """
@@ -674,12 +709,15 @@ class Execution:
             }
             if error:
                 mapping["error"] = error
+            if result_key is not None:
+                mapping["result"] = result_key
             await redis.hset(self._redis_key, mapping=mapping)
             # Set TTL from docket configuration
             await redis.expire(
                 self._redis_key, int(self.docket.execution_ttl.total_seconds())
             )
         self.state = ExecutionState.FAILED
+        self.result = result_key
         # Delete progress data
         await self.progress._delete()
         # Publish state change event
@@ -690,6 +728,66 @@ class Execution:
         if error:
             state_data["error"] = error
         await self._publish_state(state_data)
+
+    async def get_result(self, *, timeout: datetime | None = None) -> Any:
+        """Retrieve the result of this task execution.
+
+        If the execution is not yet complete, this method will wait using
+        pub/sub for state updates until completion.
+
+        Args:
+            timeout: Optional absolute datetime when to stop waiting.
+                    If None, waits indefinitely.
+
+        Returns:
+            The result of the task execution, or None if the task returned None.
+
+        Raises:
+            Exception: If the task failed, raises the stored exception
+            TimeoutError: If timeout is reached before execution completes
+        """
+        from datetime import datetime, timezone
+
+        # Wait for execution to complete if not already done
+        if self.state not in (ExecutionState.COMPLETED, ExecutionState.FAILED):
+            async for event in self.subscribe():
+                if event["type"] == "state":
+                    state = ExecutionState(event["state"])
+                    if state in (ExecutionState.COMPLETED, ExecutionState.FAILED):
+                        # Sync to get latest data including result key
+                        await self.sync()
+                        break
+
+                # Check timeout
+                if timeout is not None and datetime.now(timezone.utc) >= timeout:
+                    raise TimeoutError(
+                        f"Timeout waiting for execution {self.key} to complete"
+                    )
+
+        # If failed, retrieve and raise the exception
+        if self.state == ExecutionState.FAILED:
+            if self.result:
+                # Retrieve serialized exception from result_storage
+                result_data = await self.docket.result_storage.get(self.result)
+                if result_data and "data" in result_data:
+                    # Base64-decode and unpickle
+                    pickled_exception = base64.b64decode(result_data["data"])
+                    exception = cloudpickle.loads(pickled_exception)  # type: ignore[arg-type]
+                    raise exception
+            # If no stored exception, raise a generic error with the error message
+            error_msg = self.error or "Task execution failed"
+            raise Exception(error_msg)
+
+        # If completed successfully, retrieve result if available
+        if self.result:
+            result_data = await self.docket.result_storage.get(self.result)
+            if result_data is not None and "data" in result_data:
+                # Base64-decode and unpickle
+                pickled_result = base64.b64decode(result_data["data"])
+                return cloudpickle.loads(pickled_result)  # type: ignore[arg-type]
+
+        # No result stored - task returned None
+        return None
 
     async def sync(self) -> None:
         """Synchronize instance attributes with current execution data from Redis.
@@ -720,6 +818,7 @@ class Execution:
                     else None
                 )
                 self.error = data[b"error"].decode() if b"error" in data else None
+                self.result = data[b"result"].decode() if b"result" in data else None
             else:
                 # No data exists - reset to defaults
                 self.state = ExecutionState.SCHEDULED
@@ -727,6 +826,7 @@ class Execution:
                 self.started_at = None
                 self.completed_at = None
                 self.error = None
+                self.result = None
 
         # Sync progress data
         await self.progress.sync()

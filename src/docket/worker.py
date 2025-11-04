@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import os
 import socket
@@ -6,7 +7,9 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import Coroutine, Mapping, Protocol, cast
+from typing import Any, Coroutine, Mapping, Protocol, cast
+
+import cloudpickle  # type: ignore[import]
 
 if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
@@ -36,7 +39,7 @@ from .docket import (
     RedisMessageID,
     RedisReadGroupResponse,
 )
-from .execution import compact_signature, get_signature
+from .execution import compact_signature, get_signature, returns_none
 
 # Run class has been consolidated into Execution
 from .instrumentation import (
@@ -645,19 +648,19 @@ class Worker:
                             }
                             limited_timeout = Timeout(self.redelivery_timeout)
                             limited_timeout.start()
-                            await self._run_function_with_timeout(
+                            result = await self._run_function_with_timeout(
                                 execution, limited_dependencies, limited_timeout
                             )
                         else:
                             # User timeout is within redelivery timeout, use as-is
-                            await self._run_function_with_timeout(
+                            result = await self._run_function_with_timeout(
                                 execution, dependencies, user_timeout
                             )
                     else:
                         # No user timeout - apply redelivery timeout as hard limit
                         redelivery_timeout = Timeout(self.redelivery_timeout)
                         redelivery_timeout.start()
-                        await self._run_function_with_timeout(
+                        result = await self._run_function_with_timeout(
                             execution, dependencies, redelivery_timeout
                         )
 
@@ -671,8 +674,27 @@ class Worker:
                     )
 
                     if not rescheduled:
+                        # Store result if appropriate
+                        result_key = None
+                        # Check if result should be stored:
+                        # Skip if function is annotated with -> None OR result is None
+                        should_store = (
+                            not returns_none(execution.function) and result is not None
+                        )
+                        if should_store:
+                            # Serialize and store result
+                            pickled_result = cloudpickle.dumps(result)  # type: ignore[arg-type]
+                            # Base64-encode for JSON serialization
+                            encoded_result = base64.b64encode(pickled_result).decode(
+                                "ascii"
+                            )
+                            result_key = execution.key
+                            ttl_seconds = int(self.docket.execution_ttl.total_seconds())
+                            await self.docket.result_storage.put(
+                                result_key, {"data": encoded_result}, ttl=ttl_seconds
+                            )
                         # Mark execution as completed
-                        await execution.mark_as_completed()
+                        await execution.mark_as_completed(result_key=result_key)
 
                     arrow = "↫" if rescheduled else "↩"
                     logger.info(
@@ -691,9 +713,20 @@ class Worker:
                         execution, dependencies, timedelta(seconds=duration)
                     )
 
+                # Store exception in result_storage
+                result_key = None
+                pickled_exception = cloudpickle.dumps(e)  # type: ignore[arg-type]
+                # Base64-encode for JSON serialization
+                encoded_exception = base64.b64encode(pickled_exception).decode("ascii")
+                result_key = execution.key
+                ttl_seconds = int(self.docket.execution_ttl.total_seconds())
+                await self.docket.result_storage.put(
+                    result_key, {"data": encoded_exception}, ttl=ttl_seconds
+                )
+
                 # Mark execution as failed with error message
                 error_msg = f"{type(e).__name__}: {str(e)}"
-                await execution.mark_as_failed(error_msg)
+                await execution.mark_as_failed(error_msg, result_key=result_key)
 
                 arrow = "↫" if retried else "↩"
                 logger.exception(
@@ -718,9 +751,9 @@ class Worker:
         execution: Execution,
         dependencies: dict[str, Dependency],
         timeout: Timeout,
-    ) -> None:
+    ) -> Any:
         task_coro = cast(
-            Coroutine[None, None, None],
+            Coroutine[None, None, Any],
             execution.function(
                 *execution.args,
                 **{
@@ -738,8 +771,10 @@ class Worker:
                     break
 
                 try:
-                    await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
-                    return
+                    result = await asyncio.wait_for(
+                        asyncio.shield(task), timeout=remaining
+                    )
+                    return result
                 except asyncio.TimeoutError:
                     continue
         finally:
@@ -747,7 +782,7 @@ class Worker:
                 task.cancel()
 
             try:
-                await task
+                return await task
             except asyncio.CancelledError:
                 raise asyncio.TimeoutError
 
