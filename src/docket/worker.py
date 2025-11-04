@@ -670,8 +670,9 @@ class Worker:
                         execution, dependencies, timedelta(seconds=duration)
                     )
 
-                    # Mark execution as completed
-                    await execution.mark_as_completed()
+                    if not rescheduled:
+                        # Mark execution as completed
+                        await execution.mark_as_completed()
 
                     arrow = "↫" if rescheduled else "↩"
                     logger.info(

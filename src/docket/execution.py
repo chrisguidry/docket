@@ -728,11 +728,39 @@ class Execution:
     async def subscribe(self) -> AsyncGenerator[dict[str, Any], None]:
         """Subscribe to both state and progress updates for this task.
 
+        Emits the current state as the first event, then subscribes to real-time
+        state and progress updates via Redis pub/sub.
+
         Yields:
             Dict containing state or progress update events with a 'type' field:
             - For state events: type="state", state, worker, timestamps, error
             - For progress events: type="progress", current, total, message, updated_at
         """
+        # First, emit the current state
+        await self.sync()
+
+        # Build initial state event from current attributes
+        initial_state: dict[str, Any] = {
+            "type": "state",
+            "key": self.key,
+            "state": self.state.value,
+        }
+
+        # Add optional fields if present
+        if self.worker:
+            initial_state["worker"] = self.worker
+        if self.started_at:
+            initial_state["started_at"] = self.started_at.isoformat()
+        if self.completed_at:
+            initial_state["completed_at"] = self.completed_at.isoformat()
+        if self.error:
+            initial_state["error"] = self.error
+        if self.when:
+            initial_state["when"] = self.when.isoformat()
+
+        yield initial_state
+
+        # Then subscribe to real-time updates
         state_channel = f"{self.docket.name}:state:{self.key}"
         progress_channel = f"{self.docket.name}:progress:{self.key}"
         async with self.docket.redis() as redis:
