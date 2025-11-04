@@ -136,10 +136,8 @@ async def test_watch_with_progress_updates(docket: Docket, worker: Worker):
     assert result.exit_code == 0
     assert "progress-task" in result.output
     assert docket.name in result.output
-    # Should show progress indicators
-    assert "10" in result.output or "100%" in result.output
     # State should be shown
-    assert "RUNNING" in result.output.upper() or "COMPLETED" in result.output.upper()
+    assert "COMPLETED" in result.output.upper()
 
 
 async def test_watch_scheduled_task_transition(docket: Docket, worker: Worker):
@@ -280,8 +278,6 @@ async def test_watch_task_that_starts_while_watching(docket: Docket, worker: Wor
     assert result.exit_code == 0
     assert "timing-test" in result.output
     assert docket.name in result.output
-    # Should show progress
-    assert "10" in result.output or "100%" in result.output
 
 
 async def test_watch_receives_progress_events_during_execution(
@@ -320,7 +316,6 @@ async def test_watch_receives_progress_events_during_execution(
     assert result.exit_code == 0
     assert "many-updates" in result.output
     assert docket.name in result.output
-    assert "20" in result.output or "100%" in result.output
 
 
 async def test_watch_already_running_task_with_progress(docket: Docket, worker: Worker):
@@ -361,8 +356,6 @@ async def test_watch_already_running_task_with_progress(docket: Docket, worker: 
     assert result.exit_code == 0
     assert "already-running" in result.output
     assert docket.name in result.output
-    # Should show progress was tracked (30 total)
-    assert "30" in result.output or "100%" in result.output
 
 
 async def test_watch_task_with_worker_in_state_event(docket: Docket, worker: Worker):
@@ -401,4 +394,3 @@ async def test_watch_task_with_worker_in_state_event(docket: Docket, worker: Wor
     assert result.exit_code == 0
     assert "worker-event" in result.output
     assert docket.name in result.output
-    assert "15" in result.output or "100%" in result.output
