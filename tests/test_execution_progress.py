@@ -182,10 +182,38 @@ async def test_run_state_ttl_after_completion(docket: Docket, worker: Worker):
     await execution.sync()
     assert execution.state == ExecutionState.COMPLETED
 
-    # Verify TTL is set (should be 3600 seconds = 1 hour)
+    # Verify TTL is set to the configured execution_ttl (default: 1 hour = 3600 seconds)
+    expected_ttl = int(docket.execution_ttl.total_seconds())
     async with docket.redis() as redis:
         ttl = await redis.ttl(execution._redis_key)  # type: ignore[reportPrivateUsage]
-        assert 0 < ttl <= 3600  # TTL should be set and reasonable
+        assert 0 < ttl <= expected_ttl  # TTL should be set and reasonable
+
+
+async def test_custom_execution_ttl():
+    """Docket should respect custom execution_ttl configuration."""
+    # Create docket with custom 5-minute TTL
+    custom_ttl = timedelta(minutes=5)
+    async with Docket(name="test-custom-ttl", execution_ttl=custom_ttl) as docket:
+        async with Worker(docket) as worker:
+            task = AsyncMock()
+            task.__name__ = "test_task"
+
+            execution = await docket.add(task)()
+
+            await worker.run_until_finished()
+
+            # Verify state is completed
+            await execution.sync()
+            assert execution.state == ExecutionState.COMPLETED
+
+            # Verify TTL matches custom value (300 seconds)
+            expected_ttl = int(custom_ttl.total_seconds())
+            async with docket.redis() as redis:
+                ttl = await redis.ttl(execution._redis_key)  # type: ignore[reportPrivateUsage]
+                assert 0 < ttl <= expected_ttl
+                # Verify it's approximately the custom value (not the default 3600)
+                assert ttl > 200  # Should be close to 300, not near 0
+                assert ttl <= 300  # Should not exceed configured value
 
 
 async def test_full_lifecycle_integration(docket: Docket, worker: Worker):

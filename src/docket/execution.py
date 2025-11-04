@@ -612,7 +612,7 @@ class Execution:
     async def mark_as_completed(self) -> None:
         """Mark task as completed successfully.
 
-        Sets 1-hour TTL on state data and deletes progress data.
+        Sets TTL on state data (from docket.execution_ttl) and deletes progress data.
         """
         completed_at = datetime.now(timezone.utc).isoformat()
         async with self.docket.redis() as redis:
@@ -623,8 +623,10 @@ class Execution:
                     "completed_at": completed_at,
                 },
             )
-            # Set 1 hour TTL
-            await redis.expire(self._redis_key, 3600)
+            # Set TTL from docket configuration
+            await redis.expire(
+                self._redis_key, int(self.docket.execution_ttl.total_seconds())
+            )
         self.state = ExecutionState.COMPLETED
         # Delete progress data
         await self.progress._delete()
@@ -639,7 +641,7 @@ class Execution:
         Args:
             error: Optional error message describing the failure
 
-        Sets 1-hour TTL on state data and deletes progress data.
+        Sets TTL on state data (from docket.execution_ttl) and deletes progress data.
         """
         completed_at = datetime.now(timezone.utc).isoformat()
         async with self.docket.redis() as redis:
@@ -650,8 +652,10 @@ class Execution:
             if error:
                 mapping["error"] = error
             await redis.hset(self._redis_key, mapping=mapping)
-            # Set 1 hour TTL
-            await redis.expire(self._redis_key, 3600)
+            # Set TTL from docket configuration
+            await redis.expire(
+                self._redis_key, int(self.docket.execution_ttl.total_seconds())
+            )
         self.state = ExecutionState.FAILED
         # Delete progress data
         await self.progress._delete()

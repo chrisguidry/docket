@@ -147,6 +147,7 @@ class Docket:
         url: str = "redis://localhost:6379/0",
         heartbeat_interval: timedelta = timedelta(seconds=2),
         missed_heartbeats: int = 5,
+        execution_ttl: timedelta = timedelta(hours=1),
     ) -> None:
         """
         Args:
@@ -161,11 +162,14 @@ class Docket:
             heartbeat_interval: How often workers send heartbeat messages to the docket.
             missed_heartbeats: How many heartbeats a worker can miss before it is
                 considered dead.
+            execution_ttl: How long to keep completed or failed execution state records
+                in Redis before they expire. Defaults to 1 hour.
         """
         self.name = name
         self.url = url
         self.heartbeat_interval = heartbeat_interval
         self.missed_heartbeats = missed_heartbeats
+        self.execution_ttl = execution_ttl
         self._cancel_task_script = None
 
     @property
