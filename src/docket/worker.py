@@ -37,6 +37,8 @@ from .docket import (
     RedisReadGroupResponse,
 )
 from .execution import compact_signature, get_signature
+
+# Run class has been consolidated into Execution
 from .instrumentation import (
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
@@ -297,21 +299,20 @@ class Worker:
                 await asyncio.sleep(self.minimum_check_interval.total_seconds())
             return result
 
-        def start_task(
+        async def start_task(
             message_id: RedisMessageID,
             message: RedisMessage,
             is_redelivery: bool = False,
         ) -> bool:
-            function_name = message[b"function"].decode()
-            if not (function := self.docket.tasks.get(function_name)):
-                logger.warning(
-                    "Task function %r not found",
-                    function_name,
+            try:
+                execution = await Execution.from_message(self.docket, message)
+            except ValueError as e:
+                logger.error(
+                    "Unable to start task: %s",
+                    e,
                     extra=log_context,
                 )
                 return False
-
-            execution = Execution.from_message(function, message)
             execution.redelivered = is_redelivery
 
             task = asyncio.create_task(self._execute(execution), name=execution.key)
@@ -364,7 +365,7 @@ class Worker:
                             if not message:  # pragma: no cover
                                 continue
 
-                            task_started = start_task(
+                            task_started = await start_task(
                                 message_id, message, is_redelivery
                             )
                             if not task_started:
@@ -434,6 +435,16 @@ class Worker:
                             'attempt', task['attempt']
                         )
                         redis.call('DEL', hash_key)
+
+                        -- Set run state to queued
+                        local run_key = ARGV[2] .. ":runs:" .. task['key']
+                        redis.call('HSET', run_key, 'state', 'queued')
+
+                        -- Publish state change event to pub/sub
+                        local channel = ARGV[2] .. ":state:" .. task['key']
+                        local payload = '{"type":"state","key":"' .. task['key'] .. '","state":"queued","when":"' .. task['when'] .. '"}'
+                        redis.call('PUBLISH', channel, payload)
+
                         due_work = due_work + 1
                     end
                 end
@@ -513,6 +524,11 @@ class Worker:
             return
 
         logger.debug("Deleting known task", extra=self._log_context())
+        # Delete known/stream_id from runs hash to allow task rescheduling
+        runs_key = f"{self.docket.name}:runs:{key}"
+        await redis.hdel(runs_key, "known", "stream_id")
+
+        # TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
         known_task_key = self.docket.known_task_key(key)
         stream_id_key = self.docket.stream_id_key(key)
         await redis.delete(known_task_key, stream_id_key)
@@ -547,6 +563,10 @@ class Worker:
 
         arrow = "↬" if execution.attempt > 1 else "↪"
         logger.info("%s [%s] %s", arrow, ms(punctuality), call, extra=log_context)
+
+        # Atomically claim task and transition to running state
+        # This also initializes progress and cleans up known/stream_id to allow rescheduling
+        await execution.claim(self.name)
 
         dependencies: dict[str, Dependency] = {}
 
@@ -588,14 +608,11 @@ class Worker:
                                 # Successfully acquired slot
                                 pass
 
-                    # Preemptively reschedule the perpetual task for the future, or clear
-                    # the known task key for this task
+                    # Preemptively reschedule the perpetual task for the future
+                    # Note: known/stream_id already deleted by claim_and_run()
                     rescheduled = await self._perpetuate_if_requested(
                         execution, dependencies
                     )
-                    if not rescheduled:
-                        async with self.docket.redis() as redis:
-                            await self._delete_known_task(redis, execution)
 
                     dependency_failures = {
                         k: v
@@ -653,6 +670,10 @@ class Worker:
                         execution, dependencies, timedelta(seconds=duration)
                     )
 
+                    if not rescheduled:
+                        # Mark execution as completed
+                        await execution.mark_as_completed()
+
                     arrow = "↫" if rescheduled else "↩"
                     logger.info(
                         "%s [%s] %s", arrow, ms(duration), call, extra=log_context
@@ -669,6 +690,10 @@ class Worker:
                     retried = await self._perpetuate_if_requested(
                         execution, dependencies, timedelta(seconds=duration)
                     )
+
+                # Mark execution as failed with error message
+                error_msg = f"{type(e).__name__}: {str(e)}"
+                await execution.mark_as_failed(error_msg)
 
                 arrow = "↫" if retried else "↩"
                 logger.exception(
@@ -740,7 +765,8 @@ class Worker:
 
         execution.when = datetime.now(timezone.utc) + retry.delay
         execution.attempt += 1
-        await self.docket.schedule(execution)
+        # Use replace=True since the task is being rescheduled after failure
+        await execution.schedule(replace=True)
 
         TASKS_RETRIED.add(1, {**self.labels(), **execution.general_labels()})
         return True

@@ -40,7 +40,7 @@ async def test_executing_a_task_is_wrapped_in_a_span(docket: Docket, worker: Wor
         assert isinstance(span, Span)
         captured.append(span)
 
-    execution = await docket.add(the_task)()
+    run = await docket.add(the_task)()
 
     await worker.run_until_finished()
 
@@ -57,8 +57,9 @@ async def test_executing_a_task_is_wrapped_in_a_span(docket: Docket, worker: Wor
 
     assert task_span.attributes["docket.name"] == docket.name
     assert task_span.attributes["docket.task"] == "the_task"
-    assert task_span.attributes["docket.key"] == execution.key
-    assert task_span.attributes["docket.when"] == execution.when.isoformat()
+    assert task_span.attributes["docket.key"] == run.key
+    assert run.when is not None
+    assert task_span.attributes["docket.when"] == run.when.isoformat()
     assert task_span.attributes["docket.attempt"] == 1
     assert task_span.attributes["code.function.name"] == "the_task"
 

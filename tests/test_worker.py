@@ -247,7 +247,10 @@ async def test_worker_handles_unregistered_task_execution_on_initial_delivery(
     with caplog.at_level(logging.WARNING):
         await worker.run_until_finished()
 
-    assert "Task function 'the_task' not found" in caplog.text
+    assert (
+        "Task function 'the_task' is not registered with the current docket"
+        in caplog.text
+    )
 
 
 async def test_worker_handles_unregistered_task_execution_on_redelivery(
@@ -300,7 +303,10 @@ async def test_worker_handles_unregistered_task_execution_on_redelivery(
         with caplog.at_level(logging.WARNING):
             await worker_b.run_until_finished()
 
-    assert "Task function 'test_task' not found" in caplog.text
+    assert (
+        "Task function 'test_task' is not registered with the current docket"
+        in caplog.text
+    )
 
 
 builtin_tasks = {function.__name__ for function in standard_tasks}
@@ -1262,6 +1268,7 @@ async def test_worker_no_concurrency_dependency_in_function(docket: Docket):
     async with Worker(docket) as worker:
         # Create execution for task without concurrency dependency
         execution = Execution(
+            docket=docket,
             function=task_without_concurrency_dependency,
             args=(),
             kwargs={},
@@ -1287,6 +1294,7 @@ async def test_worker_no_concurrency_dependency_in_release(docket: Docket):
     async with Worker(docket) as worker:
         # Create execution for task without concurrency dependency
         execution = Execution(
+            docket=docket,
             function=task_without_concurrency_dependency,
             args=(),
             kwargs={},
@@ -1315,6 +1323,7 @@ async def test_worker_missing_concurrency_argument_in_release(docket: Docket):
     async with Worker(docket) as worker:
         # Create execution that doesn't have the required parameter
         execution = Execution(
+            docket=docket,
             function=task_with_missing_arg,
             args=(),
             kwargs={},  # Missing the required parameter
@@ -1346,6 +1355,7 @@ async def test_worker_concurrency_missing_argument_in_can_start(docket: Docket):
     async with Worker(docket) as worker:
         # Create execution without the required parameter
         execution = Execution(
+            docket=docket,
             function=task_with_missing_concurrency_arg,
             args=(),
             kwargs={},  # Missing the required "missing_param"
@@ -1659,7 +1669,7 @@ async def test_redis_key_cleanup_successful_task(
         assert task_executed, "Task should have executed successfully"
 
         # Verify cleanup
-        await checker.verify_keys_returned_to_baseline("successful task execution")
+        await checker.verify_keys_increased("successful task execution")
 
 
 async def test_redis_key_cleanup_failed_task(docket: Docket, worker: Worker) -> None:
@@ -1692,7 +1702,7 @@ async def test_redis_key_cleanup_failed_task(docket: Docket, worker: Worker) -> 
         assert task_attempted, "Task should have been attempted"
 
         # Verify cleanup despite failure
-        await checker.verify_keys_returned_to_baseline("failed task execution")
+        await checker.verify_keys_increased("failed task execution")
 
 
 async def test_redis_key_cleanup_cancelled_task(docket: Docket, worker: Worker) -> None:

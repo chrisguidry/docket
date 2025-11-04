@@ -166,3 +166,45 @@ async def test_clear_no_redis_key_leaks(docket: Docket, the_task: AsyncMock):
     snapshot = await docket.snapshot()
     assert len(snapshot.future) == 0
     assert len(snapshot.running) == 0
+
+
+async def test_docket_schedule_method_with_immediate_task(
+    docket: Docket, the_task: AsyncMock
+):
+    """Test direct scheduling via docket.schedule(execution) for immediate execution."""
+    from docket import Execution
+
+    # Register task so snapshot can look it up
+    docket.register(the_task)
+
+    execution = Execution(
+        docket, the_task, ("arg",), {}, datetime.now(timezone.utc), "test-key", 1
+    )
+
+    await docket.schedule(execution)
+
+    # Verify task was scheduled
+    snapshot = await docket.snapshot()
+    assert len(snapshot.future) == 1
+
+
+async def test_docket_schedule_with_stricken_task(docket: Docket, the_task: AsyncMock):
+    """Test that docket.schedule respects strike list."""
+    from docket import Execution
+
+    # Register task
+    docket.register(the_task)
+
+    # Strike the task
+    await docket.strike("the_task")
+
+    execution = Execution(
+        docket, the_task, (), {}, datetime.now(timezone.utc), "test-key", 1
+    )
+
+    # Try to schedule - should be blocked
+    await docket.schedule(execution)
+
+    # Verify task was NOT scheduled
+    snapshot = await docket.snapshot()
+    assert len(snapshot.future) == 0
