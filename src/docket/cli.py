@@ -994,7 +994,7 @@ def watch(
                         )
 
                         # Update or create progress task
-                        if total_val > 0 and worker_name is not None:
+                        if total_val > 0 and execution.started_at is not None:
                             if progress_task_id is None:
                                 # Create new progress task (first time only)
                                 progress_task_id = active_progress.add_task(
