@@ -84,8 +84,8 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: python-${{ matrix.python-version }}
 
-  pre-commit:
-    name: Pre-commit checks
+  prek:
+    name: Prek checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -98,10 +98,8 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: |
-          uv sync --dev
-          uv pip install pip
+        run: uv sync --dev
 
-      - uses: pre-commit/action@v3.0.1
+      - uses: prek-rs/prek-action@v2
         with:
           extra_args: --all-files

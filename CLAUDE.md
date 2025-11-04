@@ -34,8 +34,8 @@ ruff format
 pyright
 pyright tests
 
-# Run all pre-commit hooks
-pre-commit run --all-files
+# Run all prek hooks
+uv run prek run --all-files
 ```
 
 ### Development Setup
@@ -44,8 +44,8 @@ pre-commit run --all-files
 # Install development dependencies
 uv sync --group dev
 
-# Install pre-commit hooks
-pre-commit install
+# Install prek hooks
+uv run prek install
 ```
 
 ### Git Workflow
