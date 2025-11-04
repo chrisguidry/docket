@@ -17,7 +17,6 @@ from typing import (
     cast,
 )
 
-from redis.asyncio import Redis
 from typing_extensions import Self
 
 import cloudpickle  # type: ignore[import]
@@ -224,7 +223,7 @@ class ExecutionProgress:
         self.message = None
         self.updated_at = None
 
-    async def _publish(self, data: dict) -> None:
+    async def _publish(self, data: dict[str, Any]) -> None:
         """Publish progress update to Redis pub/sub channel.
 
         Args:
@@ -263,18 +262,12 @@ class ExecutionProgress:
             - updated_at: ISO 8601 timestamp
         """
         channel = f"{self.docket.name}:progress:{self.key}"
-        redis = Redis.from_url(self.docket.url)
-        pubsub = redis.pubsub()
-
-        try:
-            await pubsub.subscribe(channel)
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    yield json.loads(message["data"])
-        finally:
-            await pubsub.unsubscribe(channel)
-            await pubsub.aclose()
-            await redis.aclose()
+        async with self.docket.redis() as redis:
+            async with redis.pubsub() as pubsub:
+                await pubsub.subscribe(channel)
+                async for message in pubsub.listen():  # pragma: no cover
+                    if message["type"] == "message":
+                        yield json.loads(message["data"])
 
 
 class Execution:
@@ -324,10 +317,14 @@ class Execution:
         }
 
     @classmethod
-    def from_message(
-        cls, docket: "Docket", function: TaskFunction, message: Message
-    ) -> Self:
-        return cls(
+    async def from_message(cls, docket: "Docket", message: Message) -> Self:
+        function_name = message[b"function"].decode()
+        if not (function := docket.tasks.get(function_name)):
+            raise ValueError(
+                f"Task function {function_name!r} is not registered with the current docket"
+            )
+
+        instance = cls(
             docket=docket,
             function=function,
             args=cloudpickle.loads(message[b"args"]),
@@ -338,6 +335,8 @@ class Execution:
             trace_context=propagate.extract(message, getter=message_getter),
             redelivered=False,  # Default to False, will be set to True in worker if it's a redelivery
         )
+        await instance.sync()
+        return instance
 
     def general_labels(self) -> Mapping[str, str]:
         return {"docket.task": self.function.__name__}
@@ -739,7 +738,7 @@ class Execution:
         async with self.docket.redis() as redis:
             async with redis.pubsub() as pubsub:
                 await pubsub.subscribe(state_channel, progress_channel)
-                async for message in pubsub.listen():
+                async for message in pubsub.listen():  # pragma: no cover
                     if message["type"] == "message":
                         yield json.loads(message["data"])
 

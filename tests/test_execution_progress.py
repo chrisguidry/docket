@@ -137,8 +137,8 @@ async def test_progress_dependency_injection(docket: Docket, worker: Worker):
             await progress.increment()
             await progress.set_message(f"Processing item {i + 1}")
             # Capture progress data
-            if progress.current is not None:
-                progress_values.append(progress.current)
+            assert progress.current is not None
+            progress_values.append(progress.current)
 
     await docket.add(task_with_progress)()
 
@@ -328,7 +328,7 @@ async def test_progress_publish_events(docket: Docket):
     events: list[dict[str, Any]] = []
 
     async def collect_events():
-        async for event in progress.subscribe():
+        async for event in progress.subscribe():  # pragma: no cover
             events.append(event)
             if len(events) >= 3:  # Collect 3 events then stop
                 break
@@ -345,10 +345,7 @@ async def test_progress_publish_events(docket: Docket):
     await progress.set_message("Processing...")
 
     # Wait for subscriber to collect events
-    try:
-        await asyncio.wait_for(subscriber_task, timeout=2.0)
-    except asyncio.TimeoutError:
-        pass  # May timeout if we got all events
+    await asyncio.wait_for(subscriber_task, timeout=2.0)
 
     # Verify we received progress events
     assert len(events) >= 3
@@ -400,7 +397,7 @@ async def test_run_subscribe_both_state_and_progress(docket: Docket):
     all_events: list[dict[str, Any]] = []
 
     async def collect_events():
-        async for event in execution.subscribe():
+        async for event in execution.subscribe():  # pragma: no cover
             all_events.append(event)
             # Stop after we get a running state and some progress
             if (
@@ -427,10 +424,7 @@ async def test_run_subscribe_both_state_and_progress(docket: Docket):
     await execution.progress.increment(5)
 
     # Wait for subscriber to collect events
-    try:
-        await asyncio.wait_for(subscriber_task, timeout=2.0)
-    except asyncio.TimeoutError:
-        pass
+    await asyncio.wait_for(subscriber_task, timeout=2.0)
 
     # Verify we got both types
     state_events = [e for e in all_events if e["type"] == "state"]
@@ -461,7 +455,7 @@ async def test_completed_state_publishes_event(docket: Docket):
     events: list[dict[str, Any]] = []
 
     async def collect_events():
-        async for event in execution.subscribe():
+        async for event in execution.subscribe():  # pragma: no cover
             if event["type"] == "state":
                 events.append(event)
             if any(e.get("state") == "completed" for e in events):
@@ -473,10 +467,7 @@ async def test_completed_state_publishes_event(docket: Docket):
     await execution.claim("worker-1")
     await execution.mark_as_completed()
 
-    try:
-        await asyncio.wait_for(subscriber_task, timeout=2.0)
-    except asyncio.TimeoutError:
-        pass
+    await asyncio.wait_for(subscriber_task, timeout=2.0)
 
     # Find completed event
     completed_event = next(e for e in events if e.get("state") == "completed")
@@ -494,7 +485,7 @@ async def test_failed_state_publishes_event_with_error(docket: Docket):
     events: list[dict[str, Any]] = []
 
     async def collect_events():
-        async for event in execution.subscribe():
+        async for event in execution.subscribe():  # pragma: no cover
             if event["type"] == "state":
                 events.append(event)
             if any(e.get("state") == "failed" for e in events):
@@ -506,10 +497,7 @@ async def test_failed_state_publishes_event_with_error(docket: Docket):
     await execution.claim("worker-1")
     await execution.mark_as_failed("Something went wrong!")
 
-    try:
-        await asyncio.wait_for(subscriber_task, timeout=2.0)
-    except asyncio.TimeoutError:
-        pass
+    await asyncio.wait_for(subscriber_task, timeout=2.0)
 
     # Find failed event
     failed_event = next(e for e in events if e.get("state") == "failed")
@@ -541,7 +529,7 @@ async def test_end_to_end_progress_monitoring_with_worker(
 
     # Start subscriber to collect events
     async def collect_events():
-        async for event in execution.subscribe():
+        async for event in execution.subscribe():  # pragma: no cover
             collected_events.append(event)
             # Stop when we reach completed state
             if event.get("type") == "state" and event.get("state") == "completed":
@@ -556,10 +544,7 @@ async def test_end_to_end_progress_monitoring_with_worker(
     await worker.run_until_finished()
 
     # Wait for subscriber to finish
-    try:
-        await asyncio.wait_for(subscriber_task, timeout=5.0)
-    except asyncio.TimeoutError:
-        pass
+    await asyncio.wait_for(subscriber_task, timeout=5.0)
 
     # Verify we collected comprehensive events
     assert len(collected_events) > 0
@@ -615,7 +600,7 @@ async def test_end_to_end_failed_task_monitoring(docket: Docket, worker: Worker)
 
     # Start subscriber
     async def collect_events():
-        async for event in execution.subscribe():
+        async for event in execution.subscribe():  # pragma: no cover
             collected_events.append(event)
             # Stop when we reach failed state
             if event.get("type") == "state" and event.get("state") == "failed":
@@ -628,10 +613,7 @@ async def test_end_to_end_failed_task_monitoring(docket: Docket, worker: Worker)
     await worker.run_until_finished()
 
     # Wait for subscriber
-    try:
-        await asyncio.wait_for(subscriber_task, timeout=5.0)
-    except asyncio.TimeoutError:
-        pass
+    await asyncio.wait_for(subscriber_task, timeout=5.0)
 
     # Verify we got events
     assert len(collected_events) > 0
@@ -660,3 +642,115 @@ async def test_end_to_end_failed_task_monitoring(docket: Docket, worker: Worker)
     assert "error" in failed_event
     assert "ValueError" in failed_event["error"]
     assert "intentionally" in failed_event["error"]
+
+
+async def test_mark_as_failed_without_error_message(docket: Docket):
+    """Test mark_as_failed with error=None."""
+    execution = Execution(
+        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+    )
+
+    await execution.claim("worker-1")
+    await execution.mark_as_failed(error=None)
+
+    await execution.sync()
+    assert execution.state == ExecutionState.FAILED
+    assert execution.error is None
+    assert execution.completed_at is not None
+
+
+async def test_execution_sync_with_no_redis_data(docket: Docket):
+    """Test sync() when no execution data exists in Redis."""
+    execution = Execution(
+        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "nonexistent-key", 1
+    )
+
+    # Sync without ever scheduling
+    await execution.sync()
+
+    # Should reset to defaults
+    assert execution.state == ExecutionState.SCHEDULED
+    assert execution.worker is None
+    assert execution.started_at is None
+    assert execution.completed_at is None
+    assert execution.error is None
+
+
+async def test_progress_publish_with_memory_backend():
+    """Test that _publish() safely handles memory:// backend."""
+    from docket import Docket
+    from docket.execution import ExecutionProgress
+
+    # Create docket with memory:// URL
+    async with Docket(name="test-memory", url="memory://") as docket:
+        progress = ExecutionProgress(docket, "test-key")
+
+        # This should not raise an error even though pub/sub doesn't work with memory://
+        # The _publish method has an early return for memory:// backend
+        await getattr(progress, "_publish")({"type": "progress", "current": 10})
+
+        # Verify it completed without error
+        assert progress.docket.url == "memory://"
+
+
+async def test_execution_sync_with_missing_state_field(docket: Docket):
+    """Test sync() when Redis data exists but has no 'state' field."""
+    from unittest.mock import AsyncMock, patch
+
+    execution = Execution(
+        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+    )
+
+    # Set initial state
+    execution.state = ExecutionState.RUNNING
+
+    # Mock Redis to return data WITHOUT state field
+    mock_data = {
+        b"worker": b"worker-1",
+        b"started_at": b"2024-01-01T00:00:00+00:00",
+        # No b"state" field - state_value will be None
+    }
+
+    with patch.object(execution.docket, "redis") as mock_redis_ctx:
+        mock_redis = AsyncMock()
+        mock_redis.hgetall.return_value = mock_data
+        mock_redis_ctx.return_value.__aenter__.return_value = mock_redis
+
+        # Mock progress sync to avoid extra Redis calls
+        with patch.object(execution.progress, "sync"):
+            await execution.sync()
+
+    # State should NOT be updated (stays as RUNNING)
+    assert execution.state == ExecutionState.RUNNING
+    # But other fields should be updated
+    assert execution.worker == "worker-1"
+    assert execution.started_at is not None
+
+
+async def test_execution_sync_with_string_state_value(docket: Docket):
+    """Test sync() handles non-bytes state value (defensive coding)."""
+    from unittest.mock import AsyncMock, patch
+
+    execution = Execution(
+        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+    )
+
+    # Mock Redis to return string state (defensive code handles both bytes and str)
+    mock_data = {
+        b"state": "completed",  # String, not bytes!
+        b"worker": b"worker-1",
+        b"completed_at": b"2024-01-01T00:00:00+00:00",
+    }
+
+    with patch.object(execution.docket, "redis") as mock_redis_ctx:
+        mock_redis = AsyncMock()
+        mock_redis.hgetall.return_value = mock_data
+        mock_redis_ctx.return_value.__aenter__.return_value = mock_redis
+
+        # Mock progress sync
+        with patch.object(execution.progress, "sync"):
+            await execution.sync()
+
+    # Should handle string and set state correctly
+    assert execution.state == ExecutionState.COMPLETED
+    assert execution.worker == "worker-1"

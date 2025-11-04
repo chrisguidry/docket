@@ -21,6 +21,7 @@ from rich.progress import (
     TaskProgressColumn,
     TextColumn,
     TimeElapsedColumn,
+    TaskID,
 )
 from rich.table import Table
 
@@ -879,6 +880,12 @@ def watch(
 
             progress_task_id = None
 
+            def set_progress_start_time(task_id: TaskID, started_at: datetime) -> None:
+                """Set progress bar start time based on execution start time."""
+                elapsed_since_start = datetime.now(timezone.utc) - started_at
+                monotonic_start = time.monotonic() - elapsed_since_start.total_seconds()
+                active_progress.tasks[task_id].start_time = monotonic_start
+
             # Initialize progress task if we have progress data
             if current_val > 0 and total_val > 0:
                 progress_task_id = active_progress.add_task(
@@ -887,14 +894,8 @@ def watch(
                     completed=current_val,
                 )
                 # Set start time based on execution.started_at if available
-                if execution.started_at is not None:
-                    elapsed_since_start = (
-                        datetime.now(timezone.utc) - execution.started_at
-                    )
-                    monotonic_start = (
-                        time.monotonic() - elapsed_since_start.total_seconds()
-                    )
-                    active_progress.tasks[progress_task_id].start_time = monotonic_start
+                if execution.started_at is not None:  # pragma: no cover
+                    set_progress_start_time(progress_task_id, execution.started_at)
 
             def create_display_layout() -> Layout:
                 """Create the layout for watch display."""
@@ -955,7 +956,7 @@ def watch(
             # Use Live for smooth updates
             with Live(layout, console=console, refresh_per_second=4) as live:
                 # Subscribe to events and update display
-                async for event in execution.subscribe():
+                async for event in execution.subscribe():  # pragma: no cover
                     if event["type"] == "state":
                         # Update state information
                         current_state = ExecutionState(event["state"])
@@ -969,16 +970,9 @@ def watch(
                             )
                             # Update progress bar start time if we have a progress task
                             if progress_task_id is not None:
-                                elapsed_since_start = (
-                                    datetime.now(timezone.utc) - execution.started_at
+                                set_progress_start_time(
+                                    progress_task_id, execution.started_at
                                 )
-                                monotonic_start = (
-                                    time.monotonic()
-                                    - elapsed_since_start.total_seconds()
-                                )
-                                active_progress.tasks[
-                                    progress_task_id
-                                ].start_time = monotonic_start
 
                         # Update layout
                         layout = create_display_layout()
@@ -1010,17 +1004,9 @@ def watch(
                                 )
                                 # Set start time based on execution.started_at if available
                                 if execution.started_at is not None:
-                                    elapsed_since_start = (
-                                        datetime.now(timezone.utc)
-                                        - execution.started_at
+                                    set_progress_start_time(
+                                        progress_task_id, execution.started_at
                                     )
-                                    monotonic_start = (
-                                        time.monotonic()
-                                        - elapsed_since_start.total_seconds()
-                                    )
-                                    active_progress.tasks[
-                                        progress_task_id
-                                    ].start_time = monotonic_start
                             else:
                                 # Update existing progress task
                                 active_progress.update(

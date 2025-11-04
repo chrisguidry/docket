@@ -299,21 +299,20 @@ class Worker:
                 await asyncio.sleep(self.minimum_check_interval.total_seconds())
             return result
 
-        def start_task(
+        async def start_task(
             message_id: RedisMessageID,
             message: RedisMessage,
             is_redelivery: bool = False,
         ) -> bool:
-            function_name = message[b"function"].decode()
-            if not (function := self.docket.tasks.get(function_name)):
-                logger.warning(
-                    "Task function %r not found",
-                    function_name,
+            try:
+                execution = await Execution.from_message(self.docket, message)
+            except ValueError as e:
+                logger.error(
+                    "Unable to start task: %s",
+                    e,
                     extra=log_context,
                 )
                 return False
-
-            execution = Execution.from_message(self.docket, function, message)
             execution.redelivered = is_redelivery
 
             task = asyncio.create_task(self._execute(execution), name=execution.key)
@@ -366,7 +365,7 @@ class Worker:
                             if not message:  # pragma: no cover
                                 continue
 
-                            task_started = start_task(
+                            task_started = await start_task(
                                 message_id, message, is_redelivery
                             )
                             if not task_started:

@@ -726,8 +726,7 @@ class Docket:
         }
 
         for message_id, message in stream_messages:
-            function = self.tasks[message[b"function"].decode()]
-            execution = Execution.from_message(self, function, message)
+            execution = await Execution.from_message(self, message)
             if message_id in pending_lookup:
                 worker_name = pending_lookup[message_id]["consumer"].decode()
                 started = now - timedelta(
@@ -738,8 +737,7 @@ class Docket:
                 future.append(execution)  # pragma: no cover
 
         for message in queued_messages:
-            function = self.tasks[message[b"function"].decode()]
-            execution = Execution.from_message(self, function, message)
+            execution = await Execution.from_message(self, message)
             future.append(execution)
 
         workers = await self.workers()

@@ -247,7 +247,10 @@ async def test_worker_handles_unregistered_task_execution_on_initial_delivery(
     with caplog.at_level(logging.WARNING):
         await worker.run_until_finished()
 
-    assert "Task function 'the_task' not found" in caplog.text
+    assert (
+        "Task function 'the_task' is not registered with the current docket"
+        in caplog.text
+    )
 
 
 async def test_worker_handles_unregistered_task_execution_on_redelivery(
@@ -300,7 +303,10 @@ async def test_worker_handles_unregistered_task_execution_on_redelivery(
         with caplog.at_level(logging.WARNING):
             await worker_b.run_until_finished()
 
-    assert "Task function 'test_task' not found" in caplog.text
+    assert (
+        "Task function 'test_task' is not registered with the current docket"
+        in caplog.text
+    )
 
 
 builtin_tasks = {function.__name__ for function in standard_tasks}
