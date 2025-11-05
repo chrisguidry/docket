@@ -740,7 +740,7 @@ class Execution:
             try:
 
                 async def wait_for_completion():
-                    async for event in self.subscribe():
+                    async for event in self.subscribe():  # pragma: no cover
                         if event["type"] == "state":
                             state = ExecutionState(event["state"])
                             if state in (

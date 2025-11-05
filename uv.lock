@@ -1598,7 +1598,7 @@ requires-dist = [
     { name = "prometheus-client", specifier = ">=0.21.1" },
     { name = "py-key-value-aio", extras = ["memory", "redis"], specifier = ">=0.2.8" },
     { name = "python-json-logger", specifier = ">=3.2.1" },
-    { name = "redis", specifier = ">=4.6" },
+    { name = "redis", specifier = ">=5" },
     { name = "rich", specifier = ">=13.9.4" },
     { name = "typer", specifier = ">=0.15.1" },
     { name = "typing-extensions", specifier = ">=4.12.0" },

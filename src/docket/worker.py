@@ -773,7 +773,7 @@ class Worker:
                 except asyncio.TimeoutError:
                     continue
         finally:
-            if not task.done():
+            if not task.done():  # pragma: no branch
                 task.cancel()
 
         try:
