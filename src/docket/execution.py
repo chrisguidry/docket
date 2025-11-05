@@ -1,4 +1,5 @@
 import abc
+import asyncio
 import base64
 import enum
 import inspect
@@ -723,9 +724,6 @@ class Execution:
             Exception: If the task failed, raises the stored exception
             TimeoutError: If timeout is reached before execution completes
         """
-        import asyncio
-        from datetime import datetime, timezone
-
         # Wait for execution to complete if not already done
         if self.state not in (ExecutionState.COMPLETED, ExecutionState.FAILED):
             # Calculate timeout duration if absolute timeout provided
@@ -740,7 +738,7 @@ class Execution:
             try:
 
                 async def wait_for_completion():
-                    async for event in self.subscribe():  # pragma: no cover
+                    async for event in self.subscribe():  # pragma: no branch
                         if event["type"] == "state":
                             state = ExecutionState(event["state"])
                             if state in (
