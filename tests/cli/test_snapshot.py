@@ -205,6 +205,9 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
         )
         assert result.exit_code == 0, result.output
 
+        # Give worker time to start
+        await asyncio.sleep(0.5)
+
         # Should show the normal summary
         assert "1 workers, 2/5 running" in result.output, result.output
 
