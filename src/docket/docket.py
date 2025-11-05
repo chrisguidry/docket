@@ -24,6 +24,7 @@ from typing import (
     overload,
 )
 
+from key_value.aio.stores.base import BaseContextManagerStore
 from typing_extensions import Self
 
 import redis.exceptions
@@ -41,6 +42,9 @@ from .execution import (
     StrikeList,
     TaskFunction,
 )
+from key_value.aio.protocols.key_value import AsyncKeyValue
+from key_value.aio.stores.redis import RedisStore
+from key_value.aio.stores.memory import MemoryStore
 
 from .instrumentation import (
     REDIS_DISRUPTIONS,
@@ -147,6 +151,7 @@ class Docket:
         heartbeat_interval: timedelta = timedelta(seconds=2),
         missed_heartbeats: int = 5,
         execution_ttl: timedelta = timedelta(hours=1),
+        result_storage: AsyncKeyValue | None = None,
     ) -> None:
         """
         Args:
@@ -170,6 +175,14 @@ class Docket:
         self.missed_heartbeats = missed_heartbeats
         self.execution_ttl = execution_ttl
         self._cancel_task_script = None
+
+        self.result_storage: AsyncKeyValue
+        if url.startswith("memory://"):
+            self.result_storage = MemoryStore()
+        else:
+            self.result_storage = RedisStore(
+                url=url, default_collection=f"{name}:results"
+            )
 
     @property
     def worker_group_name(self) -> str:
@@ -220,6 +233,10 @@ class Docket:
             if "BUSYGROUP" not in repr(e):
                 raise
 
+        if isinstance(self.result_storage, BaseContextManagerStore):
+            await self.result_storage.__aenter__()
+        else:
+            await self.result_storage.setup()
         return self
 
     async def __aexit__(
@@ -228,6 +245,9 @@ class Docket:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        if isinstance(self.result_storage, BaseContextManagerStore):
+            await self.result_storage.__aexit__(exc_type, exc_value, traceback)
+
         del self.tasks
         del self.strike_list
 

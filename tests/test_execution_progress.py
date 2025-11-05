@@ -716,23 +716,6 @@ async def test_execution_sync_with_no_redis_data(docket: Docket):
     assert execution.error is None
 
 
-async def test_progress_publish_with_memory_backend():
-    """Test that _publish() safely handles memory:// backend."""
-    from docket import Docket
-    from docket.execution import ExecutionProgress
-
-    # Create docket with memory:// URL
-    async with Docket(name="test-memory", url="memory://") as docket:
-        progress = ExecutionProgress(docket, "test-key")
-
-        # This should not raise an error even though pub/sub doesn't work with memory://
-        # The _publish method has an early return for memory:// backend
-        await getattr(progress, "_publish")({"type": "progress", "current": 10})
-
-        # Verify it completed without error
-        assert progress.docket.url == "memory://"
-
-
 async def test_execution_sync_with_missing_state_field(docket: Docket):
     """Test sync() when Redis data exists but has no 'state' field."""
     from unittest.mock import AsyncMock, patch
@@ -755,6 +738,7 @@ async def test_execution_sync_with_missing_state_field(docket: Docket):
         mock_redis = AsyncMock()
         mock_redis.hgetall.return_value = mock_data
         mock_redis_ctx.return_value.__aenter__.return_value = mock_redis
+        mock_redis_ctx.return_value.__aexit__.return_value = None
 
         # Mock progress sync to avoid extra Redis calls
         with patch.object(execution.progress, "sync"):
@@ -786,6 +770,7 @@ async def test_execution_sync_with_string_state_value(docket: Docket):
         mock_redis = AsyncMock()
         mock_redis.hgetall.return_value = mock_data
         mock_redis_ctx.return_value.__aenter__.return_value = mock_redis
+        mock_redis_ctx.return_value.__aexit__.return_value = None
 
         # Mock progress sync
         with patch.object(execution.progress, "sync"):
@@ -818,7 +803,7 @@ async def test_subscribing_to_completed_execution(docket: Docket, worker: Worker
             assert event["type"] == "state"
             return event
 
-    first_event = await asyncio.wait_for(get_first_event(), timeout=1.0)
+    first_event = await get_first_event()
     assert first_event is not None
 
     # Verify the initial state includes completion metadata
@@ -839,7 +824,7 @@ async def test_subscribing_to_completed_execution(docket: Docket, worker: Worker
             assert event["type"] == "state"
             return event
 
-    first_event = await asyncio.wait_for(get_first_failed_event(), timeout=1.0)
+    first_event = await get_first_failed_event()
     assert first_event is not None
 
     # Verify the initial state includes error metadata

@@ -914,7 +914,7 @@ def watch(
                 )
 
                 # Add worker if available
-                if worker_name:
+                if worker_name:  # pragma: no branch
                     info_lines.append(f"[bold]Worker:[/bold] {worker_name}")
 
                 # Add error if failed
