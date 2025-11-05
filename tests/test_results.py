@@ -198,7 +198,7 @@ async def test_get_result_timeout(docket: Docket, worker: Worker):
     """Test that get_result respects timeout."""
 
     async def very_slow_task() -> int:
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
         return 42
 
     docket.register(very_slow_task)
@@ -208,8 +208,7 @@ async def test_get_result_timeout(docket: Docket, worker: Worker):
     worker_task = asyncio.create_task(worker.run_until_finished())
 
     # get_result should timeout
-    timeout = datetime.now(timezone.utc).replace(microsecond=0)
-    timeout = timeout.replace(second=timeout.second + 1)  # 1 second from now
+    timeout = datetime.now(timezone.utc) + timedelta(seconds=1)
     with pytest.raises(TimeoutError):
         await execution.get_result(timeout=timeout)
 
