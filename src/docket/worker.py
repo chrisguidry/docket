@@ -776,10 +776,10 @@ class Worker:
             if not task.done():
                 task.cancel()
 
-            try:
-                return await task
-            except asyncio.CancelledError:
-                raise asyncio.TimeoutError
+        try:
+            return await task
+        except asyncio.CancelledError:
+            raise asyncio.TimeoutError
 
     async def _retry_if_requested(
         self,
