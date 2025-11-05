@@ -96,7 +96,7 @@ async def test_snapshot_with_mixed_tasks(docket: Docket):
     future = datetime.now(timezone.utc) + timedelta(seconds=5)
     await docket.add(tasks.trace, when=future)("hi!")
     for _ in range(5):  # more than the concurrency allows
-        await docket.add(tasks.sleep)(4)
+        await docket.add(tasks.sleep)(2)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
@@ -187,10 +187,10 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
 
     # Add multiple tasks of different types
     future = datetime.now(timezone.utc) + timedelta(seconds=5)
-    await docket.add(tasks.trace, when=future, key="trace-1")("hi!")
-    await docket.add(tasks.trace, when=future, key="trace-2")("hello!")
+    await docket.add(tasks.trace, when=future)("hi!")
+    await docket.add(tasks.trace, when=future)("hello!")
     for _ in range(3):
-        await docket.add(tasks.sleep, key=f"sleep-{_}")(4)
+        await docket.add(tasks.sleep)(2)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
@@ -206,7 +206,7 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
         assert result.exit_code == 0, result.output
 
         # Should show the normal summary
-        assert "1 workers, 2/5 running" in result.output, result.output
+        assert "1 workers, 2/5 running" in result.output
 
         # Should show task statistics table with enhanced columns
         assert "Task Count Statistics by Function" in result.output

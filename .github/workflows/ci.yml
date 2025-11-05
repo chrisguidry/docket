@@ -66,6 +66,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --upgrade-package 'redis${{ matrix.backend.redis-py-version }}'
 
+      - name: Set COVERAGE_CORE for Python 3.12
+        if: ${{ matrix.python-version == '3.12' }}
+        run: |
+          echo "COVERAGE_CORE=sysmon" >> $GITHUB_ENV
       - name: Run tests
         env:
           REDIS_VERSION: ${{ matrix.backend.redis-version }}

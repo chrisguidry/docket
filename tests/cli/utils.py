@@ -22,6 +22,8 @@ async def run_cli(
 ) -> CliResult:
     """Run `python -m docket ...` and capture output."""
     merged_env = {**os.environ, "PYTHONUNBUFFERED": "1"} | (env or {})
+    if sys.version_info >= (3, 12) and sys.version_info < (3, 13):
+        merged_env.setdefault("COVERAGE_CORE", "sysmon")
 
     same_python = sys.executable
     has_pytest_cov = any(k.startswith("COV_CORE_") for k in merged_env)
