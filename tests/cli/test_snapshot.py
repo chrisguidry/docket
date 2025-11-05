@@ -187,10 +187,10 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
 
     # Add multiple tasks of different types
     future = datetime.now(timezone.utc) + timedelta(seconds=5)
-    await docket.add(tasks.trace, when=future)("hi!")
-    await docket.add(tasks.trace, when=future)("hello!")
+    await docket.add(tasks.trace, when=future, key="trace-1")("hi!")
+    await docket.add(tasks.trace, when=future, key="trace-2")("hello!")
     for _ in range(3):
-        await docket.add(tasks.sleep)(2)
+        await docket.add(tasks.sleep, key=f"sleep_{_}")(2)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
