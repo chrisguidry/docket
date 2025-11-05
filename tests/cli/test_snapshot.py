@@ -96,7 +96,7 @@ async def test_snapshot_with_mixed_tasks(docket: Docket):
     future = datetime.now(timezone.utc) + timedelta(seconds=5)
     await docket.add(tasks.trace, when=future)("hi!")
     for _ in range(5):  # more than the concurrency allows
-        await docket.add(tasks.sleep)(2)
+        await docket.add(tasks.sleep)(4)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
