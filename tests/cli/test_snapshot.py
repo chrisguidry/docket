@@ -190,7 +190,7 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
     await docket.add(tasks.trace, when=future, key="trace-1")("hi!")
     await docket.add(tasks.trace, when=future, key="trace-2")("hello!")
     for _ in range(3):
-        await docket.add(tasks.sleep, key=f"sleep_{_}")(2)
+        await docket.add(tasks.sleep, key=f"sleep-{_}")(4)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
@@ -204,9 +204,6 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
             docket.name,
         )
         assert result.exit_code == 0, result.output
-
-        # Give worker time to start
-        await asyncio.sleep(0.5)
 
         # Should show the normal summary
         assert "1 workers, 2/5 running" in result.output, result.output
