@@ -206,7 +206,7 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
         assert result.exit_code == 0, result.output
 
         # Should show the normal summary
-        assert "1 workers, 2/5 running" in result.output
+        assert "1 workers, 2/5 running" in result.output, result.output
 
         # Should show task statistics table with enhanced columns
         assert "Task Count Statistics by Function" in result.output
