@@ -63,29 +63,6 @@ def get_signature(function: Callable[..., Any]) -> inspect.Signature:
     return signature
 
 
-def returns_none(function: Callable[..., Any]) -> bool:
-    """Check if a function is annotated with -> None return type.
-
-    Args:
-        function: The function to check
-
-    Returns:
-        True if the function is annotated with -> None, False otherwise
-    """
-    signature = get_signature(function)
-    return_annotation = signature.return_annotation
-
-    # Check if annotation is None or type(None)
-    if return_annotation is None or return_annotation is type(None):
-        return True
-
-    # Handle string annotations
-    if isinstance(return_annotation, str):
-        return return_annotation.strip() == "None"
-
-    return False
-
-
 class ExecutionState(enum.Enum):
     """Lifecycle states for task execution."""
 
@@ -261,7 +238,7 @@ class ExecutionProgress:
                 self.message = None
                 self.updated_at = None
 
-    async def _delete(self) -> None:
+    async def delete(self) -> None:
         """Delete the progress data from Redis.
 
         Called internally when task execution completes.
@@ -350,7 +327,7 @@ class Execution:
         self.started_at: datetime | None = None
         self.completed_at: datetime | None = None
         self.error: str | None = None
-        self.result: str | None = None
+        self.result_key: str | None = None
         self.progress: ExecutionProgress = ExecutionProgress(docket, key)
         self._redis_key = f"{docket.name}:runs:{key}"
 
@@ -672,7 +649,7 @@ class Execution:
                 "completed_at": completed_at,
             }
             if result_key is not None:
-                mapping["result"] = result_key
+                mapping["result_key"] = result_key
             await redis.hset(
                 self._redis_key,
                 mapping=mapping,
@@ -682,9 +659,9 @@ class Execution:
                 self._redis_key, int(self.docket.execution_ttl.total_seconds())
             )
         self.state = ExecutionState.COMPLETED
-        self.result = result_key
+        self.result_key = result_key
         # Delete progress data
-        await self.progress._delete()
+        await self.progress.delete()
         # Publish state change event
         await self._publish_state(
             {"state": ExecutionState.COMPLETED.value, "completed_at": completed_at}
@@ -710,16 +687,16 @@ class Execution:
             if error:
                 mapping["error"] = error
             if result_key is not None:
-                mapping["result"] = result_key
+                mapping["result_key"] = result_key
             await redis.hset(self._redis_key, mapping=mapping)
             # Set TTL from docket configuration
             await redis.expire(
                 self._redis_key, int(self.docket.execution_ttl.total_seconds())
             )
         self.state = ExecutionState.FAILED
-        self.result = result_key
+        self.result_key = result_key
         # Delete progress data
-        await self.progress._delete()
+        await self.progress.delete()
         # Publish state change event
         state_data = {
             "state": ExecutionState.FAILED.value,
@@ -746,29 +723,46 @@ class Execution:
             Exception: If the task failed, raises the stored exception
             TimeoutError: If timeout is reached before execution completes
         """
+        import asyncio
         from datetime import datetime, timezone
 
         # Wait for execution to complete if not already done
         if self.state not in (ExecutionState.COMPLETED, ExecutionState.FAILED):
-            async for event in self.subscribe():
-                if event["type"] == "state":
-                    state = ExecutionState(event["state"])
-                    if state in (ExecutionState.COMPLETED, ExecutionState.FAILED):
-                        # Sync to get latest data including result key
-                        await self.sync()
-                        break
-
-                # Check timeout
-                if timeout is not None and datetime.now(timezone.utc) >= timeout:
+            # Calculate timeout duration if absolute timeout provided
+            timeout_seconds = None
+            if timeout is not None:
+                timeout_seconds = (timeout - datetime.now(timezone.utc)).total_seconds()
+                if timeout_seconds <= 0:
                     raise TimeoutError(
                         f"Timeout waiting for execution {self.key} to complete"
                     )
 
+            try:
+
+                async def wait_for_completion():
+                    async for event in self.subscribe():
+                        if event["type"] == "state":
+                            state = ExecutionState(event["state"])
+                            if state in (
+                                ExecutionState.COMPLETED,
+                                ExecutionState.FAILED,
+                            ):
+                                # Sync to get latest data including result key
+                                await self.sync()
+                                break
+
+                # Use asyncio.wait_for to enforce timeout
+                await asyncio.wait_for(wait_for_completion(), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                raise TimeoutError(
+                    f"Timeout waiting for execution {self.key} to complete"
+                )
+
         # If failed, retrieve and raise the exception
         if self.state == ExecutionState.FAILED:
-            if self.result:
+            if self.result_key:
                 # Retrieve serialized exception from result_storage
-                result_data = await self.docket.result_storage.get(self.result)
+                result_data = await self.docket.result_storage.get(self.result_key)
                 if result_data and "data" in result_data:
                     # Base64-decode and unpickle
                     pickled_exception = base64.b64decode(result_data["data"])
@@ -779,8 +773,8 @@ class Execution:
             raise Exception(error_msg)
 
         # If completed successfully, retrieve result if available
-        if self.result:
-            result_data = await self.docket.result_storage.get(self.result)
+        if self.result_key:
+            result_data = await self.docket.result_storage.get(self.result_key)
             if result_data is not None and "data" in result_data:
                 # Base64-decode and unpickle
                 pickled_result = base64.b64decode(result_data["data"])
@@ -818,7 +812,9 @@ class Execution:
                     else None
                 )
                 self.error = data[b"error"].decode() if b"error" in data else None
-                self.result = data[b"result"].decode() if b"result" in data else None
+                self.result_key = (
+                    data[b"result_key"].decode() if b"result_key" in data else None
+                )
             else:
                 # No data exists - reset to defaults
                 self.state = ExecutionState.SCHEDULED
@@ -826,7 +822,7 @@ class Execution:
                 self.started_at = None
                 self.completed_at = None
                 self.error = None
-                self.result = None
+                self.result_key = None
 
         # Sync progress data
         await self.progress.sync()

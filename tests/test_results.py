@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
@@ -13,7 +14,7 @@ class CustomError(Exception):
     """Custom exception for testing."""
 
     def __init__(self, message: str, code: int):
-        super().__init__(message)
+        super().__init__(message, code)
         self.message = message
         self.code = code
 
@@ -62,7 +63,7 @@ async def test_result_storage_for_dict_return(docket: Docket, worker: Worker):
     """Test that dict results are stored and retrievable."""
     result_value = {"key": "value", "number": 123}
 
-    async def returns_dict() -> dict:
+    async def returns_dict() -> dict[str, Any]:
         return result_value
 
     docket.register(returns_dict)
@@ -85,7 +86,7 @@ async def test_result_storage_for_object_return(docket: Docket, worker: Worker):
         def __init__(self, value: int):
             self.value = value
 
-        def __eq__(self, other):
+        def __eq__(self, other: Any) -> bool:
             return isinstance(other, CustomObject) and self.value == other.value
 
     result_value = CustomObject(42)
@@ -119,7 +120,7 @@ async def test_no_storage_for_none_annotated_task(docket: Docket, worker: Worker
     # Verify execution completed
     await execution.sync()
     assert execution.state == ExecutionState.COMPLETED
-    assert execution.result is None
+    assert execution.result_key is None
 
     # get_result should return None
     result = await execution.get_result()
@@ -139,7 +140,7 @@ async def test_no_storage_for_runtime_none(docket: Docket, worker: Worker):
     # Verify execution completed
     await execution.sync()
     assert execution.state == ExecutionState.COMPLETED
-    assert execution.result is None
+    assert execution.result_key is None
 
     # get_result should return None
     result = await execution.get_result()
@@ -161,7 +162,7 @@ async def test_exception_storage_and_retrieval(docket: Docket, worker: Worker):
     # Verify execution failed
     await execution.sync()
     assert execution.state == ExecutionState.FAILED
-    assert execution.result is not None
+    assert execution.result_key is not None
 
     # get_result should raise the stored exception
     with pytest.raises(CustomError) as exc_info:
@@ -212,12 +213,7 @@ async def test_get_result_timeout(docket: Docket, worker: Worker):
     with pytest.raises(TimeoutError):
         await execution.get_result(timeout=timeout)
 
-    # Clean up
-    worker_task.cancel()
-    try:
-        await worker_task
-    except asyncio.CancelledError:
-        pass
+    await worker_task
 
 
 async def test_result_ttl_matches_execution_ttl(docket: Docket, worker: Worker):
@@ -332,19 +328,103 @@ async def test_result_key_stored_in_execution_record(docket: Docket, worker: Wor
 
     # Sync and check result field
     await execution.sync()
-    assert execution.result == execution.key
+    assert execution.result_key == execution.key
 
 
-async def test_no_result_key_for_none_return(docket: Docket, worker: Worker):
-    """Test that no result key is stored for None returns."""
+async def test_get_result_with_expired_timeout(docket: Docket):
+    """Test that get_result raises immediately if timeout already expired."""
+    from unittest.mock import AsyncMock
 
-    async def returns_none() -> None:
-        pass
+    from docket.execution import Execution
 
-    docket.register(returns_none)
-    execution = await docket.add(returns_none)()
+    # Create execution in non-terminal state
+    execution = Execution(
+        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+    )
+    execution.state = ExecutionState.RUNNING
+
+    # Set timeout to 1 second in the past
+    timeout = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    # Should raise TimeoutError immediately without waiting
+    with pytest.raises(TimeoutError) as exc_info:
+        await execution.get_result(timeout=timeout)
+
+    assert "Timeout waiting for execution" in str(exc_info.value)
+
+
+async def test_get_result_failed_task_without_result_key(docket: Docket):
+    """Test get_result on failed task without stored exception."""
+    from unittest.mock import AsyncMock
+
+    from docket.execution import Execution
+
+    # Create execution in FAILED state without result_key
+    execution = Execution(
+        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+    )
+    execution.state = ExecutionState.FAILED
+    execution.error = "Something went wrong"
+    execution.result_key = None  # No exception stored
+
+    # Should raise generic Exception with error message
+    with pytest.raises(Exception) as exc_info:
+        await execution.get_result()
+
+    assert str(exc_info.value) == "Something went wrong"
+
+
+async def test_get_result_with_malformed_result_data(docket: Docket, worker: Worker):
+    """Test get_result gracefully handles malformed result data."""
+    from unittest.mock import patch
+
+    async def returns_value() -> int:
+        return 123
+
+    docket.register(returns_value)
+    execution = await docket.add(returns_value)()
     await worker.run_until_finished()
 
-    # Sync and check result field is None
+    # Verify execution completed
     await execution.sync()
-    assert execution.result is None
+    assert execution.state == ExecutionState.COMPLETED
+    assert execution.result_key is not None
+
+    # Mock result_storage.get() to return data without "data" field
+    mock_result = {"some_field": "but_no_data"}
+    with patch.object(
+        docket.result_storage, "get", return_value=mock_result
+    ) as mock_get:
+        result = await execution.get_result()
+
+    # Should return None when data field is missing
+    assert result is None
+    mock_get.assert_called_once_with(execution.result_key)
+
+
+async def test_get_result_failed_task_with_missing_exception_data(
+    docket: Docket, worker: Worker
+):
+    """Test get_result on failed task when exception data is missing from storage."""
+    from unittest.mock import patch
+
+    async def raises_error() -> int:
+        raise ValueError("test error")
+
+    docket.register(raises_error)
+    execution = await docket.add(raises_error)()
+    await worker.run_until_finished()
+
+    # Verify execution failed with result_key
+    await execution.sync()
+    assert execution.state == ExecutionState.FAILED
+    assert execution.result_key is not None
+
+    # Mock result_storage.get() to return None (exception data missing)
+    with patch.object(docket.result_storage, "get", return_value=None):
+        # Should fall back to generic error with error message
+        with pytest.raises(Exception) as exc_info:
+            await execution.get_result()
+
+    # Should use the error message from execution.error
+    assert "test error" in str(exc_info.value)

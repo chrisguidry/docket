@@ -196,6 +196,7 @@ def the_task() -> AsyncMock:
     task = AsyncMock()
     task.__name__ = "the_task"
     task.__signature__ = inspect.signature(lambda *args, **kwargs: None)
+    task.return_value = None
     return task
 
 

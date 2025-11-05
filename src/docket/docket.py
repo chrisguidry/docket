@@ -24,6 +24,7 @@ from typing import (
     overload,
 )
 
+from key_value.aio.stores.base import BaseContextManagerStore
 from typing_extensions import Self
 
 import redis.exceptions
@@ -174,6 +175,8 @@ class Docket:
         self.missed_heartbeats = missed_heartbeats
         self.execution_ttl = execution_ttl
         self._cancel_task_script = None
+
+        self.result_storage: AsyncKeyValue
         if url.startswith("memory://"):
             self.result_storage = MemoryStore()
         else:
@@ -230,6 +233,10 @@ class Docket:
             if "BUSYGROUP" not in repr(e):
                 raise
 
+        if isinstance(self.result_storage, BaseContextManagerStore):
+            await self.result_storage.__aenter__()
+        else:
+            await self.result_storage.setup()
         return self
 
     async def __aexit__(
@@ -238,6 +245,9 @@ class Docket:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        if isinstance(self.result_storage, BaseContextManagerStore):
+            await self.result_storage.__aexit__(exc_type, exc_value, traceback)
+
         del self.tasks
         del self.strike_list
 

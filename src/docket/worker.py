@@ -39,7 +39,7 @@ from .docket import (
     RedisMessageID,
     RedisReadGroupResponse,
 )
-from .execution import compact_signature, get_signature, returns_none
+from .execution import compact_signature, get_signature
 
 # Run class has been consolidated into Execution
 from .instrumentation import (
@@ -676,12 +676,7 @@ class Worker:
                     if not rescheduled:
                         # Store result if appropriate
                         result_key = None
-                        # Check if result should be stored:
-                        # Skip if function is annotated with -> None OR result is None
-                        should_store = (
-                            not returns_none(execution.function) and result is not None
-                        )
-                        if should_store:
+                        if result is not None:
                             # Serialize and store result
                             pickled_result = cloudpickle.dumps(result)  # type: ignore[arg-type]
                             # Base64-encode for JSON serialization
