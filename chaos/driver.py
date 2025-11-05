@@ -73,7 +73,20 @@ async def main(
     tasks: int = 20000,
     producers: int = 5,
     workers: int = 10,
+    base_version: str | None = None,
 ):
+    if base_version is None:
+        process = await asyncio.create_subprocess_exec(
+            "git",
+            "describe",
+            "--tags",
+            "--abbrev=0",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout, _ = await process.communicate()
+        base_version = stdout.decode("utf-8").strip()
+
     async with (
         run_redis("7.4.2") as (redis_url, redis_container),
         Docket(
@@ -105,11 +118,17 @@ async def main(
         )
 
         async def spawn_producer() -> Process:
+            docket_version = base_version if random.random() < 0.5 else "main"
+            base_command = ["uv", "run"]
+            if docket_version != "main":
+                logger.info("Using pydocket %s for producer", docket_version)
+                base_command.extend(["--with", f"pydocket=={docket_version}"])
+            else:
+                logger.info("Using main pydocket for producer")
+
+            command = [*base_command, "-m", "chaos.producer", str(tasks_per_producer)]
             return await asyncio.create_subprocess_exec(
-                *python_entrypoint(),
-                "-m",
-                "chaos.producer",
-                str(tasks_per_producer),
+                *command,
                 env=environment | {"OTEL_SERVICE_NAME": "chaos-producer"},
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -122,8 +141,16 @@ async def main(
         logger.info("Spawning %d workers...", workers)
 
         async def spawn_worker() -> Process:
-            return await asyncio.create_subprocess_exec(
-                *python_entrypoint(),
+            docket_version = base_version if random.random() < 0.5 else "main"
+            base_command = ["uv", "run"]
+            if docket_version != "main":
+                logger.info("Using pydocket %s for worker", docket_version)
+                base_command.extend(["--with", f"pydocket=={docket_version}"])
+            else:
+                logger.info("Using main pydocket for worker")
+
+            command = [
+                *base_command,
                 "-m",
                 "docket",
                 "worker",
@@ -135,6 +162,9 @@ async def main(
                 "chaos.tasks:chaos_tasks",
                 "--redelivery-timeout",
                 "5s",
+            ]
+            return await asyncio.create_subprocess_exec(
+                *command,
                 env=environment | {"OTEL_SERVICE_NAME": "chaos-worker"},
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
