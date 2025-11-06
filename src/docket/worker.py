@@ -611,7 +611,8 @@ class Worker:
                     if concurrency_limit and not concurrency_limit.is_bypassed:
                         async with self.docket.redis() as redis:
                             # Check if we can acquire a concurrency slot
-                            if not await self._can_start_task(redis, execution):
+                            can_start = await self._can_start_task(redis, execution)
+                            if not can_start:
                                 # Task cannot start due to concurrency limits
                                 logger.debug(
                                     "🔒 Task %s blocked by concurrency limit",
