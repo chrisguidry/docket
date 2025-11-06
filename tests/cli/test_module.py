@@ -1,5 +1,5 @@
 import docket
-from tests.cli.utils import run_cli
+from tests.cli.run import run_cli
 
 
 async def test_module_invocation_as_cli_entrypoint():

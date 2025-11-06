@@ -12,7 +12,7 @@ from docket.cli import relative_time
 from docket.cli import snapshot as snapshot_command
 from docket.docket import Docket, DocketSnapshot
 from docket.worker import Worker
-from tests.cli.utils import run_cli
+from tests.cli.run import run_cli
 
 # Skip CLI tests when using memory backend since CLI rejects memory:// URLs
 pytestmark = pytest.mark.skipif(

@@ -1,7 +1,7 @@
 from packaging.version import Version
 
 from docket import __version__
-from tests.cli.utils import run_cli
+from tests.cli.run import run_cli
 
 
 async def test_version_command():

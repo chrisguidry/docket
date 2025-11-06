@@ -1,6 +1,6 @@
 import pytest
 
-from tests.cli.utils import run_cli
+from tests.cli.run import run_cli
 
 
 @pytest.mark.parametrize(
