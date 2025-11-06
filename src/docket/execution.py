@@ -290,9 +290,13 @@ class ExecutionProgress:
         async with self.docket.redis() as redis:
             async with redis.pubsub() as pubsub:
                 await pubsub.subscribe(channel)
-                async for message in pubsub.listen():  # pragma: no cover
-                    if message["type"] == "message":
-                        yield json.loads(message["data"])
+                try:
+                    async for message in pubsub.listen():  # pragma: no cover
+                        if message["type"] == "message":
+                            yield json.loads(message["data"])
+                finally:
+                    # Explicitly unsubscribe to ensure clean shutdown
+                    await pubsub.unsubscribe(channel)
 
 
 class Execution:
@@ -891,14 +895,18 @@ class Execution:
         async with self.docket.redis() as redis:
             async with redis.pubsub() as pubsub:
                 await pubsub.subscribe(state_channel, progress_channel)
-                async for message in pubsub.listen():  # pragma: no cover
-                    if message["type"] == "message":
-                        message_data = json.loads(message["data"])
-                        if message_data["type"] == "state":
-                            message_data["state"] = ExecutionState(
-                                message_data["state"]
-                            )
-                        yield message_data
+                try:
+                    async for message in pubsub.listen():  # pragma: no cover
+                        if message["type"] == "message":
+                            message_data = json.loads(message["data"])
+                            if message_data["type"] == "state":
+                                message_data["state"] = ExecutionState(
+                                    message_data["state"]
+                                )
+                            yield message_data
+                finally:
+                    # Explicitly unsubscribe to ensure clean shutdown
+                    await pubsub.unsubscribe(state_channel, progress_channel)
 
 
 def compact_signature(signature: inspect.Signature) -> str:
