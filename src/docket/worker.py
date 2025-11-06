@@ -346,12 +346,11 @@ class Worker:
                     await ack_message(redis, message_id)
                 except ConcurrencyBlocked as e:
                     # Task was blocked by concurrency limits
-                    # Acknowledge first to prevent redelivery, then reschedule
-                    await ack_message(redis, message_id)
-                    when = datetime.now(timezone.utc) + timedelta(milliseconds=50)
-                    await self.docket.replace(
-                        e.execution.function, when=when, key=e.execution.key
-                    )(*e.execution.args, **e.execution.kwargs)
+                    # Use atomic schedule(reschedule_message=...) to prevent both task loss and duplicate execution
+                    e.execution.when = datetime.now(timezone.utc) + timedelta(
+                        milliseconds=50
+                    )
+                    await e.execution.schedule(reschedule_message=message_id)
 
         async def ack_message(redis: Redis, message_id: RedisMessageID) -> None:
             logger.debug("Acknowledging message", extra=log_context)
