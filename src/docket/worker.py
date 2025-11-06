@@ -61,6 +61,15 @@ from .instrumentation import (
     metrics_server,
 )
 
+
+class ConcurrencyBlocked(Exception):
+    """Raised when a task cannot start due to concurrency limits."""
+
+    def __init__(self, execution: Execution):
+        self.execution = execution
+        super().__init__(f"Task {execution.key} blocked by concurrency limits")
+
+
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
 
@@ -332,8 +341,18 @@ class Worker:
             for task in completed_tasks:
                 message_id = active_tasks.pop(task)
                 task_executions.pop(task)
-                await task
-                await ack_message(redis, message_id)
+                try:
+                    await task
+                    # Task succeeded - acknowledge the message
+                    await ack_message(redis, message_id)
+                except ConcurrencyBlocked as e:
+                    # Task was blocked by concurrency limits, reschedule it
+                    when = datetime.now(timezone.utc) + timedelta(milliseconds=50)
+                    await self.docket.add(e.execution.function, when=when)(
+                        *e.execution.args, **e.execution.kwargs
+                    )
+                    # Acknowledge the message since we rescheduled
+                    await ack_message(redis, message_id)
 
         async def ack_message(redis: Redis, message_id: RedisMessageID) -> None:
             logger.debug("Acknowledging message", extra=log_context)
@@ -593,23 +612,13 @@ class Worker:
                         async with self.docket.redis() as redis:
                             # Check if we can acquire a concurrency slot
                             if not await self._can_start_task(redis, execution):
-                                # Task cannot start due to concurrency limits - reschedule
+                                # Task cannot start due to concurrency limits
                                 logger.debug(
-                                    "🔒 Task %s blocked by concurrency limit, rescheduling",
+                                    "🔒 Task %s blocked by concurrency limit",
                                     execution.key,
                                     extra=log_context,
                                 )
-                                # Reschedule for a few milliseconds in the future
-                                when = datetime.now(timezone.utc) + timedelta(
-                                    milliseconds=50
-                                )
-                                await self.docket.add(execution.function, when=when)(
-                                    *execution.args, **execution.kwargs
-                                )
-                                return
-                            else:
-                                # Successfully acquired slot
-                                pass
+                                raise ConcurrencyBlocked(execution)
 
                     # Preemptively reschedule the perpetual task for the future
                     # Note: known/stream_id already deleted by claim_and_run()
@@ -695,6 +704,9 @@ class Worker:
                     logger.info(
                         "%s [%s] %s", arrow, ms(duration), call, extra=log_context
                     )
+            except ConcurrencyBlocked:
+                # Re-raise to be handled by process_completed_tasks
+                raise
             except Exception as e:
                 duration = log_context["duration"] = time.time() - start
                 TASKS_FAILED.add(1, counter_labels)

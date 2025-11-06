@@ -16,6 +16,7 @@ from redis.exceptions import ConnectionError
 from docket import (
     ConcurrencyLimit,
     CurrentDocket,
+    CurrentExecution,
     CurrentWorker,
     Docket,
     Perpetual,
@@ -230,6 +231,87 @@ async def test_redeliveries_respect_concurrency_limits(docket: Docket):
 
     # Should have had at least one failure that was redelivered
     assert failure_count >= 1
+
+
+async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
+    """Tasks blocked by concurrency and rescheduled should execute exactly once,
+    not be duplicated via both rescheduling and redelivery"""
+
+    execution_count = 0
+    execution_keys: list[str] = []
+
+    async def tracked_task(
+        customer_id: int,
+        execution: Execution = CurrentExecution(),
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id",
+            max_concurrent=1,
+        ),
+    ) -> None:
+        nonlocal execution_count
+        execution_keys.append(execution.key)
+        execution_count += 1
+        # Do some work that takes long enough that other tasks pile up
+        await asyncio.sleep(0.05)
+
+    # Schedule 3 tasks for the same customer - all will be blocked by concurrency
+    await docket.add(tracked_task)(customer_id=1)
+    await docket.add(tracked_task)(customer_id=1)
+    await docket.add(tracked_task)(customer_id=1)
+
+    # Use short redelivery timeout to make race condition more likely
+    async with Worker(
+        docket, concurrency=5, redelivery_timeout=timedelta(milliseconds=50)
+    ) as worker:
+        await worker.run_until_finished()
+
+    # Each task should execute exactly once
+    assert execution_count == 3, (
+        f"Expected 3 executions, got {execution_count}. "
+        f"Execution keys: {execution_keys}"
+    )
+
+    # All execution keys should be unique (no duplicate executions)
+    assert len(set(execution_keys)) == 3, (
+        f"Found duplicate executions: {execution_keys}"
+    )
+
+
+async def test_concurrency_blocked_messages_are_acknowledged(docket: Docket):
+    """When a task is rescheduled due to concurrency blocking,
+    the original stream message should be acknowledged"""
+
+    async def blocking_task(
+        customer_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id",
+            max_concurrent=1,
+        ),
+    ):
+        await asyncio.sleep(0.05)
+
+    # Schedule multiple tasks that will block each other
+    await docket.add(blocking_task)(customer_id=1)
+    await docket.add(blocking_task)(customer_id=1)
+
+    # Use short redelivery timeout
+    async with Worker(
+        docket, concurrency=5, redelivery_timeout=timedelta(milliseconds=50)
+    ) as worker:
+        await worker.run_until_finished()
+
+    # Verify no messages are left pending (all were acknowledged)
+    async with docket.redis() as redis:
+        pending_info = await redis.xpending(
+            name=docket.stream_key,
+            groupname=docket.worker_group_name,
+        )
+        assert pending_info["pending"] == 0, (
+            "Found unacknowledged messages after completion"
+        )
+
+        # Stream should be empty
+        assert await redis.xlen(docket.stream_key) == 0
 
 
 async def test_worker_handles_unregistered_task_execution_on_initial_delivery(
