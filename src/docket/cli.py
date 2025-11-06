@@ -956,7 +956,40 @@ def watch(
             # Use Live for smooth updates
             with Live(layout, console=console, refresh_per_second=4) as live:
                 # Subscribe to events and update display
-                async for event in execution.subscribe():  # pragma: no cover
+                # Use polling fallback to handle missed pub/sub events
+                subscription = execution.subscribe()
+                poll_interval = 1.0  # Check state every 1 second if no events
+
+                while True:  # pragma: no cover
+                    try:
+                        # Wait for next event with timeout
+                        event = await asyncio.wait_for(
+                            subscription.__anext__(), timeout=poll_interval
+                        )
+                    except asyncio.TimeoutError:
+                        # No event received - poll state directly as fallback
+                        await execution.sync()
+                        if execution.state != current_state:
+                            # State changed, create synthetic state event
+                            event = {
+                                "type": "state",
+                                "state": execution.state.value,
+                                "worker": execution.worker,
+                                "error": execution.error,
+                                "started_at": (
+                                    execution.started_at.isoformat()
+                                    if execution.started_at
+                                    else None
+                                ),
+                            }
+                        else:
+                            # No state change, continue waiting
+                            continue
+                    except StopAsyncIteration:
+                        # Subscription ended
+                        break
+
+                    # Process the event (from pub/sub or synthetic from polling)
                     if event["type"] == "state":
                         # Update state information
                         current_state = ExecutionState(event["state"])
