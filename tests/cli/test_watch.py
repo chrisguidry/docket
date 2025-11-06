@@ -8,9 +8,14 @@ from unittest.mock import AsyncMock
 import pytest
 
 from docket import Docket, Progress, Worker
-from docket.execution import ExecutionProgress
+from docket.execution import ExecutionProgress, ExecutionState
 
-from .utils import run_cli
+from .run import run_cli
+from .waiting import (
+    wait_for_execution_state,
+    wait_for_progress_data,
+    wait_for_worker_assignment,
+)
 
 # Skip CLI tests when using memory backend since CLI rejects memory:// URLs
 pytestmark = pytest.mark.skipif(
@@ -83,8 +88,8 @@ async def test_watch_running_task_until_completion(docket: Docket, worker: Worke
     # Start worker in background
     worker_task = asyncio.create_task(worker.run_until_finished())
 
-    # Give worker a moment to claim the task
-    await asyncio.sleep(0.05)
+    # Wait for worker to claim the task
+    await wait_for_execution_state(docket, "slower-task", ExecutionState.RUNNING)
 
     # Watch should receive state events while task runs
     result = await run_cli(
@@ -190,8 +195,10 @@ async def test_watch_task_with_initial_progress(docket: Docket, worker: Worker):
 
     worker_task = asyncio.create_task(worker.run_until_finished())
 
-    # Let task get started and report some progress
-    await asyncio.sleep(1.5)
+    # Wait for task to report progress data
+    await wait_for_progress_data(
+        docket, "initial-progress", min_current=1, min_total=20
+    )
 
     result = await run_cli(
         "watch",
@@ -220,8 +227,8 @@ async def test_watch_task_with_worker_assignment(docket: Docket, worker: Worker)
 
     worker_task = asyncio.create_task(worker.run_until_finished())
 
-    # Give worker time to claim task
-    await asyncio.sleep(0.1)
+    # Wait for worker to claim task
+    await wait_for_worker_assignment(docket, "worker-assigned")
 
     result = await run_cli(
         "watch",
@@ -298,8 +305,8 @@ async def test_watch_receives_progress_events_during_execution(
 
     worker_task = asyncio.create_task(worker.run_until_finished())
 
-    # Give worker just a moment then start watching
-    await asyncio.sleep(0.05)
+    # Wait for worker to start processing
+    await wait_for_execution_state(docket, "many-updates", ExecutionState.RUNNING)
 
     result = await run_cli(
         "watch",
@@ -337,8 +344,9 @@ async def test_watch_already_running_task_with_progress(docket: Docket, worker: 
     # Start worker
     worker_task = asyncio.create_task(worker.run_until_finished())
 
-    # Wait for task to actually start and report some progress
-    await asyncio.sleep(0.3)
+    # Wait for task to start and report progress data
+    await wait_for_execution_state(docket, "already-running", ExecutionState.RUNNING)
+    await wait_for_progress_data(docket, "already-running", min_current=1, min_total=30)
 
     # Now start watching - task should already be RUNNING with progress
     result = await run_cli(

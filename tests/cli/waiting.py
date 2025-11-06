@@ -1,0 +1,133 @@
+"""Test utilities for waiting on Redis state conditions."""
+
+import asyncio
+import time
+from typing import cast
+
+from docket import Docket
+from docket.execution import ExecutionState
+
+
+async def wait_for_progress_data(
+    docket: Docket,
+    key: str,
+    *,
+    min_current: int = 1,
+    min_total: int = 1,
+    timeout: float = 2.0,
+    interval: float = 0.01,
+) -> tuple[int, int]:
+    """Wait for progress data to appear in Redis with specified values.
+
+    Args:
+        docket: Docket instance
+        key: Task key
+        min_current: Minimum current value to wait for
+        min_total: Minimum total value to wait for
+        timeout: Maximum time to wait in seconds
+        interval: Sleep interval between checks in seconds
+
+    Returns:
+        Tuple of (current, total) values once condition is met
+
+    Raises:
+        TimeoutError: If condition not met within timeout
+    """
+    start_time = time.monotonic()
+    progress_key = f"{docket.name}:progress:{key}"
+
+    while time.monotonic() - start_time < timeout:
+        async with docket.redis() as redis:
+            data = await redis.hgetall(progress_key)  # type: ignore[misc]
+            if data:  # pragma: no branch
+                current = int(cast(bytes, data.get(b"current", b"0")))  # type: ignore[misc]
+                total = int(cast(bytes, data.get(b"total", b"100")))  # type: ignore[misc]
+
+                if current >= min_current and total >= min_total:  # pragma: no branch
+                    return (current, total)
+
+        await asyncio.sleep(interval)
+
+    raise TimeoutError(  # pragma: no cover
+        f"Progress data did not reach min_current={min_current}, min_total={min_total} "
+        f"within {timeout}s for task {key}"
+    )
+
+
+async def wait_for_execution_state(
+    docket: Docket,
+    key: str,
+    state: ExecutionState,
+    *,
+    timeout: float = 2.0,
+    interval: float = 0.01,
+) -> None:
+    """Wait for execution to reach specified state.
+
+    Args:
+        docket: Docket instance
+        key: Task key
+        state: Target execution state
+        timeout: Maximum time to wait in seconds
+        interval: Sleep interval between checks in seconds
+
+    Raises:
+        TimeoutError: If state not reached within timeout
+    """
+    start_time = time.monotonic()
+    execution_key = f"{docket.name}:runs:{key}"
+
+    while time.monotonic() - start_time < timeout:
+        async with docket.redis() as redis:
+            data = await redis.hgetall(execution_key)  # type: ignore[misc]
+            if data:  # pragma: no branch
+                state_value = data.get(b"state")  # type: ignore[misc]
+                if state_value:  # pragma: no branch
+                    current_state = ExecutionState(cast(bytes, state_value).decode())
+                    if current_state == state:  # pragma: no branch
+                        return
+
+        await asyncio.sleep(interval)
+
+    raise TimeoutError(  # pragma: no cover
+        f"Execution did not reach state {state.value} within {timeout}s for task {key}"
+    )
+
+
+async def wait_for_worker_assignment(
+    docket: Docket,
+    key: str,
+    *,
+    timeout: float = 2.0,
+    interval: float = 0.01,
+) -> str:
+    """Wait for a worker to be assigned to the execution.
+
+    Args:
+        docket: Docket instance
+        key: Task key
+        timeout: Maximum time to wait in seconds
+        interval: Sleep interval between checks in seconds
+
+    Returns:
+        Worker name once assigned
+
+    Raises:
+        TimeoutError: If no worker assigned within timeout
+    """
+    start_time = time.monotonic()
+    execution_key = f"{docket.name}:runs:{key}"
+
+    while time.monotonic() - start_time < timeout:
+        async with docket.redis() as redis:
+            data = await redis.hgetall(execution_key)  # type: ignore[misc]
+            if data:  # pragma: no branch
+                worker = data.get(b"worker")  # type: ignore[misc]
+                if worker:  # pragma: no branch
+                    return cast(bytes, worker).decode()
+
+        await asyncio.sleep(interval)
+
+    raise TimeoutError(  # pragma: no cover
+        f"No worker was assigned to task {key} within {timeout}s"
+    )
