@@ -960,96 +960,104 @@ def watch(
                 subscription = execution.subscribe()
                 poll_interval = 1.0  # Check state every 1 second if no events
 
-                while True:  # pragma: no cover
-                    try:
-                        # Wait for next event with timeout
-                        event = await asyncio.wait_for(
-                            subscription.__anext__(), timeout=poll_interval
-                        )
-                    except asyncio.TimeoutError:
-                        # No event received - poll state directly as fallback
-                        await execution.sync()
-                        if execution.state != current_state:
-                            # State changed, create synthetic state event
-                            event = {
-                                "type": "state",
-                                "state": execution.state.value,
-                                "worker": execution.worker,
-                                "error": execution.error,
-                                "started_at": (
-                                    execution.started_at.isoformat()
-                                    if execution.started_at
-                                    else None
-                                ),
-                            }
-                        else:
-                            # No state change, continue waiting
-                            continue
-                    except StopAsyncIteration:
-                        # Subscription ended
-                        break
-
-                    # Process the event (from pub/sub or synthetic from polling)
-                    if event["type"] == "state":
-                        # Update state information
-                        current_state = ExecutionState(event["state"])
-                        if worker := event.get("worker"):
-                            worker_name = worker
-                        if error := event.get("error"):
-                            error_message = error
-                        if started_at := event.get("started_at"):
-                            execution.started_at = datetime.fromisoformat(started_at)
-                            # Update progress bar start time if we have a progress task
-                            if progress_task_id is not None:
-                                set_progress_start_time(
-                                    progress_task_id, execution.started_at
-                                )
-
-                        # Update layout
-                        layout = create_display_layout()
-                        live.update(layout)
-
-                        # Exit if terminal state reached
-                        if current_state in (
-                            ExecutionState.COMPLETED,
-                            ExecutionState.FAILED,
-                        ):
+                try:
+                    while True:  # pragma: no cover
+                        try:
+                            # Wait for next event with timeout
+                            event = await asyncio.wait_for(
+                                subscription.__anext__(), timeout=poll_interval
+                            )
+                        except asyncio.TimeoutError:
+                            # No event received - poll state directly as fallback
+                            await execution.sync()
+                            if execution.state != current_state:
+                                # State changed, create synthetic state event
+                                event = {
+                                    "type": "state",
+                                    "state": execution.state.value,
+                                    "worker": execution.worker,
+                                    "error": execution.error,
+                                    "started_at": (
+                                        execution.started_at.isoformat()
+                                        if execution.started_at
+                                        else None
+                                    ),
+                                }
+                            else:
+                                # No state change, continue waiting
+                                continue
+                        except StopAsyncIteration:
+                            # Subscription ended
                             break
 
-                    elif event["type"] == "progress":
-                        # Update progress information
-                        current_val = event["current"]
-                        total_val: int = event.get("total", execution.progress.total)
-                        progress_message = event.get(
-                            "message", execution.progress.message
-                        )
-
-                        # Update or create progress task
-                        if total_val > 0 and execution.started_at is not None:
-                            if progress_task_id is None:
-                                # Create new progress task (first time only)
-                                progress_task_id = active_progress.add_task(
-                                    progress_message or "Processing...",
-                                    total=total_val,
-                                    completed=current_val or 0,
+                        # Process the event (from pub/sub or synthetic from polling)
+                        if event["type"] == "state":
+                            # Update state information
+                            current_state = ExecutionState(event["state"])
+                            if worker := event.get("worker"):
+                                worker_name = worker
+                            if error := event.get("error"):
+                                error_message = error
+                            if started_at := event.get("started_at"):
+                                execution.started_at = datetime.fromisoformat(
+                                    started_at
                                 )
-                                # Set start time based on execution.started_at if available
-                                if started_at := execution.started_at:
+                                # Update progress bar start time if we have a progress task
+                                if progress_task_id is not None:
                                     set_progress_start_time(
                                         progress_task_id, execution.started_at
                                     )
-                            else:
-                                # Update existing progress task
-                                active_progress.update(
-                                    progress_task_id,
-                                    completed=current_val,
-                                    total=total_val,
-                                    description=progress_message or "Processing...",
-                                )
 
-                        # Update layout
-                        layout = create_display_layout()
-                        live.update(layout)
+                            # Update layout
+                            layout = create_display_layout()
+                            live.update(layout)
+
+                            # Exit if terminal state reached
+                            if current_state in (
+                                ExecutionState.COMPLETED,
+                                ExecutionState.FAILED,
+                            ):
+                                break
+
+                        elif event["type"] == "progress":
+                            # Update progress information
+                            current_val = event["current"]
+                            total_val: int = event.get(
+                                "total", execution.progress.total
+                            )
+                            progress_message = event.get(
+                                "message", execution.progress.message
+                            )
+
+                            # Update or create progress task
+                            if total_val > 0 and execution.started_at is not None:
+                                if progress_task_id is None:
+                                    # Create new progress task (first time only)
+                                    progress_task_id = active_progress.add_task(
+                                        progress_message or "Processing...",
+                                        total=total_val,
+                                        completed=current_val or 0,
+                                    )
+                                    # Set start time based on execution.started_at if available
+                                    if started_at := execution.started_at:
+                                        set_progress_start_time(
+                                            progress_task_id, execution.started_at
+                                        )
+                                else:
+                                    # Update existing progress task
+                                    active_progress.update(
+                                        progress_task_id,
+                                        completed=current_val,
+                                        total=total_val,
+                                        description=progress_message or "Processing...",
+                                    )
+
+                            # Update layout
+                            layout = create_display_layout()
+                            live.update(layout)
+                finally:
+                    # Ensure subscription is properly closed to cleanup Redis connections
+                    await subscription.aclose()
 
     asyncio.run(monitor())
 
