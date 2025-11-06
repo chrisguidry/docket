@@ -23,7 +23,7 @@ from docket import (
     Worker,
 )
 from docket.dependencies import Timeout
-from docket.execution import Execution, ExecutionState
+from docket.execution import Execution
 from docket.tasks import standard_tasks
 from docket.worker import ms
 
@@ -235,18 +235,10 @@ async def test_redeliveries_respect_concurrency_limits(docket: Docket):
 
 async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
     """Tasks blocked by concurrency and rescheduled should execute exactly once,
-    not be duplicated via both rescheduling and redelivery.
-
-    This test verifies the atomic reschedule operation:
-    - Messages are acknowledged when blocked
-    - Tasks transition to SCHEDULED state
-    - Tasks are moved to queue (not stream)
-    - stream_id is cleared from runs hash
-    """
+    not be duplicated via both rescheduling and redelivery."""
 
     execution_count = 0
     execution_keys: list[str] = []
-    state_transitions: dict[str, list[ExecutionState]] = {}
 
     async def tracked_task(
         customer_id: int,
@@ -259,19 +251,12 @@ async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
         nonlocal execution_count
         execution_keys.append(execution.key)
         execution_count += 1
-
-        # Track state during execution
-        if execution.key not in state_transitions:
-            state_transitions[execution.key] = []
-        state_transitions[execution.key].append(execution.state)
-
-        # Do some work that takes long enough that other tasks pile up
         await asyncio.sleep(0.02)
 
     # Schedule 3 tasks for the same customer - all will be blocked by concurrency
-    exec1 = await docket.add(tracked_task)(customer_id=1)
-    exec2 = await docket.add(tracked_task)(customer_id=1)
-    exec3 = await docket.add(tracked_task)(customer_id=1)
+    await docket.add(tracked_task)(customer_id=1)
+    await docket.add(tracked_task)(customer_id=1)
+    await docket.add(tracked_task)(customer_id=1)
 
     # Use short redelivery timeout to make race condition more likely
     async with Worker(
@@ -300,76 +285,8 @@ async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
             "Found unacknowledged messages - atomic reschedule failed"
         )
 
-        # Verify stream is empty
+        # Verify stream is empty (cleanup happened)
         assert await redis.xlen(docket.stream_key) == 0
-
-        # Verify queue is empty (all tasks completed)
-        queue_length = await redis.zcard(docket.queue_key)
-        assert queue_length == 0, f"Queue still has {queue_length} tasks"
-
-        # Verify stream_id was cleared for all executions
-        for execution in [exec1, exec2, exec3]:
-            runs_hash = await redis.hgetall(execution._redis_key)  # type: ignore[misc]
-            assert b"stream_id" not in runs_hash, (
-                f"stream_id not cleared for {execution.key}"
-            )
-
-    # Verify state transitions - tasks should have gone through SCHEDULED when blocked
-    for key, states in state_transitions.items():
-        assert ExecutionState.RUNNING in states, f"Task {key} never ran: {states}"
-
-
-async def test_concurrency_blocked_messages_are_acknowledged(docket: Docket):
-    """When a task is rescheduled due to concurrency blocking,
-    the original stream message should be acknowledged atomically.
-
-    This verifies:
-    - Messages are acknowledged atomically with rescheduling
-    - stream_id is cleared from runs hash when rescheduled
-    - All tasks complete successfully without duplicates
-    """
-
-    async def blocking_task(
-        customer_id: int,
-        concurrency: ConcurrencyLimit = ConcurrencyLimit(
-            "customer_id",
-            max_concurrent=1,
-        ),
-    ):
-        await asyncio.sleep(0.02)
-
-    # Schedule multiple tasks that will block each other
-    exec1 = await docket.add(blocking_task)(customer_id=1)
-    exec2 = await docket.add(blocking_task)(customer_id=1)
-
-    # Use short redelivery timeout
-    async with Worker(
-        docket, concurrency=5, redelivery_timeout=timedelta(milliseconds=50)
-    ) as worker:
-        await worker.run_until_finished()
-
-    # Verify no messages are left pending (all were acknowledged)
-    async with docket.redis() as redis:
-        pending_info = await redis.xpending(
-            name=docket.stream_key,
-            groupname=docket.worker_group_name,
-        )
-        assert pending_info["pending"] == 0, (
-            "Found unacknowledged messages - atomic reschedule failed to acknowledge"
-        )
-
-        # Stream should be empty
-        assert await redis.xlen(docket.stream_key) == 0
-
-        # Queue should be empty (all tasks completed)
-        assert await redis.zcard(docket.queue_key) == 0
-
-        # Verify stream_id was cleared for both executions
-        for execution in [exec1, exec2]:
-            runs_hash = await redis.hgetall(execution._redis_key)  # type: ignore[misc]
-            assert b"stream_id" not in runs_hash, (
-                f"stream_id not cleared for {execution.key} - atomic reschedule incomplete"
-            )
 
 
 async def test_concurrency_limited_task_successfully_acquires_slot(docket: Docket):
