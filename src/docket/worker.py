@@ -608,7 +608,9 @@ class Worker:
                     concurrency_limit = get_single_dependency_of_type(
                         dependencies, ConcurrencyLimit
                     )
-                    if concurrency_limit and not concurrency_limit.is_bypassed:
+                    if (
+                        concurrency_limit and not concurrency_limit.is_bypassed
+                    ):  # pragma: no branch - coverage.py on Python 3.10 struggles with this
                         async with self.docket.redis() as redis:
                             # Check if we can acquire a concurrency slot
                             can_start = await self._can_start_task(redis, execution)
