@@ -60,6 +60,9 @@ from .instrumentation import (
     metrics_server,
 )
 
+# Delay before retrying a task blocked by concurrency limits
+CONCURRENCY_BLOCKED_RETRY_DELAY = timedelta(milliseconds=50)
+
 
 class ConcurrencyBlocked(Exception):
     """Raised when a task cannot start due to concurrency limits."""
@@ -345,10 +348,15 @@ class Worker:
                     # Task succeeded - acknowledge the message
                     await ack_message(redis, message_id)
                 except ConcurrencyBlocked as e:
-                    # Task was blocked by concurrency limits
+                    # Task was blocked by concurrency limits, reschedule atomically
+                    logger.debug(
+                        "🔒 Task %s blocked by concurrency limit, rescheduling",
+                        e.execution.key,
+                        extra=log_context,
+                    )
                     # Use atomic schedule(reschedule_message=...) to prevent both task loss and duplicate execution
-                    e.execution.when = datetime.now(timezone.utc) + timedelta(
-                        milliseconds=50
+                    e.execution.when = (
+                        datetime.now(timezone.utc) + CONCURRENCY_BLOCKED_RETRY_DELAY
                     )
                     await e.execution.schedule(reschedule_message=message_id)
 
@@ -614,11 +622,6 @@ class Worker:
                             can_start = await self._can_start_task(redis, execution)
                             if not can_start:  # pragma: no branch - 3.10 failure
                                 # Task cannot start due to concurrency limits
-                                logger.debug(
-                                    "🔒 Task %s blocked by concurrency limit",
-                                    execution.key,
-                                    extra=log_context,
-                                )
                                 raise ConcurrencyBlocked(execution)
 
                     # Preemptively reschedule the perpetual task for the future
