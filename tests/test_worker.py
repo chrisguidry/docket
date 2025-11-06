@@ -314,6 +314,31 @@ async def test_concurrency_blocked_messages_are_acknowledged(docket: Docket):
         assert await redis.xlen(docket.stream_key) == 0
 
 
+async def test_concurrency_limited_task_successfully_acquires_slot(docket: Docket):
+    """Tasks with concurrency limits successfully acquire slots when available"""
+
+    executed: list[int] = []
+
+    async def limited_task(
+        customer_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id",
+            max_concurrent=2,
+        ),
+    ) -> None:
+        executed.append(customer_id)
+        await asyncio.sleep(0.01)
+
+    # Schedule a task that has concurrency limits but should acquire slot successfully
+    await docket.add(limited_task)(customer_id=1)
+
+    async with Worker(docket, concurrency=5) as worker:
+        await worker.run_until_finished()
+
+    # Task should have executed successfully
+    assert executed == [1]
+
+
 async def test_worker_handles_unregistered_task_execution_on_initial_delivery(
     docket: Docket,
     worker: Worker,
