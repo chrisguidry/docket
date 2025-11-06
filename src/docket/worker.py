@@ -346,11 +346,11 @@ class Worker:
                     # Task succeeded - acknowledge the message
                     await ack_message(redis, message_id)
                 except ConcurrencyBlocked as e:
-                    # Task was blocked by concurrency limits, reschedule it
+                    # Task was blocked by concurrency limits, reschedule with same key
                     when = datetime.now(timezone.utc) + timedelta(milliseconds=50)
-                    await self.docket.add(e.execution.function, when=when)(
-                        *e.execution.args, **e.execution.kwargs
-                    )
+                    await self.docket.replace(
+                        e.execution.function, when=when, key=e.execution.key
+                    )(*e.execution.args, **e.execution.kwargs)
                     # Acknowledge the message since we rescheduled
                     await ack_message(redis, message_id)
 
