@@ -14,12 +14,11 @@ import cloudpickle  # type: ignore[import]
 if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
 
-from typing_extensions import Self
-
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError
+from typing_extensions import Self
 
 from .dependencies import (
     ConcurrencyLimit,
@@ -614,7 +613,7 @@ class Worker:
                         async with self.docket.redis() as redis:
                             # Check if we can acquire a concurrency slot
                             can_start = await self._can_start_task(redis, execution)
-                            if not can_start:
+                            if not can_start:  # pragma: no branch - 3.10 failure
                                 # Task cannot start due to concurrency limits
                                 logger.debug(
                                     "🔒 Task %s blocked by concurrency limit",
