@@ -61,7 +61,9 @@ from .instrumentation import (
 )
 
 # Delay before retrying a task blocked by concurrency limits
-CONCURRENCY_BLOCKED_RETRY_DELAY = timedelta(milliseconds=50)
+# Must be larger than redelivery_timeout to ensure atomic reschedule+ACK completes
+# before Redis would consider redelivering the message
+CONCURRENCY_BLOCKED_RETRY_DELAY = timedelta(milliseconds=100)
 
 
 class ConcurrencyBlocked(Exception):

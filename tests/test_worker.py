@@ -205,8 +205,9 @@ async def test_redeliveries_respect_concurrency_limits(docket: Docket):
     )  # More work for customer 1
 
     # Use short redelivery timeout so failures get redelivered quickly
+    # Must be long enough for cleanup operations to complete before redelivery
     async with Worker(
-        docket, concurrency=5, redelivery_timeout=timedelta(milliseconds=50)
+        docket, concurrency=5, redelivery_timeout=timedelta(milliseconds=200)
     ) as worker:
         await worker.run_until_finished()
 
