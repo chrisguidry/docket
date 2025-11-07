@@ -14,12 +14,11 @@ import cloudpickle  # type: ignore[import]
 if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
 
-from typing_extensions import Self
-
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError
+from typing_extensions import Self
 
 from .dependencies import (
     ConcurrencyLimit,
@@ -60,6 +59,18 @@ from .instrumentation import (
     healthcheck_server,
     metrics_server,
 )
+
+# Delay before retrying a task blocked by concurrency limits
+CONCURRENCY_BLOCKED_RETRY_DELAY = timedelta(milliseconds=50)
+
+
+class ConcurrencyBlocked(Exception):
+    """Raised when a task cannot start due to concurrency limits."""
+
+    def __init__(self, execution: Execution):
+        self.execution = execution
+        super().__init__(f"Task {execution.key} blocked by concurrency limits")
+
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
@@ -332,8 +343,22 @@ class Worker:
             for task in completed_tasks:
                 message_id = active_tasks.pop(task)
                 task_executions.pop(task)
-                await task
-                await ack_message(redis, message_id)
+                try:
+                    await task
+                    # Task succeeded - acknowledge the message
+                    await ack_message(redis, message_id)
+                except ConcurrencyBlocked as e:
+                    # Task was blocked by concurrency limits, reschedule atomically
+                    logger.debug(
+                        "🔒 Task %s blocked by concurrency limit, rescheduling",
+                        e.execution.key,
+                        extra=log_context,
+                    )
+                    # Use atomic schedule(reschedule_message=...) to prevent both task loss and duplicate execution
+                    e.execution.when = (
+                        datetime.now(timezone.utc) + CONCURRENCY_BLOCKED_RETRY_DELAY
+                    )
+                    await e.execution.schedule(reschedule_message=message_id)
 
         async def ack_message(redis: Redis, message_id: RedisMessageID) -> None:
             logger.debug("Acknowledging message", extra=log_context)
@@ -589,27 +614,15 @@ class Worker:
                     concurrency_limit = get_single_dependency_of_type(
                         dependencies, ConcurrencyLimit
                     )
-                    if concurrency_limit and not concurrency_limit.is_bypassed:
+                    if (
+                        concurrency_limit and not concurrency_limit.is_bypassed
+                    ):  # pragma: no branch - coverage.py on Python 3.10 struggles with this
                         async with self.docket.redis() as redis:
                             # Check if we can acquire a concurrency slot
-                            if not await self._can_start_task(redis, execution):
-                                # Task cannot start due to concurrency limits - reschedule
-                                logger.debug(
-                                    "🔒 Task %s blocked by concurrency limit, rescheduling",
-                                    execution.key,
-                                    extra=log_context,
-                                )
-                                # Reschedule for a few milliseconds in the future
-                                when = datetime.now(timezone.utc) + timedelta(
-                                    milliseconds=50
-                                )
-                                await self.docket.add(execution.function, when=when)(
-                                    *execution.args, **execution.kwargs
-                                )
-                                return
-                            else:
-                                # Successfully acquired slot
-                                pass
+                            can_start = await self._can_start_task(redis, execution)
+                            if not can_start:  # pragma: no branch - 3.10 failure
+                                # Task cannot start due to concurrency limits
+                                raise ConcurrencyBlocked(execution)
 
                     # Preemptively reschedule the perpetual task for the future
                     # Note: known/stream_id already deleted by claim_and_run()
@@ -695,6 +708,9 @@ class Worker:
                     logger.info(
                         "%s [%s] %s", arrow, ms(duration), call, extra=log_context
                     )
+            except ConcurrencyBlocked:
+                # Re-raise to be handled by process_completed_tasks
+                raise
             except Exception as e:
                 duration = log_context["duration"] = time.time() - start
                 TASKS_FAILED.add(1, counter_labels)

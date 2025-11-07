@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from functools import partial
-from typing import Annotated, Any, Collection
+from typing import Annotated, Any, AsyncIterator, Collection
 from unittest.mock import AsyncMock
 
 import typer
@@ -29,6 +29,35 @@ from . import __version__, tasks
 from .docket import Docket, DocketSnapshot, WorkerInfo
 from .execution import Execution, ExecutionState, Operator
 from .worker import Worker
+
+
+async def iterate_with_timeout(
+    iterator: AsyncIterator[dict[str, Any]], timeout: float
+) -> AsyncIterator[dict[str, Any] | None]:
+    """Iterate over an async iterator with timeout, ensuring proper cleanup.
+
+    Wraps an async iterator to add timeout support and guaranteed cleanup.
+    On timeout, yields None to allow the caller to handle polling fallback.
+
+    Args:
+        iterator: An async iterator (must have __anext__ and aclose methods)
+        timeout: Timeout in seconds for each iteration
+
+    Yields:
+        Items from the iterator, or None if timeout expires
+    """
+    try:
+        while True:
+            try:
+                yield await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
+            except asyncio.TimeoutError:
+                # Yield None to signal timeout, allowing caller to handle polling
+                yield None
+            except StopAsyncIteration:
+                break
+    finally:
+        await iterator.aclose()
+
 
 app: typer.Typer = typer.Typer(
     help="Docket - A distributed background task system for Python functions",
@@ -957,17 +986,13 @@ def watch(
             with Live(layout, console=console, refresh_per_second=4) as live:
                 # Subscribe to events and update display
                 # Use polling fallback to handle missed pub/sub events
-                subscription = execution.subscribe()
                 poll_interval = 1.0  # Check state every 1 second if no events
 
-                while True:  # pragma: no cover
-                    try:
-                        # Wait for next event with timeout
-                        event = await asyncio.wait_for(
-                            subscription.__anext__(), timeout=poll_interval
-                        )
-                    except asyncio.TimeoutError:
-                        # No event received - poll state directly as fallback
+                async for event in iterate_with_timeout(
+                    execution.subscribe(), poll_interval
+                ):  # pragma: no cover
+                    if event is None:
+                        # Timeout - poll state directly as fallback
                         await execution.sync()
                         if execution.state != current_state:
                             # State changed, create synthetic state event
@@ -985,9 +1010,6 @@ def watch(
                         else:
                             # No state change, continue waiting
                             continue
-                    except StopAsyncIteration:
-                        # Subscription ended
-                        break
 
                     # Process the event (from pub/sub or synthetic from polling)
                     if event["type"] == "state":

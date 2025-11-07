@@ -16,6 +16,7 @@ from redis.exceptions import ConnectionError
 from docket import (
     ConcurrencyLimit,
     CurrentDocket,
+    CurrentExecution,
     CurrentWorker,
     Docket,
     Perpetual,
@@ -230,6 +231,87 @@ async def test_redeliveries_respect_concurrency_limits(docket: Docket):
 
     # Should have had at least one failure that was redelivered
     assert failure_count >= 1
+
+
+async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
+    """Tasks blocked by concurrency and rescheduled should execute exactly once,
+    not be duplicated via both rescheduling and redelivery."""
+
+    execution_count = 0
+    execution_keys: list[str] = []
+
+    async def tracked_task(
+        customer_id: int,
+        execution: Execution = CurrentExecution(),
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id",
+            max_concurrent=1,
+        ),
+    ) -> None:
+        nonlocal execution_count
+        execution_keys.append(execution.key)
+        execution_count += 1
+        await asyncio.sleep(0.02)
+
+    # Schedule 3 tasks for the same customer - all will be blocked by concurrency
+    await docket.add(tracked_task)(customer_id=1)
+    await docket.add(tracked_task)(customer_id=1)
+    await docket.add(tracked_task)(customer_id=1)
+
+    # Use short redelivery timeout to make race condition more likely
+    async with Worker(
+        docket, concurrency=5, redelivery_timeout=timedelta(milliseconds=50)
+    ) as worker:
+        await worker.run_until_finished()
+
+    # Each task should execute exactly once
+    assert execution_count == 3, (
+        f"Expected 3 executions, got {execution_count}. "
+        f"Execution keys: {execution_keys}"
+    )
+
+    # All execution keys should be unique (no duplicate executions)
+    assert len(set(execution_keys)) == 3, (
+        f"Found duplicate executions: {execution_keys}"
+    )
+
+    # Verify no messages left pending (all were acknowledged)
+    async with docket.redis() as redis:
+        pending_info = await redis.xpending(
+            name=docket.stream_key,
+            groupname=docket.worker_group_name,
+        )
+        assert pending_info["pending"] == 0, (
+            "Found unacknowledged messages - atomic reschedule failed"
+        )
+
+        # Verify stream is empty (cleanup happened)
+        assert await redis.xlen(docket.stream_key) == 0
+
+
+async def test_concurrency_limited_task_successfully_acquires_slot(docket: Docket):
+    """Tasks with concurrency limits successfully acquire slots when available"""
+
+    executed: list[int] = []
+
+    async def limited_task(
+        customer_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id",
+            max_concurrent=2,
+        ),
+    ) -> None:
+        executed.append(customer_id)
+        await asyncio.sleep(0.01)
+
+    # Schedule a task that has concurrency limits but should acquire slot successfully
+    await docket.add(limited_task)(customer_id=1)
+
+    async with Worker(docket, concurrency=5) as worker:
+        await worker.run_until_finished()
+
+    # Task should have executed successfully
+    assert executed == [1]
 
 
 async def test_worker_handles_unregistered_task_execution_on_initial_delivery(
@@ -912,8 +994,8 @@ async def test_worker_concurrency_refresh_handles_redis_errors(docket: Docket):
 
     await docket.add(task_with_concurrency)(customer_id=1)
 
-    # Create worker to test error handling
-    worker = Worker(docket)
+    # Create worker to test error handling (with short reconnection delay for testing)
+    worker = Worker(docket, reconnection_delay=timedelta(milliseconds=10))
 
     # Mock Redis to occasionally fail during refresh operations
     error_count = 0

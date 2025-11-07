@@ -290,9 +290,13 @@ class ExecutionProgress:
         async with self.docket.redis() as redis:
             async with redis.pubsub() as pubsub:
                 await pubsub.subscribe(channel)
-                async for message in pubsub.listen():  # pragma: no cover
-                    if message["type"] == "message":
-                        yield json.loads(message["data"])
+                try:
+                    async for message in pubsub.listen():  # pragma: no cover
+                        if message["type"] == "message":
+                            yield json.loads(message["data"])
+                finally:
+                    # Explicitly unsubscribe to ensure clean shutdown
+                    await pubsub.unsubscribe(channel)
 
 
 class Execution:
@@ -408,7 +412,9 @@ class Execution:
         initiating_context = initiating_span.get_span_context()
         return [trace.Link(initiating_context)] if initiating_context.is_valid else []
 
-    async def schedule(self, replace: bool = False) -> None:
+    async def schedule(
+        self, replace: bool = False, reschedule_message: str | None = None
+    ) -> None:
         """Schedule this task atomically in Redis.
 
         This performs an atomic operation that:
@@ -416,9 +422,20 @@ class Execution:
         - Writes the execution state record
         - Tracks metadata for later cancellation
 
+        Usage patterns:
+        - Normal add: schedule(replace=False)
+        - Replace existing: schedule(replace=True)
+        - Reschedule from stream: schedule(reschedule_message=message_id)
+          This atomically acknowledges and deletes the stream message, then
+          reschedules the task to the queue. Prevents both task loss and
+          duplicate execution when rescheduling tasks (e.g., due to concurrency limits).
+
         Args:
             replace: If True, replaces any existing task with the same key.
                     If False, raises an error if the task already exists.
+            reschedule_message: If provided, atomically acknowledges and deletes
+                    this stream message ID before rescheduling the task to the queue.
+                    Used when a task needs to be rescheduled from an active stream message.
         """
         message: dict[bytes, bytes] = self.as_message()
         propagate.inject(message, setter=message_setter)
@@ -435,8 +452,8 @@ class Execution:
                 schedule_script = cast(
                     _schedule_task,
                     redis.register_script(
-                        # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key, runs_key
-                        # ARGV: task_key, when_timestamp, is_immediate, replace, ...message_fields
+                        # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key, runs_key, worker_group_key
+                        # ARGV: task_key, when_timestamp, is_immediate, replace, reschedule_message_id, ...message_fields
                         """
                             local stream_key = KEYS[1]
                             -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
@@ -445,17 +462,43 @@ class Execution:
                             local queue_key = KEYS[4]
                             local stream_id_key = KEYS[5]
                             local runs_key = KEYS[6]
+                            local worker_group_name = KEYS[7]
 
                             local task_key = ARGV[1]
                             local when_timestamp = ARGV[2]
                             local is_immediate = ARGV[3] == '1'
                             local replace = ARGV[4] == '1'
+                            local reschedule_message_id = ARGV[5]
 
-                            -- Extract message fields from ARGV[5] onwards
+                            -- Extract message fields from ARGV[6] onwards
                             local message = {}
-                            for i = 5, #ARGV, 2 do
+                            for i = 6, #ARGV, 2 do
                                 message[#message + 1] = ARGV[i]     -- field name
                                 message[#message + 1] = ARGV[i + 1] -- field value
+                            end
+
+                            -- Handle rescheduling from stream: atomically ACK message and reschedule to queue
+                            -- This prevents both task loss (ACK before reschedule) and duplicate execution
+                            -- (reschedule before ACK with slow reschedule causing redelivery)
+                            if reschedule_message_id ~= '' then
+                                -- Acknowledge and delete the message from the stream
+                                redis.call('XACK', stream_key, worker_group_name, reschedule_message_id)
+                                redis.call('XDEL', stream_key, reschedule_message_id)
+
+                                -- Park task data for future execution
+                                redis.call('HSET', parked_key, unpack(message))
+
+                                -- Add to sorted set queue
+                                redis.call('ZADD', queue_key, when_timestamp, task_key)
+
+                                -- Update state in runs hash (clear stream_id since task is no longer in stream)
+                                redis.call('HSET', runs_key,
+                                    'state', 'scheduled',
+                                    'when', when_timestamp
+                                )
+                                redis.call('HDEL', runs_key, 'stream_id')
+
+                                return 'OK'
                             end
 
                             -- Handle replacement: cancel existing task if needed
@@ -530,12 +573,14 @@ class Execution:
                         self.docket.queue_key,
                         self.docket.stream_id_key(key),
                         self._redis_key,
+                        self.docket.worker_group_name,
                     ],
                     args=[
                         key,
                         str(when.timestamp()),
                         "1" if is_immediate else "0",
                         "1" if replace else "0",
+                        reschedule_message or "",
                         *[
                             item
                             for field, value in message.items()
@@ -544,8 +589,14 @@ class Execution:
                     ],
                 )
 
-        # Update local state based on whether task is immediate or scheduled
-        if is_immediate:
+        # Update local state based on whether task is immediate, scheduled, or being rescheduled
+        if reschedule_message:
+            # When rescheduling from stream, task is always parked and queued (never immediate)
+            self.state = ExecutionState.SCHEDULED
+            await self._publish_state(
+                {"state": ExecutionState.SCHEDULED.value, "when": when.isoformat()}
+            )
+        elif is_immediate:
             self.state = ExecutionState.QUEUED
             await self._publish_state(
                 {"state": ExecutionState.QUEUED.value, "when": when.isoformat()}
@@ -891,14 +942,18 @@ class Execution:
         async with self.docket.redis() as redis:
             async with redis.pubsub() as pubsub:
                 await pubsub.subscribe(state_channel, progress_channel)
-                async for message in pubsub.listen():  # pragma: no cover
-                    if message["type"] == "message":
-                        message_data = json.loads(message["data"])
-                        if message_data["type"] == "state":
-                            message_data["state"] = ExecutionState(
-                                message_data["state"]
-                            )
-                        yield message_data
+                try:
+                    async for message in pubsub.listen():  # pragma: no cover
+                        if message["type"] == "message":
+                            message_data = json.loads(message["data"])
+                            if message_data["type"] == "state":
+                                message_data["state"] = ExecutionState(
+                                    message_data["state"]
+                                )
+                            yield message_data
+                finally:
+                    # Explicitly unsubscribe to ensure clean shutdown
+                    await pubsub.unsubscribe(state_channel, progress_channel)
 
 
 def compact_signature(signature: inspect.Signature) -> str:
