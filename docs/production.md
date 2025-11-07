@@ -185,6 +185,150 @@ Docket also works with Valkey (Redis fork):
 export DOCKET_URL=valkey://valkey.prod.com:6379/0
 ```
 
+## State and Result Storage
+
+Docket tracks execution state and stores task results by default. You can configure or disable this behavior based on your observability and throughput requirements.
+
+### Execution State Tracking
+
+By default, Docket stores execution state (SCHEDULED, QUEUED, RUNNING, COMPLETED, FAILED) in Redis with a 15-minute TTL:
+
+```python
+async with Docket(
+    name="orders",
+    url="redis://localhost:6379/0",
+    execution_ttl=timedelta(minutes=15)  # Default
+) as docket:
+    # State records expire 15 minutes after task completion
+    pass
+```
+
+The `execution_ttl` controls:
+- How long state records persist in Redis after task completion
+- How long result data is retained (see Result Storage below)
+- How long progress information remains available
+
+### Fire-and-Forget Mode
+
+For maximum throughput in high-volume scenarios, disable state tracking entirely:
+
+```python
+async with Docket(
+    name="high-throughput",
+    url="redis://localhost:6379/0",
+    execution_ttl=timedelta(0)  # Disable state persistence
+) as docket:
+    # No state records, no result storage, no progress tracking
+    for event in events:
+        await docket.add(process_event)(event)
+```
+
+With `execution_ttl=0`:
+- **No state records**: State transitions are not written to Redis
+- **No result storage**: Task return values are not persisted
+- **No progress tracking**: Progress updates are not recorded
+- **Maximum throughput**: Minimizes Redis operations per task
+- **get_result() unavailable**: Cannot retrieve task results
+
+This mode is ideal for:
+- High-volume event processing (logging, metrics, notifications)
+- Fire-and-forget operations where results don't matter
+- Systems where observability is handled externally
+- Maximizing task throughput at the expense of visibility
+
+### Result Storage Configuration
+
+Task results are stored using the `py-key-value-aio` library. By default, Docket uses `RedisStore` but you can provide a custom storage backend:
+
+```python
+from key_value.stores.redis import RedisStore
+from key_value.stores.memory import MemoryStore
+
+# Default: Redis-backed result storage
+async with Docket(
+    name="production",
+    url="redis://localhost:6379/0",
+    result_storage=RedisStore(url="redis://localhost:6379/1")  # Separate DB
+) as docket:
+    pass
+
+# Alternative: In-memory storage for testing
+async with Docket(
+    name="test",
+    url="redis://localhost:6379/0",
+    result_storage=MemoryStore()
+) as docket:
+    pass
+```
+
+Custom storage backends must implement the `KeyValueStore` protocol from `py-key-value-aio`.
+
+### Result Storage Best Practices
+
+**Separate Redis Database**: Store results in a different Redis database than task queues:
+
+```python
+result_storage = RedisStore(url="redis://localhost:6379/1")  # DB 1 for results
+docket = Docket(
+    name="orders",
+    url="redis://localhost:6379/0",  # DB 0 for queues
+    result_storage=result_storage
+)
+```
+
+**TTL Management**: Results inherit the `execution_ttl` setting. Adjust based on how long you need results:
+
+```python
+# Keep results for 1 hour
+async with Docket(execution_ttl=timedelta(hours=1)) as docket:
+    execution = await docket.add(generate_report)()
+    # Result available for 1 hour after completion
+```
+
+**None Returns**: Tasks that return `None` don't write to result storage, saving space:
+
+```python
+async def send_notification(user_id: str) -> None:
+    await send_email(user_id)
+    # No result stored - task returns None
+```
+
+**Large Results**: For large result data, consider storing references instead:
+
+```python
+# Instead of returning large data
+async def process_large_dataset(dataset_id: str) -> dict:
+    data = await expensive_computation()
+    return data  # Large object stored in Redis
+
+# Store a reference
+async def process_large_dataset(dataset_id: str) -> str:
+    data = await expensive_computation()
+    s3_key = await store_in_s3(data)
+    return s3_key  # Small string stored in Redis
+```
+
+### Monitoring State and Result Storage
+
+Track Redis memory usage for state and result data:
+
+```bash
+# Check memory usage
+redis-cli info memory
+
+# Count state records
+redis-cli --scan --pattern "docket:runs:*" | wc -l
+
+# Count result keys
+redis-cli --scan --pattern "docket:results:*" | wc -l
+```
+
+If memory usage is high:
+- Reduce `execution_ttl` to expire data sooner
+- Use `execution_ttl=0` for fire-and-forget tasks
+- Store large results externally (S3, database) and return references
+- Separate result storage to a different Redis instance
+
 ## Monitoring and Observability
 
 ### Prometheus Metrics
