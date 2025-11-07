@@ -67,7 +67,7 @@ async def test_snapshot_with_running_tasks(docket: Docket):
     docket.heartbeat_interval = heartbeat
 
     # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
-    await docket.add(tasks.sleep)(1)
+    await docket.add(tasks.sleep)(5)
 
     async with Worker(docket, name="test-worker") as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
@@ -101,7 +101,7 @@ async def test_snapshot_with_mixed_tasks(docket: Docket):
 
     # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
     for _ in range(5):
-        await docket.add(tasks.sleep)(1)
+        await docket.add(tasks.sleep)(4)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
@@ -197,7 +197,7 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
 
     # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
     for i in range(3):
-        await docket.add(tasks.sleep, key=f"sleep-{i}")(1)
+        await docket.add(tasks.sleep, key=f"sleep-{i}")(4)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
@@ -272,8 +272,8 @@ async def test_snapshot_stats_with_running_tasks_only(docket: Docket):
 
     # Add tasks that will be picked up immediately by worker
     # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
-    await docket.add(tasks.sleep)(1)
-    await docket.add(tasks.sleep)(1)
+    await docket.add(tasks.sleep)(5)
+    await docket.add(tasks.sleep)(5)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
