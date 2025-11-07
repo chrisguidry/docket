@@ -80,7 +80,7 @@ async def test_result_storage_with_ttl_zero(docket: Docket, worker: Worker) -> N
             # With TTL=0, the result expires immediately
             # Attempting to get it should timeout
             deadline = datetime.now(timezone.utc) + timedelta(seconds=0.1)
-            with pytest.raises(TimeoutError):
+            with pytest.raises(TimeoutError):  # pragma: no branch
                 await execution.get_result(deadline=deadline)
 
 
@@ -106,7 +106,7 @@ async def test_failed_task_with_ttl_zero(docket: Docket, worker: Worker) -> None
 
             # With TTL=0, exception data expires immediately
             deadline = datetime.now(timezone.utc) + timedelta(seconds=0.1)
-            with pytest.raises(TimeoutError):
+            with pytest.raises(TimeoutError):  # pragma: no branch
                 await execution.get_result(deadline=deadline)
 
 
@@ -162,5 +162,5 @@ async def test_mixed_ttl_workload(docket: Docket, worker: Worker) -> None:
 
             # Task with zero TTL should have expired result
             deadline = datetime.now(timezone.utc) + timedelta(seconds=0.1)
-            with pytest.raises(TimeoutError):
+            with pytest.raises(TimeoutError):  # pragma: no branch
                 await exec_zero_ttl.get_result(deadline=deadline)

@@ -14,6 +14,7 @@ from .run import run_cli
 from .waiting import (
     wait_for_execution_state,
     wait_for_progress_data,
+    wait_for_watch_subscribed,
     wait_for_worker_assignment,
 )
 
@@ -78,12 +79,19 @@ async def test_watch_failed_task(docket: Docket, the_task: AsyncMock):
 async def test_watch_running_task_until_completion(docket: Docket, worker: Worker):
     """Watch should monitor task from running to completion."""
 
-    async def slower_task():
-        # Sleep long enough for watch command to connect and receive events
+    # Coordination key for synchronization
+    ready_key = f"{docket.name}:test:watch:ready"
+
+    async def coordinated_task():
+        # Wait for watch to be subscribed before completing
+        async with docket.redis() as redis:
+            while not await redis.get(ready_key):  # type: ignore[misc]
+                await asyncio.sleep(0.01)
+        # Now do the work
         await asyncio.sleep(0.5)
 
-    docket.register(slower_task)
-    await docket.add(slower_task, key="slower-task")()
+    docket.register(coordinated_task)
+    await docket.add(coordinated_task, key="slower-task")()
 
     # Start worker in background
     worker_task = asyncio.create_task(worker.run_until_finished())
@@ -91,17 +99,28 @@ async def test_watch_running_task_until_completion(docket: Docket, worker: Worke
     # Wait for worker to claim the task
     await wait_for_execution_state(docket, "slower-task", ExecutionState.RUNNING)
 
-    # Watch should receive state events while task runs
-    result = await run_cli(
-        "watch",
-        "slower-task",
-        "--url",
-        docket.url,
-        "--docket",
-        docket.name,
-        timeout=2.0,
+    # Start watch subprocess in background
+    watch_task = asyncio.create_task(
+        run_cli(
+            "watch",
+            "slower-task",
+            "--url",
+            docket.url,
+            "--docket",
+            docket.name,
+            timeout=5.0,
+        )
     )
 
+    # Wait for watch to subscribe (deterministic synchronization)
+    await wait_for_watch_subscribed(docket, "slower-task")
+
+    # Signal task it can complete now
+    async with docket.redis() as redis:
+        await redis.set(ready_key, "1", ex=10)
+
+    # Wait for watch to finish
+    result = await watch_task
     await worker_task
 
     assert result.exit_code == 0
