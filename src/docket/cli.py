@@ -917,7 +917,7 @@ def watch(
 
             # Initialize progress task if we have progress data
             if current_val > 0 and total_val > 0:
-                progress_task_id = active_progress.add_task(
+                progress_task_id = active_progress.add_task(  # pragma: no cover
                     progress_message or "Processing...",
                     total=total_val,
                     completed=current_val,

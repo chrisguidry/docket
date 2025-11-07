@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from docket import Docket, Worker
-from docket.execution import ExecutionState
+from docket.execution import Execution, ExecutionState
 
 
 class CustomError(Exception):
@@ -208,9 +208,9 @@ async def test_get_result_timeout(docket: Docket, worker: Worker):
     worker_task = asyncio.create_task(worker.run_until_finished())
 
     # get_result should timeout
-    timeout = datetime.now(timezone.utc) + timedelta(seconds=1)
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=1)
     with pytest.raises(TimeoutError):
-        await execution.get_result(timeout=timeout)
+        await execution.get_result(deadline=deadline)
 
     # Let the task complete so worker can finish
     event.set()
@@ -344,12 +344,12 @@ async def test_get_result_with_expired_timeout(docket: Docket):
     )
     execution.state = ExecutionState.RUNNING
 
-    # Set timeout to 1 second in the past
-    timeout = datetime.now(timezone.utc) - timedelta(seconds=1)
+    # Set deadline to 1 second in the past
+    deadline = datetime.now(timezone.utc) - timedelta(seconds=1)
 
     # Should raise TimeoutError immediately without waiting
     with pytest.raises(TimeoutError) as exc_info:
-        await execution.get_result(timeout=timeout)
+        await execution.get_result(deadline=deadline)
 
     assert "Timeout waiting for execution" in str(exc_info.value)
 
@@ -429,3 +429,72 @@ async def test_get_result_failed_task_with_missing_exception_data(
 
     # Should use the error message from execution.error
     assert "test error" in str(exc_info.value)
+
+
+async def test_get_result_with_timeout_timedelta(docket: Docket, worker: Worker):
+    """Test get_result using timeout parameter (timedelta)."""
+
+    async def returns_value() -> int:
+        return 42
+
+    docket.register(returns_value)
+    execution = await docket.add(returns_value)()
+    await worker.run_until_finished()
+
+    result = await execution.get_result(timeout=timedelta(seconds=1))
+    assert result == 42
+
+
+async def test_get_result_with_deadline_datetime(docket: Docket, worker: Worker):
+    """Test get_result using deadline parameter (datetime)."""
+
+    async def returns_value() -> int:
+        return 42
+
+    docket.register(returns_value)
+    execution = await docket.add(returns_value)()
+    await worker.run_until_finished()
+
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=1)
+    result = await execution.get_result(deadline=deadline)
+    assert result == 42
+
+
+async def test_get_result_with_both_timeout_and_deadline_raises(
+    docket: Docket,
+):
+    """Test that specifying both timeout and deadline raises ValueError."""
+    from unittest.mock import AsyncMock
+
+    execution = Execution(
+        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+    )
+    execution.state = ExecutionState.COMPLETED
+
+    with pytest.raises(ValueError) as exc_info:
+        await execution.get_result(
+            timeout=timedelta(seconds=1),
+            deadline=datetime.now(timezone.utc) + timedelta(seconds=1),
+        )
+
+    assert "Cannot specify both timeout and deadline" in str(exc_info.value)
+
+
+async def test_get_result_timeout_on_pending_task(docket: Docket, worker: Worker):
+    """Test get_result with timeout (timedelta) on pending task."""
+    event = asyncio.Event()
+
+    async def waits_forever() -> int:
+        await event.wait()
+        return 42
+
+    docket.register(waits_forever)
+    execution = await docket.add(waits_forever)()
+
+    worker_task = asyncio.create_task(worker.run_until_finished())
+
+    with pytest.raises(TimeoutError):
+        await execution.get_result(timeout=timedelta(seconds=0.1))
+
+    event.set()
+    await worker_task

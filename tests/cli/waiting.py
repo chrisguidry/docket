@@ -131,3 +131,44 @@ async def wait_for_worker_assignment(
     raise TimeoutError(  # pragma: no cover
         f"No worker was assigned to task {key} within {timeout}s"
     )
+
+
+async def wait_for_watch_subscribed(
+    docket: Docket,
+    key: str,
+    *,
+    timeout: float = 3.0,
+    interval: float = 0.01,
+) -> None:
+    """Wait for watch command to subscribe to state channel.
+
+    Uses Redis PUBSUB NUMSUB to detect when watch has subscribed.
+    This ensures watch won't miss state events published after subscription.
+
+    Args:
+        docket: Docket instance
+        key: Task key
+        timeout: Maximum time to wait in seconds
+        interval: Sleep interval between checks in seconds
+
+    Raises:
+        TimeoutError: If watch doesn't subscribe within timeout
+    """
+    start_time = time.monotonic()
+    state_channel = f"{docket.name}:state:{key}"
+
+    while time.monotonic() - start_time < timeout:
+        async with docket.redis() as redis:
+            result = await redis.pubsub_numsub(state_channel)  # type: ignore[misc]
+            # Returns list of tuples: [(channel_bytes, count), ...]
+            for channel, count in result:  # type: ignore[misc]
+                if isinstance(channel, bytes):  # pragma: no branch
+                    channel = channel.decode()
+                if channel == state_channel and count > 0:  # pragma: no branch
+                    return
+
+        await asyncio.sleep(interval)
+
+    raise TimeoutError(  # pragma: no cover
+        f"Watch command did not subscribe to {state_channel} within {timeout}s"
+    )
