@@ -624,12 +624,6 @@ class Worker:
                                 # Task cannot start due to concurrency limits
                                 raise ConcurrencyBlocked(execution)
 
-                    # Preemptively reschedule the perpetual task for the future
-                    # Note: known/stream_id already deleted by claim_and_run()
-                    rescheduled = await self._perpetuate_if_requested(
-                        execution, dependencies
-                    )
-
                     dependency_failures = {
                         k: v
                         for k, v in dependencies.items()
