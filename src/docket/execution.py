@@ -5,7 +5,7 @@ import enum
 import inspect
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -692,7 +692,8 @@ class Execution:
         Args:
             result_key: Optional key where the task result is stored
 
-        Sets TTL on state data (from docket.execution_ttl) and deletes progress data.
+        Sets TTL on state data (from docket.execution_ttl), or deletes state
+        immediately if execution_ttl is 0. Also deletes progress data.
         """
         completed_at = datetime.now(timezone.utc).isoformat()
         async with self.docket.redis() as redis:
@@ -706,10 +707,12 @@ class Execution:
                 self._redis_key,
                 mapping=mapping,
             )
-            # Set TTL from docket configuration
-            await redis.expire(
-                self._redis_key, int(self.docket.execution_ttl.total_seconds())
-            )
+            # Set TTL from docket configuration, or delete if TTL=0
+            if self.docket.execution_ttl:
+                ttl_seconds = int(self.docket.execution_ttl.total_seconds())
+                await redis.expire(self._redis_key, ttl_seconds)
+            else:
+                await redis.delete(self._redis_key)
         self.state = ExecutionState.COMPLETED
         self.result_key = result_key
         # Delete progress data
@@ -728,7 +731,8 @@ class Execution:
             error: Optional error message describing the failure
             result_key: Optional key where the exception is stored
 
-        Sets TTL on state data (from docket.execution_ttl) and deletes progress data.
+        Sets TTL on state data (from docket.execution_ttl), or deletes state
+        immediately if execution_ttl is 0. Also deletes progress data.
         """
         completed_at = datetime.now(timezone.utc).isoformat()
         async with self.docket.redis() as redis:
@@ -741,10 +745,12 @@ class Execution:
             if result_key is not None:
                 mapping["result_key"] = result_key
             await redis.hset(self._redis_key, mapping=mapping)
-            # Set TTL from docket configuration
-            await redis.expire(
-                self._redis_key, int(self.docket.execution_ttl.total_seconds())
-            )
+            # Set TTL from docket configuration, or delete if TTL=0
+            if self.docket.execution_ttl:
+                ttl_seconds = int(self.docket.execution_ttl.total_seconds())
+                await redis.expire(self._redis_key, ttl_seconds)
+            else:
+                await redis.delete(self._redis_key)
         self.state = ExecutionState.FAILED
         self.result_key = result_key
         # Delete progress data
@@ -758,29 +764,47 @@ class Execution:
             state_data["error"] = error
         await self._publish_state(state_data)
 
-    async def get_result(self, *, timeout: datetime | None = None) -> Any:
+    async def get_result(
+        self,
+        *,
+        timeout: timedelta | None = None,
+        deadline: datetime | None = None,
+    ) -> Any:
         """Retrieve the result of this task execution.
 
         If the execution is not yet complete, this method will wait using
         pub/sub for state updates until completion.
 
         Args:
-            timeout: Optional absolute datetime when to stop waiting.
-                    If None, waits indefinitely.
+            timeout: Optional duration to wait before giving up.
+                    If None and deadline is None, waits indefinitely.
+            deadline: Optional absolute datetime when to stop waiting.
+                     If None and timeout is None, waits indefinitely.
 
         Returns:
             The result of the task execution, or None if the task returned None.
 
         Raises:
+            ValueError: If both timeout and deadline are provided
             Exception: If the task failed, raises the stored exception
-            TimeoutError: If timeout is reached before execution completes
+            TimeoutError: If timeout/deadline is reached before execution completes
         """
+        # Validate that only one time limit is provided
+        if timeout is not None and deadline is not None:
+            raise ValueError("Cannot specify both timeout and deadline")
+
+        # Convert timeout to deadline if provided
+        if timeout is not None:
+            deadline = datetime.now(timezone.utc) + timeout
+
         # Wait for execution to complete if not already done
         if self.state not in (ExecutionState.COMPLETED, ExecutionState.FAILED):
-            # Calculate timeout duration if absolute timeout provided
+            # Calculate timeout duration if absolute deadline provided
             timeout_seconds = None
-            if timeout is not None:
-                timeout_seconds = (timeout - datetime.now(timezone.utc)).total_seconds()
+            if deadline is not None:
+                timeout_seconds = (
+                    deadline - datetime.now(timezone.utc)
+                ).total_seconds()
                 if timeout_seconds <= 0:
                     raise TimeoutError(
                         f"Timeout waiting for execution {self.key} to complete"

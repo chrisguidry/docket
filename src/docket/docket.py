@@ -150,7 +150,7 @@ class Docket:
         url: str = "redis://localhost:6379/0",
         heartbeat_interval: timedelta = timedelta(seconds=2),
         missed_heartbeats: int = 5,
-        execution_ttl: timedelta = timedelta(hours=1),
+        execution_ttl: timedelta = timedelta(minutes=15),
         result_storage: AsyncKeyValue | None = None,
     ) -> None:
         """
@@ -167,7 +167,7 @@ class Docket:
             missed_heartbeats: How many heartbeats a worker can miss before it is
                 considered dead.
             execution_ttl: How long to keep completed or failed execution state records
-                in Redis before they expire. Defaults to 1 hour.
+                in Redis before they expire. Defaults to 15 minutes.
         """
         self.name = name
         self.url = url

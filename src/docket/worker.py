@@ -689,7 +689,7 @@ class Worker:
                     if not rescheduled:
                         # Store result if appropriate
                         result_key = None
-                        if result is not None:
+                        if result is not None and self.docket.execution_ttl:
                             # Serialize and store result
                             pickled_result = cloudpickle.dumps(result)  # type: ignore[arg-type]
                             # Base64-encode for JSON serialization
@@ -726,14 +726,17 @@ class Worker:
 
                 # Store exception in result_storage
                 result_key = None
-                pickled_exception = cloudpickle.dumps(e)  # type: ignore[arg-type]
-                # Base64-encode for JSON serialization
-                encoded_exception = base64.b64encode(pickled_exception).decode("ascii")
-                result_key = execution.key
-                ttl_seconds = int(self.docket.execution_ttl.total_seconds())
-                await self.docket.result_storage.put(
-                    result_key, {"data": encoded_exception}, ttl=ttl_seconds
-                )
+                if self.docket.execution_ttl:
+                    pickled_exception = cloudpickle.dumps(e)  # type: ignore[arg-type]
+                    # Base64-encode for JSON serialization
+                    encoded_exception = base64.b64encode(pickled_exception).decode(
+                        "ascii"
+                    )
+                    result_key = execution.key
+                    ttl_seconds = int(self.docket.execution_ttl.total_seconds())
+                    await self.docket.result_storage.put(
+                        result_key, {"data": encoded_exception}, ttl=ttl_seconds
+                    )
 
                 # Mark execution as failed with error message
                 error_msg = f"{type(e).__name__}: {str(e)}"
