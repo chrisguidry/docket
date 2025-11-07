@@ -196,13 +196,13 @@ async def test_get_result_waits_for_completion(docket: Docket, worker: Worker):
 
 async def test_get_result_timeout(docket: Docket, worker: Worker):
     """Test that get_result respects timeout."""
+    event = asyncio.Event()  # Never set, simulates hung task
 
-    async def very_slow_task() -> int:
-        await asyncio.sleep(5)
-        return 42
+    async def hung_task():
+        await event.wait()
 
-    docket.register(very_slow_task)
-    execution = await docket.add(very_slow_task)()
+    docket.register(hung_task)
+    execution = await docket.add(hung_task)()
 
     # Start worker in background
     worker_task = asyncio.create_task(worker.run_until_finished())
@@ -212,6 +212,8 @@ async def test_get_result_timeout(docket: Docket, worker: Worker):
     with pytest.raises(TimeoutError):
         await execution.get_result(timeout=timeout)
 
+    # Let the task complete so worker can finish
+    event.set()
     await worker_task
 
 

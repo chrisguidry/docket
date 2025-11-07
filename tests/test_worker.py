@@ -994,8 +994,8 @@ async def test_worker_concurrency_refresh_handles_redis_errors(docket: Docket):
 
     await docket.add(task_with_concurrency)(customer_id=1)
 
-    # Create worker to test error handling
-    worker = Worker(docket)
+    # Create worker to test error handling (with short reconnection delay for testing)
+    worker = Worker(docket, reconnection_delay=timedelta(milliseconds=10))
 
     # Mock Redis to occasionally fail during refresh operations
     error_count = 0

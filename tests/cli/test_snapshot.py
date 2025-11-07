@@ -66,10 +66,13 @@ async def test_snapshot_with_running_tasks(docket: Docket):
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
 
-    await docket.add(tasks.sleep)(5)
+    # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
+    await docket.add(tasks.sleep)(1)
 
     async with Worker(docket, name="test-worker") as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
+
+        await asyncio.sleep(0.05)  # Let worker pick up task
 
         result = await run_cli(
             "snapshot",
@@ -93,15 +96,17 @@ async def test_snapshot_with_mixed_tasks(docket: Docket):
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
 
-    future = datetime.now(timezone.utc) + timedelta(seconds=5)
+    future = datetime.now(timezone.utc) + timedelta(seconds=1)
     await docket.add(tasks.trace, when=future)("hi!")
-    for _ in range(5):  # more than the concurrency allows
-        await docket.add(tasks.sleep)(4)
+
+    # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
+    for _ in range(5):
+        await docket.add(tasks.sleep)(1)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
 
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.1)  # Let worker pick up tasks
 
         result = await run_cli(
             "snapshot",
@@ -186,14 +191,18 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
     docket.heartbeat_interval = heartbeat
 
     # Add multiple tasks of different types
-    future = datetime.now(timezone.utc) + timedelta(seconds=5)
+    future = datetime.now(timezone.utc) + timedelta(seconds=1)
     await docket.add(tasks.trace, when=future, key="trace-1")("hi!")
     await docket.add(tasks.trace, when=future, key="trace-2")("hello!")
-    for _ in range(3):
-        await docket.add(tasks.sleep, key=f"sleep-{_}")(4)
+
+    # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
+    for i in range(3):
+        await docket.add(tasks.sleep, key=f"sleep-{i}")(1)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
+
+        await asyncio.sleep(0.1)  # Let worker pick up tasks
 
         result = await run_cli(
             "snapshot",
@@ -262,11 +271,14 @@ async def test_snapshot_stats_with_running_tasks_only(docket: Docket):
     docket.heartbeat_interval = heartbeat
 
     # Add tasks that will be picked up immediately by worker
-    await docket.add(tasks.sleep)(5)
-    await docket.add(tasks.sleep)(5)
+    # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
+    await docket.add(tasks.sleep)(1)
+    await docket.add(tasks.sleep)(1)
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
+
+        await asyncio.sleep(0.1)  # Let worker pick up tasks
 
         result = await run_cli(
             "snapshot",

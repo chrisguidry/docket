@@ -10,10 +10,11 @@ async def test_task_timeout_respects_redelivery_timeout(docket: Docket):
     """Test that tasks are automatically timed out at the redelivery timeout."""
     task_started = False
     task_completed = False
+    event = asyncio.Event()
 
     async def long_running_task(
         customer_id: int,
-        test_mode: str = "timeout",  # Add parameter to control behavior
+        test_mode: str = "timeout",
         concurrency: ConcurrencyLimit = ConcurrencyLimit(
             "customer_id", max_concurrent=1
         ),
@@ -27,11 +28,14 @@ async def test_task_timeout_respects_redelivery_timeout(docket: Docket):
             task_completed = True
         elif test_mode == "long_complete":
             # Long running but within timeout for coverage
-            await asyncio.sleep(1.5)  # Within the 2-second timeout
+            await asyncio.sleep(0.5)  # Within the 2-second timeout
             task_completed = True
         else:
             # Simulate a task that would run longer than redelivery timeout
-            await asyncio.sleep(4)  # This will be cancelled by timeout
+            # Don't set event - task will hang and be timed out
+            await event.wait()
+
+    docket.register(long_running_task)
 
     # Create a worker with short redelivery timeout
     async with Worker(
@@ -109,10 +113,11 @@ async def test_task_timeout_with_concurrent_tasks(docket: Docket):
 async def test_redelivery_timeout_limits_long_tasks(docket: Docket):
     """Test that tasks longer than redelivery timeout are terminated."""
     task_completed = False
+    event = asyncio.Event()
 
     async def long_task(
         customer_id: int,
-        test_mode: str = "timeout",  # Add parameter to control behavior
+        test_mode: str = "timeout",
         concurrency: ConcurrencyLimit = ConcurrencyLimit(
             "customer_id", max_concurrent=1
         ),
@@ -127,8 +132,11 @@ async def test_redelivery_timeout_limits_long_tasks(docket: Docket):
             await asyncio.sleep(0.8)  # Less than 1 second timeout
             task_completed = True
         else:
-            # This will be cancelled by timeout
-            await asyncio.sleep(3)  # Try to run for 3 seconds
+            # Simulate a task that would run longer than redelivery timeout
+            # Don't set event - task will hang and be timed out
+            await event.wait()
+
+    docket.register(long_task)
 
     async with Worker(
         docket,
