@@ -96,7 +96,7 @@ async def test_snapshot_with_mixed_tasks(docket: Docket):
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
 
-    future = datetime.now(timezone.utc) + timedelta(seconds=1)
+    future = datetime.now(timezone.utc) + timedelta(seconds=5)
     await docket.add(tasks.trace, when=future)("hi!")
 
     # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
@@ -191,7 +191,7 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
     docket.heartbeat_interval = heartbeat
 
     # Add multiple tasks of different types
-    future = datetime.now(timezone.utc) + timedelta(seconds=1)
+    future = datetime.now(timezone.utc) + timedelta(seconds=5)
     await docket.add(tasks.trace, when=future, key="trace-1")("hi!")
     await docket.add(tasks.trace, when=future, key="trace-2")("hello!")
 
