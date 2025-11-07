@@ -89,7 +89,7 @@ async def test_perpetual_task_no_state_accumulation_with_ttl_zero(
 
             # Check that we're not accumulating state records
             # With TTL=0, state records should be deleted immediately
-            async with docket_with_zero_ttl.redis() as redis:
+            async with docket_with_zero_ttl.redis() as redis:  # pragma: no branch
                 keys = await redis.keys(f"{docket_with_zero_ttl.name}:runs:*")  # type: ignore
                 assert len(keys) == 0, (
                     f"Should have no state records, found {len(keys)}"

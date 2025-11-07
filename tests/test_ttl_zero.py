@@ -53,7 +53,7 @@ async def test_state_record_expires_immediately_with_ttl_zero(
             assert state is None, "State should be None after TTL=0 deletion"
 
             # Verify no state records exist in Redis
-            async with docket_with_zero_ttl.redis() as redis:
+            async with docket_with_zero_ttl.redis() as redis:  # pragma: no branch
                 keys = await redis.keys(f"{docket_with_zero_ttl.name}:runs:*")  # type: ignore
                 assert len(keys) == 0, (
                     f"Should have no state records, found {len(keys)}"
@@ -112,7 +112,7 @@ async def test_failed_task_with_ttl_zero(docket: Docket, worker: Worker) -> None
 
 async def test_mixed_ttl_workload(docket: Docket, worker: Worker) -> None:
     """Tasks with different TTL settings should not interfere with each other."""
-    async with (
+    async with (  # pragma: no branch
         Docket(
             name="test-with-ttl",
             url=docket.url,
@@ -138,7 +138,7 @@ async def test_mixed_ttl_workload(docket: Docket, worker: Worker) -> None:
         docket_with_ttl.register(task_with_ttl)
         docket_with_zero_ttl.register(task_zero_ttl)
 
-        async with (
+        async with (  # pragma: no branch
             Worker(docket=docket_with_ttl) as worker_with_ttl,
             Worker(docket=docket_with_zero_ttl) as worker_with_zero_ttl,
         ):
