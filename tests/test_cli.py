@@ -28,10 +28,13 @@ async def test_iterate_with_timeout_yields_none_on_timeout():
         yield {"value": 1}  # pragma: no cover
 
     results: list[dict[str, Any] | None] = []
-    async for item in iterate_with_timeout(slow_iterator(), timeout=0.1):
+    async for item in iterate_with_timeout(
+        slow_iterator(), timeout=0.1
+    ):  # pragma: no branch
         results.append(item)
-        if item is None:
+        if item is None:  # pragma: no branch
             break
+        # pragma: no cover - we always timeout in this test
 
     assert results[0] is None
 
@@ -54,7 +57,7 @@ async def test_iterate_with_timeout_cleanup_on_break():
     close_called = False
 
     class MockAsyncIterator:
-        def __aiter__(self):
+        def __aiter__(self):  # pragma: no cover
             return self
 
         async def __anext__(self) -> dict[str, Any]:
@@ -69,8 +72,9 @@ async def test_iterate_with_timeout_cleanup_on_break():
         AsyncGenerator[dict[str, Any] | None, None],
         iterate_with_timeout(mock_iter, timeout=1.0),
     )
-    async for _item in gen:
+    async for _item in gen:  # pragma: no branch
         break
+        # pragma: no cover - we always break in this test
 
     await gen.aclose()
     assert close_called, "aclose() should be called in finally block"
@@ -81,7 +85,7 @@ async def test_iterate_with_timeout_cleanup_on_exception():
     close_called = False
 
     class MockAsyncIterator:
-        def __aiter__(self):
+        def __aiter__(self):  # pragma: no cover
             return self
 
         async def __anext__(self) -> dict[str, Any]:
@@ -95,6 +99,6 @@ async def test_iterate_with_timeout_cleanup_on_exception():
 
     with pytest.raises(ValueError, match="Test error"):
         async for _item in iterate_with_timeout(mock_iter, timeout=1.0):
-            pass
+            pass  # pragma: no cover - exception always raised before this
 
     assert close_called, "aclose() should be called even on exception"
