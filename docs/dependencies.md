@@ -79,6 +79,52 @@ async def diagnostic_task(
     print(f"Worker concurrency: {worker.concurrency}")
 ```
 
+### Reporting Task Progress
+
+The `Progress()` dependency provides access to the current task's progress tracker, allowing tasks to report their progress to external observers:
+
+```python
+from docket import Progress
+from docket.execution import ExecutionProgress
+
+async def import_records(
+    file_path: str,
+    progress: ExecutionProgress = Progress()
+) -> None:
+    records = await load_records(file_path)
+
+    # Set the total number of items to process
+    await progress.set_total(len(records))
+    await progress.set_message("Starting import")
+
+    for i, record in enumerate(records, 1):
+        await import_record(record)
+
+        # Update progress atomically
+        await progress.increment()
+
+        # Optionally update status message
+        if i % 100 == 0:
+            await progress.set_message(f"Imported {i}/{len(records)} records")
+
+    await progress.set_message("Import complete")
+```
+
+Progress updates are:
+- **Atomic**: `increment()` uses Redis HINCRBY for thread-safe updates
+- **Real-time**: Updates published via pub/sub for live monitoring
+- **Observable**: Can be monitored with `docket watch` CLI or programmatically
+- **Ephemeral**: Progress data is automatically deleted when the task completes
+
+The `ExecutionProgress` object provides these methods:
+
+- `set_total(total: int)`: Set the target/total value for progress tracking
+- `increment(amount: int = 1)`: Atomically increment the current progress value
+- `set_message(message: str)`: Update the status message
+- `sync()`: Refresh local state from Redis
+
+For more details on progress monitoring patterns and real-time observation, see [Task State and Progress Monitoring](advanced-patterns.md#task-state-and-progress-monitoring).
+
 ## Advanced Retry Patterns
 
 ### Exponential Backoff
