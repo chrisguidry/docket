@@ -61,7 +61,9 @@ from .instrumentation import (
 )
 
 # Delay before retrying a task blocked by concurrency limits
-CONCURRENCY_BLOCKED_RETRY_DELAY = timedelta(milliseconds=50)
+# Must be larger than redelivery_timeout to ensure atomic reschedule+ACK completes
+# before Redis would consider redelivering the message
+CONCURRENCY_BLOCKED_RETRY_DELAY = timedelta(milliseconds=100)
 
 
 class ConcurrencyBlocked(Exception):
@@ -624,12 +626,6 @@ class Worker:
                                 # Task cannot start due to concurrency limits
                                 raise ConcurrencyBlocked(execution)
 
-                    # Preemptively reschedule the perpetual task for the future
-                    # Note: known/stream_id already deleted by claim_and_run()
-                    rescheduled = await self._perpetuate_if_requested(
-                        execution, dependencies
-                    )
-
                     dependency_failures = {
                         k: v
                         for k, v in dependencies.items()
@@ -824,7 +820,7 @@ class Worker:
         self,
         execution: Execution,
         dependencies: dict[str, Dependency],
-        duration: timedelta | None = None,
+        duration: timedelta,
     ) -> bool:
         perpetual = get_single_dependency_of_type(dependencies, Perpetual)
         if not perpetual:
@@ -835,15 +831,14 @@ class Worker:
             return False
 
         now = datetime.now(timezone.utc)
-        when = max(now, now + perpetual.every - (duration or timedelta(0)))
+        when = max(now, now + perpetual.every - duration)
 
         await self.docket.replace(execution.function, when, execution.key)(
             *perpetual.args,
             **perpetual.kwargs,
         )
 
-        if duration is not None:
-            TASKS_PERPETUATED.add(1, {**self.labels(), **execution.general_labels()})
+        TASKS_PERPETUATED.add(1, {**self.labels(), **execution.general_labels()})
 
         return True
 

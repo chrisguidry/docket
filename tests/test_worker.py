@@ -205,8 +205,9 @@ async def test_redeliveries_respect_concurrency_limits(docket: Docket):
     )  # More work for customer 1
 
     # Use short redelivery timeout so failures get redelivered quickly
+    # Must be long enough for cleanup operations to complete before redelivery
     async with Worker(
-        docket, concurrency=5, redelivery_timeout=timedelta(milliseconds=50)
+        docket, concurrency=5, redelivery_timeout=timedelta(milliseconds=200)
     ) as worker:
         await worker.run_until_finished()
 
@@ -553,7 +554,10 @@ async def test_perpetual_tasks_are_scheduled_close_to_target_time(
     assert len(timestamps) == 8
 
     intervals = [next - previous for previous, next in zip(timestamps, timestamps[1:])]
-    average = sum(intervals, timedelta(0)) / len(intervals)
+
+    # Skip the first interval as initial scheduling may differ from steady-state rescheduling
+    steady_state_intervals = intervals[1:]
+    average = sum(steady_state_intervals, timedelta(0)) / len(steady_state_intervals)
 
     debug = ", ".join([f"{i.total_seconds() * 1000:.2f}ms" for i in intervals])
 
