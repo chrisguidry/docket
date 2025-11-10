@@ -321,7 +321,9 @@ class Worker:
             is_redelivery: bool = False,
         ) -> bool:
             try:
-                execution = await Execution.from_message(self.docket, message)
+                execution = await Execution.from_message(
+                    self.docket, message, redelivered=is_redelivery
+                )
             except ValueError as e:
                 logger.error(
                     "Unable to start task: %s",
@@ -329,7 +331,6 @@ class Worker:
                     extra=log_context,
                 )
                 return False
-            execution.redelivered = is_redelivery
 
             task = asyncio.create_task(self._execute(execution), name=execution.key)
             active_tasks[task] = message_id

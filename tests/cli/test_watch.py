@@ -421,3 +421,24 @@ async def test_watch_task_with_worker_in_state_event(docket: Docket, worker: Wor
     assert result.exit_code == 0
     assert "worker-event" in result.output
     assert docket.name in result.output
+
+
+async def test_watch_task_with_incomplete_data(docket: Docket):
+    """Watch should show error when task has incomplete data in Redis."""
+    # Manually create runs hash with incomplete data (missing function/args/kwargs)
+    async with docket.redis() as redis:
+        runs_key = f"{docket.name}:runs:incomplete-task"
+        await redis.hset(runs_key, mapping={"state": "scheduled"})  # type: ignore[misc]
+
+    result = await run_cli(
+        "watch",
+        "incomplete-task",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+    )
+
+    assert result.exit_code == 0
+    assert "Error" in result.output
+    assert "not found" in result.output or "incomplete-task" in result.output

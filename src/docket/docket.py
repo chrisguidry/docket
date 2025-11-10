@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
-    Any,
     AsyncGenerator,
     Awaitable,
     Callable,
@@ -34,6 +33,7 @@ from uuid_extensions import uuid7
 
 from .execution import (
     Execution,
+    ExecutionState,
     LiteralOperator,
     Operator,
     Restore,
@@ -103,12 +103,25 @@ class RunningExecution(Execution):
         worker: str,
         started: datetime,
     ) -> None:
-        self.function: TaskFunction = execution.function
-        self.args: tuple[Any, ...] = execution.args
-        self.kwargs: dict[str, Any] = execution.kwargs
-        self.when: datetime = execution.when
-        self.key: str = execution.key
-        self.attempt: int = execution.attempt
+        # Call parent constructor to properly initialize immutable fields
+        super().__init__(
+            docket=execution.docket,
+            function=execution.function,
+            args=execution.args,
+            kwargs=execution.kwargs,
+            key=execution.key,
+            when=execution.when,
+            attempt=execution.attempt,
+            trace_context=execution.trace_context,
+            redelivered=execution.redelivered,
+        )
+        # Copy over mutable state fields
+        self.state: ExecutionState = execution.state
+        self.started_at: datetime | None = execution.started_at
+        self.completed_at: datetime | None = execution.completed_at
+        self.error: str | None = execution.error
+        self.result_key: str | None = execution.result_key
+        # Set RunningExecution-specific fields
         self.worker = worker
         self.started = started
 
@@ -354,7 +367,7 @@ class Docket:
             key = str(uuid7())
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
-            execution = Execution(self, function, args, kwargs, when, key, attempt=1)
+            execution = Execution(self, function, args, kwargs, key, when, attempt=1)
 
             # Check if task is stricken before scheduling
             if self.strike_list.is_stricken(execution):
@@ -430,7 +443,7 @@ class Docket:
             function = self.tasks[function]
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
-            execution = Execution(self, function, args, kwargs, when, key, attempt=1)
+            execution = Execution(self, function, args, kwargs, key, when, attempt=1)
 
             # Check if task is stricken before scheduling
             if self.strike_list.is_stricken(execution):
@@ -505,6 +518,93 @@ class Docket:
                 await self._cancel(redis, key)
 
         TASKS_CANCELLED.add(1, self.labels())
+
+    async def get_execution(self, key: str) -> Execution | None:
+        """Get a task Execution from the Docket by its key.
+
+        Args:
+            key: The task key.
+
+        Returns:
+            The Execution if found, None if the key doesn't exist.
+
+        Example:
+            # Claim check pattern: schedule a task, save the key,
+            # then retrieve the execution later to check status or get results
+            execution = await docket.add(my_task, key="important-task")(args)
+            task_key = execution.key
+
+            # Later, retrieve the execution by key
+            execution = await docket.get_execution(task_key)
+            if execution:
+                await execution.get_result()
+        """
+        import cloudpickle
+
+        async with self.redis() as redis:
+            runs_key = f"{self.name}:runs:{key}"
+            data = await redis.hgetall(runs_key)
+
+            if not data:
+                return None
+
+            # Extract task definition from runs hash
+            function_name = data.get(b"function")
+            args_data = data.get(b"args")
+            kwargs_data = data.get(b"kwargs")
+
+            # TODO: Remove in next breaking release (v0.14.0) - fallback for 0.13.0 compatibility
+            # Check parked hash if runs hash incomplete (0.13.0 didn't store task data in runs hash)
+            if not function_name or not args_data or not kwargs_data:
+                parked_key = self.parked_task_key(key)
+                parked_data = await redis.hgetall(parked_key)
+                if parked_data:
+                    function_name = parked_data.get(b"function")
+                    args_data = parked_data.get(b"args")
+                    kwargs_data = parked_data.get(b"kwargs")
+
+            if not function_name or not args_data or not kwargs_data:
+                return None
+
+            # Look up function in registry, or create a placeholder if not found
+            function_name_str = function_name.decode()
+            function = self.tasks.get(function_name_str)
+            if not function:
+                # Create a placeholder function for display purposes (e.g., CLI watch)
+                # This allows viewing task state even if function isn't registered
+                async def placeholder() -> None:
+                    pass  # pragma: no cover
+
+                placeholder.__name__ = function_name_str
+                function = placeholder
+
+            # Deserialize args and kwargs
+            args = cloudpickle.loads(args_data)
+            kwargs = cloudpickle.loads(kwargs_data)
+
+            # Extract scheduling metadata
+            when_str = data.get(b"when")
+            if not when_str:
+                return None
+            when = datetime.fromtimestamp(float(when_str.decode()), tz=timezone.utc)
+
+            # Build execution (attempt defaults to 1 for initial scheduling)
+            from docket.execution import Execution
+
+            execution = Execution(
+                docket=self,
+                function=function,
+                args=args,
+                kwargs=kwargs,
+                key=key,
+                when=when,
+                attempt=1,
+            )
+
+            # Sync with current state from Redis
+            await execution.sync()
+
+            return execution
 
     @property
     def queue_key(self) -> str:

@@ -110,7 +110,7 @@ async def test_progress_increment_invalid(docket: Docket):
 async def test_progress_increment(docket: Docket):
     """Progress should atomically increment current value."""
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
 
     # Initialize with set_running (which sets current=0)
@@ -325,7 +325,7 @@ async def test_error_message_stored_on_failure(docket: Docket, worker: Worker):
 async def test_concurrent_progress_updates(docket: Docket):
     """Progress updates should be atomic and safe for concurrent access."""
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
     progress = execution.progress
 
@@ -351,7 +351,7 @@ async def test_concurrent_progress_updates(docket: Docket):
 async def test_progress_publish_events(docket: Docket):
     """Progress updates should publish events to pub/sub channel."""
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
     progress = execution.progress
 
@@ -417,7 +417,7 @@ async def test_state_publish_events(docket: Docket, the_task: AsyncMock):
 async def test_run_subscribe_both_state_and_progress(docket: Docket):
     """Run.subscribe() should yield both state and progress events."""
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
 
     # Set up subscriber in background
@@ -477,7 +477,7 @@ async def test_run_subscribe_both_state_and_progress(docket: Docket):
 async def test_completed_state_publishes_event(docket: Docket):
     """Completed state should publish event with completed_at timestamp."""
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
 
     # Set up subscriber
@@ -507,7 +507,7 @@ async def test_completed_state_publishes_event(docket: Docket):
 async def test_failed_state_publishes_event_with_error(docket: Docket):
     """Failed state should publish event with error message."""
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
 
     # Set up subscriber
@@ -687,7 +687,7 @@ async def test_end_to_end_failed_task_monitoring(docket: Docket, worker: Worker)
 async def test_mark_as_failed_without_error_message(docket: Docket):
     """Test mark_as_failed with error=None."""
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
 
     await execution.claim("worker-1")
@@ -702,7 +702,7 @@ async def test_mark_as_failed_without_error_message(docket: Docket):
 async def test_execution_sync_with_no_redis_data(docket: Docket):
     """Test sync() when no execution data exists in Redis."""
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "nonexistent-key", 1
+        docket, AsyncMock(), (), {}, "nonexistent-key", datetime.now(timezone.utc), 1
     )
 
     # Sync without ever scheduling
@@ -721,7 +721,7 @@ async def test_execution_sync_with_missing_state_field(docket: Docket):
     from unittest.mock import AsyncMock, patch
 
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
 
     # Set initial state
@@ -756,7 +756,7 @@ async def test_execution_sync_with_string_state_value(docket: Docket):
     from unittest.mock import AsyncMock, patch
 
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
 
     # Mock Redis to return string state (defensive code handles both bytes and str)
