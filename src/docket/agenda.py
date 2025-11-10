@@ -185,8 +185,8 @@ class Agenda:
                 function=resolved_func,
                 args=args,
                 kwargs=kwargs,
-                when=schedule_time,
                 key=key,
+                when=schedule_time,
                 attempt=1,
             )
             executions.append(execution)

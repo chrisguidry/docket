@@ -340,7 +340,7 @@ async def test_get_result_with_expired_timeout(docket: Docket):
 
     # Create execution in non-terminal state
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
     execution.state = ExecutionState.RUNNING
 
@@ -362,7 +362,7 @@ async def test_get_result_failed_task_without_result_key(docket: Docket):
 
     # Create execution in FAILED state without result_key
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
     execution.state = ExecutionState.FAILED
     execution.error = "Something went wrong"
@@ -467,7 +467,7 @@ async def test_get_result_with_both_timeout_and_deadline_raises(
     from unittest.mock import AsyncMock
 
     execution = Execution(
-        docket, AsyncMock(), (), {}, datetime.now(timezone.utc), "test-key", 1
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
     execution.state = ExecutionState.COMPLETED
 

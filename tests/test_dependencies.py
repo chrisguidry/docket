@@ -589,22 +589,22 @@ async def test_contextvar_reset_on_reentrant_call(docket: Docket, worker: Worker
 
     execution1 = Execution(
         docket=docket,
-        key="task1-key",
         function=task1,
         args=(),
         kwargs={},
-        attempt=1,
+        key="task1-key",
         when=datetime.now(timezone.utc),
+        attempt=1,
     )
 
     execution2 = Execution(
         docket=docket,
-        key="task2-key",
         function=task2,
         args=(),
         kwargs={},
-        attempt=1,
+        key="task2-key",
         when=datetime.now(timezone.utc),
+        attempt=1,
     )
 
     # Capture contextvars from first call
@@ -640,12 +640,12 @@ async def test_contextvar_not_leaked_to_caller(docket: Docket):
 
     execution = Execution(
         docket=docket,
-        key="test-key",
         function=dummy_task,
         args=(),
         kwargs={},
-        attempt=1,
+        key="test-key",
         when=datetime.now(timezone.utc),
+        attempt=1,
     )
 
     async with Docket("test-contextvar-leak", url="memory://leak-test") as test_docket:

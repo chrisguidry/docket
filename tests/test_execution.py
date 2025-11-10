@@ -2,10 +2,12 @@ from typing import Annotated
 
 import pytest
 
+from datetime import datetime, timezone
+
 from docket import Docket, Worker
 from docket.annotations import Logged
 from docket.dependencies import CurrentDocket, CurrentWorker, Depends
-from docket.execution import TaskFunction, compact_signature, get_signature
+from docket.execution import Execution, TaskFunction, compact_signature, get_signature
 
 
 async def no_args() -> None: ...  # pragma: no cover
@@ -61,3 +63,83 @@ async def test_compact_signature(
     docket: Docket, worker: Worker, function: TaskFunction, expected: str
 ):
     assert compact_signature(get_signature(function)) == expected
+
+
+async def test_execution_function_is_immutable(docket: Docket):
+    async def task(x: int) -> int:  # pragma: no cover
+        return x * 2
+
+    execution = Execution(
+        docket=docket,
+        function=task,
+        args=(5,),
+        kwargs={},
+        when=datetime.now(timezone.utc),
+        key="test-key",
+        attempt=1,
+    )
+
+    assert execution.function == task
+
+    with pytest.raises(AttributeError):
+        execution.function = no_args  # type: ignore[misc]
+
+
+async def test_execution_args_is_immutable(docket: Docket):
+    async def task(x: int) -> int:  # pragma: no cover
+        return x * 2
+
+    execution = Execution(
+        docket=docket,
+        function=task,
+        args=(5,),
+        kwargs={},
+        when=datetime.now(timezone.utc),
+        key="test-key",
+        attempt=1,
+    )
+
+    assert execution.args == (5,)
+
+    with pytest.raises(AttributeError):
+        execution.args = (10,)  # type: ignore[misc]
+
+
+async def test_execution_kwargs_is_immutable(docket: Docket):
+    async def task(x: int, y: int = 2) -> int:  # pragma: no cover
+        return x * y
+
+    execution = Execution(
+        docket=docket,
+        function=task,
+        args=(5,),
+        kwargs={"y": 3},
+        when=datetime.now(timezone.utc),
+        key="test-key",
+        attempt=1,
+    )
+
+    assert execution.kwargs == {"y": 3}
+
+    with pytest.raises(AttributeError):
+        execution.kwargs = {"y": 10}  # type: ignore[misc]
+
+
+async def test_execution_key_is_immutable(docket: Docket):
+    async def task(x: int) -> int:  # pragma: no cover
+        return x * 2
+
+    execution = Execution(
+        docket=docket,
+        function=task,
+        args=(5,),
+        kwargs={},
+        when=datetime.now(timezone.utc),
+        key="test-key",
+        attempt=1,
+    )
+
+    assert execution.key == "test-key"
+
+    with pytest.raises(AttributeError):
+        execution.key = "new-key"  # type: ignore[misc]

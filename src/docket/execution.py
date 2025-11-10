@@ -312,29 +312,75 @@ class Execution:
         function: TaskFunction,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
-        when: datetime,
         key: str,
+        when: datetime,
         attempt: int,
         trace_context: opentelemetry.context.Context | None = None,
         redelivered: bool = False,
     ) -> None:
-        self.docket = docket
-        self.function = function
-        self.args = args
-        self.kwargs = kwargs
+        # Task definition (immutable)
+        self._docket = docket
+        self._function = function
+        self._args = args
+        self._kwargs = kwargs
+        self._key = key
+
+        # Scheduling metadata
         self.when = when
-        self.key = key
         self.attempt = attempt
-        self.trace_context = trace_context
-        self.redelivered = redelivered
+        self._trace_context = trace_context
+        self._redelivered = redelivered
+
+        # Lifecycle state (mutable)
         self.state: ExecutionState = ExecutionState.SCHEDULED
         self.worker: str | None = None
         self.started_at: datetime | None = None
         self.completed_at: datetime | None = None
         self.error: str | None = None
         self.result_key: str | None = None
+
+        # Progress tracking
         self.progress: ExecutionProgress = ExecutionProgress(docket, key)
+
+        # Redis key
         self._redis_key = f"{docket.name}:runs:{key}"
+
+    # Task definition properties (immutable)
+    @property
+    def docket(self) -> "Docket":
+        """Parent docket instance."""
+        return self._docket
+
+    @property
+    def function(self) -> TaskFunction:
+        """Task function to execute."""
+        return self._function
+
+    @property
+    def args(self) -> tuple[Any, ...]:
+        """Positional arguments for the task."""
+        return self._args
+
+    @property
+    def kwargs(self) -> dict[str, Any]:
+        """Keyword arguments for the task."""
+        return self._kwargs
+
+    @property
+    def key(self) -> str:
+        """Unique task identifier."""
+        return self._key
+
+    # Scheduling metadata properties
+    @property
+    def trace_context(self) -> opentelemetry.context.Context | None:
+        """OpenTelemetry trace context."""
+        return self._trace_context
+
+    @property
+    def redelivered(self) -> bool:
+        """Whether this message was redelivered."""
+        return self._redelivered
 
     def as_message(self) -> Message:
         return {
@@ -347,7 +393,9 @@ class Execution:
         }
 
     @classmethod
-    async def from_message(cls, docket: "Docket", message: Message) -> Self:
+    async def from_message(
+        cls, docket: "Docket", message: Message, redelivered: bool = False
+    ) -> Self:
         function_name = message[b"function"].decode()
         if not (function := docket.tasks.get(function_name)):
             raise ValueError(
@@ -359,11 +407,11 @@ class Execution:
             function=function,
             args=cloudpickle.loads(message[b"args"]),
             kwargs=cloudpickle.loads(message[b"kwargs"]),
-            when=datetime.fromisoformat(message[b"when"].decode()),
             key=message[b"key"].decode(),
+            when=datetime.fromisoformat(message[b"when"].decode()),
             attempt=int(message[b"attempt"].decode()),
             trace_context=propagate.extract(message, getter=message_getter),
-            redelivered=False,  # Default to False, will be set to True in worker if it's a redelivery
+            redelivered=redelivered,
         )
         await instance.sync()
         return instance
@@ -472,9 +520,24 @@ class Execution:
 
                             -- Extract message fields from ARGV[6] onwards
                             local message = {}
+                            local function_name = nil
+                            local args_data = nil
+                            local kwargs_data = nil
+
                             for i = 6, #ARGV, 2 do
-                                message[#message + 1] = ARGV[i]     -- field name
-                                message[#message + 1] = ARGV[i + 1] -- field value
+                                local field_name = ARGV[i]
+                                local field_value = ARGV[i + 1]
+                                message[#message + 1] = field_name
+                                message[#message + 1] = field_value
+
+                                -- Extract task data fields for runs hash
+                                if field_name == 'function' then
+                                    function_name = field_value
+                                elseif field_name == 'args' then
+                                    args_data = field_value
+                                elseif field_name == 'kwargs' then
+                                    kwargs_data = field_value
+                                end
                             end
 
                             -- Handle rescheduling from stream: atomically ACK message and reschedule to queue
@@ -494,7 +557,10 @@ class Execution:
                                 -- Update state in runs hash (clear stream_id since task is no longer in stream)
                                 redis.call('HSET', runs_key,
                                     'state', 'scheduled',
-                                    'when', when_timestamp
+                                    'when', when_timestamp,
+                                    'function', function_name,
+                                    'args', args_data,
+                                    'kwargs', kwargs_data
                                 )
                                 redis.call('HDEL', runs_key, 'stream_id')
 
@@ -543,7 +609,10 @@ class Execution:
                                     'state', 'queued',
                                     'when', when_timestamp,
                                     'known', when_timestamp,
-                                    'stream_id', message_id
+                                    'stream_id', message_id,
+                                    'function', function_name,
+                                    'args', args_data,
+                                    'kwargs', kwargs_data
                                 )
                             else
                                 -- Park task data for future execution
@@ -556,7 +625,10 @@ class Execution:
                                 redis.call('HSET', runs_key,
                                     'state', 'scheduled',
                                     'when', when_timestamp,
-                                    'known', when_timestamp
+                                    'known', when_timestamp,
+                                    'function', function_name,
+                                    'args', args_data,
+                                    'kwargs', kwargs_data
                                 )
                             end
 

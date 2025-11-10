@@ -9,7 +9,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import Annotated, Any, AsyncIterator, Collection
-from unittest.mock import AsyncMock
 
 import typer
 from rich.console import Console
@@ -27,7 +26,7 @@ from rich.table import Table
 
 from . import __version__, tasks
 from .docket import Docket, DocketSnapshot, WorkerInfo
-from .execution import Execution, ExecutionState, Operator
+from .execution import ExecutionState, Operator
 from .worker import Worker
 
 
@@ -868,9 +867,15 @@ def watch(
 
     async def monitor() -> None:
         async with Docket(docket_name, url) as docket:
-            execution = Execution(
-                docket, AsyncMock(), (), {}, datetime.now(timezone.utc), key, 1
-            )  # TODO: Replace AsyncMock with actual task function
+            execution = await docket.get_execution(key)
+            if not execution:
+                console = Console()
+                console.print(
+                    f"[red]Error:[/red] Task with key '{key}' not found or function not registered",
+                    style="bold",
+                )
+                return
+
             console = Console()
 
             # State colors for display
