@@ -181,6 +181,61 @@ Workers handle task delivery guarantees and fault tolerance. By default, workers
 
 Docket provides at-least-once delivery semantics, meaning tasks may be delivered more than once if workers crash, so design your tasks to be idempotent when possible.
 
+## Task Observability
+
+Docket automatically tracks task execution state and provides comprehensive observability features for monitoring long-running tasks.
+
+### Execution State
+
+Every task transitions through well-defined states (SCHEDULED → QUEUED → RUNNING → COMPLETED/FAILED) that you can query at any time:
+
+```python
+execution = await docket.add(process_order)(order_id=12345)
+
+# Check the current state
+await execution.sync()
+print(f"Task state: {execution.state}")
+```
+
+### Progress Reporting
+
+Long-running tasks can report their progress to provide visibility:
+
+```python
+from docket import Progress
+from docket.execution import ExecutionProgress
+
+async def import_records(
+    file_path: str,
+    progress: ExecutionProgress = Progress()
+) -> None:
+    records = await load_records(file_path)
+    await progress.set_total(len(records))
+
+    for record in records:
+        await process_record(record)
+        await progress.increment()
+```
+
+Progress updates are published in real-time via Redis pub/sub and can be monitored with the `docket watch` CLI command or programmatically.
+
+### Task Results
+
+Tasks can return values that are automatically persisted and retrievable:
+
+```python
+async def calculate_total(order_id: int) -> float:
+    items = await fetch_order_items(order_id)
+    return sum(item.price for item in items)
+
+# Schedule and retrieve the result
+execution = await docket.add(calculate_total)(order_id=12345)
+total = await execution.get_result()  # Waits for completion if needed
+print(f"Order total: ${total:.2f}")
+```
+
+For detailed information on state tracking, progress monitoring, result retrieval, and CLI monitoring tools, see [Task State and Progress Monitoring](advanced-patterns.md#task-state-and-progress-monitoring).
+
 ## What's Next?
 
 You now know the core concepts: creating dockets, scheduling work with idempotent keys, running workers, and basic error handling. This gives you what you need to build background task systems for most applications.
