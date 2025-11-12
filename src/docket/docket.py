@@ -636,7 +636,7 @@ class Docket:
                 _cancel_task,
                 redis.register_script(
                     # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key, runs_key
-                    # ARGV: task_key
+                    # ARGV: task_key, completed_at
                     """
                     local stream_key = KEYS[1]
                     -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
@@ -646,6 +646,7 @@ class Docket:
                     local stream_id_key = KEYS[5]
                     local runs_key = KEYS[6]
                     local task_key = ARGV[1]
+                    local completed_at = ARGV[2]
 
                     -- Get stream ID (check new location first, then legacy)
                     local message_id = redis.call('HGET', runs_key, 'stream_id')
@@ -660,15 +661,22 @@ class Docket:
                         redis.call('XDEL', stream_key, message_id)
                     end
 
-                    -- Clean up all task-related keys (handles both new and legacy formats)
-                    redis.call('DEL', known_key, parked_key, stream_id_key, runs_key)
+                    -- Clean up legacy keys and parked data
+                    redis.call('DEL', known_key, parked_key, stream_id_key)
                     redis.call('ZREM', queue_key, task_key)
+
+                    -- Create tombstone: set CANCELLED state with completed_at timestamp
+                    redis.call('HSET', runs_key, 'state', 'cancelled', 'completed_at', completed_at)
 
                     return 'OK'
                     """
                 ),
             )
         cancel_task = self._cancel_task_script
+
+        # Create tombstone with CANCELLED state
+        completed_at = datetime.now(timezone.utc).isoformat()
+        runs_key = f"{self.name}:runs:{key}"
 
         # Execute the cancellation script
         await cancel_task(
@@ -678,10 +686,18 @@ class Docket:
                 self.parked_task_key(key),
                 self.queue_key,
                 self.stream_id_key(key),
-                f"{self.name}:runs:{key}",  # runs_key
+                runs_key,
             ],
-            args=[key],
+            args=[key, completed_at],
         )
+
+        # Apply TTL or delete tombstone based on execution_ttl
+        if self.execution_ttl:
+            ttl_seconds = int(self.execution_ttl.total_seconds())
+            await redis.expire(runs_key, ttl_seconds)
+        else:
+            # execution_ttl=0 means no observability - delete tombstone immediately
+            await redis.delete(runs_key)
 
     @property
     def strike_key(self) -> str:

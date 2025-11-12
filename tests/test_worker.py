@@ -1703,20 +1703,51 @@ class KeyCountChecker:
             f"Expected more keys after {operation}, but got {total_current} vs {total_baseline}"
         )
 
-    async def verify_keys_returned_to_baseline(self, operation: str) -> None:
-        """Verify that key counts returned to baseline after operation completion."""
-        final_counts = await count_redis_keys_by_type(self.redis, self.docket.name)
-        print(f"Final key counts: {final_counts}")
+    async def verify_remaining_keys_have_ttl(
+        self, operation: str, permanent_keys: set[str] | None = None
+    ) -> None:
+        """Verify that all remaining keys either have TTL or are explicitly permanent.
 
-        # Check each key type matches baseline
-        all_key_types = set(self.baseline_counts.keys()) | set(final_counts.keys())
-        for key_type in all_key_types:
-            baseline_count = self.baseline_counts.get(key_type, 0)
-            final_count = final_counts.get(key_type, 0)
-            assert final_count == baseline_count, (
-                f"Memory leak detected after {operation}: {key_type} keys not cleaned up properly. "
-                f"Baseline: {baseline_count}, Final: {final_count}"
-            )
+        This prevents memory leaks by ensuring that any data keys created during
+        operations will eventually expire.
+
+        Args:
+            operation: Description of the operation for error messages
+            permanent_keys: Set of key patterns that are allowed to not have TTL
+                          (e.g., stream, workers sorted set). Defaults to common
+                          permanent infrastructure keys.
+        """
+        if permanent_keys is None:
+            # Default permanent keys that are part of infrastructure
+            permanent_keys = {
+                f"{self.docket.name}:stream",  # Main task stream
+                f"{self.docket.name}:workers",  # Worker heartbeats
+                f"{self.docket.name}:strikes",  # Strike list stream
+            }
+
+        # Get all keys for this docket
+        pattern = f"{self.docket.name}*"
+        all_keys: list[str] = await self.redis.keys(pattern)  # type: ignore
+
+        keys_without_ttl: list[str] = []
+
+        for key in all_keys:
+            key_str = key.decode() if isinstance(key, bytes) else str(key)
+
+            # Skip explicitly permanent keys
+            if key_str in permanent_keys:
+                continue
+
+            # Check TTL (-1 means no expiry, -2 means key doesn't exist)
+            ttl = await self.redis.ttl(key_str)
+            if ttl == -1:
+                keys_without_ttl.append(key_str)
+
+        assert not keys_without_ttl, (
+            f"Memory leak detected after {operation}: The following keys have no TTL "
+            f"and will never expire: {keys_without_ttl}. All data keys should have TTL set "
+            f"to prevent permanent memory usage."
+        )
 
 
 async def test_redis_key_cleanup_successful_task(
@@ -1724,8 +1755,8 @@ async def test_redis_key_cleanup_successful_task(
 ) -> None:
     """Test that Redis keys are properly cleaned up after successful task execution.
 
-    This test systematically counts Redis keys before and after task operations to detect
-    memory leaks where keys are not properly cleaned up.
+    After execution, a tombstone (runs hash) with COMPLETED state remains with TTL.
+    This test verifies that all remaining keys have TTL to prevent memory leaks.
     """
     # Prime the worker (run once with no tasks to establish baseline)
     await worker.run_until_finished()
@@ -1754,12 +1785,27 @@ async def test_redis_key_cleanup_successful_task(
         # Verify task executed successfully
         assert task_executed, "Task should have executed successfully"
 
-        # Verify cleanup
+        # Verify state tombstone remains with TTL
         await checker.verify_keys_increased("successful task execution")
+        await checker.verify_remaining_keys_have_ttl("successful task execution")
+
+        # Also verify with explicit permanent_keys to cover that branch
+        await checker.verify_remaining_keys_have_ttl(
+            "successful task execution",
+            permanent_keys={
+                f"{docket.name}:stream",
+                f"{docket.name}:workers",
+                f"{docket.name}:strikes",
+            },
+        )
 
 
 async def test_redis_key_cleanup_failed_task(docket: Docket, worker: Worker) -> None:
-    """Test that Redis keys are properly cleaned up after failed task execution."""
+    """Test that Redis keys are properly cleaned up after failed task execution.
+
+    After failure, a tombstone (runs hash) with FAILED state remains with TTL.
+    This test verifies that all remaining keys have TTL to prevent memory leaks.
+    """
     # Prime the worker
     await worker.run_until_finished()
 
@@ -1787,12 +1833,21 @@ async def test_redis_key_cleanup_failed_task(docket: Docket, worker: Worker) -> 
         # Verify task was attempted
         assert task_attempted, "Task should have been attempted"
 
-        # Verify cleanup despite failure
+        # Verify state tombstone remains with TTL despite failure
         await checker.verify_keys_increased("failed task execution")
+        await checker.verify_remaining_keys_have_ttl("failed task execution")
 
 
 async def test_redis_key_cleanup_cancelled_task(docket: Docket, worker: Worker) -> None:
-    """Test that Redis keys are properly cleaned up after task cancellation."""
+    """Test that Redis keys are properly cleaned up after task cancellation.
+
+    After cancellation, a tombstone (runs hash) with CANCELLED state remains with TTL
+    to support the claim check pattern via get_execution(). All other keys (queue,
+    parked data, etc.) are cleaned up. This test verifies that all remaining keys have
+    TTL to prevent memory leaks.
+    """
+    from docket.execution import ExecutionState
+
     # Prime the worker
     await worker.run_until_finished()
 
@@ -1825,8 +1880,43 @@ async def test_redis_key_cleanup_cancelled_task(docket: Docket, worker: Worker) 
             "Task should not have been executed after cancellation"
         )
 
-        # Verify cleanup after cancellation
-        await checker.verify_keys_returned_to_baseline("task cancellation")
+        # Verify tombstone exists with CANCELLED state
+        retrieved = await docket.get_execution(execution.key)
+        assert retrieved is not None, "Tombstone should exist after cancellation"
+        assert retrieved.state == ExecutionState.CANCELLED
+
+        # Verify only the runs hash (tombstone) remains
+        # All other keys (queue, parked, etc.) should be cleaned up
+        final_counts = await count_redis_keys_by_type(redis, docket.name)
+        # Baseline had 1 stream, now we have 1 stream + 1 hash (tombstone)
+        assert final_counts.get("hash", 0) == 1, (
+            "Should have exactly 1 hash (tombstone)"
+        )
+        assert final_counts.get("zset", 0) == 0, "Queue should be cleaned up"
+
+        # Verify tombstone has TTL to prevent permanent memory leak
+        await checker.verify_remaining_keys_have_ttl("task cancellation")
+
+
+async def test_verify_remaining_keys_have_ttl_detects_leaks(
+    docket: Docket, worker: Worker
+) -> None:
+    """Test that verify_remaining_keys_have_ttl properly detects keys without TTL."""
+    await worker.run_until_finished()
+
+    async with docket.redis() as redis:
+        checker = KeyCountChecker(docket, redis)
+
+        # Intentionally create a key without TTL (simulating a memory leak)
+        leak_key = f"{docket.name}:test-leak"
+        await redis.set(leak_key, "leaked-value")
+
+        # Should detect the leak
+        with pytest.raises(AssertionError, match="Memory leak detected"):
+            await checker.verify_remaining_keys_have_ttl("test operation")
+
+        # Clean up
+        await redis.delete(leak_key)
 
 
 async def test_replace_task_with_legacy_known_key(

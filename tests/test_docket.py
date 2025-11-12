@@ -6,6 +6,7 @@ import pytest
 import redis.exceptions
 
 from docket.docket import Docket
+from docket.execution import ExecutionState
 
 
 async def test_docket_aenter_propagates_connection_errors():
@@ -407,3 +408,127 @@ async def test_get_execution_fallback_to_parked_hash(
     assert execution.function == the_task
     assert execution.args == ("legacy-arg",)
     assert execution.kwargs == {"legacy": "kwarg"}
+
+
+async def test_cancelled_state_creates_tombstone(docket: Docket, the_task: AsyncMock):
+    """Cancelling a task should create a tombstone with CANCELLED state."""
+    docket.register(the_task)
+
+    # Schedule a future task
+    future = datetime.now(timezone.utc) + timedelta(seconds=60)
+    execution = await docket.add(the_task, when=future, key="task-to-cancel")(
+        "arg1", kwarg1="value1"
+    )
+
+    # Cancel the task
+    await docket.cancel(execution.key)
+
+    # Retrieve execution - should have CANCELLED state
+    retrieved = await docket.get_execution(execution.key)
+    assert retrieved is not None
+    assert retrieved.state == ExecutionState.CANCELLED
+    assert retrieved.key == "task-to-cancel"
+    assert retrieved.function == the_task
+    assert retrieved.args == ("arg1",)
+    assert retrieved.kwargs == {"kwarg1": "value1"}
+
+
+async def test_cancelled_state_respects_ttl(docket: Docket, the_task: AsyncMock):
+    """Cancelled task tombstone should have TTL set from execution_ttl."""
+    docket.register(the_task)
+
+    # Schedule a task
+    future = datetime.now(timezone.utc) + timedelta(seconds=60)
+    execution = await docket.add(the_task, when=future, key="ttl-task")("test")
+
+    # Cancel the task
+    await docket.cancel(execution.key)
+
+    # Check that the runs hash has TTL set
+    async with docket.redis() as redis:
+        runs_key = f"{docket.name}:runs:{execution.key}"
+        ttl = await redis.ttl(runs_key)
+
+        # TTL should be set (not -1 which means no expiry)
+        # Should be close to execution_ttl (default 15 minutes = 900 seconds)
+        assert ttl > 0
+        assert ttl <= int(docket.execution_ttl.total_seconds())
+
+
+async def test_cancelled_state_with_ttl_zero(docket: Docket, the_task: AsyncMock):
+    """Cancelled task with execution_ttl=0 should delete tombstone immediately."""
+    # Create docket with TTL=0
+    async with Docket(
+        name=f"{docket.name}-ttl-zero",
+        url=docket.url,
+        execution_ttl=timedelta(0),
+    ) as zero_ttl_docket:
+        zero_ttl_docket.register(the_task)
+
+        # Schedule and cancel a task
+        future = datetime.now(timezone.utc) + timedelta(seconds=60)
+        execution = await zero_ttl_docket.add(
+            the_task, when=future, key="zero-ttl-task"
+        )("test")
+        await zero_ttl_docket.cancel(execution.key)
+
+        # Tombstone should be deleted immediately
+        retrieved = await zero_ttl_docket.get_execution(execution.key)
+        assert retrieved is None
+
+
+async def test_get_execution_after_cancel(docket: Docket, the_task: AsyncMock):
+    """get_execution should retrieve cancelled task state."""
+    docket.register(the_task)
+
+    # Schedule task
+    execution = await docket.add(the_task, key="cancelled-task")("data")
+
+    # Cancel it
+    await docket.cancel(execution.key)
+
+    # Should be able to retrieve it with CANCELLED state
+    retrieved = await docket.get_execution("cancelled-task")
+    assert retrieved is not None
+    assert retrieved.state == ExecutionState.CANCELLED
+    assert retrieved.key == "cancelled-task"
+
+
+async def test_replace_does_not_set_cancelled_state(
+    docket: Docket, the_task: AsyncMock
+):
+    """replace() should not create CANCELLED state - it's a replacement, not cancellation."""
+    docket.register(the_task)
+
+    # Schedule a task
+    future = datetime.now(timezone.utc) + timedelta(seconds=60)
+    await docket.add(the_task, when=future, key="replace-task")("original")
+
+    # Replace it
+    await docket.replace(the_task, when=future, key="replace-task")("replaced")
+
+    # The new execution should be SCHEDULED, not CANCELLED
+    retrieved = await docket.get_execution("replace-task")
+    assert retrieved is not None
+    assert retrieved.state == ExecutionState.SCHEDULED
+    assert retrieved.args == ("replaced",)  # New args
+
+
+async def test_cancellation_idempotent_with_tombstone(
+    docket: Docket, the_task: AsyncMock
+):
+    """Cancelling twice should be idempotent - second cancel sees the tombstone."""
+    docket.register(the_task)
+
+    # Schedule a task
+    future = datetime.now(timezone.utc) + timedelta(seconds=60)
+    execution = await docket.add(the_task, when=future, key="idempotent-task")("test")
+
+    # Cancel it twice - both should succeed
+    await docket.cancel(execution.key)
+    await docket.cancel(execution.key)  # Should be no-op
+
+    # Should still have CANCELLED tombstone
+    retrieved = await docket.get_execution(execution.key)
+    assert retrieved is not None
+    assert retrieved.state == ExecutionState.CANCELLED
