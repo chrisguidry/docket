@@ -8,7 +8,26 @@ import pytest
 
 from docket import Docket, Execution, ExecutionState, Progress, Worker
 from docket.execution import ExecutionProgress, ProgressEvent, StateEvent
-from tests._key_leak_checker import KeyCountChecker
+
+
+@pytest.fixture
+async def execution(docket: Docket):
+    """Create an Execution with key='test-key' that cleans up after itself."""
+    execution = Execution(
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
+    )
+    try:
+        yield execution
+    finally:
+        # Clean up execution state and progress data
+        await execution.mark_as_completed()
+
+
+@pytest.fixture
+async def progress(execution: Execution):
+    """Create an ExecutionProgress from execution that cleans up with it."""
+    await execution.claim("worker-1")
+    return execution.progress
 
 
 async def test_run_state_scheduled(docket: Docket, the_task: AsyncMock):
@@ -66,16 +85,18 @@ async def test_run_state_failed_on_exception(docket: Docket, worker: Worker):
     assert execution.state == ExecutionState.FAILED
 
 
-async def test_progress_create(docket: Docket):
+async def test_progress_create(execution: Execution):
     """Progress.create() should initialize instance from Redis."""
-    # First create a progress instance and set some values
-    progress = ExecutionProgress(docket, "test-key")
+    await execution.claim("worker-1")
+    progress = execution.progress
+
+    # Set some values
     await progress.set_total(100)
     await progress.increment(5)
     await progress.set_message("Test message")
 
     # Now create a new instance using create()
-    progress2 = await ExecutionProgress.create(docket, "test-key")
+    progress2 = await ExecutionProgress.create(execution.docket, "test-key")
 
     # Verify it loaded the data from Redis
     assert progress2.current == 5
@@ -84,10 +105,8 @@ async def test_progress_create(docket: Docket):
     assert progress2.updated_at is not None
 
 
-async def test_progress_set_total(docket: Docket):
+async def test_progress_set_total(progress: ExecutionProgress):
     """Progress should be able to set total value."""
-    progress = ExecutionProgress(docket, "test-key")
-
     await progress.set_total(100)
 
     assert progress.total == 100
@@ -108,19 +127,8 @@ async def test_progress_increment_invalid(docket: Docket):
         await progress.increment(0)
 
 
-async def test_progress_increment(docket: Docket, key_leak_checker: KeyCountChecker):
+async def test_progress_increment(progress: ExecutionProgress):
     """Progress should atomically increment current value."""
-    execution = Execution(
-        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
-    )
-
-    # This test doesn't complete the execution lifecycle
-    key_leak_checker.add_exemption(f"{docket.name}:runs:test-key")
-
-    # Initialize with set_running (which sets current=0)
-    await execution.claim("worker-1")
-    progress = execution.progress
-
     # Increment multiple times
     await progress.increment()
     await progress.increment()
@@ -130,10 +138,8 @@ async def test_progress_increment(docket: Docket, key_leak_checker: KeyCountChec
     assert progress.updated_at is not None
 
 
-async def test_progress_set_message(docket: Docket):
+async def test_progress_set_message(progress: ExecutionProgress):
     """Progress should be able to set status message."""
-    progress = ExecutionProgress(docket, "test-key")
-
     await progress.set_message("Processing items...")
 
     assert progress.message == "Processing items..."
@@ -326,19 +332,8 @@ async def test_error_message_stored_on_failure(docket: Docket, worker: Worker):
     assert execution.error == "RuntimeError: Something went wrong!"
 
 
-async def test_concurrent_progress_updates(
-    docket: Docket, key_leak_checker: KeyCountChecker
-):
+async def test_concurrent_progress_updates(progress: ExecutionProgress):
     """Progress updates should be atomic and safe for concurrent access."""
-    execution = Execution(
-        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
-    )
-    progress = execution.progress
-
-    # This test doesn't complete the execution lifecycle
-    key_leak_checker.add_exemption(f"{docket.name}:runs:test-key")
-
-    await execution.claim("worker-1")
 
     # Simulate concurrent increments
     async def increment_many():
@@ -357,18 +352,8 @@ async def test_concurrent_progress_updates(
     assert progress.current == 30
 
 
-async def test_progress_publish_events(
-    docket: Docket, key_leak_checker: KeyCountChecker
-):
+async def test_progress_publish_events(progress: ExecutionProgress):
     """Progress updates should publish events to pub/sub channel."""
-    execution = Execution(
-        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
-    )
-    progress = execution.progress
-
-    # This test doesn't complete the execution lifecycle
-    key_leak_checker.add_exemption(f"{docket.name}:runs:test-key")
-
     # Set up subscriber in background
     events: list[ProgressEvent] = []
 
@@ -383,8 +368,7 @@ async def test_progress_publish_events(
     # Give subscriber time to connect
     await asyncio.sleep(0.1)
 
-    # Initialize and publish updates
-    await execution.claim("worker-1")
+    # Publish updates
     await progress.set_total(100)
     await progress.increment(10)
     await progress.set_message("Processing...")
@@ -428,17 +412,8 @@ async def test_state_publish_events(docket: Docket, the_task: AsyncMock):
     assert execution.state == ExecutionState.QUEUED
 
 
-async def test_run_subscribe_both_state_and_progress(
-    docket: Docket, key_leak_checker: KeyCountChecker
-):
+async def test_run_subscribe_both_state_and_progress(execution: Execution):
     """Run.subscribe() should yield both state and progress events."""
-    execution = Execution(
-        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
-    )
-
-    # This test doesn't complete the execution lifecycle
-    key_leak_checker.add_exemption(f"{docket.name}:runs:test-key")
-
     # Set up subscriber in background
     all_events: list[StateEvent | ProgressEvent] = []
 
@@ -493,12 +468,8 @@ async def test_run_subscribe_both_state_and_progress(
     assert increment_event["current"] == 5
 
 
-async def test_completed_state_publishes_event(docket: Docket):
+async def test_completed_state_publishes_event(execution: Execution):
     """Completed state should publish event with completed_at timestamp."""
-    execution = Execution(
-        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
-    )
-
     # Set up subscriber
     events: list[StateEvent] = []
 
@@ -523,12 +494,8 @@ async def test_completed_state_publishes_event(docket: Docket):
     assert "completed_at" in completed_event
 
 
-async def test_failed_state_publishes_event_with_error(docket: Docket):
+async def test_failed_state_publishes_event_with_error(execution: Execution):
     """Failed state should publish event with error message."""
-    execution = Execution(
-        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
-    )
-
     # Set up subscriber
     events: list[StateEvent] = []
 
@@ -703,12 +670,8 @@ async def test_end_to_end_failed_task_monitoring(docket: Docket, worker: Worker)
     assert "intentionally" in failed_event["error"]
 
 
-async def test_mark_as_failed_without_error_message(docket: Docket):
+async def test_mark_as_failed_without_error_message(execution: Execution):
     """Test mark_as_failed with error=None."""
-    execution = Execution(
-        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
-    )
-
     await execution.claim("worker-1")
     await execution.mark_as_failed(error=None)
 

@@ -990,7 +990,7 @@ async def test_striking_entire_parameters(
 ):
     """docket should support striking and restoring entire parameters"""
 
-    # Tasks with AsyncMock have serialization issues - exempt all runs keys for this test
+    # Struck tasks remain without TTL so they can be restored
     key_leak_checker.add_pattern_exemption(f"{docket.name}:runs:*")
 
     await docket.add(the_task)(customer_id="123", order_id="456")
@@ -1094,7 +1094,7 @@ async def test_striking_tasks_for_specific_parameters(
 ):
     """docket should support striking and restoring tasks for specific parameters"""
 
-    # Tasks with AsyncMock have serialization issues - exempt all runs keys for this test
+    # Struck tasks remain without TTL so they can be restored
     key_leak_checker.add_pattern_exemption(f"{docket.name}:runs:*")
 
     await docket.add(the_task)("a", b=1)

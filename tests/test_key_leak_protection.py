@@ -5,9 +5,11 @@ without TTLs leak during test execution, protecting against memory leaks in
 long-running Docket deployments.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
-from docket import Docket, Worker
+from docket import ConcurrencyLimit, Docket, Worker
 from tests._key_leak_checker import KeyCountChecker
 
 
@@ -155,7 +157,6 @@ async def test_concurrency_keys_are_handled(
     Concurrency keys don't have explicit TTLs but are self-cleaning via Lua script,
     so they should be exempt from leak detection.
     """
-    from docket import ConcurrencyLimit
 
     async def task_with_concurrency(limit: ConcurrencyLimit) -> None:
         async with limit:
@@ -177,7 +178,6 @@ async def test_queue_is_cleaned_up(
     key_leak_checker: KeyCountChecker,
 ) -> None:
     """Verify that the queue sorted set is cleaned up after tasks complete."""
-    from datetime import datetime, timedelta, timezone
 
     async def scheduled_task() -> None:
         pass

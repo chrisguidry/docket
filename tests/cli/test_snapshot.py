@@ -7,7 +7,7 @@ import pytest
 from pytest import MonkeyPatch
 from rich.table import Table
 
-from docket import tasks
+from docket import Execution, tasks
 from docket.cli import relative_time
 from docket.cli import snapshot as snapshot_command
 from docket.docket import Docket, DocketSnapshot
@@ -108,8 +108,6 @@ async def test_snapshot_with_mixed_tasks(
     execution1 = await docket.add(tasks.trace, when=future)("hi!")
 
     # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
-    from docket import Execution
-
     executions: list[Execution] = []
     for _ in range(5):
         executions.append(await docket.add(tasks.sleep)(4))

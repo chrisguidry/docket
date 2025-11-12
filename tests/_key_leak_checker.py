@@ -1,5 +1,6 @@
 """Key leak detection for preventing Redis memory leaks in tests."""
 
+from fnmatch import fnmatch
 from typing import Iterable
 
 from redis.asyncio import Redis
@@ -38,13 +39,18 @@ class KeyCountChecker:
         self.exemptions: set[str] = set()
         self.pattern_exemptions: set[str] = set()
 
-        # Permanent infrastructure keys that don't need TTL
+        # Permanent keys that don't need TTL
         self.permanent_keys = {
-            f"{docket.name}:stream",  # Main task stream
-            f"{docket.name}:workers",  # Worker heartbeats
-            f"{docket.name}:strikes",  # Strike list stream
-            f"{docket.name}:queue",  # Scheduled tasks sorted set (infrastructure)
+            f"{docket.name}:stream",  # Task stream for ready-to-execute tasks
+            f"{docket.name}:workers",  # Worker heartbeat tracking
+            f"{docket.name}:strikes",  # Strike command stream
+            f"{docket.name}:queue",  # Scheduled tasks sorted set
         }
+        # Permanent key patterns (using simple prefix matching)
+        self.permanent_patterns = [
+            f"{docket.name}:worker-tasks:",  # Per-worker task capability sets
+            f"{docket.name}:task-workers:",  # Per-task worker index sets
+        ]
 
     def add_exemption(self, key_pattern: str) -> None:
         """Add a key pattern to exempt from leak checking."""
@@ -87,32 +93,18 @@ class KeyCountChecker:
                 if key_str in self.permanent_keys:
                     continue
 
+                # Skip permanent key patterns
+                if any(key_str.startswith(pat) for pat in self.permanent_patterns):
+                    continue
+
                 # Skip exempted keys
                 if key_str in self.exemptions:
                     continue
 
                 # Skip pattern-exempted keys
                 if self.pattern_exemptions:
-                    from fnmatch import fnmatch
-
                     if any(fnmatch(key_str, pat) for pat in self.pattern_exemptions):
                         continue
-
-                # Skip worker-tasks and task-workers sets (self-cleaning via heartbeat)
-                if ":worker-tasks:" in key_str or ":task-workers:" in key_str:
-                    continue
-
-                # Skip concurrency keys (self-cleaning via Lua script)
-                if ":concurrency:" in key_str:  # pragma: no cover
-                    continue
-
-                # Skip progress keys (ephemeral, deleted when task completes)
-                if ":progress:" in key_str:  # pragma: no cover
-                    continue
-
-                # Skip result storage keys (have their own TTL management)
-                if ":results:" in key_str:  # pragma: no cover
-                    continue
 
                 # Check TTL (-1 means no expiry, -2 means key doesn't exist)
                 ttl = await redis.ttl(key_str)
