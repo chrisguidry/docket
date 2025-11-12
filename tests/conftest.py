@@ -214,7 +214,7 @@ def another_task() -> AsyncMock:
 
 @pytest.fixture(autouse=True)
 async def key_leak_checker(
-    redis_url: str, docket: Docket, worker: Worker
+    redis_url: str, docket: Docket
 ) -> AsyncGenerator[KeyCountChecker, None]:
     """Automatically verify no keys without TTL leak in any test.
 
@@ -227,8 +227,14 @@ async def key_leak_checker(
     """
     checker = KeyCountChecker(docket)
 
-    # Prime the worker to establish baseline after infrastructure setup
-    await worker.run_until_finished()
+    # Prime infrastructure with a temporary worker that exits immediately
+    async with Worker(
+        docket,
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as temp_worker:
+        await temp_worker.run_until_finished()
+
     await checker.capture_baseline()
 
     yield checker
