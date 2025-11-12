@@ -9,6 +9,7 @@ import pytest
 
 from docket import Docket, Progress, Worker
 from docket.execution import ExecutionProgress, ExecutionState
+from tests._key_leak_checker import KeyCountChecker
 
 from .run import run_cli
 from .waiting import (
@@ -423,8 +424,13 @@ async def test_watch_task_with_worker_in_state_event(docket: Docket, worker: Wor
     assert docket.name in result.output
 
 
-async def test_watch_task_with_incomplete_data(docket: Docket):
+async def test_watch_task_with_incomplete_data(
+    docket: Docket, key_leak_checker: KeyCountChecker
+):
     """Watch should show error when task has incomplete data in Redis."""
+    # This test manually creates incomplete test data
+    key_leak_checker.add_exemption(f"{docket.name}:runs:incomplete-task")
+
     # Manually create runs hash with incomplete data (missing function/args/kwargs)
     async with docket.redis() as redis:
         runs_key = f"{docket.name}:runs:incomplete-task"

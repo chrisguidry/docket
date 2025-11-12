@@ -8,6 +8,7 @@ import pytest
 
 from docket import Docket, Execution, ExecutionState, Progress, Worker
 from docket.execution import ExecutionProgress, ProgressEvent, StateEvent
+from tests._key_leak_checker import KeyCountChecker
 
 
 async def test_run_state_scheduled(docket: Docket, the_task: AsyncMock):
@@ -107,11 +108,14 @@ async def test_progress_increment_invalid(docket: Docket):
         await progress.increment(0)
 
 
-async def test_progress_increment(docket: Docket):
+async def test_progress_increment(docket: Docket, key_leak_checker: KeyCountChecker):
     """Progress should atomically increment current value."""
     execution = Execution(
         docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
+
+    # This test doesn't complete the execution lifecycle
+    key_leak_checker.add_exemption(f"{docket.name}:runs:test-key")
 
     # Initialize with set_running (which sets current=0)
     await execution.claim("worker-1")
@@ -322,12 +326,17 @@ async def test_error_message_stored_on_failure(docket: Docket, worker: Worker):
     assert execution.error == "RuntimeError: Something went wrong!"
 
 
-async def test_concurrent_progress_updates(docket: Docket):
+async def test_concurrent_progress_updates(
+    docket: Docket, key_leak_checker: KeyCountChecker
+):
     """Progress updates should be atomic and safe for concurrent access."""
     execution = Execution(
         docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
     progress = execution.progress
+
+    # This test doesn't complete the execution lifecycle
+    key_leak_checker.add_exemption(f"{docket.name}:runs:test-key")
 
     await execution.claim("worker-1")
 
@@ -348,12 +357,17 @@ async def test_concurrent_progress_updates(docket: Docket):
     assert progress.current == 30
 
 
-async def test_progress_publish_events(docket: Docket):
+async def test_progress_publish_events(
+    docket: Docket, key_leak_checker: KeyCountChecker
+):
     """Progress updates should publish events to pub/sub channel."""
     execution = Execution(
         docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
     progress = execution.progress
+
+    # This test doesn't complete the execution lifecycle
+    key_leak_checker.add_exemption(f"{docket.name}:runs:test-key")
 
     # Set up subscriber in background
     events: list[ProgressEvent] = []
@@ -414,11 +428,16 @@ async def test_state_publish_events(docket: Docket, the_task: AsyncMock):
     assert execution.state == ExecutionState.QUEUED
 
 
-async def test_run_subscribe_both_state_and_progress(docket: Docket):
+async def test_run_subscribe_both_state_and_progress(
+    docket: Docket, key_leak_checker: KeyCountChecker
+):
     """Run.subscribe() should yield both state and progress events."""
     execution = Execution(
         docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
+
+    # This test doesn't complete the execution lifecycle
+    key_leak_checker.add_exemption(f"{docket.name}:runs:test-key")
 
     # Set up subscriber in background
     all_events: list[StateEvent | ProgressEvent] = []

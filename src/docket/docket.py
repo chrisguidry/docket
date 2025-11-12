@@ -991,18 +991,46 @@ class Docket:
                     scheduled_keys: list[bytes]
                     stream_count, queue_count, scheduled_keys = await pipeline.execute()
 
+                # Get keys from stream messages before trimming
+                stream_keys: list[str] = []
+                if stream_count > 0:
+                    # Read all messages from the stream
+                    messages = await redis.xrange(self.stream_key, "-", "+")
+                    for message_id, fields in messages:
+                        # Extract the key field from the message
+                        if b"key" in fields:  # pragma: no branch
+                            stream_keys.append(fields[b"key"].decode())
+
+                async with redis.pipeline() as pipeline:
                     # Clear all data
                     # Trim stream to 0 messages instead of deleting it to preserve consumer group
                     if stream_count > 0:
                         pipeline.xtrim(self.stream_key, maxlen=0, approximate=False)
                     pipeline.delete(self.queue_key)
 
-                    # Clear parked task data and known task keys
+                    # Clear parked task data and known task keys for scheduled tasks
                     for key_bytes in scheduled_keys:
                         key = key_bytes.decode()
                         pipeline.delete(self.parked_task_key(key))
                         pipeline.delete(self.known_task_key(key))
                         pipeline.delete(self.stream_id_key(key))
+
+                        # Handle runs hash: set TTL or delete based on execution_ttl
+                        runs_key = f"{self.name}:runs:{key}"
+                        if self.execution_ttl:
+                            ttl_seconds = int(self.execution_ttl.total_seconds())
+                            pipeline.expire(runs_key, ttl_seconds)
+                        else:
+                            pipeline.delete(runs_key)
+
+                    # Handle runs hash for immediate tasks from stream
+                    for key in stream_keys:
+                        runs_key = f"{self.name}:runs:{key}"
+                        if self.execution_ttl:
+                            ttl_seconds = int(self.execution_ttl.total_seconds())
+                            pipeline.expire(runs_key, ttl_seconds)
+                        else:
+                            pipeline.delete(runs_key)
 
                     await pipeline.execute()
 

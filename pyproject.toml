@@ -96,7 +96,7 @@ addopts = [
     "--maxprocesses=4",
     "--cov=src/docket",
     "--cov=tests",
-    "--cov-report=term-missing",
+    "--cov-report=term-missing:skip-covered",
     "--cov-branch",
 ]
 asyncio_mode = "auto"

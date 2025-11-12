@@ -683,7 +683,11 @@ class Worker:
                         execution, dependencies, timedelta(seconds=duration)
                     )
 
-                    if not rescheduled:
+                    if rescheduled:
+                        # Task was rescheduled - still mark this execution as completed
+                        # to set TTL on the runs hash (the new execution has its own entry)
+                        await execution.mark_as_completed(result_key=None)
+                    else:
                         # Store result if appropriate
                         result_key = None
                         if result is not None and self.docket.execution_ttl:
