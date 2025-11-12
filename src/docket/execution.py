@@ -82,6 +82,9 @@ class ExecutionState(enum.Enum):
     FAILED = "failed"
     """Task execution failed."""
 
+    CANCELLED = "cancelled"
+    """Task was explicitly cancelled before completion."""
+
 
 class ProgressEvent(TypedDict):
     type: Literal["progress"]
