@@ -41,7 +41,7 @@ async def test_snapshot_empty_docket(docket: Docket):
     )
     assert result.exit_code == 0, result.output
 
-    assert "0 workers, 0/0 running" in result.output
+    assert "0 workers, 0/0 running" in result.output, result.output
 
 
 async def test_snapshot_with_scheduled_tasks(docket: Docket):
@@ -58,8 +58,8 @@ async def test_snapshot_with_scheduled_tasks(docket: Docket):
     )
     assert result.exit_code == 0, result.output
 
-    assert "0 workers, 0/1 running" in result.output
-    assert "future-task" in result.output
+    assert "0 workers, 0/1 running" in result.output, result.output
+    assert "future-task" in result.output, result.output
 
 
 async def test_snapshot_with_running_tasks(
@@ -89,9 +89,9 @@ async def test_snapshot_with_running_tasks(
         )
         assert result.exit_code == 0, result.output
 
-        assert "1 workers, 1/1 running" in result.output
-        assert "sleep" in result.output
-        assert "test-worker" in result.output
+        assert "1 workers, 1/1 running" in result.output, result.output
+        assert "sleep" in result.output, result.output
+        assert "test-worker" in result.output, result.output
 
         worker_running.cancel()
         await worker_running
@@ -133,10 +133,10 @@ async def test_snapshot_with_mixed_tasks(
         )
         assert result.exit_code == 0, result.output
 
-        assert "1 workers, 2/6 running" in result.output
-        assert "sleep" in result.output
-        assert "test-worker" in result.output
-        assert "trace" in result.output
+        assert "1 workers, 2/6 running" in result.output, result.output
+        assert "sleep" in result.output, result.output
+        assert "test-worker" in result.output, result.output
+        assert "trace" in result.output, result.output
 
         worker_running.cancel()
         await worker_running
@@ -197,7 +197,7 @@ async def test_snapshot_with_stats_flag_empty(docket: Docket):
     assert result.exit_code == 0, result.output
 
     # Should still show the normal summary
-    assert "0 workers, 0/0 running" in result.output
+    assert "0 workers, 0/0 running" in result.output, result.output
     # With empty docket, stats table shouldn't appear since there are no tasks
 
 
