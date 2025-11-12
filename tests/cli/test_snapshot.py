@@ -62,13 +62,18 @@ async def test_snapshot_with_scheduled_tasks(docket: Docket):
     assert "future-task" in result.output
 
 
-async def test_snapshot_with_running_tasks(docket: Docket):
+async def test_snapshot_with_running_tasks(
+    docket: Docket, key_leak_checker: KeyCountChecker
+):
     """Should show running tasks in the snapshot"""
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
 
     # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
-    await docket.add(tasks.sleep)(5)
+    execution = await docket.add(tasks.sleep)(5)
+
+    # This test cancels worker mid-execution, leaving incomplete tasks
+    key_leak_checker.add_exemption(f"{docket.name}:runs:{execution.key}")
 
     async with Worker(docket, name="test-worker") as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
