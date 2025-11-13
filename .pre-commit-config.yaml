@@ -34,3 +34,9 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+      - id: pyright
+        name: pyright (chaos tests)
+        entry: pyright chaos
+        language: system
+        types: [python]
+        pass_filenames: false
