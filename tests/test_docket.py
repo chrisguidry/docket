@@ -7,6 +7,7 @@ import redis.exceptions
 
 from docket.docket import Docket
 from docket.execution import ExecutionState
+from tests._key_leak_checker import KeyCountChecker
 
 
 async def test_docket_aenter_propagates_connection_errors():
@@ -169,6 +170,29 @@ async def test_clear_no_redis_key_leaks(docket: Docket, the_task: AsyncMock):
     assert len(snapshot.running) == 0
 
 
+async def test_clear_with_execution_ttl_zero(the_task: AsyncMock):
+    """Should delete runs hashes immediately when execution_ttl=0."""
+    async with Docket(
+        name="test-docket-ttl-zero", url="memory://", execution_ttl=timedelta(0)
+    ) as docket:
+        docket.register(the_task)
+
+        # Add both immediate and scheduled tasks
+        await docket.add(the_task, key="immediate1")("arg1")
+        future = datetime.now(timezone.utc) + timedelta(seconds=60)
+        await docket.add(the_task, when=future, key="scheduled1")("arg2")
+
+        result = await docket.clear()
+        assert result == 2
+
+        # Verify runs hashes were deleted (not just expired)
+        async with docket.redis() as redis:
+            immediate_runs = await redis.exists(f"{docket.name}:runs:immediate1")
+            scheduled_runs = await redis.exists(f"{docket.name}:runs:scheduled1")
+            assert immediate_runs == 0
+            assert scheduled_runs == 0
+
+
 async def test_docket_schedule_method_with_immediate_task(
     docket: Docket, the_task: AsyncMock
 ):
@@ -302,8 +326,13 @@ async def test_get_execution_claim_check_pattern(docket: Docket, the_task: Async
     assert retrieved_execution.kwargs == {"priority": "high"}
 
 
-async def test_get_execution_with_incomplete_data(docket: Docket):
+async def test_get_execution_with_incomplete_data(
+    docket: Docket, key_leak_checker: KeyCountChecker
+):
     """get_execution should return None when runs hash has incomplete data."""
+    # This test manually creates incomplete test data
+    key_leak_checker.add_exemption(f"{docket.name}:runs:incomplete-task")
+
     # Manually create runs hash with missing fields
     async with docket.redis() as redis:
         runs_key = f"{docket.name}:runs:incomplete-task"
@@ -314,11 +343,16 @@ async def test_get_execution_with_incomplete_data(docket: Docket):
     assert execution is None
 
 
-async def test_get_execution_with_missing_when(docket: Docket, the_task: AsyncMock):
+async def test_get_execution_with_missing_when(
+    docket: Docket, the_task: AsyncMock, key_leak_checker: KeyCountChecker
+):
     """get_execution should return None when runs hash is missing when field."""
     import cloudpickle  # type: ignore[import-untyped]
 
     docket.register(the_task)
+
+    # This test manually creates incomplete test data
+    key_leak_checker.add_exemption(f"{docket.name}:runs:no-when-task")
 
     # Manually create runs hash with function/args/kwargs but no when
     async with docket.redis() as redis:
@@ -340,9 +374,13 @@ async def test_get_execution_with_missing_when(docket: Docket, the_task: AsyncMo
 
 async def test_get_execution_with_unregistered_function_creates_placeholder(
     docket: Docket,
+    key_leak_checker: KeyCountChecker,
 ):
     """get_execution should create placeholder function when not registered."""
     import cloudpickle  # type: ignore[import-untyped]
+
+    # This test manually creates incomplete test data
+    key_leak_checker.add_exemption(f"{docket.name}:runs:unregistered-task")
 
     # Manually create runs hash with unregistered function
     async with docket.redis() as redis:

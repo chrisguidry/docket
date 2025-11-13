@@ -7,11 +7,12 @@ import pytest
 from pytest import MonkeyPatch
 from rich.table import Table
 
-from docket import tasks
+from docket import Execution, tasks
 from docket.cli import relative_time
 from docket.cli import snapshot as snapshot_command
 from docket.docket import Docket, DocketSnapshot
 from docket.worker import Worker
+from tests._key_leak_checker import KeyCountChecker
 from tests.cli.run import run_cli
 
 # Skip CLI tests when using memory backend since CLI rejects memory:// URLs
@@ -40,7 +41,7 @@ async def test_snapshot_empty_docket(docket: Docket):
     )
     assert result.exit_code == 0, result.output
 
-    assert "0 workers, 0/0 running" in result.output
+    assert "0 workers, 0/0 running" in result.output, result.output
 
 
 async def test_snapshot_with_scheduled_tasks(docket: Docket):
@@ -57,17 +58,22 @@ async def test_snapshot_with_scheduled_tasks(docket: Docket):
     )
     assert result.exit_code == 0, result.output
 
-    assert "0 workers, 0/1 running" in result.output
-    assert "future-task" in result.output
+    assert "0 workers, 0/1 running" in result.output, result.output
+    assert "future-task" in result.output, result.output
 
 
-async def test_snapshot_with_running_tasks(docket: Docket):
+async def test_snapshot_with_running_tasks(
+    docket: Docket, key_leak_checker: KeyCountChecker
+):
     """Should show running tasks in the snapshot"""
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
 
     # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
-    await docket.add(tasks.sleep)(5)
+    execution = await docket.add(tasks.sleep)(5)
+
+    # This test cancels worker mid-execution, leaving incomplete tasks
+    key_leak_checker.add_exemption(f"{docket.name}:runs:{execution.key}")
 
     async with Worker(docket, name="test-worker") as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
@@ -83,25 +89,33 @@ async def test_snapshot_with_running_tasks(docket: Docket):
         )
         assert result.exit_code == 0, result.output
 
-        assert "1 workers, 1/1 running" in result.output
-        assert "sleep" in result.output
-        assert "test-worker" in result.output
+        assert "1 workers, 1/1 running" in result.output, result.output
+        assert "sleep" in result.output, result.output
+        assert "test-worker" in result.output, result.output
 
         worker_running.cancel()
         await worker_running
 
 
-async def test_snapshot_with_mixed_tasks(docket: Docket):
+async def test_snapshot_with_mixed_tasks(
+    docket: Docket, key_leak_checker: KeyCountChecker
+):
     """Should show both running and scheduled tasks in the snapshot"""
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
 
     future = datetime.now(timezone.utc) + timedelta(seconds=5)
-    await docket.add(tasks.trace, when=future)("hi!")
+    execution1 = await docket.add(tasks.trace, when=future)("hi!")
 
     # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
+    executions: list[Execution] = []
     for _ in range(5):
-        await docket.add(tasks.sleep)(4)
+        executions.append(await docket.add(tasks.sleep)(4))
+
+    # This test cancels worker mid-execution, leaving incomplete tasks
+    key_leak_checker.add_exemption(f"{docket.name}:runs:{execution1.key}")
+    for ex in executions:
+        key_leak_checker.add_exemption(f"{docket.name}:runs:{ex.key}")
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
@@ -117,10 +131,10 @@ async def test_snapshot_with_mixed_tasks(docket: Docket):
         )
         assert result.exit_code == 0, result.output
 
-        assert "1 workers, 2/6 running" in result.output
-        assert "sleep" in result.output
-        assert "test-worker" in result.output
-        assert "trace" in result.output
+        assert "1 workers, 2/6 running" in result.output, result.output
+        assert "sleep" in result.output, result.output
+        assert "test-worker" in result.output, result.output
+        assert "trace" in result.output, result.output
 
         worker_running.cancel()
         await worker_running
@@ -181,11 +195,13 @@ async def test_snapshot_with_stats_flag_empty(docket: Docket):
     assert result.exit_code == 0, result.output
 
     # Should still show the normal summary
-    assert "0 workers, 0/0 running" in result.output
+    assert "0 workers, 0/0 running" in result.output, result.output
     # With empty docket, stats table shouldn't appear since there are no tasks
 
 
-async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
+async def test_snapshot_with_stats_flag_mixed_tasks(
+    docket: Docket, key_leak_checker: KeyCountChecker
+):
     """Should show task count statistics when --stats flag is used"""
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
@@ -195,9 +211,14 @@ async def test_snapshot_with_stats_flag_mixed_tasks(docket: Docket):
     await docket.add(tasks.trace, when=future, key="trace-1")("hi!")
     await docket.add(tasks.trace, when=future, key="trace-2")("hello!")
 
+    # This test cancels worker mid-execution, leaving incomplete tasks
+    key_leak_checker.add_exemption(f"{docket.name}:runs:trace-1")
+    key_leak_checker.add_exemption(f"{docket.name}:runs:trace-2")
+
     # Use tasks.sleep for CLI tests since the subprocess needs importable tasks
     for i in range(3):
         await docket.add(tasks.sleep, key=f"sleep-{i}")(4)
+        key_leak_checker.add_exemption(f"{docket.name}:runs:sleep-{i}")
 
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())

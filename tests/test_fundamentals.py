@@ -37,6 +37,7 @@ from docket import (
     tasks,
 )
 from docket.execution import ExecutionProgress, StateEvent
+from tests._key_leak_checker import KeyCountChecker
 
 
 @pytest.fixture
@@ -945,12 +946,19 @@ async def test_infinitely_self_perpetuating_tasks(
 
 
 async def test_striking_entire_tasks(
-    docket: Docket, worker: Worker, the_task: AsyncMock, another_task: AsyncMock
+    docket: Docket,
+    worker: Worker,
+    the_task: AsyncMock,
+    another_task: AsyncMock,
+    key_leak_checker: KeyCountChecker,
 ):
     """docket should support striking and restoring entire tasks"""
 
-    await docket.add(the_task)("a", b="c")
+    execution1 = await docket.add(the_task)("a", b="c")
     await docket.add(another_task)("d", e="f")
+
+    # Struck tasks leave runs hash behind (intentional - task might be restored)
+    key_leak_checker.add_exemption(f"{docket.name}:runs:{execution1.key}")
 
     await docket.strike(the_task)
 
@@ -974,9 +982,16 @@ async def test_striking_entire_tasks(
 
 
 async def test_striking_entire_parameters(
-    docket: Docket, worker: Worker, the_task: AsyncMock, another_task: AsyncMock
+    docket: Docket,
+    worker: Worker,
+    the_task: AsyncMock,
+    another_task: AsyncMock,
+    key_leak_checker: KeyCountChecker,
 ):
     """docket should support striking and restoring entire parameters"""
+
+    # Struck tasks remain without TTL so they can be restored
+    key_leak_checker.add_pattern_exemption(f"{docket.name}:runs:*")
 
     await docket.add(the_task)(customer_id="123", order_id="456")
     await docket.add(the_task)(customer_id="456", order_id="789")
@@ -1071,9 +1086,17 @@ async def test_striking_entire_parameters(
 
 
 async def test_striking_tasks_for_specific_parameters(
-    docket: Docket, worker: Worker, the_task: AsyncMock, another_task: AsyncMock
+    docket: Docket,
+    worker: Worker,
+    the_task: AsyncMock,
+    another_task: AsyncMock,
+    key_leak_checker: KeyCountChecker,
 ):
     """docket should support striking and restoring tasks for specific parameters"""
+
+    # Struck tasks remain without TTL so they can be restored
+    key_leak_checker.add_pattern_exemption(f"{docket.name}:runs:*")
+
     await docket.add(the_task)("a", b=1)
     await docket.add(the_task)("a", b=2)
     await docket.add(the_task)("a", b=3)

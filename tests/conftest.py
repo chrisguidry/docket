@@ -18,6 +18,8 @@ from redis import ConnectionPool, Redis
 
 from docket import Docket, Worker
 
+from tests._key_leak_checker import KeyCountChecker
+
 REDIS_VERSION = os.environ.get("REDIS_VERSION", "7.4")
 
 
@@ -208,3 +210,34 @@ def another_task() -> AsyncMock:
     task.__name__ = "another_task"
     task.__signature__ = inspect.signature(lambda *args, **kwargs: None)
     return task
+
+
+@pytest.fixture(autouse=True)
+async def key_leak_checker(
+    redis_url: str, docket: Docket
+) -> AsyncGenerator[KeyCountChecker, None]:
+    """Automatically verify no keys without TTL leak in any test.
+
+    This autouse fixture runs for every test and ensures that no Redis keys
+    without TTL are created during test execution, preventing memory leaks in
+    long-running Docket deployments.
+
+    Tests can add exemptions for specific keys:
+    - key_leak_checker.add_exemption(f"{docket.name}:special-key")
+    """
+    checker = KeyCountChecker(docket)
+
+    # Prime infrastructure with a temporary worker that exits immediately
+    async with Worker(
+        docket,
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as temp_worker:
+        await temp_worker.run_until_finished()
+
+    await checker.capture_baseline()
+
+    yield checker
+
+    # Verify no leaks after test completes
+    await checker.verify_remaining_keys_have_ttl()
