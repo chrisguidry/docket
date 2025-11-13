@@ -68,6 +68,84 @@ async def run_redis(version: str) -> AsyncGenerator[tuple[str, Container], None]
         container.stop()
 
 
+async def setup_environments(
+    base_version: str,
+) -> tuple[list[str], list[str]]:
+    """Create two virtual environments: one for base version, one for main.
+
+    Returns:
+        Tuple of (base_python_command, main_python_command) lists ready for use with create_subprocess_exec.
+    """
+    import tempfile
+    from pathlib import Path
+
+    temp_dir = Path(tempfile.gettempdir()) / f"docket-chaos-{uuid4()}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    base_venv = temp_dir / "base"
+    main_venv = temp_dir / "main"
+
+    logger.info("Setting up base environment with pydocket %s...", base_version)
+    process = await asyncio.create_subprocess_exec(
+        "uv",
+        "venv",
+        str(base_venv),
+        "--python",
+        sys.executable,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    await process.wait()
+
+    process = await asyncio.create_subprocess_exec(
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        str(base_venv / "bin" / "python"),
+        f"pydocket=={base_version}",
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    await process.wait()
+
+    logger.info("Setting up main environment with current pydocket...")
+    process = await asyncio.create_subprocess_exec(
+        "uv",
+        "venv",
+        str(main_venv),
+        "--python",
+        sys.executable,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    await process.wait()
+
+    process = await asyncio.create_subprocess_exec(
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        str(main_venv / "bin" / "python"),
+        "-e",
+        ".",
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    await process.wait()
+
+    base_python = python_entrypoint()
+    if base_python[0] == "opentelemetry-instrument":
+        base_command = [base_python[0], str(base_venv / "bin" / "python")]
+        main_command = [base_python[0], str(main_venv / "bin" / "python")]
+    else:
+        base_command = [str(base_venv / "bin" / "python")]
+        main_command = [str(main_venv / "bin" / "python")]
+
+    logger.info("Environment setup complete")
+    return base_command, main_command
+
+
 async def main(
     mode: Literal["performance", "chaos"] = "chaos",
     tasks: int = 20000,
@@ -86,6 +164,8 @@ async def main(
         )
         stdout, _ = await process.communicate()
         base_version = stdout.decode("utf-8").strip()
+
+    base_python_command, main_python_command = await setup_environments(base_version)
 
     async with (
         run_redis("7.4.2") as (redis_url, redis_container),
@@ -118,15 +198,12 @@ async def main(
         )
 
         async def spawn_producer() -> Process:
-            docket_version = base_version if random.random() < 0.5 else "main"
-            base_command = ["uv", "run", "--isolated"]
-            if docket_version != "main":
-                logger.info("Using pydocket %s for producer", docket_version)
-                base_command.extend(["--with", f"pydocket=={docket_version}"])
-            else:
-                logger.info("Using main pydocket for producer")
+            use_base = random.random() < 0.5
+            python_command = base_python_command if use_base else main_python_command
+            version_label = base_version if use_base else "main"
+            logger.info("Using pydocket %s for producer", version_label)
 
-            command = [*base_command, "-m", "chaos.producer", str(tasks_per_producer)]
+            command = [*python_command, "-m", "chaos.producer", str(tasks_per_producer)]
             return await asyncio.create_subprocess_exec(
                 *command,
                 env=environment | {"OTEL_SERVICE_NAME": "chaos-producer"},
@@ -141,16 +218,13 @@ async def main(
         logger.info("Spawning %d workers...", workers)
 
         async def spawn_worker() -> Process:
-            docket_version = base_version if random.random() < 0.5 else "main"
-            base_command = ["uv", "run", "--isolated"]
-            if docket_version != "main":
-                logger.info("Using pydocket %s for worker", docket_version)
-                base_command.extend(["--with", f"pydocket=={docket_version}"])
-            else:
-                logger.info("Using main pydocket for worker")
+            use_base = random.random() < 0.5
+            python_command = base_python_command if use_base else main_python_command
+            version_label = base_version if use_base else "main"
+            logger.info("Using pydocket %s for worker", version_label)
 
             command = [
-                *base_command,
+                *python_command,
                 "-m",
                 "docket",
                 "worker",
@@ -177,7 +251,7 @@ async def main(
         while True:
             try:
                 async with docket.redis() as r:
-                    info: dict[str, Any] = await r.info()
+                    info: dict[str, Any] = await r.info()  # type: ignore[reportUnknownMemberType]
                     connected_clients = int(info.get("connected_clients", 0))
 
                     sent_tasks = await r.zcard("hello:sent")
@@ -210,7 +284,7 @@ async def main(
                 chaos_chance = random.random()
                 if chaos_chance < 0.02:
                     logger.warning("CHAOS: Restarting redis server...")
-                    redis_container.restart(timeout=2)
+                    redis_container.restart(timeout=2)  # type: ignore[reportUnknownMemberType]
 
                 elif chaos_chance < 0.10:
                     worker_index = random.randrange(len(worker_processes))
@@ -242,10 +316,10 @@ async def main(
             await asyncio.sleep(0.25)
 
         async with docket.redis() as r:
-            first_entries: Sequence[tuple[bytes, float]] = await r.zrange(
+            first_entries: Sequence[tuple[bytes, float]] = await r.zrange(  # type: ignore[reportUnknownMemberType]
                 "hello:received", 0, 0, withscores=True
             )
-            last_entries: Sequence[tuple[bytes, float]] = await r.zrange(
+            last_entries: Sequence[tuple[bytes, float]] = await r.zrange(  # type: ignore[reportUnknownMemberType]
                 "hello:received", -1, -1, withscores=True
             )
 

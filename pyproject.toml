@@ -110,7 +110,7 @@ branch = true
 parallel = true
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "chaos"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
