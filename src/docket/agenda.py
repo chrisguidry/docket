@@ -9,7 +9,7 @@ import random
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterator, ParamSpec, TypeVar, overload
 
-from uuid_extensions import uuid7
+from ._uuid7 import uuid7
 
 from .docket import Docket
 from .execution import Execution, TaskFunction
