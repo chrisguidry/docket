@@ -29,7 +29,7 @@ from typing_extensions import Self
 import redis.exceptions
 from opentelemetry import trace
 from redis.asyncio import ConnectionPool, Redis
-from uuid_extensions import uuid7
+from ._uuid7 import uuid7
 
 from .execution import (
     Execution,
