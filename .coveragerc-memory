@@ -6,5 +6,6 @@ branch = true
 parallel = true
 omit =
     src/docket/__main__.py
+    src/docket/_uuid7.py
     src/docket/cli.py
     tests/cli/test_*.py
