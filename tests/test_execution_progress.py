@@ -150,7 +150,7 @@ async def test_progress_dependency_injection(docket: Docket, worker: Worker):
     """Progress dependency should be injected into task functions."""
     progress_values: list[int] = []
 
-    async def task_with_progress(progress: ExecutionProgress = Progress()):
+    async def task_with_progress(progress: Progress = Progress()):
         await progress.set_total(10)
         for i in range(10):
             await asyncio.sleep(0.001)
@@ -172,7 +172,7 @@ async def test_progress_dependency_injection(docket: Docket, worker: Worker):
 async def test_progress_deleted_on_completion(docket: Docket, worker: Worker):
     """Progress data should be deleted when task completes."""
 
-    async def task_with_progress(progress: ExecutionProgress = Progress()):
+    async def task_with_progress(progress: Progress = Progress()):
         await progress.set_total(5)
         await progress.increment()
 
@@ -238,7 +238,7 @@ async def test_full_lifecycle_integration(docket: Docket, worker: Worker):
     """Test complete lifecycle: SCHEDULED -> QUEUED -> RUNNING -> COMPLETED."""
     states_observed: list[ExecutionState] = []
 
-    async def tracking_task(progress: ExecutionProgress = Progress()):
+    async def tracking_task(progress: Progress = Progress()):
         await progress.set_total(3)
         for i in range(3):
             await progress.increment()
@@ -270,7 +270,7 @@ async def test_full_lifecycle_integration(docket: Docket, worker: Worker):
 async def test_progress_with_multiple_increments(docket: Docket, worker: Worker):
     """Test progress tracking with realistic usage pattern."""
 
-    async def process_items(items: list[int], progress: ExecutionProgress = Progress()):
+    async def process_items(items: list[int], progress: Progress = Progress()):
         await progress.set_total(len(items))
         await progress.set_message("Starting processing")
 
@@ -294,7 +294,7 @@ async def test_progress_with_multiple_increments(docket: Docket, worker: Worker)
 async def test_progress_without_total(docket: Docket, worker: Worker):
     """Progress should work even without setting total."""
 
-    async def task_without_total(progress: ExecutionProgress = Progress()):
+    async def task_without_total(progress: Progress = Progress()):
         for _ in range(5):
             await progress.increment()
             await asyncio.sleep(0.001)
@@ -527,7 +527,7 @@ async def test_end_to_end_progress_monitoring_with_worker(
     """Test complete end-to-end progress monitoring with real worker execution."""
     collected_events: list[StateEvent | ProgressEvent] = []
 
-    async def task_with_progress(progress: ExecutionProgress = Progress()):
+    async def task_with_progress(progress: Progress = Progress()):
         """Task that reports progress as it executes."""
         await progress.set_total(5)
         await progress.set_message("Starting work")
@@ -610,7 +610,7 @@ async def test_end_to_end_failed_task_monitoring(docket: Docket, worker: Worker)
     """Test progress monitoring for a task that fails."""
     collected_events: list[StateEvent | ProgressEvent] = []
 
-    async def failing_task(progress: ExecutionProgress = Progress()):
+    async def failing_task(progress: Progress = Progress()):
         """Task that reports progress then fails."""
         await progress.set_total(10)
         await progress.set_message("Starting work")

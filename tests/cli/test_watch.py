@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from docket import Docket, Progress, Worker
-from docket.execution import ExecutionProgress, ExecutionState
+from docket.execution import ExecutionState
 from tests._key_leak_checker import KeyCountChecker
 
 from .run import run_cli
@@ -133,7 +133,7 @@ async def test_watch_running_task_until_completion(docket: Docket, worker: Worke
 async def test_watch_with_progress_updates(docket: Docket, worker: Worker):
     """Watch should display progress bar updates."""
 
-    async def task_with_progress(progress: ExecutionProgress = Progress()):
+    async def task_with_progress(progress: Progress = Progress()):
         await progress.set_total(10)
         await progress.set_message("Starting")
         for i in range(10):
@@ -201,7 +201,7 @@ async def test_watch_scheduled_task_transition(docket: Docket, worker: Worker):
 async def test_watch_task_with_initial_progress(docket: Docket, worker: Worker):
     """Watch should handle task that already has progress when monitoring starts."""
 
-    async def task_with_initial_progress(progress: ExecutionProgress = Progress()):
+    async def task_with_initial_progress(progress: Progress = Progress()):
         # Set progress before watch likely connects
         await progress.set_total(20)
         await progress.increment(5)
@@ -271,7 +271,7 @@ async def test_watch_task_with_worker_assignment(docket: Docket, worker: Worker)
 async def test_watch_task_that_starts_while_watching(docket: Docket, worker: Worker):
     """Watch should receive started_at event and update progress bar timing."""
 
-    async def task_that_waits_then_progresses(progress: ExecutionProgress = Progress()):
+    async def task_that_waits_then_progresses(progress: Progress = Progress()):
         # Immediately report progress so watch sees it
         await progress.set_total(10)
         await progress.increment(1)
@@ -312,7 +312,7 @@ async def test_watch_receives_progress_events_during_execution(
 ):
     """Watch should receive and process progress events as they occur."""
 
-    async def task_with_many_updates(progress: ExecutionProgress = Progress()):
+    async def task_with_many_updates(progress: Progress = Progress()):
         await progress.set_total(20)
         for i in range(20):
             await asyncio.sleep(0.08)  # 1.6 seconds total
@@ -348,7 +348,7 @@ async def test_watch_receives_progress_events_during_execution(
 async def test_watch_already_running_task_with_progress(docket: Docket, worker: Worker):
     """Watch a task that's already running with progress when watch starts."""
 
-    async def task_already_running(progress: ExecutionProgress = Progress()):
+    async def task_already_running(progress: Progress = Progress()):
         # Set up some initial state quickly
         await progress.set_total(30)
         await progress.increment(10)
@@ -389,7 +389,7 @@ async def test_watch_already_running_task_with_progress(docket: Docket, worker: 
 async def test_watch_task_with_worker_in_state_event(docket: Docket, worker: Worker):
     """Watch should handle state events containing worker name."""
 
-    async def task_with_delays(progress: ExecutionProgress = Progress()):
+    async def task_with_delays(progress: Progress = Progress()):
         # Publish progress to create progress bar
         await progress.set_total(15)
         await progress.increment(1)

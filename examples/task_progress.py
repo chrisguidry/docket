@@ -1,13 +1,13 @@
 """Example demonstrating task progress tracking and real-time monitoring.
 
 This example shows how to:
-- Report progress from within a task using ExecutionProgress
+- Report progress from within a task using Progress
 - Track progress with current value, total, and status messages
 - Monitor task progress in real-time using the 'docket watch' command
 - Schedule tasks for future execution
 
 Key Concepts:
-- ExecutionProgress: Tracks task progress (current/total) and status messages
+- Progress: Tracks task progress (current/total) and status messages
 - Progress dependency: Injected into tasks via Progress() default parameter
 - Real-time monitoring: Use 'docket watch' CLI to monitor running tasks
 - State tracking: Tasks transition through SCHEDULED → QUEUED → RUNNING → COMPLETED
@@ -20,12 +20,10 @@ from docket import Docket, Progress, Worker
 import asyncio
 import rich.console
 
-from docket.execution import ExecutionProgress
-
 from .common import run_redis
 
 
-async def long_task(progress: ExecutionProgress = Progress()) -> None:
+async def long_task(progress: Progress = Progress()) -> None:
     """A long-running task that reports progress as it executes.
 
     This demonstrates the key progress tracking patterns:
@@ -33,12 +31,12 @@ async def long_task(progress: ExecutionProgress = Progress()) -> None:
     - Incremental progress updates with increment()
     - Status messages with set_message()
 
-    The ExecutionProgress object has a default total of 100, so we don't need
+    The Progress object has a default total of 100, so we don't need
     to call set_total() in this example. The progress automatically increments
     from 0 to 100.
 
     Args:
-        progress: Injected ExecutionProgress tracker (automatically provided by Docket)
+        progress: Injected Progress tracker (automatically provided by Docket)
 
     Pattern for your own tasks:
         1. Add progress parameter with Progress() default

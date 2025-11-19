@@ -36,7 +36,7 @@ from docket import (
     Worker,
     tasks,
 )
-from docket.execution import ExecutionProgress, StateEvent
+from docket.execution import StateEvent
 from tests._key_leak_checker import KeyCountChecker
 
 
@@ -593,7 +593,7 @@ async def test_tasks_can_report_progress(docket: Docket, worker: Worker):
     async def the_task(
         a: str,
         b: str,
-        progress: ExecutionProgress = Progress(),
+        progress: Progress = Progress(),
     ):
         assert a == "a"
         assert b == "c"
