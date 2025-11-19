@@ -20,17 +20,16 @@ from typing import (
     cast,
 )
 
-from typing_extensions import Self
-
 import cloudpickle  # type: ignore[import]
 import opentelemetry.context
 from opentelemetry import propagate, trace
+from typing_extensions import Self
 
 from .annotations import Logged
 from .instrumentation import CACHE_SIZE, message_getter, message_setter
 
 if TYPE_CHECKING:
-    from .docket import Docket
+    from .docket import Docket, RedisMessageID
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -464,7 +463,7 @@ class Execution:
         return [trace.Link(initiating_context)] if initiating_context.is_valid else []
 
     async def schedule(
-        self, replace: bool = False, reschedule_message: str | None = None
+        self, replace: bool = False, reschedule_message: "RedisMessageID | None" = None
     ) -> None:
         """Schedule this task atomically in Redis.
 
@@ -655,7 +654,7 @@ class Execution:
                         str(when.timestamp()),
                         "1" if is_immediate else "0",
                         "1" if replace else "0",
-                        reschedule_message or "",
+                        reschedule_message or b"",
                         *[
                             item
                             for field, value in message.items()
