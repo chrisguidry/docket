@@ -2,8 +2,8 @@ import asyncio
 import time
 from datetime import timedelta
 
-
-from docket import ConcurrencyLimit, Docket, Worker
+from docket import ConcurrencyLimit, CurrentExecution, Docket, Worker
+from docket.execution import Execution
 
 
 async def test_task_timeout_respects_redelivery_timeout(docket: Docket):
@@ -202,3 +202,120 @@ async def test_short_tasks_complete_within_timeout(docket: Docket):
             f"Expected 5 tasks completed, got {tasks_completed}"
         )
         assert total_time < 2.0, f"Short tasks took too long: {total_time:.2f}s"
+
+
+async def test_redeliveries_respect_concurrency_limits(docket: Docket):
+    """Test that redelivered tasks still respect concurrency limits"""
+    task_executions: list[tuple[int, float]] = []
+    failure_count = 0
+
+    async def task_that_sometimes_fails(
+        customer_id: int,
+        should_fail: bool,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id",
+            max_concurrent=1,
+        ),
+    ):
+        nonlocal failure_count
+        task_executions.append((customer_id, time.time()))
+        await asyncio.sleep(0.02)
+
+        if should_fail:
+            failure_count += 1
+            raise ValueError("Intentional failure for testing")
+
+    # Schedule tasks: some will fail initially, others succeed
+    await docket.add(task_that_sometimes_fails)(customer_id=1, should_fail=True)
+    await docket.add(task_that_sometimes_fails)(customer_id=1, should_fail=False)
+    await docket.add(task_that_sometimes_fails)(customer_id=2, should_fail=False)
+    await docket.add(task_that_sometimes_fails)(customer_id=1, should_fail=False)
+
+    async with Worker(
+        docket, concurrency=5, redelivery_timeout=timedelta(milliseconds=200)
+    ) as worker:
+        await worker.run_until_finished()
+
+    # Verify all tasks eventually executed
+    customer_1_executions = [t for t in task_executions if t[0] == 1]
+    customer_2_executions = [t for t in task_executions if t[0] == 2]
+
+    assert len(customer_1_executions) == 3
+    assert len(customer_2_executions) == 1
+
+    # Verify tasks for customer 1 didn't run concurrently
+    customer_1_times = sorted([t[1] for t in customer_1_executions])
+    for i in range(len(customer_1_times) - 1):
+        time_gap = customer_1_times[i + 1] - customer_1_times[i]
+        assert time_gap >= 0.015, (
+            f"Tasks for customer 1 overlapped: gap={time_gap:.3f}s"
+        )
+
+    assert failure_count >= 1
+
+
+async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
+    """Concurrency limits should prevent tasks for the same customer from overlapping,
+    while allowing parallelism across different customers."""
+
+    executions: list[tuple[int, float, float, str]] = []
+
+    async def tracked_task(
+        customer_id: int,
+        execution: Execution = CurrentExecution(),
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id",
+            max_concurrent=1,
+        ),
+    ) -> None:
+        start = time.time()
+        await asyncio.sleep(0.02)
+        end = time.time()
+        executions.append((customer_id, start, end, execution.key))
+
+    # Schedule 5 tasks for each of 3 customers
+    for customer_id in [1, 2, 3]:
+        for _ in range(5):
+            await docket.add(tracked_task)(customer_id=customer_id)
+
+    # Use short redelivery timeout to stress test the system
+    async with Worker(
+        docket, concurrency=5, redelivery_timeout=timedelta(milliseconds=50)
+    ) as worker:
+        await worker.run_until_finished()
+
+    # Group executions by customer_id
+    by_customer: dict[int, list[tuple[float, float, str]]] = {}
+    for customer_id, start, end, key in executions:
+        by_customer.setdefault(customer_id, []).append((start, end, key))
+
+    # Verify each customer's tasks completed and didn't overlap
+    for customer_id, customer_executions in by_customer.items():
+        # At least 5 tasks must have completed (redelivery may cause more)
+        assert len(customer_executions) >= 5, (
+            f"Customer {customer_id} only completed {len(customer_executions)}/5 tasks"
+        )
+
+        # No two executions for this customer should overlap in time
+        for i, (start1, end1, key1) in enumerate(customer_executions):
+            for start2, end2, key2 in customer_executions[i + 1 :]:
+                overlap = start1 < end2 and start2 < end1
+                assert not overlap, (
+                    f"Customer {customer_id} tasks overlapped: "
+                    f"{key1} [{start1:.3f}-{end1:.3f}] and "
+                    f"{key2} [{start2:.3f}-{end2:.3f}]"
+                )
+
+    # Verify all customers completed their tasks
+    assert len(by_customer) == 3, f"Expected 3 customers, got {len(by_customer)}"
+
+    # Verify cleanup
+    async with docket.redis() as redis:
+        pending_info = await redis.xpending(
+            name=docket.stream_key,
+            groupname=docket.worker_group_name,
+        )
+        assert pending_info["pending"] == 0, (
+            "Found unacknowledged messages - cleanup failed"
+        )
+        assert await redis.xlen(docket.stream_key) == 0
