@@ -193,13 +193,7 @@ def TaskLogger() -> "logging.LoggerAdapter[logging.Logger]":
     return cast("logging.LoggerAdapter[logging.Logger]", _TaskLogger())
 
 
-class _Progress(Dependency):
-    async def __aenter__(self) -> ExecutionProgress:
-        execution = self.execution.get()
-        return execution.progress
-
-
-def Progress() -> ExecutionProgress:
+class Progress(Dependency):
     """A dependency to report progress updates for the currently executing task.
 
     Tasks can use this to report their current progress (current/total values) and
@@ -209,7 +203,7 @@ def Progress() -> ExecutionProgress:
 
     ```python
     @task
-    async def process_records(records: list, progress: ExecutionProgress = Progress()) -> None:
+    async def process_records(records: list, progress: Progress = Progress()) -> None:
         await progress.set_total(len(records))
         for i, record in enumerate(records):
             await process(record)
@@ -217,7 +211,47 @@ def Progress() -> ExecutionProgress:
             await progress.set_message(f"Processed {record.id}")
     ```
     """
-    return cast(ExecutionProgress, _Progress())
+
+    def __init__(self) -> None:
+        self._progress: ExecutionProgress | None = None
+
+    async def __aenter__(self) -> "Progress":
+        execution = self.execution.get()
+        self._progress = execution.progress
+        return self
+
+    @property
+    def current(self) -> int | None:
+        """Current progress value."""
+        assert self._progress is not None, "Progress must be used as a dependency"
+        return self._progress.current
+
+    @property
+    def total(self) -> int:
+        """Total/target value for progress tracking."""
+        assert self._progress is not None, "Progress must be used as a dependency"
+        return self._progress.total
+
+    @property
+    def message(self) -> str | None:
+        """User-provided status message."""
+        assert self._progress is not None, "Progress must be used as a dependency"
+        return self._progress.message
+
+    async def set_total(self, total: int) -> None:
+        """Set the total/target value for progress tracking."""
+        assert self._progress is not None, "Progress must be used as a dependency"
+        await self._progress.set_total(total)
+
+    async def increment(self, amount: int = 1) -> None:
+        """Atomically increment the current progress value."""
+        assert self._progress is not None, "Progress must be used as a dependency"
+        await self._progress.increment(amount)
+
+    async def set_message(self, message: str | None) -> None:
+        """Update the progress status message."""
+        assert self._progress is not None, "Progress must be used as a dependency"
+        await self._progress.set_message(message)
 
 
 class ForcedRetry(Exception):
