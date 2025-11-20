@@ -1603,7 +1603,7 @@ requires-dist = [
     { name = "opentelemetry-exporter-prometheus", specifier = ">=0.51b0" },
     { name = "prometheus-client", specifier = ">=0.21.1" },
     { name = "py-key-value-aio", extras = ["memory", "redis"], specifier = ">=0.3.0" },
-    { name = "python-json-logger", specifier = ">=3.2.1" },
+    { name = "python-json-logger", specifier = ">=2.0.7" },
     { name = "redis", specifier = ">=5" },
     { name = "rich", specifier = ">=13.9.4" },
     { name = "typer", specifier = ">=0.15.1" },
