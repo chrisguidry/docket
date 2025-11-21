@@ -18,9 +18,9 @@ implementations = [
 
 # Add stdlib if available (Python 3.14+)
 if sys.version_info >= (3, 14):  # pragma: no branch
-    from uuid import uuid7 as stdlib_uuid7
+    from uuid import uuid7 as stdlib_uuid7  # pragma: no cover
 
-    implementations.append(pytest.param(stdlib_uuid7, id="stdlib"))
+    implementations.append(pytest.param(stdlib_uuid7, id="stdlib"))  # pragma: no cover
 
 
 @pytest.fixture(params=implementations)
