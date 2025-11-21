@@ -28,6 +28,7 @@ from .dependencies import (
 from .docket import Docket
 from .execution import Execution, ExecutionState
 from .worker import Worker
+from . import testing
 
 __all__ = [
     "__version__",
@@ -48,6 +49,7 @@ __all__ = [
     "TaskArgument",
     "TaskKey",
     "TaskLogger",
+    "testing",
     "Timeout",
     "Worker",
 ]
