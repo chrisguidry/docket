@@ -35,6 +35,7 @@ from docket import (
     Timeout,
     Worker,
     tasks,
+    testing,
 )
 from docket.execution import StateEvent
 from tests._key_leak_checker import KeyCountChecker
@@ -104,6 +105,8 @@ async def test_adding_is_idempotent(
     later = now() + timedelta(milliseconds=500)
     await docket.add(the_task, later, key=key)("b", "c", c="d")
 
+    await testing.assert_task_scheduled(docket, the_task, key=key)
+
     await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("a", "b", c="c")
@@ -124,6 +127,8 @@ async def test_rescheduling_later(
     later = now() + timedelta(milliseconds=100)
     await docket.replace(the_task, later, key=key)("b", "c", c="d")
 
+    await testing.assert_task_scheduled(docket, the_task, key=key)
+
     await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("b", "c", c="d")
@@ -143,6 +148,8 @@ async def test_rescheduling_earlier(
 
     earlier = now() + timedelta(milliseconds=10)
     await docket.replace(the_task, earlier, key)("b", "c", c="d")
+
+    await testing.assert_task_scheduled(docket, the_task, key=key)
 
     await worker.run_until_finished()
 
@@ -252,6 +259,8 @@ async def test_cancelling_future_task(
 
     await docket.cancel(execution.key)
 
+    await testing.assert_task_not_scheduled(docket, the_task)
+
     await worker.run_until_finished()
 
     the_task.assert_not_called()
@@ -265,6 +274,8 @@ async def test_cancelling_immediate_task(
     execution = await docket.add(the_task, now())("a", "b", c="c")
 
     await docket.cancel(execution.key)
+
+    await testing.assert_task_not_scheduled(docket, the_task)
 
     await worker.run_until_finished()
 
@@ -284,6 +295,8 @@ async def test_cancellation_is_idempotent(
     # Cancel it twice - both should succeed without error
     await docket.cancel(key)
     await docket.cancel(key)  # Should be idempotent
+
+    await testing.assert_task_not_scheduled(docket, the_task)
 
     # Run worker to ensure the task was actually cancelled
     await worker.run_until_finished()
