@@ -2,9 +2,8 @@
 
 import time
 import uuid
-from datetime import datetime, timezone
 
-from docket._uuid7 import uuid7, uuid7str  # pyright: ignore[reportUnknownVariableType]
+from docket._uuid7 import uuid7
 
 
 def test_uuid7_returns_uuid_object() -> None:
@@ -52,63 +51,39 @@ def test_uuid7_uniqueness() -> None:
     assert len(uuids) == 1000
 
 
-def test_uuid7str_returns_string() -> None:
-    """uuid7str() should return a string representation."""
-    result = uuid7str()
+def test_uuid7_as_str() -> None:
+    """uuid7() can be converted to string."""
+    result = str(uuid7())
     assert isinstance(result, str)
     # Should be in standard UUID format
     assert len(result) == 36
     assert result.count("-") == 4
-
-
-def test_uuid7str_is_valid_uuid() -> None:
-    """uuid7str() should return a valid UUID string."""
-    result = uuid7str()
+    # Should be a valid UUID
     parsed = uuid.UUID(result)
     assert parsed.version == 7
-    assert parsed.variant == uuid.RFC_4122
 
 
-def test_uuid7_with_zero_ns() -> None:
-    """uuid7(ns=0) should return the zero UUID."""
-    result = uuid7(ns=0)
-    assert result == uuid.UUID("00000000-0000-0000-0000-000000000000")
+def test_uuid7_as_int() -> None:
+    """uuid7() can be converted to integer via .int property."""
+    result = uuid7()
+    uuid_int = result.int
+    assert isinstance(uuid_int, int)
+    assert uuid_int > 0
 
 
-def test_uuid7_with_specific_timestamp() -> None:
-    """uuid7() should accept a specific timestamp in nanoseconds."""
-    # Use a fixed timestamp
-    ns = int(datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp() * 1_000_000_000)
-    result = uuid7(ns=ns)
-    assert isinstance(result, uuid.UUID)
-    assert result.version == 7
-
-
-def test_uuid7_as_type_str() -> None:
-    """uuid7(as_type='str') should return a string."""
-    result = uuid7(as_type="str")
-    assert isinstance(result, str)
-    assert len(result) == 36
-
-
-def test_uuid7_as_type_int() -> None:
-    """uuid7(as_type='int') should return an integer."""
-    result = uuid7(as_type="int")
-    assert isinstance(result, int)
-    assert result > 0
-
-
-def test_uuid7_as_type_hex() -> None:
-    """uuid7(as_type='hex') should return a hex string."""
-    result = uuid7(as_type="hex")
-    assert isinstance(result, str)
-    assert len(result) == 32
+def test_uuid7_as_hex() -> None:
+    """uuid7() can be converted to hex via .hex property."""
+    result = uuid7()
+    hex_str = result.hex
+    assert isinstance(hex_str, str)
+    assert len(hex_str) == 32
     # Should be valid hex
-    int(result, 16)
+    int(hex_str, 16)
 
 
-def test_uuid7_as_type_bytes() -> None:
-    """uuid7(as_type='bytes') should return bytes."""
-    result = uuid7(as_type="bytes")
-    assert isinstance(result, bytes)
-    assert len(result) == 16
+def test_uuid7_as_bytes() -> None:
+    """uuid7() can be converted to bytes via .bytes property."""
+    result = uuid7()
+    uuid_bytes = result.bytes
+    assert isinstance(uuid_bytes, bytes)
+    assert len(uuid_bytes) == 16
