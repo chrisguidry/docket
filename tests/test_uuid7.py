@@ -17,7 +17,7 @@ implementations = [
 ]
 
 # Add stdlib if available (Python 3.14+)
-if sys.version_info >= (3, 14):
+if sys.version_info >= (3, 14):  # pragma: no branch
     from uuid import uuid7 as stdlib_uuid7
 
     implementations.append(pytest.param(stdlib_uuid7, id="stdlib"))
