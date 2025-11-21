@@ -8,8 +8,10 @@ The vendored code can be removed once Python 3.13 support is dropped.
 """
 
 import os
+import sys
 import time
 import uuid
+from typing import Callable
 
 __all__ = ("uuid7",)
 
@@ -47,8 +49,8 @@ def _vendored_uuid7() -> uuid.UUID:
     return uuid.UUID(int=uuid_int)
 
 
-# Try to use stdlib uuid7 on Python 3.14+, fallback to vendored
-try:
+# On Python 3.14+, use stdlib uuid7; otherwise use vendored implementation
+if sys.version_info >= (3, 14):
     from uuid import uuid7
-except (ImportError, AttributeError):
-    uuid7 = _vendored_uuid7
+else:
+    uuid7: Callable[[], uuid.UUID] = _vendored_uuid7
