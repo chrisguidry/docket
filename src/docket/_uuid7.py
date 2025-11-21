@@ -4,6 +4,10 @@ to RFC4122 from 2005:
 https://datatracker.ietf.org/doc/html/draft-peabody-dispatch-new-uuid-format
 
 Stephen Simmons, v0.1.0, 2021-12-27
+
+This module provides uuid7() support. On Python 3.14+, we use the stdlib
+implementation. On older Python versions, we use the vendored implementation
+below. The vendored code can be removed once Python 3.13 support is dropped.
 """
 
 # pyright: reportUnknownParameterType=false, reportMissingParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportDeprecated=false
@@ -23,12 +27,20 @@ import time
 from typing import Callable, Optional, Union
 import uuid
 
+# Try to use stdlib uuid7 on Python 3.14+
+try:
+    from uuid import uuid7 as _stdlib_uuid7
+
+    _HAS_STDLIB_UUID7 = True
+except (ImportError, AttributeError):
+    _HAS_STDLIB_UUID7 = False
+
 # Expose function used by uuid7() to get current time in nanoseconds
 # since the Unix epoch.
 time_ns = time.time_ns
 
 
-def uuid7(
+def _vendored_uuid7(
     ns: Optional[int] = None,
     as_type: Optional[str] = None,
     time_func: Callable[[], int] = time_ns,
@@ -36,6 +48,11 @@ def uuid7(
     _last_as_of=[0, 0, 0, 0],
 ) -> Union[uuid.UUID, str, int, bytes]:
     """
+    Vendored UUID v7 implementation, following the proposed extension to RFC4122.
+
+    This implementation is from Stephen Simmons, v0.1.0, 2021-12-27, and provides
+    extended functionality beyond the stdlib uuid7() (custom timestamps, output formats, etc).
+
     UUID v7, following the proposed extension to RFC4122 described in
     https://www.ietf.org/id/draft-peabody-dispatch-new-uuid-format-02.html.
     All representations (string, byte array, int) sort chronologically,
@@ -172,6 +189,11 @@ def uuid7(
         return uuid.UUID(int=uuid_int)
 
 
+# Temporary alias for uuid7str and other functions below
+# This will be redefined at the end of the file to use stdlib when available
+uuid7 = _vendored_uuid7
+
+
 def uuid7str(ns: Optional[int] = None) -> str:
     "uuid7() as a string without creating a UUID object first."
     return uuid7(ns, as_type="str")  # type: ignore
@@ -296,3 +318,35 @@ def uuid_to_datetime(
             ns_since_epoch / 1_000_000_000,
             tz=datetime.timezone.utc,
         )
+
+
+# Define uuid7 wrapper that uses stdlib when available, vendored implementation otherwise
+if _HAS_STDLIB_UUID7:
+
+    def uuid7(
+        ns: Optional[int] = None,
+        as_type: Optional[str] = None,
+        time_func: Callable[[], int] = time_ns,
+        _last=[0, 0, 0, 0],
+        _last_as_of=[0, 0, 0, 0],
+    ) -> Union[uuid.UUID, str, int, bytes]:
+        """
+        UUID v7 generation. Uses stdlib implementation on Python 3.14+ when possible,
+        falls back to vendored implementation for extended functionality.
+        """
+        # Use stdlib for the simple case (no custom parameters)
+        if ns is None and as_type is None and time_func is time_ns:
+            return _stdlib_uuid7()
+
+        # Fall back to vendored implementation for extended API
+        return _vendored_uuid7(
+            ns=ns,
+            as_type=as_type,
+            time_func=time_func,
+            _last=_last,
+            _last_as_of=_last_as_of,
+        )
+
+else:
+    # On Python < 3.14, just use the vendored implementation
+    uuid7 = _vendored_uuid7
