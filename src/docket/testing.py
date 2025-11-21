@@ -225,6 +225,11 @@ async def assert_no_tasks(docket: Docket) -> None:
     all_tasks = list(snapshot.future)
 
     if all_tasks:
+        found_tasks = [
+            f"  - {e.function.__name__}(args={e.args!r}, kwargs={e.kwargs!r}, key={e.key!r})"
+            for e in all_tasks
+        ]
+        found_str = "\n".join(found_tasks)
         raise AssertionError(
-            f"Expected no tasks, found {len(all_tasks)} task(s) scheduled"
+            f"Expected no tasks, found {len(all_tasks)} task(s) scheduled:\n{found_str}"
         )
