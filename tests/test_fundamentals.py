@@ -178,6 +178,24 @@ async def test_rescheduling_by_name(
     assert later <= now()
 
 
+async def test_replace_without_existing_task_acts_like_add(
+    docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """docket.replace() on a non-existent key should schedule the task like add()"""
+
+    key = f"my-cool-task:{uuid4()}"
+
+    # Replace without prior add - should just schedule the task
+    later = now() + timedelta(milliseconds=100)
+    await docket.replace(the_task, later, key=key)("b", "c", c="d")
+
+    await worker.run_until_finished()
+
+    the_task.assert_awaited_once_with("b", "c", c="d")
+
+    assert later <= now()
+
+
 async def test_task_keys_are_idempotent_in_the_future(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
 ):

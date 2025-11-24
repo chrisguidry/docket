@@ -441,6 +441,8 @@ class Docket:
         """
         if isinstance(function, str):
             function = self.tasks[function]
+        else:
+            self.register(function)
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
             execution = Execution(self, function, args, kwargs, key, when, attempt=1)
