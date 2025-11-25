@@ -701,6 +701,72 @@ async def test_rapid_replace_operations(
     assert the_task.await_count == 1
 
 
+@pytest.mark.parametrize(
+    "execution_ttl", [None, timedelta(0)], ids=["default_ttl", "zero_ttl"]
+)
+async def test_duplicate_execution_race_condition_non_perpetual_task(
+    redis_url: str, execution_ttl: timedelta | None
+):
+    """Reproduce race condition where non-perpetual tasks execute multiple times.
+
+    Bug: known_task_key is deleted BEFORE task function runs (worker.py:588),
+    allowing duplicate docket.add() calls with the same key to succeed
+    while the original task is still executing.
+
+    Timeline:
+    1. Task A scheduled with key="task:123" -> known_key set
+    2. Worker picks up Task A, _perpetuate_if_requested() returns False
+    3. Worker calls _delete_known_task() -> known_key DELETED
+    4. Worker starts executing the actual task function (slow task)
+    5. Meanwhile, docket.add(key="task:123") checks EXISTS known_key -> 0
+    6. Duplicate task scheduled and picked up by concurrent worker
+    7. Both tasks execute in parallel
+
+    Tests both default TTL and execution_ttl=0 to ensure fix doesn't depend
+    on volatile results keys.
+    """
+    execution_count = 0
+    task_started = asyncio.Event()
+
+    async def slow_task(task_id: str):
+        nonlocal execution_count
+        execution_count += 1
+        task_started.set()
+        await asyncio.sleep(0.3)
+
+    docket_kwargs: dict[str, object] = {
+        "name": f"test-race-{uuid4()}",
+        "url": redis_url,
+    }
+    if execution_ttl is not None:
+        docket_kwargs["execution_ttl"] = execution_ttl
+
+    async with Docket(**docket_kwargs) as docket:  # type: ignore[arg-type]
+        docket.register(slow_task)
+        task_key = f"race-test:{uuid4()}"
+
+        async with Worker(docket, concurrency=2) as worker:
+            worker_task = asyncio.create_task(worker.run_until_finished())
+
+            # Schedule first task
+            await docket.add(slow_task, key=task_key)("first")
+
+            # Wait for task to start (known_key already deleted at this point)
+            await asyncio.wait_for(task_started.wait(), timeout=2.0)
+            await asyncio.sleep(0.05)  # Small buffer to ensure deletion happened
+
+            # Attempt duplicate - should be rejected but isn't due to bug
+            await docket.add(slow_task, key=task_key)("second")
+
+            await asyncio.wait_for(worker_task, timeout=5.0)
+
+        # BUG: execution_count == 2 (both tasks ran)
+        # EXPECTED: execution_count == 1 (duplicate rejected)
+        assert execution_count == 1, (
+            f"Task executed {execution_count} times, expected 1"
+        )
+
+
 async def test_wrongtype_error_with_legacy_known_task_key(
     docket: Docket,
     worker: Worker,

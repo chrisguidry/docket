@@ -594,6 +594,11 @@ class Execution:
                                 -- Check if task already exists (check new location first, then legacy)
                                 local known_exists = redis.call('HEXISTS', runs_key, 'known') == 1
                                 if not known_exists then
+                                    -- Check if task is currently running (known field deleted at claim time)
+                                    local state = redis.call('HGET', runs_key, 'state')
+                                    if state == 'running' then
+                                        return 'EXISTS'
+                                    end
                                     -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
                                     known_exists = redis.call('EXISTS', known_key) == 1
                                 end

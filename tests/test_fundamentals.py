@@ -904,7 +904,8 @@ async def test_self_perpetuating_immediate_tasks(
     async def the_task(start: int, iteration: int, key: str = TaskKey()):
         calls[key].append(start + iteration)
         if iteration < 3:
-            await docket.add(the_task, key=key)(start, iteration + 1)
+            # Use replace() for self-perpetuating to allow rescheduling while running
+            await docket.replace(the_task, now(), key=key)(start, iteration + 1)
 
     await docket.add(the_task, key="first")(10, 1)
     await docket.add(the_task, key="second")(20, 1)
@@ -929,7 +930,8 @@ async def test_self_perpetuating_scheduled_tasks(
         calls[key].append(start + iteration)
         if iteration < 3:
             soon = now() + timedelta(milliseconds=100)
-            await docket.add(the_task, key=key, when=soon)(start, iteration + 1)
+            # Use replace() for self-perpetuating to allow rescheduling while running
+            await docket.replace(the_task, key=key, when=soon)(start, iteration + 1)
 
     await docket.add(the_task, key="first")(10, 1)
     await docket.add(the_task, key="second")(20, 1)
@@ -954,12 +956,14 @@ async def test_infinitely_self_perpetuating_tasks(
     async def the_task(start: int, iteration: int, key: str = TaskKey()):
         calls[key].append(start + iteration)
         soon = now() + timedelta(milliseconds=100)
-        await docket.add(the_task, key=key, when=soon)(start, iteration + 1)
+        # Use replace() for self-perpetuating to allow rescheduling while running
+        await docket.replace(the_task, key=key, when=soon)(start, iteration + 1)
 
     async def unaffected_task(start: int, iteration: int, key: str = TaskKey()):
         calls[key].append(start + iteration)
         if iteration < 3:
-            await docket.add(unaffected_task, key=key)(start, iteration + 1)
+            # Use replace() for self-perpetuating to allow rescheduling while running
+            await docket.replace(unaffected_task, now(), key=key)(start, iteration + 1)
 
     await docket.add(the_task, key="first")(10, 1)
     await docket.add(the_task, key="second")(20, 1)
