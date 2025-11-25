@@ -570,3 +570,77 @@ async def test_cancellation_idempotent_with_tombstone(
     retrieved = await docket.get_execution(execution.key)
     assert retrieved is not None
     assert retrieved.state == ExecutionState.CANCELLED
+
+
+# Tests for task registration before __aenter__
+
+
+def test_standard_tasks_available_after_init():
+    """Standard tasks (trace, fail, sleep) should be available after __init__."""
+    docket = Docket(name="test-standard-tasks", url="memory://")
+
+    assert "trace" in docket.tasks
+    assert "fail" in docket.tasks
+    assert "sleep" in docket.tasks
+
+
+def test_register_task_before_aenter():
+    """Tasks can be registered before entering the async context manager."""
+    docket = Docket(name="test-pre-register", url="memory://")
+
+    async def my_task() -> None: ...
+
+    docket.register(my_task)
+
+    assert "my_task" in docket.tasks
+    assert docket.tasks["my_task"] is my_task
+
+
+async def test_registered_task_usable_after_aenter():
+    """Tasks registered before __aenter__ should be usable inside the context."""
+    docket = Docket(name="test-pre-register-usable", url="memory://")
+
+    async def my_task(value: str) -> None: ...
+
+    docket.register(my_task)
+
+    async with docket:
+        assert "my_task" in docket.tasks
+        execution = await docket.add(my_task)("test-value")
+        assert execution.function is my_task
+        assert execution.args == ("test-value",)
+
+
+async def test_tasks_persist_after_aexit():
+    """Task registry should persist after exiting the async context."""
+    docket = Docket(name="test-persist-after-exit", url="memory://")
+
+    async def my_task() -> None: ...
+
+    docket.register(my_task)
+
+    async with docket:
+        ...
+
+    # Tasks should still be there after exit
+    assert "my_task" in docket.tasks
+    assert "trace" in docket.tasks
+
+
+async def test_docket_reentry_preserves_tasks():
+    """Re-entering the docket should preserve both user and standard tasks."""
+    docket = Docket(name="test-reentry", url="memory://")
+
+    async def my_task() -> None: ...
+
+    docket.register(my_task)
+
+    # First entry/exit
+    async with docket:
+        assert "my_task" in docket.tasks
+        assert "trace" in docket.tasks
+
+    # Re-entry should still have all tasks
+    async with docket:
+        assert "my_task" in docket.tasks
+        assert "trace" in docket.tasks

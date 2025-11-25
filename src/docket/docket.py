@@ -197,14 +197,15 @@ class Docket:
                 url=url, default_collection=f"{name}:results"
             )
 
+        from .tasks import standard_tasks
+
+        self.tasks: dict[str, TaskFunction] = {fn.__name__: fn for fn in standard_tasks}
+
     @property
     def worker_group_name(self) -> str:
         return "docket-workers"
 
     async def __aenter__(self) -> Self:
-        from .tasks import standard_tasks
-
-        self.tasks = {fn.__name__: fn for fn in standard_tasks}
         self.strike_list = StrikeList()
 
         # Check if we should use in-memory backend (fakeredis)
@@ -261,7 +262,6 @@ class Docket:
         if isinstance(self.result_storage, BaseContextManagerStore):
             await self.result_storage.__aexit__(exc_type, exc_value, traceback)
 
-        del self.tasks
         del self.strike_list
 
         self._monitor_strikes_task.cancel()
