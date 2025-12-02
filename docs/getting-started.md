@@ -21,7 +21,7 @@ With `pip`:
 pip install pydocket
 ```
 
-You'll also need a [Redis](http://redis.io/) server with Streams support (Redis 5.0+). Docket is tested with Redis 6 and 7, and also works with [Valkey](https://valkey.io/).
+You'll also need a [Redis](http://redis.io/) server with Streams support (Redis 5.0+). Docket is tested with Redis 6, 7, and 8, and also works with [Valkey](https://valkey.io/).
 
 ## Your First Docket
 
