@@ -82,7 +82,7 @@ pip install pydocket
 ```
 
 Docket requires a [Redis](http://redis.io/) server with Streams support (which was
-introduced in Redis 5.0.0). Docket is tested with Redis 6 and 7.
+introduced in Redis 5.0.0). Docket is tested with Redis 6, 7, and 8.
 
 For testing without Redis, Docket includes [fakeredis](https://github.com/cunla/fakeredis-py) for in-memory operation:
 
