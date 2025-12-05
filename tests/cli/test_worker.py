@@ -5,7 +5,6 @@ import logging
 import os
 import signal
 import sys
-import time
 from datetime import datetime, timezone
 
 import pytest
@@ -193,27 +192,11 @@ async def _test_signal_graceful_shutdown(
 
     # Wait for the sleep task to start (logs go to stdout with plain format)
     output_so_far = ""
-    deadline = time.time() + 30
-    task_started = False
+    assert proc.stdout is not None
 
-    while time.time() < deadline:
-        try:
-            chunk = await asyncio.wait_for(
-                proc.stdout.read(1024) if proc.stdout else asyncio.sleep(0.1),
-                timeout=0.5,
-            )
-            if chunk:
-                output_so_far += chunk.decode()
-        except asyncio.TimeoutError:  # pragma: no cover
-            pass
-
-        if "Sleeping for" in output_so_far:
-            task_started = True
-            break
-
-        await asyncio.sleep(0.1)
-
-    assert task_started, f"Task did not start. Output:\n{output_so_far}"
+    while "Sleeping for" not in output_so_far:
+        chunk = await asyncio.wait_for(proc.stdout.read(1024), timeout=30)
+        output_so_far += chunk.decode()
 
     # Send signal
     assert proc.pid is not None
