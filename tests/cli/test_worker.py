@@ -1,14 +1,19 @@
+import asyncio
 import inspect
 import json
 import logging
 import os
+import signal
+import sys
+import time
 from datetime import datetime, timezone
 
 import pytest
 
 from docket.docket import Docket
-from docket.tasks import trace
+from docket.tasks import sleep, trace
 from docket.worker import Worker
+from tests._key_leak_checker import KeyCountChecker
 from tests.cli.run import run_cli
 
 # Skip CLI tests when using memory backend since CLI rejects memory:// URLs
@@ -155,3 +160,85 @@ async def test_json_logging_format(docket: Docket):
         timestamp = timestamp.astimezone()
         assert timestamp >= start
         assert timestamp.tzinfo is not None
+
+
+async def _test_signal_graceful_shutdown(
+    docket: Docket, key_leak_checker: KeyCountChecker, sig: signal.Signals
+) -> None:
+    """Helper: verify worker gracefully drains in-flight tasks on signal."""
+    # The subprocess worker creates progress keys that won't be cleaned up by
+    # the in-process key leak checker
+    key_leak_checker.add_pattern_exemption(f"{docket.name}:progress:*")
+    key_leak_checker.add_pattern_exemption(f"{docket.name}:runs:*")
+
+    docket.register(sleep)
+    await docket.add(sleep)(3)
+
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "docket",
+        "worker",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "--logging-format",
+        "plain",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+
+    # Wait for the sleep task to start (logs go to stdout with plain format)
+    output_so_far = ""
+    deadline = time.time() + 30
+    task_started = False
+
+    while time.time() < deadline:
+        try:
+            chunk = await asyncio.wait_for(
+                proc.stdout.read(1024) if proc.stdout else asyncio.sleep(0.1),
+                timeout=0.5,
+            )
+            if chunk:
+                output_so_far += chunk.decode()
+        except asyncio.TimeoutError:
+            pass
+
+        if "Sleeping for" in output_so_far:
+            task_started = True
+            break
+
+        await asyncio.sleep(0.1)
+
+    assert task_started, f"Task did not start. Output:\n{output_so_far}"
+
+    # Send signal
+    assert proc.pid is not None
+    os.kill(proc.pid, sig)
+
+    # Wait for graceful exit
+    stdout_rest, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+    output = output_so_far + stdout_rest.decode() + stderr.decode()
+
+    assert proc.returncode == 0, (
+        f"Expected exit code 0, got {proc.returncode}\n{output}"
+    )
+    assert "Shutdown requested, finishing" in output, (
+        f"Missing shutdown message\n{output}"
+    )
+    assert "↩" in output or "↫" in output, f"Task did not complete\n{output}"
+
+
+async def test_sigterm_gracefully_drains_inflight_tasks(
+    docket: Docket, key_leak_checker: KeyCountChecker
+) -> None:
+    """Worker should finish in-flight tasks before exiting on SIGTERM.
+
+    This is critical for Kubernetes deployments where SIGTERM is sent during
+    pod termination. Without graceful handling, in-flight tasks are abruptly
+    killed and must be redelivered after redelivery_timeout.
+    """
+    await _test_signal_graceful_shutdown(docket, key_leak_checker, signal.SIGTERM)

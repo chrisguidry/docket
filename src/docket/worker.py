@@ -2,6 +2,7 @@ import asyncio
 import base64
 import logging
 import os
+import signal
 import socket
 import sys
 import time
@@ -199,7 +200,26 @@ class Worker:
                     if until_finished:
                         await worker.run_until_finished()
                     else:
-                        await worker.run_forever()  # pragma: no cover
+                        loop = asyncio.get_running_loop()
+                        current_task = asyncio.current_task()
+
+                        def handle_sigterm() -> None:
+                            logger.info(
+                                "Received SIGTERM, initiating graceful shutdown..."
+                            )
+                            if current_task and not current_task.done():
+                                current_task.cancel()
+
+                        if hasattr(signal, "SIGTERM"):
+                            loop.add_signal_handler(signal.SIGTERM, handle_sigterm)
+
+                        try:
+                            await worker.run_forever()
+                        except asyncio.CancelledError:
+                            pass  # Expected from signal handler
+                        finally:
+                            if hasattr(signal, "SIGTERM"):
+                                loop.remove_signal_handler(signal.SIGTERM)
 
     async def run_until_finished(self) -> None:
         """Run the worker until there are no more tasks to process."""
