@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import functools
 import logging
 import os
 import signal
@@ -8,7 +9,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import Any, Coroutine, Mapping, Protocol, cast
+from typing import Any, Callable, Coroutine, Mapping, Protocol, TypeVar, cast
 
 import cloudpickle  # type: ignore[import]
 
@@ -77,6 +78,40 @@ class ConcurrencyBlocked(Exception):
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
+
+F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, None]])
+
+
+def _with_sigterm_handler(func: F) -> F:  # pragma: no cover
+    """Decorator that installs a SIGTERM handler for graceful shutdown.
+
+    On SIGTERM, cancels the wrapped coroutine, allowing in-flight tasks to
+    complete before the worker exits. Tested via subprocess in
+    test_sigterm_gracefully_drains_inflight_tasks.
+    """
+    if not hasattr(signal, "SIGTERM"):
+        return func
+
+    @functools.wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> None:
+        loop = asyncio.get_running_loop()
+        task: asyncio.Task[None] | None = None
+
+        def handle_sigterm() -> None:
+            logger.info("Received SIGTERM, initiating graceful shutdown...")
+            if task and not task.done():
+                task.cancel()
+
+        loop.add_signal_handler(signal.SIGTERM, handle_sigterm)
+        try:
+            task = asyncio.create_task(func(*args, **kwargs))
+            await task
+        except asyncio.CancelledError:
+            pass  # Expected from signal handler
+        finally:
+            loop.remove_signal_handler(signal.SIGTERM)
+
+    return cast(F, wrapper)
 
 
 class _stream_due_tasks(Protocol):
@@ -199,35 +234,21 @@ class Worker:
                 ):
                     if until_finished:
                         await worker.run_until_finished()
-                    else:  # pragma: no cover
-                        loop = asyncio.get_running_loop()
-                        current_task = asyncio.current_task()
-
-                        def handle_sigterm() -> None:
-                            logger.info(
-                                "Received SIGTERM, initiating graceful shutdown..."
-                            )
-                            if current_task and not current_task.done():
-                                current_task.cancel()
-
-                        if hasattr(signal, "SIGTERM"):
-                            loop.add_signal_handler(signal.SIGTERM, handle_sigterm)
-
-                        try:
-                            await worker.run_forever()
-                        except asyncio.CancelledError:
-                            pass  # Expected from signal handler
-                        finally:
-                            if hasattr(signal, "SIGTERM"):
-                                loop.remove_signal_handler(signal.SIGTERM)
+                    else:  # pragma: no cover - tested via subprocess
+                        await worker.run_forever()
 
     async def run_until_finished(self) -> None:
         """Run the worker until there are no more tasks to process."""
         return await self._run(forever=False)
 
-    async def run_forever(self) -> None:
-        """Run the worker indefinitely."""
-        return await self._run(forever=True)  # pragma: no cover
+    @_with_sigterm_handler
+    async def run_forever(self) -> None:  # pragma: no cover - tested via subprocess
+        """Run the worker indefinitely.
+
+        Installs a SIGTERM handler that initiates graceful shutdown, allowing
+        in-flight tasks to complete before the worker exits.
+        """
+        await self._run(forever=True)
 
     _execution_counts: dict[str, int]
 
