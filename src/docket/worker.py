@@ -199,7 +199,7 @@ class Worker:
                 ):
                     if until_finished:
                         await worker.run_until_finished()
-                    else:  # pragma: no cover - tested via subprocess in test_sigterm_gracefully_drains_inflight_tasks
+                    else:  # pragma: no cover
                         loop = asyncio.get_running_loop()
                         current_task = asyncio.current_task()
 
