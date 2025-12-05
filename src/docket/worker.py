@@ -82,8 +82,8 @@ tracer: Tracer = trace.get_tracer(__name__)
 F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, None]])
 
 
-def _with_sigterm_handler(func: F) -> F:  # pragma: no cover
-    """Decorator that installs a SIGTERM handler for graceful shutdown.
+def handle_signals(func: F) -> F:  # pragma: no cover
+    """Decorator that installs a signal handler for graceful shutdown.
 
     On SIGTERM, cancels the wrapped coroutine, allowing in-flight tasks to
     complete before the worker exits.
@@ -106,7 +106,7 @@ def _with_sigterm_handler(func: F) -> F:  # pragma: no cover
             task = asyncio.create_task(func(*args, **kwargs))
             await task
         except asyncio.CancelledError:
-            pass  # Expected from signal handler
+            pass
         finally:
             loop.remove_signal_handler(signal.SIGTERM)
 
@@ -233,8 +233,8 @@ class Worker:
                 ):
                     if until_finished:
                         await worker.run_until_finished()
-                    else:  # pragma: no cover - tested via subprocess
-                        await worker.run_forever()
+                    else:
+                        await worker.run_forever()  # pragma: no cover
 
     async def run_until_finished(self) -> None:
         """Run the worker until there are no more tasks to process."""
@@ -242,7 +242,7 @@ class Worker:
 
     async def run_forever(self) -> None:
         """Run the worker indefinitely."""
-        return await self._run(forever=True)
+        return await self._run(forever=True)  # pragma: no cover
 
     _execution_counts: dict[str, int]
 
@@ -277,7 +277,7 @@ class Worker:
             self.docket.strike_list.remove_condition(has_reached_max_iterations)
             self._execution_counts = {}
 
-    @_with_sigterm_handler
+    @handle_signals
     async def _run(self, forever: bool = False) -> None:
         self._startup_log()
 
