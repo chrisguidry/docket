@@ -86,8 +86,7 @@ def _with_sigterm_handler(func: F) -> F:  # pragma: no cover
     """Decorator that installs a SIGTERM handler for graceful shutdown.
 
     On SIGTERM, cancels the wrapped coroutine, allowing in-flight tasks to
-    complete before the worker exits. Tested via subprocess in
-    test_sigterm_gracefully_drains_inflight_tasks.
+    complete before the worker exits.
     """
     if not hasattr(signal, "SIGTERM"):
         return func
@@ -241,14 +240,9 @@ class Worker:
         """Run the worker until there are no more tasks to process."""
         return await self._run(forever=False)
 
-    @_with_sigterm_handler
-    async def run_forever(self) -> None:  # pragma: no cover - tested via subprocess
-        """Run the worker indefinitely.
-
-        Installs a SIGTERM handler that initiates graceful shutdown, allowing
-        in-flight tasks to complete before the worker exits.
-        """
-        await self._run(forever=True)
+    async def run_forever(self) -> None:
+        """Run the worker indefinitely."""
+        return await self._run(forever=True)
 
     _execution_counts: dict[str, int]
 
@@ -283,6 +277,7 @@ class Worker:
             self.docket.strike_list.remove_condition(has_reached_max_iterations)
             self._execution_counts = {}
 
+    @_with_sigterm_handler
     async def _run(self, forever: bool = False) -> None:
         self._startup_log()
 
