@@ -204,7 +204,7 @@ async def _test_signal_graceful_shutdown(
             )
             if chunk:
                 output_so_far += chunk.decode()
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError:  # pragma: no cover
             pass
 
         if "Sleeping for" in output_so_far:
