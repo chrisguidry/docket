@@ -1,13 +1,15 @@
 import asyncio
 import base64
+import functools
 import logging
 import os
+import signal
 import socket
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import Any, Coroutine, Mapping, Protocol, cast
+from typing import Any, Callable, Coroutine, Mapping, Protocol, TypeVar, cast
 
 import cloudpickle  # type: ignore[import]
 
@@ -76,6 +78,39 @@ class ConcurrencyBlocked(Exception):
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
+
+F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, None]])
+
+
+def handle_signals(func: F) -> F:  # pragma: no cover
+    """Decorator that installs a signal handler for graceful shutdown.
+
+    On SIGTERM, cancels the wrapped coroutine, allowing in-flight tasks to
+    complete before the worker exits.
+    """
+    if not hasattr(signal, "SIGTERM"):
+        return func
+
+    @functools.wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> None:
+        loop = asyncio.get_running_loop()
+        task: asyncio.Task[None] | None = None
+
+        def handle_sigterm() -> None:
+            logger.info("Received SIGTERM, initiating graceful shutdown...")
+            if task and not task.done():
+                task.cancel()
+
+        loop.add_signal_handler(signal.SIGTERM, handle_sigterm)
+        try:
+            task = asyncio.create_task(func(*args, **kwargs))
+            await task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            loop.remove_signal_handler(signal.SIGTERM)
+
+    return cast(F, wrapper)
 
 
 class _stream_due_tasks(Protocol):
@@ -242,6 +277,7 @@ class Worker:
             self.docket.strike_list.remove_condition(has_reached_max_iterations)
             self._execution_counts = {}
 
+    @handle_signals
     async def _run(self, forever: bool = False) -> None:
         self._startup_log()
 
