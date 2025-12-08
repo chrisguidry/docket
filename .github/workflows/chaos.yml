@@ -8,7 +8,7 @@ on:
   workflow_call:
 
 jobs:
-  test:
+  chaos:
     name: Chaos tests
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -30,3 +30,24 @@ jobs:
 
       - name: Run chaos tests
         run: python -m chaos.driver
+
+  signals:
+    name: Signal handling tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv and set Python version
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: 3.12
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run signal handling tests
+        run: python -m chaos.signals

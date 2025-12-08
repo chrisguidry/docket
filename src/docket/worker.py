@@ -83,10 +83,13 @@ F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, None]])
 
 
 def handle_signals(func: F) -> F:  # pragma: no cover
-    """Decorator that installs a signal handler for graceful shutdown.
+    """Decorator that installs signal handlers for graceful shutdown.
 
-    On SIGTERM, cancels the wrapped coroutine, allowing in-flight tasks to
-    complete before the worker exits.
+    On SIGTERM or SIGINT, cancels the wrapped coroutine, allowing in-flight
+    tasks to complete before the worker exits.
+
+    Note: While Python 3.11+ added automatic SIGINT handling to asyncio.run(),
+    we handle it explicitly for consistent behavior across Python 3.10+.
     """
     if not hasattr(signal, "SIGTERM"):
         return func
@@ -96,12 +99,13 @@ def handle_signals(func: F) -> F:  # pragma: no cover
         loop = asyncio.get_running_loop()
         task: asyncio.Task[None] | None = None
 
-        def handle_sigterm() -> None:
-            logger.info("Received SIGTERM, initiating graceful shutdown...")
+        def handle_shutdown(sig_name: str) -> None:
+            logger.info("Received %s, initiating graceful shutdown...", sig_name)
             if task and not task.done():
                 task.cancel()
 
-        loop.add_signal_handler(signal.SIGTERM, handle_sigterm)
+        loop.add_signal_handler(signal.SIGTERM, lambda: handle_shutdown("SIGTERM"))
+        loop.add_signal_handler(signal.SIGINT, lambda: handle_shutdown("SIGINT"))
         try:
             task = asyncio.create_task(func(*args, **kwargs))
             await task
@@ -109,6 +113,7 @@ def handle_signals(func: F) -> F:  # pragma: no cover
             pass
         finally:
             loop.remove_signal_handler(signal.SIGTERM)
+            loop.remove_signal_handler(signal.SIGINT)
 
     return cast(F, wrapper)
 
