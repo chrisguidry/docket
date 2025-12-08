@@ -209,8 +209,11 @@ async def _test_signal_graceful_shutdown(
     assert proc.returncode == 0, (
         f"Expected exit code 0, got {proc.returncode}\n{output}"
     )
+    assert f"Received {sig.name}, initiating graceful shutdown" in output, (
+        f"Missing shutdown message for {sig.name}\n{output}"
+    )
     assert "Shutdown requested, finishing" in output, (
-        f"Missing shutdown message\n{output}"
+        f"Missing 'Shutdown requested' message\n{output}"
     )
     assert "↩" in output or "↫" in output, f"Task did not complete\n{output}"
 
@@ -225,3 +228,13 @@ async def test_sigterm_gracefully_drains_inflight_tasks(
     killed and must be redelivered after redelivery_timeout.
     """
     await _test_signal_graceful_shutdown(docket, key_leak_checker, signal.SIGTERM)
+
+
+async def test_sigint_gracefully_drains_inflight_tasks(
+    docket: Docket, key_leak_checker: KeyCountChecker
+) -> None:
+    """Worker should finish in-flight tasks before exiting on SIGINT.
+
+    This ensures consistent graceful shutdown behavior across Python 3.10+.
+    """
+    await _test_signal_graceful_shutdown(docket, key_leak_checker, signal.SIGINT)

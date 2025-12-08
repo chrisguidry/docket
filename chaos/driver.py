@@ -2,23 +2,20 @@ import asyncio
 import logging
 import os
 import random
-import socket
 import sys
 from asyncio import subprocess
 from asyncio.subprocess import Process
-from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import Any, AsyncGenerator, Literal, Sequence
+from typing import Any, Literal, Sequence
 from uuid import uuid4
 
 import redis.exceptions
-from docker import DockerClient
-from docker.models.containers import Container
 from opentelemetry import trace
 
 from docket import Docket
 from docket.execution import Operator
 
+from .redis import run_redis
 from .tasks import toxic
 
 logging.getLogger().setLevel(logging.INFO)
@@ -38,34 +35,6 @@ def python_entrypoint() -> list[str]:
     if os.environ.get("OTEL_DISTRO"):
         return ["opentelemetry-instrument", sys.executable]
     return [sys.executable]
-
-
-@asynccontextmanager
-async def run_redis(version: str) -> AsyncGenerator[tuple[str, Container], None]:
-    def get_free_port() -> int:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("", 0))
-            return s.getsockname()[1]
-
-    port = get_free_port()
-
-    client = DockerClient.from_env()
-    container = client.containers.run(
-        f"redis:{version}",
-        detach=True,
-        ports={"6379/tcp": port},
-        auto_remove=True,
-    )
-
-    # Wait for Redis to be ready
-    for line in container.logs(stream=True):
-        if b"Ready to accept connections" in line:
-            break
-
-    try:
-        yield f"redis://localhost:{port}/0", container
-    finally:
-        container.stop()
 
 
 async def setup_environments(
