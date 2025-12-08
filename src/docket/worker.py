@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import functools
 import logging
 import os
 import signal
@@ -9,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import Any, Callable, Coroutine, Mapping, Protocol, TypeVar, cast
+from typing import Any, Coroutine, Mapping, Protocol, cast
 
 import cloudpickle  # type: ignore[import]
 
@@ -78,44 +77,6 @@ class ConcurrencyBlocked(Exception):
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
-
-F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, None]])
-
-
-def handle_signals(func: F) -> F:  # pragma: no cover
-    """Decorator that installs signal handlers for graceful shutdown.
-
-    On SIGTERM or SIGINT, cancels the wrapped coroutine, allowing in-flight
-    tasks to complete before the worker exits.
-
-    Note: While Python 3.11+ added automatic SIGINT handling to asyncio.run(),
-    we handle it explicitly for consistent behavior across Python 3.10+.
-    """
-    if not hasattr(signal, "SIGTERM"):
-        return func
-
-    @functools.wraps(func)
-    async def wrapper(*args: Any, **kwargs: Any) -> None:
-        loop = asyncio.get_running_loop()
-        task: asyncio.Task[None] | None = None
-
-        def handle_shutdown(sig_name: str) -> None:
-            logger.info("Received %s, initiating graceful shutdown...", sig_name)
-            if task and not task.done():
-                task.cancel()
-
-        loop.add_signal_handler(signal.SIGTERM, lambda: handle_shutdown("SIGTERM"))
-        loop.add_signal_handler(signal.SIGINT, lambda: handle_shutdown("SIGINT"))
-        try:
-            task = asyncio.create_task(func(*args, **kwargs))
-            await task
-        except asyncio.CancelledError:
-            pass
-        finally:
-            loop.remove_signal_handler(signal.SIGTERM)
-            loop.remove_signal_handler(signal.SIGINT)
-
-    return cast(F, wrapper)
 
 
 class _stream_due_tasks(Protocol):
@@ -216,6 +177,14 @@ class Worker:
         metrics_port: int | None = None,
         tasks: list[str] = ["docket.tasks:standard_tasks"],
     ) -> None:
+        """Run a worker as the main entry point (CLI).
+
+        This method installs signal handlers for graceful shutdown since it
+        assumes ownership of the event loop. When embedding Docket in another
+        framework (e.g., FastAPI with uvicorn), use Worker.run_forever() or
+        Worker.run_until_finished() directly - those methods do not install
+        signal handlers and rely on the framework to handle shutdown signals.
+        """
         with (
             healthcheck_server(port=healthcheck_port),
             metrics_server(port=metrics_port),
@@ -236,10 +205,41 @@ class Worker:
                         schedule_automatic_tasks=schedule_automatic_tasks,
                     ) as worker
                 ):
-                    if until_finished:
-                        await worker.run_until_finished()
-                    else:
-                        await worker.run_forever()  # pragma: no cover
+                    # Install signal handlers for graceful shutdown.
+                    # This is only appropriate when we own the event loop (CLI entry point).
+                    # Embedded usage should let the framework handle signals.
+                    loop = asyncio.get_running_loop()
+                    run_task: asyncio.Task[None] | None = None
+
+                    def handle_shutdown(sig_name: str) -> None:  # pragma: no cover
+                        logger.info(
+                            "Received %s, initiating graceful shutdown...", sig_name
+                        )
+                        if run_task and not run_task.done():
+                            run_task.cancel()
+
+                    if hasattr(signal, "SIGTERM"):  # pragma: no cover
+                        loop.add_signal_handler(
+                            signal.SIGTERM, lambda: handle_shutdown("SIGTERM")
+                        )
+                        loop.add_signal_handler(
+                            signal.SIGINT, lambda: handle_shutdown("SIGINT")
+                        )
+
+                    try:
+                        if until_finished:
+                            run_task = asyncio.create_task(worker.run_until_finished())
+                        else:
+                            run_task = asyncio.create_task(
+                                worker.run_forever()
+                            )  # pragma: no cover
+                        await run_task
+                    except asyncio.CancelledError:  # pragma: no cover
+                        pass
+                    finally:
+                        if hasattr(signal, "SIGTERM"):  # pragma: no cover
+                            loop.remove_signal_handler(signal.SIGTERM)
+                            loop.remove_signal_handler(signal.SIGINT)
 
     async def run_until_finished(self) -> None:
         """Run the worker until there are no more tasks to process."""
@@ -282,7 +282,6 @@ class Worker:
             self.docket.strike_list.remove_condition(has_reached_max_iterations)
             self._execution_counts = {}
 
-    @handle_signals
     async def _run(self, forever: bool = False) -> None:
         self._startup_log()
 
