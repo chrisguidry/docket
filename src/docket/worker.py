@@ -18,7 +18,7 @@ if sys.version_info < (3, 11):  # pragma: no cover
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 from redis.asyncio import Redis
-from redis.exceptions import ConnectionError, LockError
+from redis.exceptions import ConnectionError, LockError, ResponseError
 from typing_extensions import Self
 
 from .dependencies import (
@@ -326,14 +326,20 @@ class Worker:
 
         async def get_redeliveries(redis: Redis) -> RedisReadGroupResponse:
             logger.debug("Getting redeliveries", extra=log_context)
-            _, redeliveries, *_ = await redis.xautoclaim(
-                name=self.docket.stream_key,
-                groupname=self.docket.worker_group_name,
-                consumername=self.name,
-                min_idle_time=int(self.redelivery_timeout.total_seconds() * 1000),
-                start_id="0-0",
-                count=available_slots,
-            )
+            try:
+                _, redeliveries, *_ = await redis.xautoclaim(
+                    name=self.docket.stream_key,
+                    groupname=self.docket.worker_group_name,
+                    consumername=self.name,
+                    min_idle_time=int(self.redelivery_timeout.total_seconds() * 1000),
+                    start_id="0-0",
+                    count=available_slots,
+                )
+            except ResponseError as e:
+                if "NOGROUP" in str(e):
+                    await self.docket._ensure_stream_and_group()
+                    return await get_redeliveries(redis)
+                raise  # pragma: no cover
             return [(b"__redelivery__", redeliveries)]
 
         async def get_new_deliveries(redis: Redis) -> RedisReadGroupResponse:
@@ -342,15 +348,21 @@ class Worker:
             # This is necessary because fakeredis's async blocking operations don't
             # properly yield control to the asyncio event loop
             is_memory = self.docket.url.startswith("memory://")
-            result = await redis.xreadgroup(
-                groupname=self.docket.worker_group_name,
-                consumername=self.name,
-                streams={self.docket.stream_key: ">"},
-                block=0
-                if is_memory
-                else int(self.minimum_check_interval.total_seconds() * 1000),
-                count=available_slots,
-            )
+            try:
+                result = await redis.xreadgroup(
+                    groupname=self.docket.worker_group_name,
+                    consumername=self.name,
+                    streams={self.docket.stream_key: ">"},
+                    block=0
+                    if is_memory
+                    else int(self.minimum_check_interval.total_seconds() * 1000),
+                    count=available_slots,
+                )
+            except ResponseError as e:
+                if "NOGROUP" in str(e):
+                    await self.docket._ensure_stream_and_group()
+                    return await get_new_deliveries(redis)
+                raise  # pragma: no cover
             if is_memory and not result:
                 await asyncio.sleep(self.minimum_check_interval.total_seconds())
             return result

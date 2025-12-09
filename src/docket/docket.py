@@ -234,19 +234,6 @@ class Docket:
 
         self._monitor_strikes_task = asyncio.create_task(self._monitor_strikes())
 
-        # Ensure that the stream and worker group exist
-        try:
-            async with self.redis() as r:
-                await r.xgroup_create(
-                    groupname=self.worker_group_name,
-                    name=self.stream_key,
-                    id="0-0",
-                    mkstream=True,
-                )
-        except redis.exceptions.RedisError as e:
-            if "BUSYGROUP" not in repr(e):
-                raise
-
         if isinstance(self.result_storage, BaseContextManagerStore):
             await self.result_storage.__aenter__()
         else:
@@ -625,6 +612,25 @@ class Docket:
     def stream_id_key(self, key: str) -> str:
         return f"{self.name}:stream-id:{key}"
 
+    async def _ensure_stream_and_group(self) -> None:
+        """Create stream and consumer group if they don't exist (idempotent).
+
+        This is safe to call from multiple workers racing to initialize - the
+        BUSYGROUP error is silently ignored since it just means another worker
+        created the group first.
+        """
+        try:
+            async with self.redis() as r:
+                await r.xgroup_create(
+                    groupname=self.worker_group_name,
+                    name=self.stream_key,
+                    id="0-0",
+                    mkstream=True,
+                )
+        except redis.exceptions.ResponseError as e:
+            if "BUSYGROUP" not in str(e):
+                raise  # pragma: no cover
+
     async def _cancel(self, redis: Redis, key: str) -> None:
         """Cancel a task atomically.
 
@@ -814,6 +820,12 @@ class Docket:
         Returns:
             A snapshot of the Docket.
         """
+        # For memory:// URLs (fakeredis), ensure the group exists upfront. This
+        # avoids a fakeredis bug where xpending_range raises TypeError instead
+        # of NOGROUP when the consumer group doesn't exist.
+        if self.url.startswith("memory://"):
+            await self._ensure_stream_and_group()
+
         running: list[RunningExecution] = []
         future: list[Execution] = []
 
@@ -842,13 +854,23 @@ class Docket:
                 scheduled_task_keys: list[bytes]
 
                 now = datetime.now(timezone.utc)
-                (
-                    total_stream_messages,
-                    total_schedule_messages,
-                    pending_messages,
-                    stream_messages,
-                    scheduled_task_keys,
-                ) = await pipeline.execute()
+                try:
+                    (
+                        total_stream_messages,
+                        total_schedule_messages,
+                        pending_messages,
+                        stream_messages,
+                        scheduled_task_keys,
+                    ) = await pipeline.execute()
+                except redis.exceptions.ResponseError as e:
+                    # Check for NOGROUP error. Also check for XPENDING because
+                    # redis-py 7.0 has a bug where pipeline errors lose the
+                    # original NOGROUP message (shows "{exception.args}" instead).
+                    error_str = str(e)
+                    if "NOGROUP" in error_str or "XPENDING" in error_str:
+                        await self._ensure_stream_and_group()
+                        return await self.snapshot()
+                    raise  # pragma: no cover
 
                 for task_key in scheduled_task_keys:
                     pipeline.hgetall(self.parked_task_key(task_key.decode()))
