@@ -1049,12 +1049,10 @@ async def test_multiple_workers_racing_to_create_group(redis_url: str):
             for _ in range(5)
         ]
 
-        async with asyncio.TaskGroup() as tg:
-            for w in workers:
-                await w.__aenter__()
+        for w in workers:
+            await w.__aenter__()
 
-            for w in workers:
-                tg.create_task(w.run_until_finished())
+        await asyncio.gather(*[w.run_until_finished() for w in workers])
 
         for w in workers:
             await w.__aexit__(None, None, None)

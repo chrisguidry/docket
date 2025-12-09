@@ -246,6 +246,13 @@ async def main(
                     "driver: Redis connection error (%s), retrying in 5s...", e
                 )
                 await asyncio.sleep(5)
+            except redis.exceptions.ResponseError as e:
+                if "NOGROUP" in str(e):
+                    # Consumer group not created yet, workers haven't started
+                    logger.debug("driver: Consumer group not yet created, waiting...")
+                    await asyncio.sleep(1)
+                else:
+                    raise
 
             # Now apply some chaos to the system:
 
