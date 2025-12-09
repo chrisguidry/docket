@@ -988,3 +988,169 @@ async def test_worker_run_classmethod_memory_backend() -> None:
         schedule_automatic_tasks=False,
         until_finished=True,
     )
+
+
+async def test_consumer_group_created_on_first_worker_read(redis_url: str):
+    """Consumer group should be created when worker first tries to read.
+
+    Issue #206: Lazy stream/consumer group bootstrap.
+    """
+    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+
+    async def dummy_task():
+        pass
+
+    async with docket:
+        docket.register(dummy_task)
+
+        await docket.add(dummy_task)()
+
+        async with docket.redis() as redis:
+            assert await redis.exists(docket.stream_key)
+            groups = await redis.xinfo_groups(docket.stream_key)
+            assert len(groups) == 0, "Consumer group should not exist before worker"
+
+        async with Worker(
+            docket,
+            minimum_check_interval=timedelta(milliseconds=5),
+            scheduling_resolution=timedelta(milliseconds=5),
+        ) as worker:
+            await worker.run_until_finished()
+
+        async with docket.redis() as redis:
+            groups = await redis.xinfo_groups(docket.stream_key)
+            assert len(groups) == 1
+            assert groups[0]["name"] == docket.worker_group_name.encode()
+
+
+async def test_multiple_workers_racing_to_create_group(redis_url: str):
+    """Multiple workers starting simultaneously should all succeed.
+
+    Issue #206: Lazy stream/consumer group bootstrap.
+    """
+    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+    call_counts: dict[str, int] = {}
+
+    async def counting_task(worker: Worker = CurrentWorker()):
+        call_counts[worker.name] = call_counts.get(worker.name, 0) + 1
+
+    async with docket:
+        docket.register(counting_task)
+
+        for _ in range(20):
+            await docket.add(counting_task)()
+
+        workers = [
+            Worker(
+                docket,
+                minimum_check_interval=timedelta(milliseconds=5),
+                scheduling_resolution=timedelta(milliseconds=5),
+            )
+            for _ in range(5)
+        ]
+
+        for w in workers:
+            await w.__aenter__()
+
+        await asyncio.gather(*[w.run_until_finished() for w in workers])
+
+        for w in workers:
+            await w.__aexit__(None, None, None)
+
+        total_calls = sum(call_counts.values())
+        assert total_calls == 20
+
+        async with docket.redis() as redis:
+            groups = await redis.xinfo_groups(docket.stream_key)
+            assert len(groups) == 1
+
+
+async def test_worker_handles_nogroup_error_gracefully(redis_url: str):
+    """Worker should handle NOGROUP error and create group automatically.
+
+    Issue #206: Lazy stream/consumer group bootstrap.
+    """
+    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+    task_executed = False
+
+    async def simple_task():
+        nonlocal task_executed
+        task_executed = True
+
+    async with docket:
+        docket.register(simple_task)
+
+        await docket.add(simple_task)()
+
+        async with docket.redis() as redis:
+            groups = await redis.xinfo_groups(docket.stream_key)
+            assert len(groups) == 0
+
+        async with Worker(
+            docket,
+            minimum_check_interval=timedelta(milliseconds=5),
+            scheduling_resolution=timedelta(milliseconds=5),
+        ) as worker:
+            await worker.run_until_finished()
+
+        assert task_executed, "Task should have been executed"
+
+
+async def test_worker_handles_nogroup_in_xreadgroup(redis_url: str):
+    """Worker should handle NOGROUP error in xreadgroup and retry.
+
+    Issue #206: Lazy stream/consumer group bootstrap.
+
+    This tests the rare case where xautoclaim succeeds but then xreadgroup
+    gets NOGROUP (e.g., if the group was deleted between the two calls).
+    """
+    from unittest.mock import patch
+
+    import redis.asyncio
+    from redis.exceptions import ResponseError
+
+    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+    task_executed = False
+
+    async def simple_task():
+        nonlocal task_executed
+        task_executed = True
+
+    async with docket:
+        docket.register(simple_task)
+
+        # Add a task so the worker has something to process
+        await docket.add(simple_task)()
+
+        # Ensure group exists first so xautoclaim won't hit NOGROUP
+        await docket._ensure_stream_and_group()  # pyright: ignore[reportPrivateUsage]
+
+        # Track how many times xreadgroup is called
+        call_count = 0
+        original_xreadgroup = redis.asyncio.Redis.xreadgroup
+
+        async def mock_xreadgroup(  # pyright: ignore[reportUnknownParameterType]
+            self: redis.asyncio.Redis,  # type: ignore[type-arg]
+            *args: object,
+            **kwargs: object,
+        ) -> object:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call raises NOGROUP (simulating group deletion)
+                raise ResponseError("NOGROUP No such key or consumer group")
+            # Subsequent calls use real implementation
+            return await original_xreadgroup(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch.object(redis.asyncio.Redis, "xreadgroup", mock_xreadgroup):
+            async with Worker(
+                docket,
+                minimum_check_interval=timedelta(milliseconds=5),
+                scheduling_resolution=timedelta(milliseconds=5),
+            ) as worker:
+                await worker.run_until_finished()
+
+        # Task should have executed after NOGROUP was handled
+        assert task_executed
+        # Should have called xreadgroup at least twice (once NOGROUP, then success)
+        assert call_count >= 2
