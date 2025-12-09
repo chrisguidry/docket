@@ -234,6 +234,12 @@ async def key_leak_checker(
         scheduling_resolution=timedelta(milliseconds=5),
     ) as temp_worker:
         await temp_worker.run_until_finished()
+        # Clean up heartbeat data to avoid polluting tests that check worker counts
+        async with docket.redis() as r:
+            await r.zrem(docket.workers_set, temp_worker.name)
+            for task_name in docket.tasks:
+                await r.zrem(docket.task_workers_set(task_name), temp_worker.name)
+            await r.delete(docket.worker_tasks_set(temp_worker.name))
 
     await checker.capture_baseline()
 

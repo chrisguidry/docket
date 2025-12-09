@@ -915,7 +915,6 @@ class Worker:
 
     async def _heartbeat(self) -> None:
         while True:
-            await asyncio.sleep(self.docket.heartbeat_interval.total_seconds())
             try:
                 now = datetime.now(timezone.utc).timestamp()
                 maximum_age = (
@@ -973,6 +972,8 @@ class Worker:
                     exc_info=True,
                     extra=self._log_context(),
                 )
+
+            await asyncio.sleep(self.docket.heartbeat_interval.total_seconds())
 
     async def _can_start_task(self, redis: Redis, execution: Execution) -> bool:
         """Check if a task can start based on concurrency limits."""
