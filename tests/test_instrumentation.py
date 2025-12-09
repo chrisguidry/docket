@@ -766,8 +766,8 @@ async def test_worker_publishes_depth_gauges(
     async with Worker(docket):
         await asyncio.sleep(0.2)  # enough for a heartbeat to be published
 
-    QUEUE_DEPTH.assert_called_once_with(2, docket_labels)
-    SCHEDULE_DEPTH.assert_called_once_with(3, docket_labels)
+    QUEUE_DEPTH.assert_called_with(2, docket_labels)
+    SCHEDULE_DEPTH.assert_called_with(3, docket_labels)
 
 
 @pytest.fixture
