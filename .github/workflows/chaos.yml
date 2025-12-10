@@ -32,7 +32,7 @@ jobs:
         run: uv sync --dev
 
       - name: Run chaos tests
-        run: python -m chaos.driver
+        run: uv run python -m chaos.driver
 
   signals:
     name: Signal handling tests
@@ -53,4 +53,4 @@ jobs:
         run: uv sync --dev
 
       - name: Run signal handling tests
-        run: python -m chaos.signals
+        run: uv run python -m chaos.signals
