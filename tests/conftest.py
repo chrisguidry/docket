@@ -98,7 +98,7 @@ def redis_server(
             with socket.socket(
                 socket.AF_INET, socket.SOCK_STREAM
             ) as s:  # pragma: no cover
-                s.bind(("", 0))  # pragma: no cover
+                s.bind(("127.0.0.1", 0))  # pragma: no cover
                 redis_port = s.getsockname()[1]  # pragma: no cover
 
             image = f"redis:{REDIS_VERSION}"  # pragma: no cover
