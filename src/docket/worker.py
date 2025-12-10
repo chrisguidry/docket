@@ -651,6 +651,7 @@ class Worker:
         await execution.claim(self.name)
 
         dependencies: dict[str, Dependency] = {}
+        acquired_concurrency_slot = False
 
         with tracer.start_as_current_span(
             execution.function.__name__,
@@ -677,6 +678,7 @@ class Worker:
                             if not can_start:  # pragma: no branch - 3.10 failure
                                 # Task cannot start due to concurrency limits
                                 raise ConcurrencyBlocked(execution)
+                            acquired_concurrency_slot = True
 
                     dependency_failures = {
                         k: v
@@ -799,14 +801,10 @@ class Worker:
                     "%s [%s] %s", arrow, ms(duration), call, extra=log_context
                 )
             finally:
-                # Release concurrency slot if we acquired one
-                if dependencies:
-                    concurrency_limit = get_single_dependency_of_type(
-                        dependencies, ConcurrencyLimit
-                    )
-                    if concurrency_limit and not concurrency_limit.is_bypassed:
-                        async with self.docket.redis() as redis:
-                            await self._release_concurrency_slot(redis, execution)
+                # Release concurrency slot only if we actually acquired one
+                if acquired_concurrency_slot:
+                    async with self.docket.redis() as redis:
+                        await self._release_concurrency_slot(redis, execution)
 
                 TASKS_RUNNING.add(-1, counter_labels)
                 TASKS_COMPLETED.add(1, counter_labels)
@@ -997,25 +995,38 @@ class Worker:
             f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
         )
 
-        # Use Redis sorted set with timestamps to track concurrency and handle expiration
+        # Use Redis sorted set to track concurrency. Each entry is keyed by
+        # task_key with the timestamp as the score.
+        #
+        # The slot_timeout prevents duplicate execution when xautoclaim reclaims
+        # a message from one worker and delivers it to another while the original
+        # is still running. If the slot is "fresh" (updated within slot_timeout),
+        # we block the new delivery. If it's stale (worker probably crashed), we
+        # allow takeover.
         lua_script = """
         local key = KEYS[1]
         local max_concurrent = tonumber(ARGV[1])
-        local worker_id = ARGV[2]
-        local task_key = ARGV[3]
-        local current_time = tonumber(ARGV[4])
-        local expiration_time = tonumber(ARGV[5])
+        local task_key = ARGV[2]
+        local current_time = tonumber(ARGV[3])
+        local slot_timeout = tonumber(ARGV[4])
 
-        -- Remove expired entries
-        local expired_cutoff = current_time - expiration_time
-        redis.call('ZREMRANGEBYSCORE', key, 0, expired_cutoff)
+        -- Check if this task already has a slot (from a previous delivery attempt)
+        local slot_time = redis.call('ZSCORE', key, task_key)
+        if slot_time then
+            local age = current_time - slot_time
+            if age < slot_timeout then
+                -- Fresh slot - another delivery is still executing this task
+                return 0
+            else
+                -- Stale slot - original worker probably crashed, allow takeover
+                redis.call('ZADD', key, current_time, task_key)
+                return 1
+            end
+        end
 
-        -- Get current count
-        local current = redis.call('ZCARD', key)
-
-        if current < max_concurrent then
-            -- Add this worker's task to the sorted set with current timestamp
-            redis.call('ZADD', key, current_time, worker_id .. ':' .. task_key)
+        -- No existing slot for this task - check if we can acquire a new one
+        if redis.call('ZCARD', key) < max_concurrent then
+            redis.call('ZADD', key, current_time, task_key)
             return 1
         else
             return 0
@@ -1023,17 +1034,19 @@ class Worker:
         """
 
         current_time = datetime.now(timezone.utc).timestamp()
-        expiration_seconds = self.redelivery_timeout.total_seconds()
+        # Slot timeout should be much longer than tasks normally take to complete.
+        # Using 5x redelivery_timeout as a reasonable default - if a task takes
+        # longer than this, it's likely stuck and should be taken over.
+        slot_timeout = self.redelivery_timeout.total_seconds() * 5
 
         result = await redis.eval(  # type: ignore
             lua_script,
             1,
             concurrency_key,
             str(concurrency_limit.max_concurrent),
-            self.name,
             execution.key,
             current_time,
-            expiration_seconds,
+            slot_timeout,
         )
 
         return bool(result)
@@ -1061,8 +1074,8 @@ class Worker:
             f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
         )
 
-        # Remove this worker's task from the sorted set
-        await redis.zrem(concurrency_key, f"{self.name}:{execution.key}")  # type: ignore
+        # Remove this task from the sorted set
+        await redis.zrem(concurrency_key, execution.key)  # type: ignore
 
 
 def ms(seconds: float) -> str:
