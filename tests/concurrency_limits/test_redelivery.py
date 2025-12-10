@@ -256,7 +256,12 @@ async def test_redeliveries_respect_concurrency_limits(docket: Docket):
 
 async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
     """Concurrency limits should prevent tasks for the same customer from overlapping,
-    while allowing parallelism across different customers."""
+    while allowing parallelism across different customers.
+
+    This test uses TWO separate workers to ensure concurrency limits work across
+    workers, not just within a single worker. This is important because xautoclaim
+    can reclaim messages from one worker and deliver them to another.
+    """
 
     executions: list[tuple[int, float, float, str]] = []
 
@@ -268,9 +273,9 @@ async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
             max_concurrent=1,
         ),
     ) -> None:
-        start = time.time()
+        start = time.monotonic()
         await asyncio.sleep(0.02)
-        end = time.time()
+        end = time.monotonic()
         executions.append((customer_id, start, end, execution.key))
 
     # Schedule 5 tasks for each of 3 customers
@@ -278,11 +283,27 @@ async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
         for _ in range(5):
             await docket.add(tracked_task)(customer_id=customer_id)
 
-    # Use short redelivery timeout to stress test the system
-    async with Worker(
-        docket, concurrency=5, redelivery_timeout=timedelta(milliseconds=50)
-    ) as worker:
-        await worker.run_until_finished()
+    # Use TWO workers with short redelivery timeout to stress test cross-worker
+    # concurrency limits. This exposes issues where xautoclaim reclaims a task
+    # from Worker 1 and delivers it to Worker 2 while Worker 1 is still executing.
+    async with (
+        Worker(
+            docket,
+            concurrency=3,
+            redelivery_timeout=timedelta(milliseconds=50),
+            name="worker-1",
+        ) as worker1,
+        Worker(
+            docket,
+            concurrency=3,
+            redelivery_timeout=timedelta(milliseconds=50),
+            name="worker-2",
+        ) as worker2,
+    ):
+        await asyncio.gather(
+            worker1.run_until_finished(),
+            worker2.run_until_finished(),
+        )
 
     # Group executions by customer_id
     by_customer: dict[int, list[tuple[float, float, str]]] = {}
