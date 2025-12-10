@@ -7,6 +7,9 @@ on:
     branches: [main]
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   chaos:
     name: Chaos tests
@@ -14,12 +17,12 @@ jobs:
     timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Install uv and set Python version
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: 3.12
           enable-cache: true
@@ -29,7 +32,7 @@ jobs:
         run: uv sync --dev
 
       - name: Run chaos tests
-        run: python -m chaos.driver
+        run: uv run python -m chaos.driver
 
   signals:
     name: Signal handling tests
@@ -37,10 +40,10 @@ jobs:
     timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install uv and set Python version
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: 3.12
           enable-cache: true
@@ -50,4 +53,4 @@ jobs:
         run: uv sync --dev
 
       - name: Run signal handling tests
-        run: python -m chaos.signals
+        run: uv run python -m chaos.signals

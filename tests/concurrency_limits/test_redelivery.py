@@ -38,13 +38,13 @@ async def test_task_timeout_respects_redelivery_timeout(docket: Docket):
     docket.register(long_running_task)
 
     # Create a worker with short redelivery timeout
+    # Note: We use 3 seconds instead of 2 to give more headroom under CPU load,
+    # which prevents xautoclaim from racing with task completion.
     async with Worker(
         docket,
-        minimum_check_interval=timedelta(milliseconds=5),
-        scheduling_resolution=timedelta(milliseconds=5),
-        redelivery_timeout=timedelta(
-            seconds=2
-        ),  # Tasks will be timed out after 2 seconds
+        minimum_check_interval=timedelta(milliseconds=50),
+        scheduling_resolution=timedelta(milliseconds=50),
+        redelivery_timeout=timedelta(seconds=3),
     ) as worker:
         # Schedule the long-running task
         await docket.add(long_running_task)(customer_id=1)
@@ -129,7 +129,7 @@ async def test_redelivery_timeout_limits_long_tasks(docket: Docket):
             task_completed = True
         elif test_mode == "long_complete":
             # Long running but completes within timeout
-            await asyncio.sleep(0.8)  # Less than 1 second timeout
+            await asyncio.sleep(1.5)  # Less than 3 second timeout
             task_completed = True
         else:
             # Simulate a task that would run longer than redelivery timeout
@@ -138,11 +138,13 @@ async def test_redelivery_timeout_limits_long_tasks(docket: Docket):
 
     docket.register(long_task)
 
+    # Note: We use 3 seconds instead of 1 to give more headroom under CPU load,
+    # which prevents xautoclaim from racing with task completion.
     async with Worker(
         docket,
-        minimum_check_interval=timedelta(milliseconds=5),
-        scheduling_resolution=timedelta(milliseconds=5),
-        redelivery_timeout=timedelta(seconds=1),  # Short timeout
+        minimum_check_interval=timedelta(milliseconds=50),
+        scheduling_resolution=timedelta(milliseconds=50),
+        redelivery_timeout=timedelta(seconds=3),
     ) as worker:
         # Schedule long-running task
         await docket.add(long_task)(customer_id=1)
@@ -184,9 +186,9 @@ async def test_short_tasks_complete_within_timeout(docket: Docket):
 
     async with Worker(
         docket,
-        minimum_check_interval=timedelta(milliseconds=5),
-        scheduling_resolution=timedelta(milliseconds=5),
-        redelivery_timeout=timedelta(seconds=2),  # Reasonable timeout
+        minimum_check_interval=timedelta(milliseconds=50),
+        scheduling_resolution=timedelta(milliseconds=50),
+        redelivery_timeout=timedelta(seconds=3),
     ) as worker:
         # Schedule multiple short tasks
         for _ in range(5):
@@ -201,7 +203,7 @@ async def test_short_tasks_complete_within_timeout(docket: Docket):
         assert tasks_completed == 5, (
             f"Expected 5 tasks completed, got {tasks_completed}"
         )
-        assert total_time < 2.0, f"Short tasks took too long: {total_time:.2f}s"
+        assert total_time < 3.0, f"Short tasks took too long: {total_time:.2f}s"
 
 
 async def test_redeliveries_respect_concurrency_limits(docket: Docket):

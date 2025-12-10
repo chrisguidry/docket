@@ -678,7 +678,7 @@ async def test_task_running_gauge_is_incremented(
 @pytest.fixture
 def metrics_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
+        s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
@@ -773,7 +773,7 @@ async def test_worker_publishes_depth_gauges(
 @pytest.fixture
 def healthcheck_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
+        s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
