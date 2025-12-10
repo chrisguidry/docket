@@ -1,0 +1,17 @@
+services:
+  pytest:
+    build:
+      context: .
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.10}
+    volumes:
+      - .:/app:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - REDIS_VERSION=${REDIS_VERSION:-memory}
+    network_mode: host
+    deploy:
+      resources:
+        limits:
+          cpus: "${CPU_LIMIT:-0.5}"
+          memory: "${MEM_LIMIT:-512M}"
