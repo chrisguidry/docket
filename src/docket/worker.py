@@ -1034,10 +1034,10 @@ class Worker:
         """
 
         current_time = datetime.now(timezone.utc).timestamp()
-        # Slot timeout should be much longer than tasks normally take to complete.
-        # Using 5x redelivery_timeout as a reasonable default - if a task takes
-        # longer than this, it's likely stuck and should be taken over.
-        slot_timeout = self.redelivery_timeout.total_seconds() * 5
+        # Slot timeout needs to be longer than redelivery_timeout so that when
+        # xautoclaim reclaims a message, we can tell if the original is still
+        # running (fresh) vs crashed (stale).
+        slot_timeout = self.redelivery_timeout.total_seconds() + 5
 
         result = await redis.eval(  # type: ignore
             lua_script,
