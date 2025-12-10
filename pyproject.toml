@@ -27,7 +27,7 @@ dependencies = [
     "exceptiongroup>=1.2.0; python_version < '3.11'",
     "fakeredis[lua]>=2.32.1",
     "opentelemetry-api>=1.30.0",
-    "opentelemetry-exporter-prometheus>=0.51b0",
+    "opentelemetry-sdk>=1.30.0",
     "prometheus-client>=0.21.1",
     "py-key-value-aio[memory,redis]>=0.3.0",
     "python-json-logger>=2.0.7",
@@ -105,12 +105,13 @@ asyncio_default_test_loop_scope = "function"
 filterwarnings = ["error"]
 
 [tool.coverage.run]
-omit = ["src/docket/__main__.py", "src/docket/_uuid7.py"]
+omit = ["src/docket/__main__.py", "src/docket/_uuid7.py", "src/docket/_vendor/*"]
 branch = true
 parallel = true
 
 [tool.pyright]
 include = ["src", "tests", "chaos"]
+exclude = ["src/docket/_vendor"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"

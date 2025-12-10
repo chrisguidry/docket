@@ -3,7 +3,6 @@ from threading import Thread
 from typing import Generator, cast
 
 from opentelemetry import metrics
-from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.metrics import set_meter_provider
 from opentelemetry.propagators.textmap import Getter, Setter
 from opentelemetry.sdk.metrics import MeterProvider
@@ -209,6 +208,8 @@ def metrics_server(
         make_server,  # type: ignore[import]
         make_wsgi_app,  # type: ignore[import]
     )
+
+    from docket._vendor.otel_prometheus import PrometheusMetricReader
 
     set_meter_provider(MeterProvider(metric_readers=[PrometheusMetricReader()]))
 
