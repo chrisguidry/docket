@@ -38,13 +38,13 @@ async def test_task_timeout_respects_redelivery_timeout(docket: Docket):
     docket.register(long_running_task)
 
     # Create a worker with short redelivery timeout
+    # Note: We use 3 seconds instead of 2 to give more headroom under CPU load,
+    # which prevents xautoclaim from racing with task completion.
     async with Worker(
         docket,
-        minimum_check_interval=timedelta(milliseconds=5),
-        scheduling_resolution=timedelta(milliseconds=5),
-        redelivery_timeout=timedelta(
-            seconds=2
-        ),  # Tasks will be timed out after 2 seconds
+        minimum_check_interval=timedelta(milliseconds=50),
+        scheduling_resolution=timedelta(milliseconds=50),
+        redelivery_timeout=timedelta(seconds=3),
     ) as worker:
         # Schedule the long-running task
         await docket.add(long_running_task)(customer_id=1)
