@@ -1010,6 +1010,9 @@ class Worker:
         local current_time = tonumber(ARGV[3])
         local slot_timeout = tonumber(ARGV[4])
 
+        -- Clean up stale slots from crashed workers or orphaned tasks
+        redis.call('ZREMRANGEBYSCORE', key, 0, current_time - slot_timeout)
+
         -- Check if this task already has a slot (from a previous delivery attempt)
         local slot_time = redis.call('ZSCORE', key, task_key)
         if slot_time then

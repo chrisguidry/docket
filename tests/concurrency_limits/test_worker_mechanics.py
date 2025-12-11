@@ -286,3 +286,47 @@ async def test_worker_concurrency_missing_argument_in_can_start(docket: Docket):
         async with docket.redis() as redis:
             result = await worker._can_start_task(redis, execution)  # type: ignore[reportPrivateUsage]
             assert result is True
+
+
+async def test_stale_concurrency_slots_are_cleaned_up(docket: Docket):
+    """Test that stale slots from crashed workers are cleaned up."""
+    task_completed = False
+
+    async def task_with_concurrency(
+        customer_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id", max_concurrent=2
+        ),
+    ):
+        nonlocal task_completed
+        task_completed = True
+
+    # Manually insert stale slots into the concurrency sorted set.
+    # These simulate slots from workers that crashed without releasing.
+    concurrency_key = f"{docket.name}:concurrency:customer_id:123"
+    stale_timestamp = datetime.now(timezone.utc).timestamp() - 400  # >slot_timeout old
+
+    async with docket.redis() as redis:
+        # Add two stale slots that would block new tasks if not cleaned up
+        await redis.zadd(concurrency_key, {"stale_task_1": stale_timestamp})  # type: ignore
+        await redis.zadd(concurrency_key, {"stale_task_2": stale_timestamp})  # type: ignore
+
+        # Verify stale slots are present
+        count_before = await redis.zcard(concurrency_key)  # type: ignore
+        assert count_before == 2
+
+    # Run a task - this should clean up stale slots and execute
+    await docket.add(task_with_concurrency)(customer_id=123)
+
+    async with Worker(docket) as worker:
+        await worker.run_until_finished()
+
+    assert task_completed
+
+    # Verify stale slots were cleaned up (only our task's slot should remain briefly,
+    # but it gets released after completion, so the set should be empty or have 0-1 entries)
+    async with docket.redis() as redis:
+        remaining = await redis.zrange(concurrency_key, 0, -1)  # type: ignore
+        # Stale entries should be gone - they were older than slot_timeout
+        assert b"stale_task_1" not in remaining
+        assert b"stale_task_2" not in remaining
