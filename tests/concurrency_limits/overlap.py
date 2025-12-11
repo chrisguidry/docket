@@ -25,7 +25,7 @@ def assert_no_overlaps(intervals: Sequence[tuple[float, float]], context: str) -
     """
     for i, (start_a, end_a) in enumerate(intervals):
         for j, (start_b, end_b) in enumerate(intervals[i + 1 :], start=i + 1):
-            if intervals_overlap(start_a, end_a, start_b, end_b):
+            if intervals_overlap(start_a, end_a, start_b, end_b):  # pragma: no cover
                 raise AssertionError(
                     f"{context} overlapped: "
                     f"interval {i} [{start_a:.3f}-{end_a:.3f}] and "
@@ -46,10 +46,10 @@ def assert_some_overlap(
     overlaps = 0
     for i, (start_a, end_a) in enumerate(intervals):
         for start_b, end_b in intervals[i + 1 :]:
-            if intervals_overlap(start_a, end_a, start_b, end_b):
+            if intervals_overlap(start_a, end_a, start_b, end_b):  # pragma: no branch
                 overlaps += 1
 
-    if overlaps < min_overlaps:
+    if overlaps < min_overlaps:  # pragma: no cover
         raise AssertionError(
             f"{context} should have at least {min_overlaps} overlapping pairs, "
             f"but found {overlaps}"
