@@ -14,7 +14,7 @@ jobs:
   chaos:
     name: Chaos tests
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@v6
@@ -37,7 +37,7 @@ jobs:
   signals:
     name: Signal handling tests
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@v6

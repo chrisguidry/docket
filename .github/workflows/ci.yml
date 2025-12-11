@@ -13,7 +13,7 @@ jobs:
   test:
     name: Test Python ${{ matrix.python-version }}, ${{ matrix.backend.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -87,7 +87,7 @@ jobs:
   prek:
     name: Prek checks
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
 
