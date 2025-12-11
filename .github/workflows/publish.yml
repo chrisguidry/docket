@@ -37,9 +37,6 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
 
-      - name: Install build dependencies
-        run: uv pip install --system hatchling hatch-vcs
-
       - name: Build package
         run: uv build
 
