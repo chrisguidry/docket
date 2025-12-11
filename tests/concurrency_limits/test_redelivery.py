@@ -5,6 +5,8 @@ from datetime import timedelta
 from docket import ConcurrencyLimit, CurrentExecution, Docket, Worker
 from docket.execution import Execution
 
+from tests.concurrency_limits.overlap import assert_no_overlaps
+
 
 async def test_task_timeout_respects_redelivery_timeout(docket: Docket):
     """Test that tasks are automatically timed out at the redelivery timeout."""
@@ -195,9 +197,9 @@ async def test_short_tasks_complete_within_timeout(docket: Docket):
             await docket.add(short_task)(customer_id=1)
 
         # Run tasks
-        start_time = time.time()
+        start_time = time.monotonic()
         await worker.run_until_finished()
-        total_time = time.time() - start_time
+        total_time = time.monotonic() - start_time
 
         # All tasks should complete successfully
         assert tasks_completed == 5, (
@@ -208,7 +210,7 @@ async def test_short_tasks_complete_within_timeout(docket: Docket):
 
 async def test_redeliveries_respect_concurrency_limits(docket: Docket):
     """Test that redelivered tasks still respect concurrency limits"""
-    task_executions: list[tuple[int, float]] = []
+    task_executions: list[tuple[int, float, float]] = []  # (customer_id, start, end)
     failure_count = 0
 
     async def task_that_sometimes_fails(
@@ -220,8 +222,10 @@ async def test_redeliveries_respect_concurrency_limits(docket: Docket):
         ),
     ):
         nonlocal failure_count
-        task_executions.append((customer_id, time.time()))
+        start = time.monotonic()
         await asyncio.sleep(0.02)
+        end = time.monotonic()
+        task_executions.append((customer_id, start, end))
 
         if should_fail:
             failure_count += 1
@@ -239,20 +243,15 @@ async def test_redeliveries_respect_concurrency_limits(docket: Docket):
         await worker.run_until_finished()
 
     # Verify all tasks eventually executed
-    customer_1_executions = [t for t in task_executions if t[0] == 1]
-    customer_2_executions = [t for t in task_executions if t[0] == 2]
+    customer_1_intervals = [(s, e) for cid, s, e in task_executions if cid == 1]
+    customer_2_intervals = [(s, e) for cid, s, e in task_executions if cid == 2]
 
     # At least 3 executions for customer 1 (redelivery may cause more)
-    assert len(customer_1_executions) >= 3
-    assert len(customer_2_executions) >= 1
+    assert len(customer_1_intervals) >= 3
+    assert len(customer_2_intervals) >= 1
 
-    # Verify tasks for customer 1 didn't run concurrently
-    customer_1_times = sorted([t[1] for t in customer_1_executions])
-    for i in range(len(customer_1_times) - 1):
-        time_gap = customer_1_times[i + 1] - customer_1_times[i]
-        assert time_gap >= 0.015, (
-            f"Tasks for customer 1 overlapped: gap={time_gap:.3f}s"
-        )
+    # Verify tasks for customer 1 didn't overlap (concurrency limit = 1)
+    assert_no_overlaps(customer_1_intervals, "Customer 1 tasks")
 
     assert failure_count >= 1
 
@@ -321,14 +320,8 @@ async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
         )
 
         # No two executions for this customer should overlap in time
-        for i, (start1, end1, key1) in enumerate(customer_executions):
-            for start2, end2, key2 in customer_executions[i + 1 :]:
-                overlap = start1 < end2 and start2 < end1
-                assert not overlap, (
-                    f"Customer {customer_id} tasks overlapped: "
-                    f"{key1} [{start1:.3f}-{end1:.3f}] and "
-                    f"{key2} [{start2:.3f}-{end2:.3f}]"
-                )
+        intervals = [(start, end) for start, end, _ in customer_executions]
+        assert_no_overlaps(intervals, f"Customer {customer_id} tasks")
 
     # Verify all customers completed their tasks
     assert len(by_customer) == 3, f"Expected 3 customers, got {len(by_customer)}"

@@ -9,6 +9,8 @@ from docket import (
     Worker,
 )
 
+from tests.concurrency_limits.overlap import assert_no_overlaps, assert_some_overlap
+
 
 async def test_basic_concurrency_limit(docket: Docket, worker: Worker):
     """Test basic concurrency limiting functionality."""
@@ -42,7 +44,7 @@ async def test_basic_concurrency_limit(docket: Docket, worker: Worker):
 async def test_concurrency_limit_single_argument(docket: Docket, worker: Worker):
     """Test that ConcurrencyLimit enforces single concurrent execution per argument value."""
     execution_order: list[str] = []
-    execution_times: list[tuple[float, str]] = []
+    execution_intervals: list[tuple[float, float]] = []
 
     async def slow_task(
         customer_id: int,
@@ -50,16 +52,15 @@ async def test_concurrency_limit_single_argument(docket: Docket, worker: Worker)
             "customer_id", max_concurrent=1
         ),
     ):
-        start_time = time.time()
-        execution_times.append((start_time, "start"))
+        start = time.monotonic()
         execution_order.append(f"start_{customer_id}")
 
         # Simulate some work
         await asyncio.sleep(0.2)
 
-        end_time = time.time()
-        execution_times.append((end_time, "end"))
+        end = time.monotonic()
         execution_order.append(f"end_{customer_id}")
+        execution_intervals.append((start, end))
 
     # Schedule multiple tasks for the same customer_id
     await docket.add(slow_task)(customer_id=1)
@@ -88,20 +89,13 @@ async def test_concurrency_limit_single_argument(docket: Docket, worker: Worker)
     ]
 
     # Verify no overlap in execution times
-    times = sorted(execution_times)
-    for i in range(0, len(times) - 1, 2):
-        end_time = times[i + 1][0]
-
-        # Check if there's a next task
-        if i + 2 < len(times):
-            next_start_time = times[i + 2][0]
-            assert end_time <= next_start_time, "Tasks should not overlap"
+    assert_no_overlaps(execution_intervals, "Same customer tasks")
 
 
 async def test_concurrency_limit_different_arguments(docket: Docket, worker: Worker):
     """Test that tasks with different argument values can run concurrently."""
     execution_order: list[str] = []
-    execution_times: dict[str, float] = {}
+    execution_intervals: dict[int, tuple[float, float]] = {}
 
     async def slow_task(
         customer_id: int,
@@ -109,16 +103,15 @@ async def test_concurrency_limit_different_arguments(docket: Docket, worker: Wor
             "customer_id", max_concurrent=1
         ),
     ):
-        start_time = time.time()
-        execution_times[f"start_{customer_id}"] = start_time
+        start = time.monotonic()
         execution_order.append(f"start_{customer_id}")
 
         # Simulate some work
         await asyncio.sleep(0.1)
 
-        end_time = time.time()
-        execution_times[f"end_{customer_id}"] = end_time
+        end = time.monotonic()
         execution_order.append(f"end_{customer_id}")
+        execution_intervals[customer_id] = (start, end)
 
     # Schedule tasks for different customer_ids
     await docket.add(slow_task)(customer_id=1)
@@ -132,23 +125,9 @@ async def test_concurrency_limit_different_arguments(docket: Docket, worker: Wor
     # Verify all tasks completed
     assert len(execution_order) == 6
 
-    # Verify tasks for different customers ran concurrently
-    # by checking that at least two tasks overlapped in execution time
-    # (task A started before task B ended, AND task B started before task A ended)
-    intervals = [
-        (execution_times["start_1"], execution_times["end_1"]),
-        (execution_times["start_2"], execution_times["end_2"]),
-        (execution_times["start_3"], execution_times["end_3"]),
-    ]
-    overlaps = 0
-    for i, (start_a, end_a) in enumerate(intervals):
-        for start_b, end_b in intervals[i + 1 :]:
-            if start_a < end_b and start_b < end_a:
-                overlaps += 1
-
-    assert overlaps >= 1, (
-        "Tasks with different customer_ids should run concurrently (overlap in time)"
-    )
+    # Verify tasks for different customers ran concurrently (at least one overlap)
+    intervals = [execution_intervals[1], execution_intervals[2], execution_intervals[3]]
+    assert_some_overlap(intervals, "Different customer tasks")
 
 
 async def test_concurrency_limit_max_concurrent(docket: Docket, worker: Worker):
