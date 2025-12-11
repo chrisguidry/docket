@@ -1,5 +1,5 @@
 # Upstream version - change this to update
-OTEL_VERSION := v1.30.0
+OTEL_VERSION := v1.39.0
 
 # Upstream repository
 OTEL_REPO := https://github.com/open-telemetry/opentelemetry-python
