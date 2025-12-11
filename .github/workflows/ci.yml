@@ -109,7 +109,7 @@ jobs:
         uses: j178/prek-action@v1
 
   check-no-prerelease:
-    name: Verify no pre-release dependencies
+    name: Verify no unintended pre-release dependencies
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -117,9 +117,9 @@ jobs:
 
       - uses: astral-sh/setup-uv@v7
 
-      - name: Build and install with prerelease=disallow
+      - name: Build and install with prerelease=explicit
         run: |
           uv build
           uv venv .venv
-          uv pip install dist/*.whl --prerelease=disallow
+          uv pip install dist/*.whl --prerelease=explicit
           uv run python -c "import docket; print(docket.__version__)"
