@@ -3,10 +3,12 @@ import logging
 import os
 import random
 import sys
+import urllib.request
 from asyncio import subprocess
 from asyncio.subprocess import Process
 from datetime import timedelta
 from typing import Any, Literal, Sequence
+from urllib.error import HTTPError
 from uuid import uuid4
 
 import redis.exceptions
@@ -17,6 +19,19 @@ from docket.execution import Operator
 
 from .redis import run_redis
 from .tasks import toxic
+
+
+def package_exists_on_pypi(package: str, version: str) -> bool:
+    """Check if a package version exists on PyPI."""
+    url = f"https://pypi.org/pypi/{package}/{version}/json"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            return response.status == 200
+    except HTTPError as e:
+        if e.code == 404:
+            return False
+        raise
+
 
 logging.getLogger().setLevel(logging.INFO)
 
@@ -133,6 +148,14 @@ async def main(
         )
         stdout, _ = await process.communicate()
         base_version = stdout.decode("utf-8").strip()
+
+    if not package_exists_on_pypi("pydocket", base_version):
+        logger.error(
+            "pydocket %s is not available on PyPI yet - "
+            "cannot run chaos tests until the release is published",
+            base_version,
+        )
+        sys.exit(1)
 
     base_python_command, main_python_command = await setup_environments(base_version)
 
