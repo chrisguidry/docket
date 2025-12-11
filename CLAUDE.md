@@ -26,7 +26,7 @@ The project REQUIRES 100% test coverage
 
 When debugging flaky CI tests that are hard to reproduce locally, use the Docker test
 runner with CPU limits. CI failures often stem from timing issues that only manifest
-under CPU contention - throttling to 0.1-0.25 CPU can reproduce these locally.
+under CPU contention - throttling to 0.2 CPU can reproduce these locally.
 
 Use docker compose to run tests with CPU throttling, simulating slow CI environments:
 
@@ -34,8 +34,8 @@ Use docker compose to run tests with CPU throttling, simulating slow CI environm
 # Run specific tests with CPU limit (default 0.5 = half a core)
 docker compose run --rm pytest tests/path/to/test.py -v
 
-# Extreme throttling to reproduce timing bugs
-CPU_LIMIT=0.1 docker compose run --rm pytest tests/concurrency_limits/ -v --timeout=120
+# Throttling to reproduce timing bugs (0.2 is the sweet spot)
+CPU_LIMIT=0.2 docker compose run --rm pytest tests/concurrency_limits/ -v --timeout=120
 
 # Different Python version
 PYTHON_VERSION=3.12 docker compose build

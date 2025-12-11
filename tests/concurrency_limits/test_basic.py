@@ -133,16 +133,21 @@ async def test_concurrency_limit_different_arguments(docket: Docket, worker: Wor
     assert len(execution_order) == 6
 
     # Verify tasks for different customers ran concurrently
-    # (start times should be close together)
-    start_times = [
-        execution_times["start_1"],
-        execution_times["start_2"],
-        execution_times["start_3"],
+    # by checking that at least two tasks overlapped in execution time
+    # (task A started before task B ended, AND task B started before task A ended)
+    intervals = [
+        (execution_times["start_1"], execution_times["end_1"]),
+        (execution_times["start_2"], execution_times["end_2"]),
+        (execution_times["start_3"], execution_times["end_3"]),
     ]
+    overlaps = 0
+    for i, (start_a, end_a) in enumerate(intervals):
+        for start_b, end_b in intervals[i + 1 :]:
+            if start_a < end_b and start_b < end_a:
+                overlaps += 1
 
-    max_start_diff = max(start_times) - min(start_times)
-    assert max_start_diff < 0.05, (
-        "Tasks with different customer_ids should start concurrently"
+    assert overlaps >= 1, (
+        "Tasks with different customer_ids should run concurrently (overlap in time)"
     )
 
 

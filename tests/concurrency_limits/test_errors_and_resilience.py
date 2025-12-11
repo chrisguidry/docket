@@ -219,20 +219,24 @@ async def test_worker_concurrency_edge_cases(docket: Docket):
 
 async def test_worker_graceful_shutdown_with_concurrency_management(docket: Docket):
     """Test that workers shut down gracefully while managing concurrency"""
-    task_started = False
-    shutdown_completed = False
+    task_started = asyncio.Event()
+    task_completed = asyncio.Event()
 
     async def simple_task():
-        nonlocal task_started
-        task_started = True
+        task_started.set()
         await asyncio.sleep(0.01)
+        task_completed.set()
 
     await docket.add(simple_task)()
 
     async with Worker(docket) as worker:
-        asyncio.create_task(worker.run_until_finished())
-        await asyncio.sleep(0.05)
+        worker_task = asyncio.create_task(worker.run_until_finished())
+        # Wait for task to start (event-based, not time-based)
+        await asyncio.wait_for(task_started.wait(), timeout=5.0)
+        # Worker context manager will exit and stop the worker
 
-    shutdown_completed = True
+    # Await the worker task to ensure clean shutdown
+    await worker_task
 
-    assert shutdown_completed
+    # Verify the task completed
+    assert task_completed.is_set(), "Task should have completed before shutdown"
