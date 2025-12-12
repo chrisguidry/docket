@@ -6,9 +6,10 @@ import signal
 import socket
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import Any, Coroutine, Mapping, Protocol, cast
+from typing import Any, Coroutine, Generator, Mapping, Protocol, cast
 
 import cloudpickle  # type: ignore[import]
 
@@ -61,6 +62,8 @@ from .instrumentation import (
     metrics_server,
 )
 
+from opentelemetry.instrumentation.utils import suppress_instrumentation
+
 # Delay before retrying a task blocked by concurrency limits
 # Must be larger than redelivery_timeout to ensure atomic reschedule+ACK completes
 # before Redis would consider redelivering the message
@@ -106,6 +109,7 @@ class Worker:
     minimum_check_interval: timedelta
     scheduling_resolution: timedelta
     schedule_automatic_tasks: bool
+    suppress_internal_instrumentation: bool
 
     def __init__(
         self,
@@ -117,6 +121,7 @@ class Worker:
         minimum_check_interval: timedelta = timedelta(milliseconds=250),
         scheduling_resolution: timedelta = timedelta(milliseconds=250),
         schedule_automatic_tasks: bool = True,
+        suppress_internal_instrumentation: bool = True,
     ) -> None:
         self.docket = docket
         self.name = name or f"{socket.gethostname()}#{os.getpid()}"
@@ -126,6 +131,25 @@ class Worker:
         self.minimum_check_interval = minimum_check_interval
         self.scheduling_resolution = scheduling_resolution
         self.schedule_automatic_tasks = schedule_automatic_tasks
+        self.suppress_internal_instrumentation = suppress_internal_instrumentation
+
+    @contextmanager
+    def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
+        """Suppress OTel auto-instrumentation for internal Redis operations.
+
+        When suppress_internal_instrumentation is True (default), this context manager
+        suppresses OpenTelemetry auto-instrumentation spans for internal Redis polling
+        operations like XREADGROUP, XAUTOCLAIM, and Lua script evaluations. This prevents
+        thousands of noisy spans per minute from overwhelming trace storage.
+
+        Task execution spans and user-facing operations (schedule, cancel, etc.) are
+        NOT suppressed.
+        """
+        if self.suppress_internal_instrumentation:
+            with suppress_instrumentation():
+                yield
+        else:
+            yield
 
     async def __aenter__(self) -> Self:
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
@@ -172,6 +196,7 @@ class Worker:
         minimum_check_interval: timedelta = timedelta(milliseconds=100),
         scheduling_resolution: timedelta = timedelta(milliseconds=250),
         schedule_automatic_tasks: bool = True,
+        suppress_internal_instrumentation: bool = True,
         until_finished: bool = False,
         healthcheck_port: int | None = None,
         metrics_port: int | None = None,
@@ -203,6 +228,7 @@ class Worker:
                         minimum_check_interval=minimum_check_interval,
                         scheduling_resolution=scheduling_resolution,
                         schedule_automatic_tasks=schedule_automatic_tasks,
+                        suppress_internal_instrumentation=suppress_internal_instrumentation,
                     ) as worker
                 ):
                     # Install signal handlers for graceful shutdown.
@@ -327,14 +353,17 @@ class Worker:
         async def get_redeliveries(redis: Redis) -> RedisReadGroupResponse:
             logger.debug("Getting redeliveries", extra=log_context)
             try:
-                _, redeliveries, *_ = await redis.xautoclaim(
-                    name=self.docket.stream_key,
-                    groupname=self.docket.worker_group_name,
-                    consumername=self.name,
-                    min_idle_time=int(self.redelivery_timeout.total_seconds() * 1000),
-                    start_id="0-0",
-                    count=available_slots,
-                )
+                with self._maybe_suppress_instrumentation():
+                    _, redeliveries, *_ = await redis.xautoclaim(
+                        name=self.docket.stream_key,
+                        groupname=self.docket.worker_group_name,
+                        consumername=self.name,
+                        min_idle_time=int(
+                            self.redelivery_timeout.total_seconds() * 1000
+                        ),
+                        start_id="0-0",
+                        count=available_slots,
+                    )
             except ResponseError as e:
                 if "NOGROUP" in str(e):
                     await self.docket._ensure_stream_and_group()
@@ -349,15 +378,16 @@ class Worker:
             # properly yield control to the asyncio event loop
             is_memory = self.docket.url.startswith("memory://")
             try:
-                result = await redis.xreadgroup(
-                    groupname=self.docket.worker_group_name,
-                    consumername=self.name,
-                    streams={self.docket.stream_key: ">"},
-                    block=0
-                    if is_memory
-                    else int(self.minimum_check_interval.total_seconds() * 1000),
-                    count=available_slots,
-                )
+                with self._maybe_suppress_instrumentation():
+                    result = await redis.xreadgroup(
+                        groupname=self.docket.worker_group_name,
+                        consumername=self.name,
+                        streams={self.docket.stream_key: ">"},
+                        block=0
+                        if is_memory
+                        else int(self.minimum_check_interval.total_seconds() * 1000),
+                        count=available_slots,
+                    )
             except ResponseError as e:
                 if "NOGROUP" in str(e):
                     await self.docket._ensure_stream_and_group()
@@ -548,10 +578,11 @@ class Worker:
         while not worker_stopping.is_set() or total_work:
             try:
                 logger.debug("Scheduling due tasks", extra=log_context)
-                total_work, due_work = await stream_due_tasks(
-                    keys=[self.docket.queue_key, self.docket.stream_key],
-                    args=[datetime.now(timezone.utc).timestamp(), self.docket.name],
-                )
+                with self._maybe_suppress_instrumentation():
+                    total_work, due_work = await stream_due_tasks(
+                        keys=[self.docket.queue_key, self.docket.stream_key],
+                        args=[datetime.now(timezone.utc).timestamp(), self.docket.name],
+                    )
 
                 if due_work > 0:
                     logger.debug(
@@ -923,37 +954,37 @@ class Worker:
                 task_names = list(self.docket.tasks)
 
                 async with self.docket.redis() as r:
-                    async with r.pipeline() as pipeline:
-                        pipeline.zremrangebyscore(self.workers_set, 0, oldest)
-                        pipeline.zadd(self.workers_set, {self.name: now})
+                    with self._maybe_suppress_instrumentation():
+                        async with r.pipeline() as pipeline:
+                            pipeline.zremrangebyscore(self.workers_set, 0, oldest)
+                            pipeline.zadd(self.workers_set, {self.name: now})
 
-                        for task_name in task_names:
-                            task_workers_set = self.task_workers_set(task_name)
-                            pipeline.zremrangebyscore(task_workers_set, 0, oldest)
-                            pipeline.zadd(task_workers_set, {self.name: now})
+                            for task_name in task_names:
+                                task_workers_set = self.task_workers_set(task_name)
+                                pipeline.zremrangebyscore(task_workers_set, 0, oldest)
+                                pipeline.zadd(task_workers_set, {self.name: now})
 
-                        pipeline.sadd(self.worker_tasks_set(self.name), *task_names)
-                        pipeline.expire(
-                            self.worker_tasks_set(self.name),
-                            max(maximum_age, timedelta(seconds=1)),
-                        )
+                            pipeline.sadd(self.worker_tasks_set(self.name), *task_names)
+                            pipeline.expire(
+                                self.worker_tasks_set(self.name),
+                                max(maximum_age, timedelta(seconds=1)),
+                            )
 
-                        await pipeline.execute()
+                            await pipeline.execute()
 
-                    async with r.pipeline() as pipeline:
-                        pipeline.xlen(self.docket.stream_key)
-                        pipeline.zcount(self.docket.queue_key, 0, now)
-                        pipeline.zcount(self.docket.queue_key, now, "+inf")
+                        async with r.pipeline() as pipeline:
+                            pipeline.xlen(self.docket.stream_key)
+                            pipeline.zcount(self.docket.queue_key, 0, now)
+                            pipeline.zcount(self.docket.queue_key, now, "+inf")
 
-                        results: list[int] = await pipeline.execute()
-                        stream_depth = results[0]
-                        overdue_depth = results[1]
-                        schedule_depth = results[2]
+                            results: list[int] = await pipeline.execute()
 
-                        QUEUE_DEPTH.set(
-                            stream_depth + overdue_depth, self.docket.labels()
-                        )
-                        SCHEDULE_DEPTH.set(schedule_depth, self.docket.labels())
+                    stream_depth = results[0]
+                    overdue_depth = results[1]
+                    schedule_depth = results[2]
+
+                    QUEUE_DEPTH.set(stream_depth + overdue_depth, self.docket.labels())
+                    SCHEDULE_DEPTH.set(schedule_depth, self.docket.labels())
 
             except asyncio.CancelledError:  # pragma: no cover
                 return
