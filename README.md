@@ -1,3 +1,5 @@
+![Image](https://github.com/user-attachments/assets/2d7007bd-90fc-4a17-9be3-d60aefacbc40)
+
 Docket is a distributed background task system for Python functions with a focus
 on the scheduling of future work as seamlessly and efficiently as immediate work.
 
