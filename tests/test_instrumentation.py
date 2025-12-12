@@ -2,14 +2,18 @@ import asyncio
 import http.client
 import socket
 from datetime import datetime, timedelta, timezone
+from typing import Generator, Sequence
 from unittest import mock
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from opentelemetry import trace
+from opentelemetry.instrumentation.redis import RedisInstrumentor
 from opentelemetry.metrics import Counter, Histogram, UpDownCounter
 from opentelemetry.metrics import _Gauge as Gauge
-from opentelemetry.sdk.trace import Span, TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, Span, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
 from docket import Docket, Worker
@@ -787,3 +791,114 @@ def test_healthcheck_server_returns_ok(healthcheck_port: int):
         assert response.status == 200
         assert response.headers["Content-Type"] == "text/plain"
         assert response.read().decode() == "OK"
+
+
+# --- Tests for Redis instrumentation suppression ---
+
+
+@pytest.fixture
+def span_exporter(tracer_provider: TracerProvider) -> InMemorySpanExporter:
+    """Creates an in-memory span exporter that captures all spans."""
+    exporter = InMemorySpanExporter()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return exporter
+
+
+@pytest.fixture
+def redis_instrumentation() -> Generator[None, None, None]:
+    """Enables Redis auto-instrumentation for the duration of the test."""
+    instrumentor = RedisInstrumentor()
+    instrumentor.instrument()  # type: ignore[no-untyped-call]
+    try:
+        yield
+    finally:
+        instrumentor.uninstrument()
+
+
+def _get_polling_spans(spans: Sequence[ReadableSpan]) -> list[ReadableSpan]:
+    """Filter spans to only internal polling spans (XREADGROUP, XAUTOCLAIM)."""
+    polling_commands = {"XREADGROUP", "XAUTOCLAIM"}
+    result: list[ReadableSpan] = []
+    for span in spans:
+        name_upper = span.name.upper()
+        if any(cmd in name_upper for cmd in polling_commands):
+            result.append(span)
+    return result
+
+
+async def test_internal_redis_polling_spans_suppressed_by_default(
+    docket: Docket,
+    span_exporter: InMemorySpanExporter,
+    redis_instrumentation: None,
+):
+    """Internal Redis polling spans (XREADGROUP, XAUTOCLAIM) should be suppressed by default.
+
+    Per-task Redis operations (claim, concurrency checks) are still instrumented since
+    they scale with task count, not with polling frequency.
+    """
+    # Clear any spans from setup fixtures (e.g., key_leak_checker's temp worker)
+    span_exporter.clear()
+
+    task_executed = False
+
+    async def simple_task():
+        nonlocal task_executed
+        task_executed = True
+
+    await docket.add(simple_task)()
+
+    # Default: suppress_internal_instrumentation=True
+    async with Worker(docket) as worker:
+        await worker.run_until_finished()
+
+    assert task_executed
+
+    spans = span_exporter.get_finished_spans()
+    span_names = [s.name for s in spans]
+
+    # Task execution span SHOULD exist
+    assert "simple_task" in span_names, f"Expected task span, got: {span_names}"
+
+    # Internal Redis polling spans (XREADGROUP, XAUTOCLAIM) should NOT exist
+    polling_spans = _get_polling_spans(spans)
+    assert len(polling_spans) == 0, (
+        f"Expected no polling spans with suppression enabled, "
+        f"got: {[s.name for s in polling_spans]}"
+    )
+
+
+async def test_internal_redis_polling_spans_present_when_suppression_disabled(
+    docket: Docket,
+    span_exporter: InMemorySpanExporter,
+    redis_instrumentation: None,
+):
+    """Internal Redis polling spans should appear when suppression is disabled."""
+    # Clear any spans from setup fixtures
+    span_exporter.clear()
+
+    task_executed = False
+
+    async def simple_task():
+        nonlocal task_executed
+        task_executed = True
+
+    await docket.add(simple_task)()
+
+    # Explicitly disable suppression
+    async with Worker(docket, suppress_internal_instrumentation=False) as worker:
+        await worker.run_until_finished()
+
+    assert task_executed
+
+    spans = span_exporter.get_finished_spans()
+    span_names = [s.name for s in spans]
+
+    # Task execution span should exist
+    assert "simple_task" in span_names, f"Expected task span, got: {span_names}"
+
+    # Redis polling spans SHOULD exist when suppression is disabled
+    polling_spans = _get_polling_spans(spans)
+    assert len(polling_spans) > 0, (
+        f"Expected polling spans with suppression disabled, got none. "
+        f"All spans: {span_names}"
+    )
