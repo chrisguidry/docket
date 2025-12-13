@@ -423,6 +423,7 @@ await docket.add(tasks.fail)("Testing error notification system")
 ```
 
 These are particularly useful for:
+
 - Marking milestones in complex workflows
 - Testing monitoring and alerting systems
 - Debugging task execution order
@@ -717,16 +718,19 @@ State transitions are atomic and published via Redis pub/sub for real-time monit
 Docket stores execution state and progress in Redis with automatic cleanup:
 
 **Execution State** (`{docket}:runs:{key}`):
+
 - Stored as Redis hash containing state, timestamps, worker name, error messages, and result keys
 - TTL controlled by `execution_ttl` (default: 15 minutes)
 - Setting `execution_ttl=0` skips state persistence entirely for maximum throughput
 
 **Progress Data** (`{docket}:progress:{key}`):
+
 - Stored as Redis hash with `current`, `total`, `message`, and `updated_at` fields
 - Ephemeral data deleted when task completes
 - Updated atomically with `increment()` for thread-safe progress tracking
 
 **Result Storage**:
+
 - Results stored using `py-key-value-aio` library (RedisStore or MemoryStore)
 - Serialized with cloudpickle and base64-encoded for reliability
 - TTL matches `execution_ttl` for consistent cleanup
@@ -1091,6 +1095,7 @@ async with Docket(
 ```
 
 With `execution_ttl=0`:
+
 - No state records are created in Redis
 - No results are persisted
 - Progress tracking is not available

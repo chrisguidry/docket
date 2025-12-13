@@ -204,6 +204,7 @@ async with Docket(
 ```
 
 The `execution_ttl` controls:
+
 - How long state records persist in Redis after task completion
 - How long result data is retained (see Result Storage below)
 - How long progress information remains available
@@ -224,6 +225,7 @@ async with Docket(
 ```
 
 With `execution_ttl=0`:
+
 - **No state records**: State transitions are not written to Redis
 - **No result storage**: Task return values are not persisted
 - **No progress tracking**: Progress updates are not recorded
@@ -231,6 +233,7 @@ With `execution_ttl=0`:
 - **get_result() unavailable**: Cannot retrieve task results
 
 This mode is ideal for:
+
 - High-volume event processing (logging, metrics, notifications)
 - Fire-and-forget operations where results don't matter
 - Systems where observability is handled externally
@@ -324,6 +327,7 @@ redis-cli --scan --pattern "docket:results:*" | wc -l
 ```
 
 If memory usage is high:
+
 - Reduce `execution_ttl` to expire data sooner
 - Use `execution_ttl=0` for fire-and-forget tasks
 - Store large results externally (S3, database) and return references

@@ -111,6 +111,7 @@ async def import_records(
 ```
 
 Progress updates are:
+
 - **Atomic**: `increment()` uses Redis HINCRBY for thread-safe updates
 - **Real-time**: Updates published via pub/sub for live monitoring
 - **Observable**: Can be monitored with `docket watch` CLI or programmatically
@@ -237,6 +238,7 @@ async def call_api(
 ```
 
 **Important**: Synchronous dependencies should **NOT** include blocking I/O operations (file access, network calls, database queries, etc.) as it will block the event loop and prevent tasks from being executed. Use async dependencies for any I/O. Sync dependencies are best for:
+
 - Pure computations
 - In-memory data structure access
 - Configuration lookups from memory
@@ -446,12 +448,14 @@ If `unreliable_dependency` fails, the task won't execute and the error will be l
 ### Choose Sync vs Async Appropriately
 
 **Use synchronous dependencies for:**
+
 - Pure computations (math, string manipulation, data transformations)
 - In-memory data structure access (dicts, lists, sets)
 - Configuration lookups from memory
 - Non-blocking operations that complete instantly
 
 **Use asynchronous dependencies for:**
+
 - Network I/O (HTTP requests, API calls)
 - File I/O (reading/writing files)
 - Database queries
