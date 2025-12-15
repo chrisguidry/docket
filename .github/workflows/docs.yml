@@ -41,7 +41,7 @@ jobs:
         run: uv run mkdocs build
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         id: docs-artifact
         with:
           name: documentation
