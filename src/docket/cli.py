@@ -309,14 +309,14 @@ def worker(
             help="Schedule automatic tasks",
         ),
     ] = True,
-    suppress_internal_instrumentation: Annotated[
+    enable_internal_instrumentation: Annotated[
         bool,
         typer.Option(
-            "--suppress-internal-instrumentation/--no-suppress-internal-instrumentation",
-            help="Suppress OpenTelemetry spans for internal Redis polling operations",
-            envvar="DOCKET_WORKER_SUPPRESS_INTERNAL_INSTRUMENTATION",
+            "--enable-internal-instrumentation/--no-enable-internal-instrumentation",
+            help="Enable OpenTelemetry spans for internal Redis polling operations",
+            envvar="DOCKET_WORKER_ENABLE_INTERNAL_INSTRUMENTATION",
         ),
-    ] = True,
+    ] = False,
     until_finished: Annotated[
         bool,
         typer.Option(
@@ -352,7 +352,7 @@ def worker(
             minimum_check_interval=minimum_check_interval,
             scheduling_resolution=scheduling_resolution,
             schedule_automatic_tasks=schedule_automatic_tasks,
-            suppress_internal_instrumentation=suppress_internal_instrumentation,
+            enable_internal_instrumentation=enable_internal_instrumentation,
             until_finished=until_finished,
             healthcheck_port=healthcheck_port,
             metrics_port=metrics_port,

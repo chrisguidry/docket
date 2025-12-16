@@ -109,7 +109,7 @@ class Worker:
     minimum_check_interval: timedelta
     scheduling_resolution: timedelta
     schedule_automatic_tasks: bool
-    suppress_internal_instrumentation: bool
+    enable_internal_instrumentation: bool
 
     def __init__(
         self,
@@ -121,7 +121,7 @@ class Worker:
         minimum_check_interval: timedelta = timedelta(milliseconds=250),
         scheduling_resolution: timedelta = timedelta(milliseconds=250),
         schedule_automatic_tasks: bool = True,
-        suppress_internal_instrumentation: bool = True,
+        enable_internal_instrumentation: bool = False,
     ) -> None:
         self.docket = docket
         self.name = name or f"{socket.gethostname()}#{os.getpid()}"
@@ -131,13 +131,13 @@ class Worker:
         self.minimum_check_interval = minimum_check_interval
         self.scheduling_resolution = scheduling_resolution
         self.schedule_automatic_tasks = schedule_automatic_tasks
-        self.suppress_internal_instrumentation = suppress_internal_instrumentation
+        self.enable_internal_instrumentation = enable_internal_instrumentation
 
     @contextmanager
     def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
         """Suppress OTel auto-instrumentation for internal Redis operations.
 
-        When suppress_internal_instrumentation is True (default), this context manager
+        When enable_internal_instrumentation is False (default), this context manager
         suppresses OpenTelemetry auto-instrumentation spans for internal Redis polling
         operations like XREADGROUP, XAUTOCLAIM, and Lua script evaluations. This prevents
         thousands of noisy spans per minute from overwhelming trace storage.
@@ -145,7 +145,7 @@ class Worker:
         Task execution spans and user-facing operations (schedule, cancel, etc.) are
         NOT suppressed.
         """
-        if self.suppress_internal_instrumentation:
+        if not self.enable_internal_instrumentation:
             with suppress_instrumentation():
                 yield
         else:
@@ -196,7 +196,7 @@ class Worker:
         minimum_check_interval: timedelta = timedelta(milliseconds=100),
         scheduling_resolution: timedelta = timedelta(milliseconds=250),
         schedule_automatic_tasks: bool = True,
-        suppress_internal_instrumentation: bool = True,
+        enable_internal_instrumentation: bool = False,
         until_finished: bool = False,
         healthcheck_port: int | None = None,
         metrics_port: int | None = None,
@@ -217,7 +217,7 @@ class Worker:
             async with Docket(
                 name=docket_name,
                 url=url,
-                suppress_internal_instrumentation=suppress_internal_instrumentation,
+                enable_internal_instrumentation=enable_internal_instrumentation,
             ) as docket:
                 for task_path in tasks:
                     docket.register_collection(task_path)
@@ -232,7 +232,7 @@ class Worker:
                         minimum_check_interval=minimum_check_interval,
                         scheduling_resolution=scheduling_resolution,
                         schedule_automatic_tasks=schedule_automatic_tasks,
-                        suppress_internal_instrumentation=suppress_internal_instrumentation,
+                        enable_internal_instrumentation=enable_internal_instrumentation,
                     ) as worker
                 ):
                     # Install signal handlers for graceful shutdown.
