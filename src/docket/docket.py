@@ -167,7 +167,7 @@ class Docket:
         missed_heartbeats: int = 5,
         execution_ttl: timedelta = timedelta(minutes=15),
         result_storage: AsyncKeyValue | None = None,
-        suppress_internal_instrumentation: bool = True,
+        enable_internal_instrumentation: bool = False,
     ) -> None:
         """
         Args:
@@ -184,16 +184,16 @@ class Docket:
                 considered dead.
             execution_ttl: How long to keep completed or failed execution state records
                 in Redis before they expire. Defaults to 15 minutes.
-            suppress_internal_instrumentation: Whether to suppress OpenTelemetry spans
+            enable_internal_instrumentation: Whether to enable OpenTelemetry spans
                 for internal Redis polling operations like strike stream monitoring.
-                Defaults to True.
+                Defaults to False.
         """
         self.name = name
         self.url = url
         self.heartbeat_interval = heartbeat_interval
         self.missed_heartbeats = missed_heartbeats
         self.execution_ttl = execution_ttl
-        self.suppress_internal_instrumentation = suppress_internal_instrumentation
+        self.enable_internal_instrumentation = enable_internal_instrumentation
         self._cancel_task_script = None
 
         self.result_storage: AsyncKeyValue
@@ -212,12 +212,12 @@ class Docket:
     def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
         """Suppress OTel auto-instrumentation for internal Redis operations.
 
-        When suppress_internal_instrumentation is True (default), this context manager
+        When enable_internal_instrumentation is False (default), this context manager
         suppresses OpenTelemetry auto-instrumentation spans for internal Redis polling
         operations like strike stream monitoring. This prevents noisy spans from
         overwhelming trace storage.
         """
-        if self.suppress_internal_instrumentation:
+        if not self.enable_internal_instrumentation:
             with suppress_instrumentation():
                 yield
         else:

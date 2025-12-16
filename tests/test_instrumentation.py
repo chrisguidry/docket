@@ -877,7 +877,7 @@ async def test_internal_redis_polling_spans_suppressed_by_default(
 
     await docket.add(simple_task)()
 
-    # Default: suppress_internal_instrumentation=True
+    # Default: enable_internal_instrumentation=False
     async with Worker(docket) as worker:
         await worker.run_until_finished()
 
@@ -914,8 +914,8 @@ async def test_internal_redis_polling_spans_present_when_suppression_disabled(
 
     await docket.add(simple_task)()
 
-    # Explicitly disable suppression
-    async with Worker(docket, suppress_internal_instrumentation=False) as worker:
+    # Explicitly enable internal instrumentation
+    async with Worker(docket, enable_internal_instrumentation=True) as worker:
         await worker.run_until_finished()
 
     assert task_executed
@@ -926,10 +926,10 @@ async def test_internal_redis_polling_spans_present_when_suppression_disabled(
     # Task execution span should exist
     assert "simple_task" in span_names, f"Expected task span, got: {span_names}"
 
-    # Redis polling spans SHOULD exist when suppression is disabled
+    # Redis polling spans SHOULD exist when internal instrumentation is enabled
     polling_spans = _get_polling_spans(spans)
     assert len(polling_spans) > 0, (
-        f"Expected polling spans with suppression disabled, got none. "
+        f"Expected polling spans with internal instrumentation enabled, got none. "
         f"All spans: {span_names}"
     )
 
@@ -941,7 +941,7 @@ async def test_docket_strike_xread_spans_suppressed_by_default(
     """Docket's strike stream XREAD polling spans should be suppressed by default."""
     span_exporter.clear()
 
-    # Create docket with default suppress_internal_instrumentation=True
+    # Create docket with default enable_internal_instrumentation=False
     async with Docket(url="memory://"):
         # Give the _monitor_strikes task time to do at least one XREAD poll
         await asyncio.sleep(0.1)
@@ -955,15 +955,15 @@ async def test_docket_strike_xread_spans_suppressed_by_default(
     )
 
 
-async def test_docket_strike_xread_spans_present_when_suppression_disabled(
+async def test_docket_strike_xread_spans_present_when_instrumentation_enabled(
     span_exporter: InMemorySpanExporter,
     redis_instrumentation: None,
 ):
-    """Docket's strike stream XREAD polling spans should appear when suppression is disabled."""
+    """Docket's strike stream XREAD polling spans should appear when instrumentation is enabled."""
     span_exporter.clear()
 
-    # Create docket with suppression disabled
-    async with Docket(url="memory://", suppress_internal_instrumentation=False):
+    # Create docket with internal instrumentation enabled
+    async with Docket(url="memory://", enable_internal_instrumentation=True):
         # Give the _monitor_strikes task time to do at least one XREAD poll
         await asyncio.sleep(0.1)
 
@@ -971,6 +971,6 @@ async def test_docket_strike_xread_spans_present_when_suppression_disabled(
     xread_spans = _get_xread_spans(spans)
 
     assert len(xread_spans) > 0, (
-        f"Expected XREAD spans with suppression disabled, got none. "
+        f"Expected XREAD spans with internal instrumentation enabled, got none. "
         f"All spans: {[s.name for s in spans]}"
     )
