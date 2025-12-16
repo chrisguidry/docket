@@ -816,14 +816,44 @@ def redis_instrumentation() -> Generator[None, None, None]:
 
 
 def _get_polling_spans(spans: Sequence[ReadableSpan]) -> list[ReadableSpan]:
-    """Filter spans to only internal polling spans (XREADGROUP, XAUTOCLAIM)."""
-    polling_commands = {"XREADGROUP", "XAUTOCLAIM"}
+    """Filter spans to only internal polling spans (XREADGROUP, XAUTOCLAIM, XREAD)."""
+    polling_commands = {"XREADGROUP", "XAUTOCLAIM", "XREAD"}
     result: list[ReadableSpan] = []
     for span in spans:
         name_upper = span.name.upper()
         if any(cmd in name_upper for cmd in polling_commands):
             result.append(span)
     return result
+
+
+def _get_xread_spans(spans: Sequence[ReadableSpan]) -> list[ReadableSpan]:
+    """Filter spans to only XREAD spans (strike stream monitoring)."""
+    result: list[ReadableSpan] = []
+    for span in spans:
+        name_upper = span.name.upper()
+        if "XREAD" in name_upper and "XREADGROUP" not in name_upper:
+            result.append(span)
+    return result
+
+
+def test_get_xread_spans_filters_correctly():
+    """Unit test for _get_xread_spans helper to cover all branches."""
+    # Create mock spans with different names
+    xread_span = Mock(spec=ReadableSpan)
+    xread_span.name = "XREAD"
+
+    xreadgroup_span = Mock(spec=ReadableSpan)
+    xreadgroup_span.name = "XREADGROUP"
+
+    other_span = Mock(spec=ReadableSpan)
+    other_span.name = "GET"
+
+    spans = [xread_span, xreadgroup_span, other_span]
+    result = _get_xread_spans(spans)
+
+    # Only XREAD should be included (not XREADGROUP or GET)
+    assert len(result) == 1
+    assert result[0] is xread_span
 
 
 async def test_internal_redis_polling_spans_suppressed_by_default(
@@ -901,4 +931,46 @@ async def test_internal_redis_polling_spans_present_when_suppression_disabled(
     assert len(polling_spans) > 0, (
         f"Expected polling spans with suppression disabled, got none. "
         f"All spans: {span_names}"
+    )
+
+
+async def test_docket_strike_xread_spans_suppressed_by_default(
+    span_exporter: InMemorySpanExporter,
+    redis_instrumentation: None,
+):
+    """Docket's strike stream XREAD polling spans should be suppressed by default."""
+    span_exporter.clear()
+
+    # Create docket with default suppress_internal_instrumentation=True
+    async with Docket(url="memory://"):
+        # Give the _monitor_strikes task time to do at least one XREAD poll
+        await asyncio.sleep(0.1)
+
+    spans = span_exporter.get_finished_spans()
+    xread_spans = _get_xread_spans(spans)
+
+    assert len(xread_spans) == 0, (
+        f"Expected no XREAD spans with suppression enabled, "
+        f"got: {[s.name for s in xread_spans]}"
+    )
+
+
+async def test_docket_strike_xread_spans_present_when_suppression_disabled(
+    span_exporter: InMemorySpanExporter,
+    redis_instrumentation: None,
+):
+    """Docket's strike stream XREAD polling spans should appear when suppression is disabled."""
+    span_exporter.clear()
+
+    # Create docket with suppression disabled
+    async with Docket(url="memory://", suppress_internal_instrumentation=False):
+        # Give the _monitor_strikes task time to do at least one XREAD poll
+        await asyncio.sleep(0.1)
+
+    spans = span_exporter.get_finished_spans()
+    xread_spans = _get_xread_spans(spans)
+
+    assert len(xread_spans) > 0, (
+        f"Expected XREAD spans with suppression disabled, got none. "
+        f"All spans: {[s.name for s in spans]}"
     )
