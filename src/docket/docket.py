@@ -1,7 +1,7 @@
 import asyncio
 import importlib
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
@@ -10,6 +10,7 @@ from typing import (
     Awaitable,
     Callable,
     Collection,
+    Generator,
     Hashable,
     Iterable,
     Mapping,
@@ -28,6 +29,7 @@ from typing_extensions import Self
 
 import redis.exceptions
 from opentelemetry import trace
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from redis.asyncio import ConnectionPool, Redis
 from ._uuid7 import uuid7
 
@@ -165,6 +167,7 @@ class Docket:
         missed_heartbeats: int = 5,
         execution_ttl: timedelta = timedelta(minutes=15),
         result_storage: AsyncKeyValue | None = None,
+        suppress_internal_instrumentation: bool = True,
     ) -> None:
         """
         Args:
@@ -181,12 +184,16 @@ class Docket:
                 considered dead.
             execution_ttl: How long to keep completed or failed execution state records
                 in Redis before they expire. Defaults to 15 minutes.
+            suppress_internal_instrumentation: Whether to suppress OpenTelemetry spans
+                for internal Redis polling operations like strike stream monitoring.
+                Defaults to True.
         """
         self.name = name
         self.url = url
         self.heartbeat_interval = heartbeat_interval
         self.missed_heartbeats = missed_heartbeats
         self.execution_ttl = execution_ttl
+        self.suppress_internal_instrumentation = suppress_internal_instrumentation
         self._cancel_task_script = None
 
         self.result_storage: AsyncKeyValue
@@ -200,6 +207,21 @@ class Docket:
         from .tasks import standard_tasks
 
         self.tasks: dict[str, TaskFunction] = {fn.__name__: fn for fn in standard_tasks}
+
+    @contextmanager
+    def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
+        """Suppress OTel auto-instrumentation for internal Redis operations.
+
+        When suppress_internal_instrumentation is True (default), this context manager
+        suppresses OpenTelemetry auto-instrumentation spans for internal Redis polling
+        operations like strike stream monitoring. This prevents noisy spans from
+        overwhelming trace storage.
+        """
+        if self.suppress_internal_instrumentation:
+            with suppress_instrumentation():
+                yield
+        else:
+            yield
 
     @property
     def worker_group_name(self) -> str:
@@ -776,11 +798,12 @@ class Docket:
             try:
                 async with self.redis() as r:
                     while True:
-                        streams: RedisReadGroupResponse = await r.xread(
-                            {self.strike_key: last_id},
-                            count=100,
-                            block=60_000,
-                        )
+                        with self._maybe_suppress_instrumentation():
+                            streams: RedisReadGroupResponse = await r.xread(
+                                {self.strike_key: last_id},
+                                count=100,
+                                block=60_000,
+                            )
                         for _, messages in streams:
                             for message_id, message in messages:
                                 last_id = message_id

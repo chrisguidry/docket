@@ -214,7 +214,11 @@ class Worker:
             healthcheck_server(port=healthcheck_port),
             metrics_server(port=metrics_port),
         ):
-            async with Docket(name=docket_name, url=url) as docket:
+            async with Docket(
+                name=docket_name,
+                url=url,
+                suppress_internal_instrumentation=suppress_internal_instrumentation,
+            ) as docket:
                 for task_path in tasks:
                     docket.register_collection(task_path)
 
