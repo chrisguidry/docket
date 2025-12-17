@@ -144,7 +144,7 @@ async def test_worker_handles_unregistered_task_execution_on_initial_delivery(
 
     # Default fallback logs warning and ACKs the message
     assert "Unknown task 'the_task' received - dropping" in caplog.text
-    assert "Register via CLI (--tasks your.module)" in caplog.text
+    assert "Register via CLI (--tasks your.module:tasks)" in caplog.text
 
 
 async def test_worker_handles_unregistered_task_execution_on_redelivery(
@@ -200,7 +200,7 @@ async def test_worker_handles_unregistered_task_execution_on_redelivery(
 
     # Default fallback logs warning and ACKs the message
     assert "Unknown task 'test_task' received - dropping" in caplog.text
-    assert "Register via CLI (--tasks your.module)" in caplog.text
+    assert "Register via CLI (--tasks your.module:tasks)" in caplog.text
 
 
 builtin_tasks = {function.__name__ for function in standard_tasks}

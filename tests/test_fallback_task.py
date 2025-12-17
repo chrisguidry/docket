@@ -34,7 +34,7 @@ async def test_default_fallback_task_logs_and_acks(
 
     # Should log about unknown task with function name and registration hints
     assert "Unknown task 'the_task' received - dropping" in caplog.text
-    assert "Register via CLI (--tasks your.module)" in caplog.text
+    assert "Register via CLI (--tasks your.module:tasks)" in caplog.text
 
     # Message should be acknowledged (no pending messages)
     async with docket.redis() as redis:

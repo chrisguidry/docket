@@ -94,7 +94,7 @@ async def default_fallback_task(
     """Default fallback that logs a warning and completes the task."""
     logger.warning(
         "Unknown task %r received - dropping. "
-        "Register via CLI (--tasks your.module) or API (docket.register(func)).",
+        "Register via CLI (--tasks your.module:tasks) or API (docket.register(func)).",
         execution.function_name,
     )
 
