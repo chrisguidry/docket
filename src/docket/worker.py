@@ -17,6 +17,7 @@ if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
 
 from opentelemetry import trace
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from opentelemetry.trace import Status, StatusCode, Tracer
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -62,8 +63,6 @@ from .instrumentation import (
     metrics_server,
 )
 
-from opentelemetry.instrumentation.utils import suppress_instrumentation
-
 # Delay before retrying a task blocked by concurrency limits
 # Must be larger than redelivery_timeout to ensure atomic reschedule+ACK completes
 # before Redis would consider redelivering the message
@@ -76,6 +75,20 @@ class ConcurrencyBlocked(Exception):
     def __init__(self, execution: Execution):
         self.execution = execution
         super().__init__(f"Task {execution.key} blocked by concurrency limits")
+
+
+class RetryRequested(Exception):
+    """Raised when a task should be retried after failure.
+
+    This exception is raised by _retry_if_requested and caught by
+    process_completed_tasks to atomically ACK the original message
+    and reschedule the task. This prevents a race condition where
+    both retry logic and XAUTOCLAIM could create duplicate tasks.
+    """
+
+    def __init__(self, execution: Execution):
+        self.execution = execution
+        super().__init__(f"Task {execution.key} requested retry")
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -104,7 +117,6 @@ class Worker:
     docket: Docket
     name: str
     concurrency: int
-    redelivery_timeout: timedelta
     reconnection_delay: timedelta
     minimum_check_interval: timedelta
     scheduling_resolution: timedelta
@@ -132,6 +144,40 @@ class Worker:
         self.scheduling_resolution = scheduling_resolution
         self.schedule_automatic_tasks = schedule_automatic_tasks
         self.enable_internal_instrumentation = enable_internal_instrumentation
+
+    @property
+    def redelivery_timeout(self) -> timedelta:
+        return self._redelivery_timeout
+
+    @redelivery_timeout.setter
+    def redelivery_timeout(self, value: timedelta) -> None:
+        self._redelivery_timeout = value
+
+        # Maximum timeout for tasks without explicit Timeout dependency.
+        # This is set slightly below redelivery_timeout to leave margin for exception
+        # handling and retry scheduling to complete before XAUTOCLAIM can reclaim the
+        # message. Without this margin, there's a race: task times out at exactly
+        # redelivery_timeout, XAUTOCLAIM fires at the same moment, and the message
+        # can be redelivered before we can acknowledge/reschedule it atomically.
+        # For very short redelivery timeouts (e.g., in tests), cap the margin to
+        # ensure the implicit timeout remains positive.
+        margin = min(
+            max(
+                min(value * 0.1, timedelta(seconds=1)),
+                timedelta(milliseconds=50),
+            ),
+            value * 0.25,  # Never take more than 25% of the redelivery timeout
+        )
+        self._implicit_timeout_limit = value - margin
+
+        # Concurrency slot timeout - how long a slot reservation is valid.
+        # Must exceed redelivery_timeout so we can distinguish between a task that's
+        # still running (slot recently refreshed) vs one that crashed without cleanup
+        # (slot stale). When XAUTOCLAIM redelivers a message, we check if the original
+        # worker's slot is fresh (task still running, reject redelivery) or stale
+        # (worker crashed, allow takeover). The 5-second buffer ensures slots don't
+        # expire while tasks are legitimately running near the timeout boundary.
+        self._slot_timeout = value.total_seconds() + 5
 
     @contextmanager
     def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
@@ -363,7 +409,7 @@ class Worker:
                         groupname=self.docket.worker_group_name,
                         consumername=self.name,
                         min_idle_time=int(
-                            self.redelivery_timeout.total_seconds() * 1000
+                            self._redelivery_timeout.total_seconds() * 1000
                         ),
                         start_id="0-0",
                         count=available_slots,
@@ -446,6 +492,15 @@ class Worker:
                     # Use atomic schedule(reschedule_message=...) to prevent both task loss and duplicate execution
                     e.execution.when = (
                         datetime.now(timezone.utc) + CONCURRENCY_BLOCKED_RETRY_DELAY
+                    )
+                    await e.execution.schedule(reschedule_message=message_id)
+                except RetryRequested as e:
+                    # Task failed and retry was requested - reschedule atomically
+                    # execution.when already set by _retry_if_requested
+                    logger.debug(
+                        "🔄 Task %s requested retry, rescheduling",
+                        e.execution.key,
+                        extra=log_context,
                     )
                     await e.execution.schedule(reschedule_message=message_id)
 
@@ -654,13 +709,14 @@ class Worker:
         log_context = {**self._log_context(), **execution.specific_labels()}
         counter_labels = {**self.labels(), **execution.general_labels()}
 
+        function_name = execution.function.__name__
         call = execution.call_repr()
 
         if self.docket.strike_list.is_stricken(execution):
             async with self.docket.redis() as redis:
                 await self._delete_known_task(redis, execution)
 
-            logger.warning("🗙 %s", call, extra=log_context)
+            logger.warning("↛ %s", call, extra=log_context)
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
             return
 
@@ -688,13 +744,17 @@ class Worker:
         dependencies: dict[str, Dependency] = {}
         acquired_concurrency_slot = False
 
+        # Track RetryRequested to raise after span exits (prevents OTel from
+        # overwriting the original exception's status on the span)
+        retry_to_raise: RetryRequested | None = None
+
         with tracer.start_as_current_span(
-            execution.function.__name__,
+            function_name,
             kind=trace.SpanKind.CONSUMER,
             attributes={
                 **self.labels(),
                 **execution.specific_labels(),
-                "code.function.name": execution.function.__name__,
+                "code.function.name": function_name,
             },
             links=execution.incoming_span_links(),
         ) as span:
@@ -735,31 +795,31 @@ class Worker:
                     # Apply timeout logic - either user's timeout or redelivery timeout
                     user_timeout = get_single_dependency_of_type(dependencies, Timeout)
                     if user_timeout:
-                        # If user timeout is longer than redelivery timeout, limit it
-                        if user_timeout.base > self.redelivery_timeout:
-                            # Create a new timeout limited by redelivery timeout
+                        # If user timeout exceeds our safe limit, cap it
+                        if user_timeout.base > self._implicit_timeout_limit:
+                            # Create a new timeout limited to implicit_timeout_limit
                             # Remove the user timeout from dependencies to avoid conflicts
                             limited_dependencies = {
                                 k: v
                                 for k, v in dependencies.items()
                                 if not isinstance(v, Timeout)
                             }
-                            limited_timeout = Timeout(self.redelivery_timeout)
+                            limited_timeout = Timeout(self._implicit_timeout_limit)
                             limited_timeout.start()
                             result = await self._run_function_with_timeout(
                                 execution, limited_dependencies, limited_timeout
                             )
                         else:
-                            # User timeout is within redelivery timeout, use as-is
+                            # User timeout is within safe limit, use as-is
                             result = await self._run_function_with_timeout(
                                 execution, dependencies, user_timeout
                             )
                     else:
-                        # No user timeout - apply redelivery timeout as hard limit
-                        redelivery_timeout = Timeout(self.redelivery_timeout)
-                        redelivery_timeout.start()
+                        # No user timeout - apply implicit timeout limit
+                        implicit_timeout = Timeout(self._implicit_timeout_limit)
+                        implicit_timeout.start()
                         result = await self._run_function_with_timeout(
-                            execution, dependencies, redelivery_timeout
+                            execution, dependencies, implicit_timeout
                         )
 
                     duration = log_context["duration"] = time.time() - start
@@ -807,9 +867,16 @@ class Worker:
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
 
-                retried = await self._retry_if_requested(execution, dependencies)
-                if not retried:
-                    retried = await self._perpetuate_if_requested(
+                # Check if retry is requested
+                retry_requested: RetryRequested | None = None
+                try:
+                    await self._retry_if_requested(execution, dependencies)
+                except RetryRequested as rr:
+                    retry_requested = rr
+
+                rescheduled = retry_requested is not None
+                if not rescheduled:
+                    rescheduled = await self._perpetuate_if_requested(
                         execution, dependencies, timedelta(seconds=duration)
                     )
 
@@ -831,10 +898,14 @@ class Worker:
                 error_msg = f"{type(e).__name__}: {str(e)}"
                 await execution.mark_as_failed(error_msg, result_key=result_key)
 
-                arrow = "↫" if retried else "↩"
+                arrow = "↫" if rescheduled else "↩"
                 logger.exception(
                     "%s [%s] %s", arrow, ms(duration), call, extra=log_context
                 )
+
+                # Capture for raising after span exits
+                if retry_requested:
+                    retry_to_raise = retry_requested
             finally:
                 # Release concurrency slot only if we actually acquired one
                 if acquired_concurrency_slot:
@@ -844,6 +915,10 @@ class Worker:
                 TASKS_RUNNING.add(-1, counter_labels)
                 TASKS_COMPLETED.add(1, counter_labels)
                 TASK_DURATION.record(duration, counter_labels)
+
+        # Raise RetryRequested after span exits to preserve original exception status
+        if retry_to_raise:
+            raise retry_to_raise
 
     async def _run_function_with_timeout(
         self,
@@ -889,21 +964,24 @@ class Worker:
         self,
         execution: Execution,
         dependencies: dict[str, Dependency],
-    ) -> bool:
+    ) -> None:
+        """Check if retry is requested and raise RetryRequested if so.
+
+        Updates execution state (when, attempt) and raises RetryRequested
+        to signal that process_completed_tasks should atomically ACK the
+        original message and reschedule the task.
+        """
         retry = get_single_dependency_of_type(dependencies, Retry)
         if not retry:
-            return False
+            return
 
         if retry.attempts is not None and execution.attempt >= retry.attempts:
-            return False
+            return
 
         execution.when = datetime.now(timezone.utc) + retry.delay
         execution.attempt += 1
-        # Use replace=True since the task is being rescheduled after failure
-        await execution.schedule(replace=True)
-
         TASKS_RETRIED.add(1, {**self.labels(), **execution.general_labels()})
-        return True
+        raise RetryRequested(execution)
 
     async def _perpetuate_if_requested(
         self,
@@ -1072,10 +1150,6 @@ class Worker:
         """
 
         current_time = datetime.now(timezone.utc).timestamp()
-        # Slot timeout needs to be longer than redelivery_timeout so that when
-        # xautoclaim reclaims a message, we can tell if the original is still
-        # running (fresh) vs crashed (stale).
-        slot_timeout = self.redelivery_timeout.total_seconds() + 5
 
         result = await redis.eval(  # type: ignore
             lua_script,
@@ -1084,7 +1158,7 @@ class Worker:
             str(concurrency_limit.max_concurrent),
             execution.key,
             current_time,
-            slot_timeout,
+            self._slot_timeout,
         )
 
         return bool(result)
