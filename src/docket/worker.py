@@ -1131,9 +1131,9 @@ class Worker:
         )
 
         # Lua script for atomic concurrency slot management.
-        # Slot takeover for same task is based on redelivery (via XAUTOCLAIM).
+        # Slot takeover requires BOTH redelivery (via XAUTOCLAIM) AND stale slot.
         # Slots are kept alive by periodic refresh in _renew_leases.
-        # When full, we scavenge stale slots (older than redelivery_timeout).
+        # When full, we scavenge any stale slot (older than redelivery_timeout).
         lua_script = """
         local key = KEYS[1]
         local max_concurrent = tonumber(ARGV[1])
@@ -1146,14 +1146,16 @@ class Worker:
         -- Check if this task already has a slot (from a previous delivery attempt)
         local slot_time = redis.call('ZSCORE', key, task_key)
         if slot_time then
-            if is_redelivery == 1 then
-                -- Redelivery: XAUTOCLAIM reclaimed this message because the
-                -- original worker stopped renewing. Safe to take over the slot.
+            slot_time = tonumber(slot_time)
+            if is_redelivery == 1 and slot_time <= stale_threshold then
+                -- Redelivery AND slot is stale: original worker stopped renewing,
+                -- safe to take over the slot.
                 redis.call('ZADD', key, current_time, task_key)
                 redis.call('EXPIRE', key, key_ttl)
                 return 1
             else
-                -- Not a redelivery but slot exists: another delivery is executing
+                -- Either not a redelivery, or slot is still fresh (original worker
+                -- is just slow, not dead). Don't take over.
                 return 0
             end
         end

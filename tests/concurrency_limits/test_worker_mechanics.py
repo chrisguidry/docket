@@ -338,3 +338,52 @@ async def test_stale_concurrency_slots_are_scavenged_when_full(docket: Docket):
         assert len(remaining) == 1
         # The remaining slot should be one of the stale ones
         assert remaining[0] in [b"stale_task_1", b"stale_task_2"]
+
+
+async def test_graceful_shutdown_releases_concurrency_slots(docket: Docket):
+    """Verify that concurrency slots are released when worker shuts down gracefully.
+
+    When a worker receives a shutdown signal while tasks are running, it should
+    drain the active tasks (let them complete) and release their concurrency slots.
+    """
+    task_started = asyncio.Event()
+    task_can_finish = asyncio.Event()
+    task_completed = False
+
+    async def slow_task_with_concurrency(
+        customer_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id", max_concurrent=1
+        ),
+    ) -> None:
+        nonlocal task_completed
+        task_started.set()
+        await task_can_finish.wait()
+        task_completed = True
+
+    await docket.add(slow_task_with_concurrency)(customer_id=42)
+
+    concurrency_key = f"{docket.name}:concurrency:customer_id:42"
+
+    async with Worker(docket) as worker:
+        # Start worker in background
+        worker_task = asyncio.create_task(worker.run_until_finished())
+
+        # Wait for task to start (slot should be acquired)
+        await asyncio.wait_for(task_started.wait(), timeout=5.0)
+
+        # Verify slot is held
+        async with docket.redis() as redis:
+            slot_count = await redis.zcard(concurrency_key)
+            assert slot_count == 1, "Slot should be held while task is running"
+
+        # Let task finish - worker will drain and exit
+        task_can_finish.set()
+        await asyncio.wait_for(worker_task, timeout=5.0)
+
+    # Verify task completed and slot was released
+    assert task_completed, "Task should have completed during graceful shutdown"
+
+    async with docket.redis() as redis:
+        slot_count = await redis.zcard(concurrency_key)
+        assert slot_count == 0, "Slot should be released after graceful shutdown"
