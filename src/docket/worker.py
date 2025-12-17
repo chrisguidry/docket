@@ -704,6 +704,10 @@ class Worker:
                 logger.warning("Failed to renew leases", exc_info=True)
 
     async def _schedule_all_automatic_perpetual_tasks(self) -> None:
+        # Wait for strikes to be fully loaded before scheduling to avoid
+        # scheduling struck tasks or missing restored tasks
+        await self.docket.wait_for_strikes_loaded()
+
         async with self.docket.redis() as redis:
             try:
                 async with redis.lock(

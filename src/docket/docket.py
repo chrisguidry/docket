@@ -156,6 +156,7 @@ class Docket:
     strike_list: StrikeList
 
     _monitor_strikes_task: asyncio.Task[None]
+    _strikes_loaded: asyncio.Event
     _connection_pool: ConnectionPool
     _cancel_task_script: _cancel_task | None
 
@@ -229,6 +230,7 @@ class Docket:
 
     async def __aenter__(self) -> Self:
         self.strike_list = StrikeList()
+        self._strikes_loaded = asyncio.Event()
 
         # Check if we should use in-memory backend (fakeredis)
         # Support memory:// URLs for in-memory dockets
@@ -779,6 +781,16 @@ class Docket:
         restore = Restore(function, parameter, operator, value)
         return await self._send_strike_instruction(restore)
 
+    async def wait_for_strikes_loaded(self) -> None:
+        """Wait for all existing strikes to be loaded from the stream.
+
+        This method blocks until the strike monitor has completed its initial
+        non-blocking read of all existing strike messages. Call this before
+        making decisions that depend on the current strike state, such as
+        scheduling automatic perpetual tasks.
+        """
+        await self._strikes_loaded.wait()
+
     async def _send_strike_instruction(self, instruction: StrikeInstruction) -> None:
         with tracer.start_as_current_span(
             f"docket.{instruction.direction}",
@@ -794,16 +806,27 @@ class Docket:
 
     async def _monitor_strikes(self) -> NoReturn:
         last_id = "0-0"
+        initial_load_complete = False
         while True:
             try:
                 async with self.redis() as r:
                     while True:
                         with self._maybe_suppress_instrumentation():
+                            # Non-blocking for initial load (block=None), then block
+                            # for new messages (block=60_000). Note: block=0 means
+                            # "block forever" in Redis, not "non-blocking".
                             streams: RedisReadGroupResponse = await r.xread(
                                 {self.strike_key: last_id},
                                 count=100,
-                                block=60_000,
+                                block=60_000 if initial_load_complete else None,
                             )
+
+                        # If no messages and we haven't signaled yet, initial load is done
+                        if not streams and not initial_load_complete:
+                            initial_load_complete = True
+                            self._strikes_loaded.set()
+                            continue
+
                         for _, messages in streams:
                             for message_id, message in messages:
                                 last_id = message_id

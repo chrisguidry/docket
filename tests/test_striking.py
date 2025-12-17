@@ -1,10 +1,11 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 import pytest
 
-from docket import Docket
+from docket import Docket, Worker
+from docket.dependencies import Perpetual
 from docket.execution import Execution, Operator, Strike, StrikeList
 
 
@@ -209,3 +210,103 @@ async def test_strike_incomparable_values(
     assert execution is not None  # Simply access the variable to satisfy the linter
 
     assert "Incompatible type for strike condition" in caplog.text
+
+
+async def test_struck_automatic_perpetual_does_not_start(docket: Docket):
+    """Struck automatic perpetual tasks should not be scheduled by new workers.
+
+    This verifies that the race between loading strikes and scheduling automatic
+    perpetuals is resolved: strikes are fully loaded before scheduling runs.
+    """
+    called = False
+
+    async def my_struck_automatic_task(
+        perpetual: Perpetual = Perpetual(
+            every=timedelta(milliseconds=50), automatic=True
+        ),
+    ):
+        nonlocal called
+        called = True  # pragma: no cover
+
+    docket.register(my_struck_automatic_task)
+
+    # Strike the task before starting the worker
+    await docket.strike("my_struck_automatic_task")
+
+    # Start a fresh docket instance (simulating a new worker process)
+    async with Docket(docket.name, docket.url) as fresh_docket:
+        fresh_docket.register(my_struck_automatic_task)
+
+        # Wait for strikes to be loaded before proceeding
+        await fresh_docket.wait_for_strikes_loaded()
+
+        # Verify the strike is loaded
+        assert "my_struck_automatic_task" in fresh_docket.strike_list.task_strikes
+
+        # Start a worker with this fresh docket - struck task should NOT be scheduled
+        async with Worker(fresh_docket) as worker:
+            await worker.run_until_finished()
+
+    assert not called, "Struck automatic task should not have been executed"
+
+
+async def test_restored_automatic_perpetual_does_start(docket: Docket):
+    """Restored automatic perpetual tasks should be scheduled by new workers.
+
+    This verifies that when a task is struck and then restored, a new worker
+    will correctly schedule it because the restore is loaded before scheduling.
+    """
+    calls = 0
+
+    async def my_restored_automatic_task(
+        perpetual: Perpetual = Perpetual(
+            every=timedelta(milliseconds=50), automatic=True
+        ),
+    ):
+        nonlocal calls
+        calls += 1
+
+    docket.register(my_restored_automatic_task)
+
+    # Strike then restore the task
+    await docket.strike("my_restored_automatic_task")
+    await docket.restore("my_restored_automatic_task")
+
+    # Start a fresh docket instance (simulating a new worker process)
+    async with Docket(docket.name, docket.url) as fresh_docket:
+        fresh_docket.register(my_restored_automatic_task)
+
+        # Wait for strikes to be loaded before proceeding
+        await fresh_docket.wait_for_strikes_loaded()
+
+        # Verify the task is NOT in the strike list (was restored)
+        assert "my_restored_automatic_task" not in fresh_docket.strike_list.task_strikes
+
+        # Start a worker - restored task SHOULD be scheduled
+        async with Worker(fresh_docket) as worker:
+            await worker.run_at_most({"my_restored_automatic_task": 3})
+
+    assert calls == 3, f"Expected 3 calls, got {calls}"
+
+
+async def test_strikes_loaded_event_is_set_after_initial_load(docket: Docket):
+    """The strikes_loaded event should be set after initial strike stream read.
+
+    This tests that wait_for_strikes_loaded() returns quickly when existing
+    strikes have already been read from the stream.
+    """
+    # Add some strikes to the stream
+    await docket.strike("task_a")
+    await docket.strike("task_b", "customer_id", "==", "123")
+
+    # Start a fresh docket instance
+    async with Docket(docket.name, docket.url) as fresh_docket:
+        # wait_for_strikes_loaded should complete quickly (not block forever)
+        await asyncio.wait_for(fresh_docket.wait_for_strikes_loaded(), timeout=5.0)
+
+        # Verify the strikes are loaded
+        assert "task_a" in fresh_docket.strike_list.task_strikes
+        assert "task_b" in fresh_docket.strike_list.task_strikes
+        assert fresh_docket.strike_list.task_strikes["task_b"]["customer_id"] == {
+            ("==", "123")
+        }
