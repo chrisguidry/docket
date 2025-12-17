@@ -607,18 +607,18 @@ class Worker:
                     exc_info=True,
                     extra=log_context,
                 )
-            finally:
-                try:
-                    await asyncio.wait_for(
-                        worker_stopping.wait(),
-                        timeout=self.scheduling_resolution.total_seconds(),
-                    )
-                    # Worker is stopping - exit if no more work to drain
-                    if not total_work:
-                        logger.debug("Scheduler loop finished", extra=log_context)
-                        return
-                except asyncio.TimeoutError:
-                    pass  # Time to check for due tasks again
+
+            # Wait for worker to stop or scheduling interval to pass
+            try:
+                await asyncio.wait_for(
+                    worker_stopping.wait(),
+                    timeout=self.scheduling_resolution.total_seconds(),
+                )
+                # Worker is stopping - exit if no more work to drain
+                if not total_work:
+                    break
+            except asyncio.TimeoutError:
+                pass  # Time to check for due tasks again
 
         logger.debug("Scheduler loop finished", extra=log_context)
 
