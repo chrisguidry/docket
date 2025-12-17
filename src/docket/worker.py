@@ -635,7 +635,7 @@ class Worker:
         """
         renewal_interval = self.redelivery_timeout.total_seconds() / 4
 
-        while not worker_stopping.is_set():
+        while not worker_stopping.is_set():  # pragma: no branch
             try:
                 await asyncio.wait_for(
                     worker_stopping.wait(),

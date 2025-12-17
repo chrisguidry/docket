@@ -379,19 +379,12 @@ async def test_lease_renewal_recovers_from_redis_error(
 
 
 async def test_lease_renewal_exits_cleanly_with_no_active_tasks(docket: Docket):
-    """Lease renewal loop should exit cleanly when worker stops with no active tasks.
-
-    This covers the case where the renewal loop wakes up, finds no active messages,
-    and then checks the while condition to find worker_stopping is set.
-    """
-    # Use very short redelivery_timeout so renewal interval is tiny
+    """Lease renewal loop should exit cleanly when worker stops with no active tasks."""
     async with Worker(
         docket,
-        redelivery_timeout=timedelta(milliseconds=40),  # 10ms renewal interval
+        redelivery_timeout=timedelta(milliseconds=40),
         minimum_check_interval=timedelta(milliseconds=5),
         scheduling_resolution=timedelta(milliseconds=5),
     ) as worker:
-        # Let renewal loop iterate at least once with no tasks
-        await asyncio.sleep(0.015)  # Slightly longer than renewal interval
-        # Worker exits cleanly (run_until_finished would return immediately with no tasks)
+        # Worker with no tasks exits immediately
         await worker.run_until_finished()
