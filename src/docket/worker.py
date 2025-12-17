@@ -615,7 +615,8 @@ class Worker:
                     )
                     # Worker is stopping - exit if no more work to drain
                     if not total_work:
-                        break
+                        logger.debug("Scheduler loop finished", extra=log_context)
+                        return
                 except asyncio.TimeoutError:
                     pass  # Time to check for due tasks again
 
