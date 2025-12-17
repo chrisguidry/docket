@@ -1223,7 +1223,7 @@ class StrikeList:
         return any(condition(execution) for condition in self._conditions)
 
     def _matches_task_or_parameter_strike(self, execution: Execution) -> bool:
-        function_name = execution.function.__name__
+        function_name = execution.function_name
 
         # Check if the entire task is stricken (without parameter conditions)
         task_strikes = self.task_strikes.get(function_name, {})

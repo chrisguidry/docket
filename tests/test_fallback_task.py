@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import timedelta
 from typing import Any
@@ -61,7 +60,7 @@ async def test_custom_fallback_receives_original_args_kwargs(
         received_kwargs = kwargs
 
     async def original_task(x: int, y: str, z: bool = True) -> None:
-        pass
+        pass  # pragma: no cover
 
     docket.register(original_task)
     await docket.add(original_task)(42, "hello", z=False)
@@ -97,7 +96,7 @@ async def test_fallback_can_access_function_name(
         captured_function_name = execution.function_name
 
     async def my_special_task() -> None:
-        pass
+        pass  # pragma: no cover
 
     docket.register(my_special_task)
     await docket.add(my_special_task)()
@@ -135,7 +134,7 @@ async def test_fallback_dependency_injection(
         captured_logger = logger
 
     async def some_task(value: int) -> None:
-        pass
+        pass  # pragma: no cover
 
     docket.register(some_task)
     await docket.add(some_task)(123)
@@ -156,6 +155,44 @@ async def test_fallback_dependency_injection(
     assert captured_logger is not None
 
 
+async def test_fallback_custom_user_dependency(
+    docket: Docket,
+    key_leak_checker: KeyCountChecker,
+):
+    """Fallback should support custom user dependencies via Depends()."""
+    from docket.dependencies import Depends
+
+    async def get_request_id() -> str:
+        return "req-12345"
+
+    captured_request_id: str | None = None
+
+    async def custom_fallback(
+        *args: Any,
+        request_id: str = Depends(get_request_id),
+        **kwargs: Any,
+    ) -> None:
+        nonlocal captured_request_id
+        captured_request_id = request_id
+
+    async def some_task() -> None:
+        pass  # pragma: no cover
+
+    docket.register(some_task)
+    await docket.add(some_task)()
+    docket.tasks.pop("some_task")
+
+    async with Worker(
+        docket,
+        fallback_task=custom_fallback,
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as worker:
+        await worker.run_until_finished()
+
+    assert captured_request_id == "req-12345"
+
+
 async def test_fallback_return_completes_task(
     docket: Docket,
     key_leak_checker: KeyCountChecker,
@@ -166,7 +203,7 @@ async def test_fallback_return_completes_task(
         return "handled"
 
     async def missing_task() -> None:
-        pass
+        pass  # pragma: no cover
 
     docket.register(missing_task)
     await docket.add(missing_task)()
@@ -210,7 +247,7 @@ async def test_fallback_exception_triggers_retry(
             raise ValueError("Simulated failure")
 
     async def some_task() -> None:
-        pass
+        pass  # pragma: no cover
 
     docket.register(some_task)
     await docket.add(some_task)()
@@ -222,14 +259,9 @@ async def test_fallback_exception_triggers_retry(
         minimum_check_interval=timedelta(milliseconds=5),
         scheduling_resolution=timedelta(milliseconds=5),
     ) as worker:
-        # Run until the fallback succeeds (after 3 attempts)
-        for _ in range(30):
-            await worker.run_until_finished()
-            if call_count >= 3:
-                break
-            await asyncio.sleep(0.02)
+        await worker.run_until_finished()
 
-    assert call_count >= 3
+    assert call_count == 3
 
 
 async def test_execution_function_name_matches_for_known_tasks(

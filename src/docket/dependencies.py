@@ -166,7 +166,7 @@ def TaskArgument(parameter: str | None = None, optional: bool = False) -> Any:
 class _TaskLogger(Dependency):
     async def __aenter__(self) -> "logging.LoggerAdapter[logging.Logger]":
         execution = self.execution.get()
-        logger = logging.getLogger(f"docket.task.{execution.function.__name__}")
+        logger = logging.getLogger(f"docket.task.{execution.function_name}")
         return logging.LoggerAdapter(
             logger,
             {

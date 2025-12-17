@@ -88,7 +88,7 @@ async def test_worker_command_with_fallback_task(
 
     # Schedule a task that won't be registered with the worker
     async def unregistered_task() -> None:
-        pass
+        pass  # pragma: no cover
 
     docket.register(unregistered_task)
     await docket.add(unregistered_task)()

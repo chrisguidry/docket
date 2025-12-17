@@ -750,24 +750,15 @@ class Worker:
             except LockError:  # pragma: no cover
                 return
 
-    async def _delete_known_task(
-        self, redis: Redis, execution_or_message: Execution | RedisMessage
-    ) -> None:
-        if isinstance(execution_or_message, Execution):
-            key = execution_or_message.key
-        elif bytes_key := execution_or_message.get(b"key"):
-            key = bytes_key.decode()
-        else:  # pragma: no cover
-            return
-
+    async def _delete_known_task(self, redis: Redis, execution: Execution) -> None:
         logger.debug("Deleting known task", extra=self._log_context())
         # Delete known/stream_id from runs hash to allow task rescheduling
-        runs_key = f"{self.docket.name}:runs:{key}"
+        runs_key = f"{self.docket.name}:runs:{execution.key}"
         await redis.hdel(runs_key, "known", "stream_id")
 
         # TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
-        known_task_key = self.docket.known_task_key(key)
-        stream_id_key = self.docket.stream_id_key(key)
+        known_task_key = self.docket.known_task_key(execution.key)
+        stream_id_key = self.docket.stream_id_key(execution.key)
         await redis.delete(known_task_key, stream_id_key)
 
     async def _execute(self, execution: Execution) -> None:
@@ -809,12 +800,12 @@ class Worker:
         acquired_concurrency_slot = False
 
         with tracer.start_as_current_span(
-            execution.function.__name__,
+            execution.function_name,
             kind=trace.SpanKind.CONSUMER,
             attributes={
                 **self.labels(),
                 **execution.specific_labels(),
-                "code.function.name": execution.function.__name__,
+                "code.function.name": execution.function_name,
             },
             links=execution.incoming_span_links(),
         ) as span:

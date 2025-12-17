@@ -678,7 +678,7 @@ def get_task_stats(
 
     # Count running tasks by function
     for execution in snapshot.running:
-        func_name = execution.function.__name__
+        func_name = execution.function_name
         if func_name not in stats:
             stats[func_name] = {
                 "running": 0,
@@ -707,7 +707,7 @@ def get_task_stats(
 
     # Count future tasks by function
     for execution in snapshot.future:
-        func_name = execution.function.__name__
+        func_name = execution.function_name
         if func_name not in stats:
             stats[func_name] = {
                 "running": 0,
@@ -806,7 +806,7 @@ def snapshot(
     for execution in snapshot.running:
         table.add_row(
             relative(execution.when),
-            execution.function.__name__,
+            execution.function_name,
             execution.key,
             execution.worker,
             relative(execution.started),
@@ -815,7 +815,7 @@ def snapshot(
     for execution in snapshot.future:
         table.add_row(
             relative(execution.when),
-            execution.function.__name__,
+            execution.function_name,
             execution.key,
             "",
             "",

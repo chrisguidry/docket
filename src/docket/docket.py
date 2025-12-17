@@ -384,7 +384,7 @@ class Docket:
             if self.strike_list.is_stricken(execution):
                 logger.warning(
                     "%r is stricken, skipping schedule of %r",
-                    execution.function.__name__,
+                    execution.function_name,
                     execution.key,
                 )
                 TASKS_STRICKEN.add(
@@ -462,7 +462,7 @@ class Docket:
             if self.strike_list.is_stricken(execution):
                 logger.warning(
                     "%r is stricken, skipping schedule of %r",
-                    execution.function.__name__,
+                    execution.function_name,
                     execution.key,
                 )
                 TASKS_STRICKEN.add(
@@ -492,14 +492,14 @@ class Docket:
             attributes={
                 **self.labels(),
                 **execution.specific_labels(),
-                "code.function.name": execution.function.__name__,
+                "code.function.name": execution.function_name,
             },
         ):
             # Check if task is stricken before scheduling
             if self.strike_list.is_stricken(execution):
                 logger.warning(
                     "%r is stricken, skipping schedule of %r",
-                    execution.function.__name__,
+                    execution.function_name,
                     execution.key,
                 )
                 TASKS_STRICKEN.add(
