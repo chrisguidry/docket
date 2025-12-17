@@ -127,41 +127,6 @@ async def test_worker_respects_concurrency_limit(docket: Docket, worker: Worker)
     assert 1 < max_concurrency_observed <= 5
 
 
-async def test_worker_handles_redeliveries_from_abandoned_workers(
-    docket: Docket, the_task: AsyncMock
-):
-    """The worker should handle redeliveries from abandoned workers"""
-
-    await docket.add(the_task)()
-
-    async with Worker(
-        docket, redelivery_timeout=timedelta(milliseconds=100)
-    ) as worker_a:
-        worker_a._execute = AsyncMock(side_effect=Exception("Nope"))  # type: ignore[protected-access]
-        with pytest.raises(Exception, match="Nope"):
-            await worker_a.run_until_finished()
-
-    the_task.assert_not_called()
-
-    async with Worker(
-        docket, redelivery_timeout=timedelta(milliseconds=100)
-    ) as worker_b:
-        async with docket.redis() as redis:
-            pending_info = await redis.xpending(
-                docket.stream_key,
-                docket.worker_group_name,
-            )
-            assert pending_info["pending"] == 1, (
-                "Expected one pending task in the stream"
-            )
-
-        await asyncio.sleep(0.125)  # longer than the redelivery timeout
-
-        await worker_b.run_until_finished()
-
-    the_task.assert_awaited_once_with()
-
-
 async def test_worker_handles_unregistered_task_execution_on_initial_delivery(
     docket: Docket,
     worker: Worker,

@@ -608,7 +608,16 @@ class Worker:
                     extra=log_context,
                 )
             finally:
-                await asyncio.sleep(self.scheduling_resolution.total_seconds())
+                try:
+                    await asyncio.wait_for(
+                        worker_stopping.wait(),
+                        timeout=self.scheduling_resolution.total_seconds(),
+                    )
+                    # Worker is stopping - exit if no more work to drain
+                    if not total_work:
+                        break
+                except asyncio.TimeoutError:
+                    pass  # Time to check for due tasks again
 
         logger.debug("Scheduler loop finished", extra=log_context)
 
@@ -777,34 +786,21 @@ class Worker:
                             ],
                         )
 
-                    # Apply timeout logic - either user's timeout or redelivery timeout
+                    # Run task with user-specified timeout, or no timeout
+                    # Lease renewal keeps messages alive so we don't need implicit timeouts
                     user_timeout = get_single_dependency_of_type(dependencies, Timeout)
                     if user_timeout:
-                        # If user timeout is longer than redelivery timeout, limit it
-                        if user_timeout.base > self.redelivery_timeout:
-                            # Create a new timeout limited by redelivery timeout
-                            # Remove the user timeout from dependencies to avoid conflicts
-                            limited_dependencies = {
-                                k: v
-                                for k, v in dependencies.items()
-                                if not isinstance(v, Timeout)
-                            }
-                            limited_timeout = Timeout(self.redelivery_timeout)
-                            limited_timeout.start()
-                            result = await self._run_function_with_timeout(
-                                execution, limited_dependencies, limited_timeout
-                            )
-                        else:
-                            # User timeout is within redelivery timeout, use as-is
-                            result = await self._run_function_with_timeout(
-                                execution, dependencies, user_timeout
-                            )
-                    else:
-                        # No user timeout - apply redelivery timeout as hard limit
-                        redelivery_timeout = Timeout(self.redelivery_timeout)
-                        redelivery_timeout.start()
+                        user_timeout.start()
                         result = await self._run_function_with_timeout(
-                            execution, dependencies, redelivery_timeout
+                            execution, dependencies, user_timeout
+                        )
+                    else:
+                        result = await execution.function(
+                            *execution.args,
+                            **{
+                                **execution.kwargs,
+                                **dependencies,
+                            },
                         )
 
                     duration = log_context["duration"] = time.time() - start

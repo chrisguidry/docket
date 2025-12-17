@@ -2,14 +2,14 @@ import asyncio
 import time
 from datetime import timedelta
 
-from docket import ConcurrencyLimit, CurrentExecution, Docket, Worker
+from docket import ConcurrencyLimit, CurrentExecution, Docket, Timeout, Worker
 from docket.execution import Execution
 
 from tests.concurrency_limits.overlap import assert_no_overlaps
 
 
-async def test_task_timeout_respects_redelivery_timeout(docket: Docket):
-    """Test that tasks are automatically timed out at the redelivery timeout."""
+async def test_task_timeout_with_explicit_timeout(docket: Docket):
+    """Test that tasks with explicit Timeout are timed out correctly."""
     task_started = False
     task_completed = False
     event = asyncio.Event()
@@ -20,6 +20,7 @@ async def test_task_timeout_respects_redelivery_timeout(docket: Docket):
         concurrency: ConcurrencyLimit = ConcurrencyLimit(
             "customer_id", max_concurrent=1
         ),
+        timeout: Timeout = Timeout(timedelta(seconds=1)),
     ):
         nonlocal task_started, task_completed
         task_started = True
@@ -30,18 +31,15 @@ async def test_task_timeout_respects_redelivery_timeout(docket: Docket):
             task_completed = True
         elif test_mode == "long_complete":
             # Long running but within timeout for coverage
-            await asyncio.sleep(0.5)  # Within the 2-second timeout
+            await asyncio.sleep(0.5)  # Within the 1-second timeout
             task_completed = True
         else:
-            # Simulate a task that would run longer than redelivery timeout
+            # Simulate a task that would run longer than timeout
             # Don't set event - task will hang and be timed out
             await event.wait()
 
     docket.register(long_running_task)
 
-    # Create a worker with short redelivery timeout
-    # Note: We use 3 seconds instead of 2 to give more headroom under CPU load,
-    # which prevents xautoclaim from racing with task completion.
     async with Worker(
         docket,
         minimum_check_interval=timedelta(milliseconds=50),
@@ -112,8 +110,8 @@ async def test_task_timeout_with_concurrent_tasks(docket: Docket):
         assert len(tasks_completed) == 3, "All tasks should have completed"
 
 
-async def test_redelivery_timeout_limits_long_tasks(docket: Docket):
-    """Test that tasks longer than redelivery timeout are terminated."""
+async def test_explicit_timeout_limits_long_tasks(docket: Docket):
+    """Test that tasks with explicit Timeout longer than the limit are terminated."""
     task_completed = False
     event = asyncio.Event()
 
@@ -123,6 +121,7 @@ async def test_redelivery_timeout_limits_long_tasks(docket: Docket):
         concurrency: ConcurrencyLimit = ConcurrencyLimit(
             "customer_id", max_concurrent=1
         ),
+        timeout: Timeout = Timeout(timedelta(seconds=1)),
     ):
         nonlocal task_completed
         if test_mode == "complete":
@@ -131,17 +130,15 @@ async def test_redelivery_timeout_limits_long_tasks(docket: Docket):
             task_completed = True
         elif test_mode == "long_complete":
             # Long running but completes within timeout
-            await asyncio.sleep(1.5)  # Less than 3 second timeout
+            await asyncio.sleep(0.5)  # Less than 1 second timeout
             task_completed = True
         else:
-            # Simulate a task that would run longer than redelivery timeout
+            # Simulate a task that would run longer than timeout
             # Don't set event - task will hang and be timed out
             await event.wait()
 
     docket.register(long_task)
 
-    # Note: We use 3 seconds instead of 1 to give more headroom under CPU load,
-    # which prevents xautoclaim from racing with task completion.
     async with Worker(
         docket,
         minimum_check_interval=timedelta(milliseconds=50),
@@ -155,9 +152,7 @@ async def test_redelivery_timeout_limits_long_tasks(docket: Docket):
         await worker.run_until_finished()
 
         # Verify task was timed out
-        assert not task_completed, (
-            "Task should have been timed out by redelivery timeout"
-        )
+        assert not task_completed, "Task should have been timed out by explicit Timeout"
 
         # Test completion path for coverage
         task_completed = False
