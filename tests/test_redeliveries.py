@@ -6,18 +6,19 @@ These tests verify that:
 """
 
 import asyncio
+import inspect
 from datetime import timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from redis.asyncio import Redis
+from redis.exceptions import ConnectionError
 
-from docket import Docket, Retry, Worker
+from docket import Docket, Perpetual, Retry, Timeout, Worker
 
 
 @pytest.fixture
 def the_task() -> AsyncMock:
-    import inspect
-
     task = AsyncMock()
     task.__name__ = "the_task"
     task.__signature__ = inspect.signature(lambda *args, **kwargs: None)
@@ -169,8 +170,6 @@ async def test_perpetual_task_with_lease_renewal(docket: Docket):
     Without lease renewal, a perpetual task running longer than redelivery_timeout
     could be reclaimed by XAUTOCLAIM, causing duplicate execution.
     """
-    from docket import Perpetual
-
     executions: list[int] = []
 
     async def slow_perpetual(
@@ -200,8 +199,6 @@ async def test_user_timeout_longer_than_redelivery(docket: Docket):
     Lease renewal allows tasks to run longer than redelivery_timeout without
     being reclaimed by XAUTOCLAIM.
     """
-    from docket.dependencies import Timeout
-
     task_completed = False
 
     async def long_task_with_timeout(
@@ -343,11 +340,6 @@ async def test_lease_renewal_recovers_from_redis_error(
     If XCLAIM fails, the worker should log a warning and continue.
     The task should still complete successfully.
     """
-    from unittest.mock import patch
-
-    from redis.asyncio import Redis
-    from redis.exceptions import ConnectionError
-
     task_completed = False
 
     async def slow_task():
