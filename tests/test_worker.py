@@ -525,6 +525,55 @@ async def test_worker_timeout_exceeds_redelivery_timeout(docket: Docket):
     assert task_executed
 
 
+@pytest.mark.parametrize(
+    "redelivery_timeout,expected_implicit_limit,expected_slot_timeout",
+    [
+        # Very short timeout (200ms): margin = min(max(min(20ms, 1s), 50ms), 50ms) = 50ms
+        (timedelta(milliseconds=200), timedelta(milliseconds=150), 5.2),
+        # Short timeout (500ms): margin = min(max(min(50ms, 1s), 50ms), 125ms) = 50ms
+        (timedelta(milliseconds=500), timedelta(milliseconds=450), 5.5),
+        # Medium timeout (2s): margin = min(max(min(200ms, 1s), 50ms), 500ms) = 200ms
+        (timedelta(seconds=2), timedelta(seconds=1.8), 7.0),
+        # Default timeout (30s): margin = min(max(min(3s, 1s), 50ms), 7.5s) = 1s
+        (timedelta(seconds=30), timedelta(seconds=29), 35.0),
+        # Long timeout (2min): margin = min(max(min(12s, 1s), 50ms), 30s) = 1s
+        (timedelta(minutes=2), timedelta(seconds=119), 125.0),
+    ],
+)
+async def test_worker_redelivery_timeout_derived_values(
+    docket: Docket,
+    redelivery_timeout: timedelta,
+    expected_implicit_limit: timedelta,
+    expected_slot_timeout: float,
+):
+    """Test that redelivery_timeout property correctly calculates derived values."""
+    async with Worker(docket, redelivery_timeout=redelivery_timeout) as worker:
+        # Test getter (line 150)
+        assert worker.redelivery_timeout == redelivery_timeout
+
+        # Test _implicit_timeout_limit calculation (private, but testing for coverage)
+        assert worker._implicit_timeout_limit == expected_implicit_limit  # pyright: ignore[reportPrivateUsage]
+
+        # Test _slot_timeout calculation (private, but testing for coverage)
+        assert worker._slot_timeout == expected_slot_timeout  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_worker_redelivery_timeout_can_be_changed(docket: Docket):
+    """Test that redelivery_timeout can be changed after worker creation."""
+    async with Worker(docket, redelivery_timeout=timedelta(seconds=30)) as worker:
+        assert worker.redelivery_timeout == timedelta(seconds=30)
+        assert worker._implicit_timeout_limit == timedelta(seconds=29)  # pyright: ignore[reportPrivateUsage]
+        assert worker._slot_timeout == 35.0  # pyright: ignore[reportPrivateUsage]
+
+        # Change redelivery_timeout
+        worker.redelivery_timeout = timedelta(seconds=10)
+
+        # Verify all derived values updated
+        assert worker.redelivery_timeout == timedelta(seconds=10)
+        assert worker._implicit_timeout_limit == timedelta(seconds=9)  # pyright: ignore[reportPrivateUsage]
+        assert worker._slot_timeout == 15.0  # pyright: ignore[reportPrivateUsage]
+
+
 async def test_worker_concurrency_cleanup_without_dependencies(docket: Docket):
     """Test worker cleanup when dependencies are not defined."""
     cleanup_executed = False
