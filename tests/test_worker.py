@@ -135,20 +135,16 @@ async def test_worker_handles_unregistered_task_execution_on_initial_delivery(
     key_leak_checker: KeyCountChecker,
 ):
     """worker should handle the case when an unregistered task is executed"""
-    execution = await docket.add(the_task)()
-
-    # This test intentionally leaves task in incomplete state - another worker might have it
-    key_leak_checker.add_exemption(f"{docket.name}:runs:{execution.key}")
+    await docket.add(the_task)()
 
     docket.tasks.pop("the_task")
 
     with caplog.at_level(logging.WARNING):
         await worker.run_until_finished()
 
-    assert (
-        "Task function 'the_task' is not registered with the current docket"
-        in caplog.text
-    )
+    # Default fallback logs warning and ACKs the message
+    assert "Unknown task 'the_task' received - dropping" in caplog.text
+    assert "Register via CLI (--tasks your.module:tasks)" in caplog.text
 
 
 async def test_worker_handles_unregistered_task_execution_on_redelivery(
@@ -172,10 +168,7 @@ async def test_worker_handles_unregistered_task_execution_on_redelivery(
         await worker_success.run_until_finished()
 
     # Schedule another task for the redelivery test
-    execution = await docket.add(test_task)()
-
-    # This test intentionally leaves task in incomplete state - another worker might have it
-    key_leak_checker.add_exemption(f"{docket.name}:runs:{execution.key}")
+    await docket.add(test_task)()
 
     # First worker fails during execution
     async with Worker(
@@ -205,10 +198,9 @@ async def test_worker_handles_unregistered_task_execution_on_redelivery(
         with caplog.at_level(logging.WARNING):
             await worker_b.run_until_finished()
 
-    assert (
-        "Task function 'test_task' is not registered with the current docket"
-        in caplog.text
-    )
+    # Default fallback logs warning and ACKs the message
+    assert "Unknown task 'test_task' received - dropping" in caplog.text
+    assert "Register via CLI (--tasks your.module:tasks)" in caplog.text
 
 
 builtin_tasks = {function.__name__ for function in standard_tasks}

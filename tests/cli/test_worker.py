@@ -81,6 +81,36 @@ async def test_worker_command(
     assert "trace" in result.output
 
 
+async def test_worker_command_with_fallback_task(
+    docket: Docket,
+):
+    """Should accept --fallback-task option and use it for unknown tasks"""
+
+    # Schedule a task that won't be registered with the worker
+    async def unregistered_task() -> None:
+        pass  # pragma: no cover
+
+    docket.register(unregistered_task)
+    await docket.add(unregistered_task)()
+    docket.tasks.pop("unregistered_task")
+
+    # Use the default fallback from docket.worker
+    result = await run_cli(
+        "worker",
+        "--until-finished",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "--fallback-task",
+        "docket.worker:default_fallback_task",
+    )
+    assert result.exit_code == 0
+
+    assert "Starting worker" in result.output
+    assert "Unknown task 'unregistered_task'" in result.output
+
+
 async def test_rich_logging_format(docket: Docket):
     """Should use rich formatting for logs by default"""
     await docket.add(trace)("hello")

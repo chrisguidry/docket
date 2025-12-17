@@ -340,6 +340,18 @@ def worker(
             envvar="DOCKET_WORKER_METRICS_PORT",
         ),
     ] = None,
+    fallback_task: Annotated[
+        str | None,
+        typer.Option(
+            "--fallback-task",
+            help=(
+                "Dotted path to a fallback task for unknown functions "
+                "(e.g., myapp.tasks:my_fallback). Receives original args/kwargs "
+                "and supports full dependency injection."
+            ),
+            envvar="DOCKET_FALLBACK_TASK",
+        ),
+    ] = None,
 ) -> None:
     asyncio.run(
         Worker.run(
@@ -357,6 +369,7 @@ def worker(
             healthcheck_port=healthcheck_port,
             metrics_port=metrics_port,
             tasks=tasks,
+            fallback_task=fallback_task,
         )
     )
 
@@ -665,7 +678,7 @@ def get_task_stats(
 
     # Count running tasks by function
     for execution in snapshot.running:
-        func_name = execution.function.__name__
+        func_name = execution.function_name
         if func_name not in stats:
             stats[func_name] = {
                 "running": 0,
@@ -694,7 +707,7 @@ def get_task_stats(
 
     # Count future tasks by function
     for execution in snapshot.future:
-        func_name = execution.function.__name__
+        func_name = execution.function_name
         if func_name not in stats:
             stats[func_name] = {
                 "running": 0,
@@ -793,7 +806,7 @@ def snapshot(
     for execution in snapshot.running:
         table.add_row(
             relative(execution.when),
-            execution.function.__name__,
+            execution.function_name,
             execution.key,
             execution.worker,
             relative(execution.started),
@@ -802,7 +815,7 @@ def snapshot(
     for execution in snapshot.future:
         table.add_row(
             relative(execution.when),
-            execution.function.__name__,
+            execution.function_name,
             execution.key,
             "",
             "",

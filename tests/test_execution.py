@@ -143,3 +143,26 @@ async def test_execution_key_is_immutable(docket: Docket):
 
     with pytest.raises(AttributeError):
         execution.key = "new-key"  # type: ignore[misc]
+
+
+async def test_execution_from_message_without_fallback_raises_for_unknown_task(
+    docket: Docket,
+):
+    """Execution.from_message should raise ValueError when task is unknown and no fallback."""
+    import cloudpickle  # type: ignore[import-untyped]
+
+    # Create a message for a task that isn't registered
+    message = {
+        b"function": b"unknown_task",
+        b"args": cloudpickle.dumps(()),  # pyright: ignore[reportUnknownMemberType]
+        b"kwargs": cloudpickle.dumps({}),  # pyright: ignore[reportUnknownMemberType]
+        b"when": b"2024-01-01T00:00:00+00:00",
+        b"key": b"test-key",
+        b"attempt": b"1",
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        await Execution.from_message(docket, message, redelivered=False)
+
+    assert "unknown_task" in str(exc_info.value)
+    assert "not registered" in str(exc_info.value)

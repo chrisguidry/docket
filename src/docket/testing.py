@@ -33,7 +33,7 @@ def _matches_criteria(
     """Check if an execution matches the given criteria."""
     # Check function name
     function_name = function if isinstance(function, str) else function.__name__
-    if execution.function.__name__ != function_name:
+    if execution.function_name != function_name:
         return False
 
     # Check key if specified
@@ -120,7 +120,7 @@ async def assert_task_scheduled(
 
     # Show what we found instead
     found_tasks = [
-        f"  - {e.function.__name__}(args={e.args!r}, kwargs={e.kwargs!r}, key={e.key!r})"
+        f"  - {e.function_name}(args={e.args!r}, kwargs={e.kwargs!r}, key={e.key!r})"
         for e in all_tasks
     ]
     found_str = "\n".join(found_tasks)
@@ -165,7 +165,7 @@ async def assert_task_not_scheduled(
             function_name = function if isinstance(function, str) else function.__name__
             raise AssertionError(
                 f"Task {function_name} found but should not be scheduled\n"
-                f"Found: {execution.function.__name__}(args={execution.args!r}, "
+                f"Found: {execution.function_name}(args={execution.args!r}, "
                 f"kwargs={execution.kwargs!r}, key={execution.key!r})"
             )
 
@@ -200,7 +200,7 @@ async def assert_task_count(
         function_desc = "all tasks"
     else:
         function_name = function if isinstance(function, str) else function.__name__
-        actual_count = sum(1 for e in all_tasks if e.function.__name__ == function_name)
+        actual_count = sum(1 for e in all_tasks if e.function_name == function_name)
         function_desc = f"tasks for {function_name}"
 
     if actual_count != count:
@@ -226,7 +226,7 @@ async def assert_no_tasks(docket: Docket) -> None:
 
     if all_tasks:
         found_tasks = [
-            f"  - {e.function.__name__}(args={e.args!r}, kwargs={e.kwargs!r}, key={e.key!r})"
+            f"  - {e.function_name}(args={e.args!r}, kwargs={e.kwargs!r}, key={e.key!r})"
             for e in all_tasks
         ]
         found_str = "\n".join(found_tasks)
