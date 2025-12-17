@@ -375,7 +375,7 @@ async def test_lease_renewal_recovers_from_redis_error(
 
     assert task_completed, "Task should complete despite renewal error"
     assert xclaim_calls >= 2, "Should have retried renewal after error"
-    assert "Failed to renew message leases" in caplog.text
+    assert "Failed to renew leases" in caplog.text
 
 
 async def test_lease_renewal_exits_cleanly_with_no_active_tasks(docket: Docket):

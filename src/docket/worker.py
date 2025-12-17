@@ -17,6 +17,7 @@ if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
 
 from opentelemetry import trace
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from opentelemetry.trace import Status, StatusCode, Tracer
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -62,12 +63,23 @@ from .instrumentation import (
     metrics_server,
 )
 
-from opentelemetry.instrumentation.utils import suppress_instrumentation
-
 # Delay before retrying a task blocked by concurrency limits
 # Must be larger than redelivery_timeout to ensure atomic reschedule+ACK completes
 # before Redis would consider redelivering the message
 CONCURRENCY_BLOCKED_RETRY_DELAY = timedelta(milliseconds=100)
+
+# Lease renewal happens this many times per redelivery_timeout period.
+# Concurrency slot TTLs are set to this many redelivery_timeout periods.
+# A factor of 4 means we renew 4x per period and TTLs last 4 periods.
+LEASE_RENEWAL_FACTOR = 4
+
+# Lock timeout for coordinating automatic perpetual task scheduling at startup.
+# If a worker crashes while holding this lock, it expires after this many seconds.
+AUTOMATIC_PERPETUAL_LOCK_TIMEOUT_SECONDS = 10
+
+# Minimum TTL in seconds for Redis keys to avoid immediate expiration when
+# redelivery_timeout is very small (e.g., in tests with 200ms timeouts).
+MINIMUM_TTL_SECONDS = 1
 
 
 class ConcurrencyBlocked(Exception):
@@ -153,7 +165,10 @@ class Worker:
 
     async def __aenter__(self) -> Self:
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
-        self._execution_counts = {}
+        self._execution_counts: dict[str, int] = {}
+        # Track concurrency slots for active tasks so we can refresh them during
+        # lease renewal. Maps execution.key → (concurrency_key, task_key)
+        self._concurrency_slots: dict[str, tuple[str, str]] = {}
         return self
 
     async def __aexit__(
@@ -163,6 +178,7 @@ class Worker:
         traceback: TracebackType | None,
     ) -> None:
         del self._execution_counts
+        del self._concurrency_slots
 
         self._heartbeat_task.cancel()
         try:
@@ -628,12 +644,17 @@ class Worker:
         active_messages: dict[asyncio.Task[None], RedisMessageID],
         worker_stopping: asyncio.Event,
     ) -> None:
-        """Periodically renew leases on messages being processed.
+        """Periodically renew leases on messages and concurrency slots.
 
         Calls XCLAIM with idle=0 to reset the message's idle time, preventing
         XAUTOCLAIM from reclaiming it while we're still processing.
+
+        Also refreshes concurrency slot timestamps to prevent them from being
+        garbage collected while tasks are still running.
         """
-        renewal_interval = self.redelivery_timeout.total_seconds() / 4
+        renewal_interval = (
+            self.redelivery_timeout.total_seconds() / LEASE_RENEWAL_FACTOR
+        )
 
         while not worker_stopping.is_set():  # pragma: no branch
             try:
@@ -647,27 +668,48 @@ class Worker:
 
             # Snapshot to avoid concurrent modification with main loop
             message_ids = list(active_messages.values())
-            if not message_ids:
+            concurrency_slots = list(self._concurrency_slots.values())
+            if not message_ids and not concurrency_slots:
                 continue
 
             try:
                 with self._maybe_suppress_instrumentation():
-                    await redis.xclaim(
-                        name=self.docket.stream_key,
-                        groupname=self.docket.worker_group_name,
-                        consumername=self.name,
-                        min_idle_time=0,
-                        message_ids=message_ids,
-                        idle=0,
-                    )
+                    # Renew message leases
+                    if message_ids:  # pragma: no branch
+                        await redis.xclaim(
+                            name=self.docket.stream_key,
+                            groupname=self.docket.worker_group_name,
+                            consumername=self.name,
+                            min_idle_time=0,
+                            message_ids=message_ids,
+                            idle=0,
+                        )
+
+                    # Refresh concurrency slot timestamps and TTLs
+                    if concurrency_slots:
+                        current_time = datetime.now(timezone.utc).timestamp()
+                        key_ttl = max(
+                            MINIMUM_TTL_SECONDS,
+                            int(
+                                self.redelivery_timeout.total_seconds()
+                                * LEASE_RENEWAL_FACTOR
+                            ),
+                        )
+                        async with redis.pipeline() as pipe:
+                            for concurrency_key, task_key in concurrency_slots:
+                                pipe.zadd(concurrency_key, {task_key: current_time})  # type: ignore
+                                pipe.expire(concurrency_key, key_ttl)  # type: ignore
+                            await pipe.execute()
             except Exception:
-                logger.warning("Failed to renew message leases", exc_info=True)
+                logger.warning("Failed to renew leases", exc_info=True)
 
     async def _schedule_all_automatic_perpetual_tasks(self) -> None:
         async with self.docket.redis() as redis:
             try:
                 async with redis.lock(
-                    f"{self.docket.name}:perpetual:lock", timeout=10, blocking=False
+                    f"{self.docket.name}:perpetual:lock",
+                    timeout=AUTOMATIC_PERPETUAL_LOCK_TIMEOUT_SECONDS,
+                    blocking=False,
                 ):
                     for task_function in self.docket.tasks.values():
                         perpetual = get_single_dependency_parameter_of_type(
@@ -1013,7 +1055,9 @@ class Worker:
                             pipeline.sadd(self.worker_tasks_set(self.name), *task_names)
                             pipeline.expire(
                                 self.worker_tasks_set(self.name),
-                                max(maximum_age, timedelta(seconds=1)),
+                                max(
+                                    maximum_age, timedelta(seconds=MINIMUM_TTL_SECONDS)
+                                ),
                             )
 
                             await pipeline.execute()
@@ -1061,9 +1105,10 @@ class Worker:
         is safe. If the message is NOT a redelivery and a slot already exists,
         we block to prevent duplicate execution.
 
-        As a safety net, very old slots (>5 minutes) are garbage collected to
-        handle edge cases like workers that crashed after ACKing but before
-        releasing their slot.
+        Slots are refreshed during lease renewal (in _renew_leases) every
+        redelivery_timeout/4. If all slots are full, we scavenge any slot older
+        than redelivery_timeout (meaning it hasn't been refreshed and the worker
+        must be dead).
         """
         # Check if task has a concurrency limit dependency
         concurrency_limit = get_single_dependency_parameter_of_type(
@@ -1086,18 +1131,17 @@ class Worker:
         )
 
         # Lua script for atomic concurrency slot management.
-        # Slot takeover is based on redelivery (via XAUTOCLAIM), not timestamps.
-        # Timestamps are only used for garbage collection of orphaned slots.
+        # Slot takeover for same task is based on redelivery (via XAUTOCLAIM).
+        # Slots are kept alive by periodic refresh in _renew_leases.
+        # When full, we scavenge stale slots (older than redelivery_timeout).
         lua_script = """
         local key = KEYS[1]
         local max_concurrent = tonumber(ARGV[1])
         local task_key = ARGV[2]
         local current_time = tonumber(ARGV[3])
         local is_redelivery = tonumber(ARGV[4])
-        local gc_timeout = tonumber(ARGV[5])
-
-        -- Garbage collect very old slots (safety net for edge cases)
-        redis.call('ZREMRANGEBYSCORE', key, 0, current_time - gc_timeout)
+        local stale_threshold = tonumber(ARGV[5])
+        local key_ttl = tonumber(ARGV[6])
 
         -- Check if this task already has a slot (from a previous delivery attempt)
         local slot_time = redis.call('ZSCORE', key, task_key)
@@ -1106,6 +1150,7 @@ class Worker:
                 -- Redelivery: XAUTOCLAIM reclaimed this message because the
                 -- original worker stopped renewing. Safe to take over the slot.
                 redis.call('ZADD', key, current_time, task_key)
+                redis.call('EXPIRE', key, key_ttl)
                 return 1
             else
                 -- Not a redelivery but slot exists: another delivery is executing
@@ -1116,16 +1161,30 @@ class Worker:
         -- No existing slot for this task - check if we can acquire a new one
         if redis.call('ZCARD', key) < max_concurrent then
             redis.call('ZADD', key, current_time, task_key)
+            redis.call('EXPIRE', key, key_ttl)
             return 1
-        else
-            return 0
         end
+
+        -- All slots are full. Scavenge any stale slot (not refreshed recently).
+        -- Slots are refreshed every redelivery_timeout/4, so anything older than
+        -- redelivery_timeout hasn't been refreshed and the worker must be dead.
+        local stale_slots = redis.call('ZRANGEBYSCORE', key, 0, stale_threshold, 'LIMIT', 0, 1)
+        if #stale_slots > 0 then
+            redis.call('ZREM', key, stale_slots[1])
+            redis.call('ZADD', key, current_time, task_key)
+            redis.call('EXPIRE', key, key_ttl)
+            return 1
+        end
+
+        return 0
         """
 
         current_time = datetime.now(timezone.utc).timestamp()
-        # GC timeout is purely for cleaning up orphaned slots (e.g., worker crashed
-        # after ACK but before slot release). 5 minutes is conservative.
-        gc_timeout = 300.0
+        stale_threshold = current_time - self.redelivery_timeout.total_seconds()
+        key_ttl = max(
+            MINIMUM_TTL_SECONDS,
+            int(self.redelivery_timeout.total_seconds() * LEASE_RENEWAL_FACTOR),
+        )
 
         result = await redis.eval(  # type: ignore
             lua_script,
@@ -1135,15 +1194,24 @@ class Worker:
             execution.key,
             current_time,
             1 if execution.redelivered else 0,
-            gc_timeout,
+            stale_threshold,
+            key_ttl,
         )
 
-        return bool(result)
+        acquired = bool(result)
+        if acquired:
+            # Track the slot so we can refresh it during lease renewal
+            self._concurrency_slots[execution.key] = (concurrency_key, execution.key)
+
+        return acquired
 
     async def _release_concurrency_slot(
         self, redis: Redis, execution: Execution
     ) -> None:
         """Release a concurrency slot when task completes."""
+        # Clean up tracking regardless of whether we actually release a slot
+        self._concurrency_slots.pop(execution.key, None)
+
         # Check if task has a concurrency limit dependency
         concurrency_limit = get_single_dependency_parameter_of_type(
             execution.function, ConcurrencyLimit
@@ -1163,8 +1231,14 @@ class Worker:
             f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
         )
 
-        # Remove this task from the sorted set
-        await redis.zrem(concurrency_key, execution.key)  # type: ignore
+        # Remove this task from the sorted set and delete the key if empty
+        lua_script = """
+        redis.call('ZREM', KEYS[1], ARGV[1])
+        if redis.call('ZCARD', KEYS[1]) == 0 then
+            redis.call('DEL', KEYS[1])
+        end
+        """
+        await redis.eval(lua_script, 1, concurrency_key, execution.key)  # type: ignore
 
 
 def ms(seconds: float) -> str:

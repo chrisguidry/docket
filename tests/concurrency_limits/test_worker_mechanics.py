@@ -288,8 +288,13 @@ async def test_worker_concurrency_missing_argument_in_can_start(docket: Docket):
             assert result is True
 
 
-async def test_stale_concurrency_slots_are_cleaned_up(docket: Docket):
-    """Test that stale slots from crashed workers are cleaned up."""
+async def test_stale_concurrency_slots_are_scavenged_when_full(docket: Docket):
+    """Test that stale slots are scavenged on-demand when concurrency is full.
+
+    Slots are only scavenged when a new task needs one and all slots are taken.
+    This is a distributed approach - each worker cleans up as needed rather than
+    proactive garbage collection.
+    """
     task_completed = False
 
     async def task_with_concurrency(
@@ -304,10 +309,12 @@ async def test_stale_concurrency_slots_are_cleaned_up(docket: Docket):
     # Manually insert stale slots into the concurrency sorted set.
     # These simulate slots from workers that crashed without releasing.
     concurrency_key = f"{docket.name}:concurrency:customer_id:123"
-    stale_timestamp = datetime.now(timezone.utc).timestamp() - 400  # >slot_timeout old
+    stale_timestamp = (
+        datetime.now(timezone.utc).timestamp() - 400
+    )  # >redelivery_timeout old
 
     async with docket.redis() as redis:
-        # Add two stale slots that would block new tasks if not cleaned up
+        # Add two stale slots that fill up max_concurrent
         await redis.zadd(concurrency_key, {"stale_task_1": stale_timestamp})  # type: ignore
         await redis.zadd(concurrency_key, {"stale_task_2": stale_timestamp})  # type: ignore
 
@@ -315,7 +322,7 @@ async def test_stale_concurrency_slots_are_cleaned_up(docket: Docket):
         count_before = await redis.zcard(concurrency_key)  # type: ignore
         assert count_before == 2
 
-    # Run a task - this should clean up stale slots and execute
+    # Run a task - this should scavenge ONE stale slot and execute
     await docket.add(task_with_concurrency)(customer_id=123)
 
     async with Worker(docket) as worker:
@@ -323,10 +330,11 @@ async def test_stale_concurrency_slots_are_cleaned_up(docket: Docket):
 
     assert task_completed
 
-    # Verify stale slots were cleaned up (only our task's slot should remain briefly,
-    # but it gets released after completion, so the set should be empty or have 0-1 entries)
+    # Verify: one stale slot was scavenged, task completed and released its slot,
+    # so one stale slot should remain (we only scavenge what we need)
     async with docket.redis() as redis:
         remaining = await redis.zrange(concurrency_key, 0, -1)  # type: ignore
-        # Stale entries should be gone - they were older than slot_timeout
-        assert b"stale_task_1" not in remaining
-        assert b"stale_task_2" not in remaining
+        # One stale slot should remain (the other was scavenged)
+        assert len(remaining) == 1
+        # The remaining slot should be one of the stale ones
+        assert remaining[0] in [b"stale_task_1", b"stale_task_2"]
