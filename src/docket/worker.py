@@ -1051,7 +1051,20 @@ class Worker:
             await asyncio.sleep(self.docket.heartbeat_interval.total_seconds())
 
     async def _can_start_task(self, redis: Redis, execution: Execution) -> bool:
-        """Check if a task can start based on concurrency limits."""
+        """Check if a task can start based on concurrency limits.
+
+        Uses a Redis sorted set to track concurrency slots per task. Each entry
+        is keyed by task_key with the timestamp as the score.
+
+        When XAUTOCLAIM reclaims a message (because the original worker stopped
+        renewing its lease), execution.redelivered=True signals that slot takeover
+        is safe. If the message is NOT a redelivery and a slot already exists,
+        we block to prevent duplicate execution.
+
+        As a safety net, very old slots (>5 minutes) are garbage collected to
+        handle edge cases like workers that crashed after ACKing but before
+        releasing their slot.
+        """
         # Check if task has a concurrency limit dependency
         concurrency_limit = get_single_dependency_parameter_of_type(
             execution.function, ConcurrencyLimit
@@ -1072,35 +1085,31 @@ class Worker:
             f"{scope}:concurrency:{concurrency_limit.argument_name}:{argument_value}"
         )
 
-        # Use Redis sorted set to track concurrency. Each entry is keyed by
-        # task_key with the timestamp as the score.
-        #
-        # The slot_timeout prevents duplicate execution when xautoclaim reclaims
-        # a message from one worker and delivers it to another while the original
-        # is still running. If the slot is "fresh" (updated within slot_timeout),
-        # we block the new delivery. If it's stale (worker probably crashed), we
-        # allow takeover.
+        # Lua script for atomic concurrency slot management.
+        # Slot takeover is based on redelivery (via XAUTOCLAIM), not timestamps.
+        # Timestamps are only used for garbage collection of orphaned slots.
         lua_script = """
         local key = KEYS[1]
         local max_concurrent = tonumber(ARGV[1])
         local task_key = ARGV[2]
         local current_time = tonumber(ARGV[3])
-        local slot_timeout = tonumber(ARGV[4])
+        local is_redelivery = tonumber(ARGV[4])
+        local gc_timeout = tonumber(ARGV[5])
 
-        -- Clean up stale slots from crashed workers or orphaned tasks
-        redis.call('ZREMRANGEBYSCORE', key, 0, current_time - slot_timeout)
+        -- Garbage collect very old slots (safety net for edge cases)
+        redis.call('ZREMRANGEBYSCORE', key, 0, current_time - gc_timeout)
 
         -- Check if this task already has a slot (from a previous delivery attempt)
         local slot_time = redis.call('ZSCORE', key, task_key)
         if slot_time then
-            local age = current_time - slot_time
-            if age < slot_timeout then
-                -- Fresh slot - another delivery is still executing this task
-                return 0
-            else
-                -- Stale slot - original worker probably crashed, allow takeover
+            if is_redelivery == 1 then
+                -- Redelivery: XAUTOCLAIM reclaimed this message because the
+                -- original worker stopped renewing. Safe to take over the slot.
                 redis.call('ZADD', key, current_time, task_key)
                 return 1
+            else
+                -- Not a redelivery but slot exists: another delivery is executing
+                return 0
             end
         end
 
@@ -1114,10 +1123,9 @@ class Worker:
         """
 
         current_time = datetime.now(timezone.utc).timestamp()
-        # Slot timeout needs to be longer than redelivery_timeout so that when
-        # xautoclaim reclaims a message, we can tell if the original is still
-        # running (fresh) vs crashed (stale).
-        slot_timeout = self.redelivery_timeout.total_seconds() + 5
+        # GC timeout is purely for cleaning up orphaned slots (e.g., worker crashed
+        # after ACK but before slot release). 5 minutes is conservative.
+        gc_timeout = 300.0
 
         result = await redis.eval(  # type: ignore
             lua_script,
@@ -1126,7 +1134,8 @@ class Worker:
             str(concurrency_limit.max_concurrent),
             execution.key,
             current_time,
-            slot_timeout,
+            1 if execution.redelivered else 0,
+            gc_timeout,
         )
 
         return bool(result)

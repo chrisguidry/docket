@@ -2,6 +2,8 @@ import asyncio
 import time
 from datetime import timedelta
 
+import pytest
+
 from docket import ConcurrencyLimit, CurrentExecution, Docket, Timeout, Worker
 from docket.execution import Execution
 
@@ -331,3 +333,65 @@ async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
             "Found unacknowledged messages - cleanup failed"
         )
         assert await redis.xlen(docket.stream_key) == 0
+
+
+async def test_concurrency_slot_takeover_on_redelivery(docket: Docket):
+    """Concurrency slots can be taken over when a message is redelivered.
+
+    When XAUTOCLAIM reclaims a message, the new worker receives is_redelivery=True.
+    This signals that the original worker stopped renewing leases, so the slot
+    takeover is safe. Without this, the new worker would be blocked by the
+    existing slot from the crashed worker.
+    """
+    executions: list[tuple[str, int]] = []
+
+    async def task_with_concurrency(
+        task_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "task_id",
+            max_concurrent=1,
+        ),
+    ) -> None:
+        executions.append(("start", task_id))
+        await asyncio.sleep(0.1)
+        executions.append(("end", task_id))
+
+    await docket.add(task_with_concurrency, key="task")(task_id=1)
+
+    # Worker A claims the message but crashes during execution (before _execute)
+    async with Worker(
+        docket,
+        name="worker-a",
+        redelivery_timeout=timedelta(milliseconds=100),
+        minimum_check_interval=timedelta(milliseconds=10),
+        scheduling_resolution=timedelta(milliseconds=10),
+    ) as worker_a:
+        # Simulate crash by failing in _execute
+        async def crashing_execute(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("Worker A crashed!")
+
+        worker_a._execute = crashing_execute  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+
+        with pytest.raises(RuntimeError, match="Worker A crashed"):
+            await worker_a.run_until_finished()
+
+    # Task should not have executed
+    assert executions == [], f"Task executed before crash: {executions}"
+
+    # Wait for redelivery timeout so XAUTOCLAIM can reclaim the message
+    await asyncio.sleep(0.15)
+
+    # Worker B should get the redelivered message and be able to take over the slot
+    async with Worker(
+        docket,
+        name="worker-b",
+        redelivery_timeout=timedelta(milliseconds=100),
+        minimum_check_interval=timedelta(milliseconds=10),
+        scheduling_resolution=timedelta(milliseconds=10),
+    ) as worker_b:
+        await worker_b.run_until_finished()
+
+    # Task should have executed once on worker B
+    assert executions == [("start", 1), ("end", 1)], (
+        f"Expected one complete execution, got {executions}"
+    )
