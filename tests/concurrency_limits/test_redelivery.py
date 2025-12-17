@@ -2,7 +2,6 @@ import asyncio
 import time
 from datetime import timedelta
 
-import pytest
 
 from docket import ConcurrencyLimit, CurrentExecution, Docket, Timeout, Worker
 from docket.execution import Execution
@@ -342,6 +341,14 @@ async def test_concurrency_slot_takeover_on_redelivery(docket: Docket):
     This signals that the original worker stopped renewing leases, so the slot
     takeover is safe. Without this, the new worker would be blocked by the
     existing slot from the crashed worker.
+
+    This test manually sets up the "crashed worker" scenario:
+    1. Add task via docket.add (creates proper message format)
+    2. Have a fake consumer claim the message (simulating Worker A)
+    3. Insert a concurrency slot (simulating Worker A acquired it before crashing)
+    4. Wait for message to become stale (idle > redelivery_timeout)
+    5. Worker B runs XAUTOCLAIM, gets message with is_redelivery=True
+    6. Worker B should take over the existing slot and execute successfully
     """
     executions: list[tuple[str, int]] = []
 
@@ -353,35 +360,41 @@ async def test_concurrency_slot_takeover_on_redelivery(docket: Docket):
         ),
     ) -> None:
         executions.append(("start", task_id))
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
         executions.append(("end", task_id))
 
+    # Add task properly so message format is correct
     await docket.add(task_with_concurrency, key="task")(task_id=1)
 
-    # Worker A claims the message but crashes during execution (before _execute)
-    async with Worker(
-        docket,
-        name="worker-a",
-        redelivery_timeout=timedelta(milliseconds=100),
-        minimum_check_interval=timedelta(milliseconds=10),
-        scheduling_resolution=timedelta(milliseconds=10),
-    ) as worker_a:
-        # Simulate crash by failing in _execute
-        async def crashing_execute(*args: object, **kwargs: object) -> None:
-            raise RuntimeError("Worker A crashed!")
+    # Manually set up the crashed worker scenario
+    async with docket.redis() as redis:
+        # Have a fake "crashed worker" claim the message (puts it in pending)
+        # This simulates Worker A claiming the message before crashing
+        await redis.xreadgroup(
+            groupname=docket.worker_group_name,
+            consumername="crashed-worker",
+            streams={docket.stream_key: ">"},
+            count=1,
+        )
 
-        worker_a._execute = crashing_execute  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+        # Insert concurrency slot as if crashed worker acquired it
+        # This is the key part: slot exists but worker is dead
+        concurrency_key = f"{docket.name}:concurrency:task_id:1"
+        slot_time = time.time()
+        await redis.zadd(concurrency_key, {"task": slot_time})
+        # Set TTL to avoid key leak detection (matches what worker would set)
+        await redis.expire(concurrency_key, 10)
 
-        with pytest.raises(RuntimeError, match="Worker A crashed"):
-            await worker_a.run_until_finished()
+        # Verify setup: message is pending, slot exists
+        pending = await redis.xpending(docket.stream_key, docket.worker_group_name)
+        assert pending["pending"] == 1, "Message should be pending"
+        slot_exists = await redis.zscore(concurrency_key, "task")
+        assert slot_exists is not None, "Concurrency slot should exist"
 
-    # Task should not have executed
-    assert executions == [], f"Task executed before crash: {executions}"
-
-    # Wait for redelivery timeout so XAUTOCLAIM can reclaim the message
+    # Wait for message to become stale (idle > redelivery_timeout)
     await asyncio.sleep(0.15)
 
-    # Worker B should get the redelivered message and be able to take over the slot
+    # Worker B should XAUTOCLAIM the stale message and take over the slot
     async with Worker(
         docket,
         name="worker-b",
@@ -391,7 +404,13 @@ async def test_concurrency_slot_takeover_on_redelivery(docket: Docket):
     ) as worker_b:
         await worker_b.run_until_finished()
 
-    # Task should have executed once on worker B
+    # Task should have executed once - slot takeover succeeded
     assert executions == [("start", 1), ("end", 1)], (
-        f"Expected one complete execution, got {executions}"
+        f"Expected one complete execution via slot takeover, got {executions}"
     )
+
+    # Verify cleanup: slot should be released after task completion
+    async with docket.redis() as redis:
+        concurrency_key = f"{docket.name}:concurrency:task_id:1"
+        remaining = await redis.zcard(concurrency_key)
+        assert remaining == 0, "Concurrency slot should be released after completion"

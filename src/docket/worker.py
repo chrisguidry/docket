@@ -167,8 +167,8 @@ class Worker:
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
         self._execution_counts: dict[str, int] = {}
         # Track concurrency slots for active tasks so we can refresh them during
-        # lease renewal. Maps execution.key → (concurrency_key, task_key)
-        self._concurrency_slots: dict[str, tuple[str, str]] = {}
+        # lease renewal. Maps execution.key → concurrency_key
+        self._concurrency_slots: dict[str, str] = {}
         return self
 
     async def __aexit__(
@@ -668,7 +668,7 @@ class Worker:
 
             # Snapshot to avoid concurrent modification with main loop
             message_ids = list(active_messages.values())
-            concurrency_slots = list(self._concurrency_slots.values())
+            concurrency_slots = dict(self._concurrency_slots)
             if not message_ids and not concurrency_slots:
                 continue
 
@@ -696,7 +696,7 @@ class Worker:
                             ),
                         )
                         async with redis.pipeline() as pipe:
-                            for concurrency_key, task_key in concurrency_slots:
+                            for task_key, concurrency_key in concurrency_slots.items():
                                 pipe.zadd(concurrency_key, {task_key: current_time})  # type: ignore
                                 pipe.expire(concurrency_key, key_ttl)  # type: ignore
                             await pipe.execute()
@@ -1201,7 +1201,7 @@ class Worker:
         acquired = bool(result)
         if acquired:
             # Track the slot so we can refresh it during lease renewal
-            self._concurrency_slots[execution.key] = (concurrency_key, execution.key)
+            self._concurrency_slots[execution.key] = concurrency_key
 
         return acquired
 
