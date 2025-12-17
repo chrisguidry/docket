@@ -53,11 +53,12 @@ jobs:
             pytest-args: ""
           # Memory backend: CLI tests are skipped via pytest skip markers because
           # CLI rejects memory:// URLs. Use separate coverage config to exclude CLI.
+          # Coverage threshold is lower due to pytest-xdist coverage data combination issues.
           - backend:
               name: "Memory (in-memory backend)"
               redis-version: "memory"
               redis-py-version: ">=5"
-            cov-threshold: 98 # CLI tests are excluded from coverage and some lines are only covered by CLI tests
+            cov-threshold: 95
             pytest-args: "--cov-config=.coveragerc-memory"
 
     steps:
