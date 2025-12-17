@@ -319,10 +319,12 @@ class Execution:
         attempt: int,
         trace_context: opentelemetry.context.Context | None = None,
         redelivered: bool = False,
+        function_name: str | None = None,
     ) -> None:
         # Task definition (immutable)
         self._docket = docket
         self._function = function
+        self._function_name = function_name or function.__name__
         self._args = args
         self._kwargs = kwargs
         self._key = key
@@ -373,6 +375,11 @@ class Execution:
         """Unique task identifier."""
         return self._key
 
+    @property
+    def function_name(self) -> str:
+        """Name of the task function (from message, may differ from function.__name__ for fallback tasks)."""
+        return self._function_name
+
     # Scheduling metadata properties
     @property
     def trace_context(self) -> opentelemetry.context.Context | None:
@@ -388,7 +395,7 @@ class Execution:
         return {
             b"key": self.key.encode(),
             b"when": self.when.isoformat().encode(),
-            b"function": self.function.__name__.encode(),
+            b"function": self.function_name.encode(),
             b"args": cloudpickle.dumps(self.args),  # type: ignore[arg-type]
             b"kwargs": cloudpickle.dumps(self.kwargs),  # type: ignore[arg-type]
             b"attempt": str(self.attempt).encode(),
@@ -396,13 +403,19 @@ class Execution:
 
     @classmethod
     async def from_message(
-        cls, docket: "Docket", message: Message, redelivered: bool = False
+        cls,
+        docket: "Docket",
+        message: Message,
+        redelivered: bool = False,
+        fallback_task: TaskFunction | None = None,
     ) -> Self:
         function_name = message[b"function"].decode()
         if not (function := docket.tasks.get(function_name)):
-            raise ValueError(
-                f"Task function {function_name!r} is not registered with the current docket"
-            )
+            if fallback_task is None:
+                raise ValueError(
+                    f"Task function {function_name!r} is not registered with the current docket"
+                )
+            function = fallback_task
 
         instance = cls(
             docket=docket,
@@ -414,16 +427,17 @@ class Execution:
             attempt=int(message[b"attempt"].decode()),
             trace_context=propagate.extract(message, getter=message_getter),
             redelivered=redelivered,
+            function_name=function_name,
         )
         await instance.sync()
         return instance
 
     def general_labels(self) -> Mapping[str, str]:
-        return {"docket.task": self.function.__name__}
+        return {"docket.task": self.function_name}
 
     def specific_labels(self) -> Mapping[str, str | int]:
         return {
-            "docket.task": self.function.__name__,
+            "docket.task": self.function_name,
             "docket.key": self.key,
             "docket.when": self.when.isoformat(),
             "docket.attempt": self.attempt,
@@ -436,7 +450,7 @@ class Execution:
 
     def call_repr(self) -> str:
         arguments: list[str] = []
-        function_name = self.function.__name__
+        function_name = self.function_name
 
         signature = get_signature(self.function)
         logged_parameters = Logged.annotated_parameters(signature)

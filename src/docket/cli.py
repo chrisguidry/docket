@@ -340,6 +340,18 @@ def worker(
             envvar="DOCKET_WORKER_METRICS_PORT",
         ),
     ] = None,
+    fallback_task: Annotated[
+        str | None,
+        typer.Option(
+            "--fallback-task",
+            help=(
+                "Dotted path to a fallback task for unknown functions "
+                "(e.g., myapp.tasks:my_fallback). Receives original args/kwargs "
+                "and supports full dependency injection."
+            ),
+            envvar="DOCKET_FALLBACK_TASK",
+        ),
+    ] = None,
 ) -> None:
     asyncio.run(
         Worker.run(
@@ -357,6 +369,7 @@ def worker(
             healthcheck_port=healthcheck_port,
             metrics_port=metrics_port,
             tasks=tasks,
+            fallback_task=fallback_task,
         )
     )
 

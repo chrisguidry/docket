@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import importlib
 import logging
 import os
 import signal
@@ -25,10 +26,12 @@ from typing_extensions import Self
 
 from .dependencies import (
     ConcurrencyLimit,
+    CurrentExecution,
     Dependency,
     FailedDependency,
     Perpetual,
     Retry,
+    TaskLogger,
     Timeout,
     get_single_dependency_of_type,
     get_single_dependency_parameter_of_type,
@@ -41,7 +44,7 @@ from .docket import (
     RedisMessageID,
     RedisReadGroupResponse,
 )
-from .execution import compact_signature, get_signature
+from .execution import TaskFunction, compact_signature, get_signature
 
 # Run class has been consolidated into Execution
 from .instrumentation import (
@@ -80,6 +83,20 @@ AUTOMATIC_PERPETUAL_LOCK_TIMEOUT_SECONDS = 10
 # Minimum TTL in seconds for Redis keys to avoid immediate expiration when
 # redelivery_timeout is very small (e.g., in tests with 200ms timeouts).
 MINIMUM_TTL_SECONDS = 1
+
+
+async def default_fallback_task(
+    *args: Any,
+    execution: Execution = CurrentExecution(),
+    logger: logging.LoggerAdapter[logging.Logger] = TaskLogger(),
+    **kwargs: Any,
+) -> None:
+    """Default fallback that logs a warning and completes the task."""
+    logger.warning(
+        "Unknown task %r received - dropping. "
+        "Register via CLI (--tasks your.module) or API (docket.register(func)).",
+        execution.function_name,
+    )
 
 
 class ConcurrencyBlocked(Exception):
@@ -122,6 +139,7 @@ class Worker:
     scheduling_resolution: timedelta
     schedule_automatic_tasks: bool
     enable_internal_instrumentation: bool
+    fallback_task: TaskFunction
 
     def __init__(
         self,
@@ -134,6 +152,7 @@ class Worker:
         scheduling_resolution: timedelta = timedelta(milliseconds=250),
         schedule_automatic_tasks: bool = True,
         enable_internal_instrumentation: bool = False,
+        fallback_task: TaskFunction | None = None,
     ) -> None:
         self.docket = docket
         self.name = name or f"{socket.gethostname()}#{os.getpid()}"
@@ -144,6 +163,7 @@ class Worker:
         self.scheduling_resolution = scheduling_resolution
         self.schedule_automatic_tasks = schedule_automatic_tasks
         self.enable_internal_instrumentation = enable_internal_instrumentation
+        self.fallback_task = fallback_task or default_fallback_task
 
     @contextmanager
     def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
@@ -217,6 +237,7 @@ class Worker:
         healthcheck_port: int | None = None,
         metrics_port: int | None = None,
         tasks: list[str] = ["docket.tasks:standard_tasks"],
+        fallback_task: str | None = None,
     ) -> None:
         """Run a worker as the main entry point (CLI).
 
@@ -226,6 +247,13 @@ class Worker:
         Worker.run_until_finished() directly - those methods do not install
         signal handlers and rely on the framework to handle shutdown signals.
         """
+        # Parse fallback_task string if provided (module:function format)
+        resolved_fallback_task: TaskFunction | None = None
+        if fallback_task:
+            module_name, _, member_name = fallback_task.rpartition(":")
+            module = importlib.import_module(module_name)
+            resolved_fallback_task = getattr(module, member_name)
+
         with (
             healthcheck_server(port=healthcheck_port),
             metrics_server(port=metrics_port),
@@ -249,6 +277,7 @@ class Worker:
                         scheduling_resolution=scheduling_resolution,
                         schedule_automatic_tasks=schedule_automatic_tasks,
                         enable_internal_instrumentation=enable_internal_instrumentation,
+                        fallback_task=resolved_fallback_task,
                     ) as worker
                 ):
                     # Install signal handlers for graceful shutdown.
@@ -424,18 +453,13 @@ class Worker:
             message_id: RedisMessageID,
             message: RedisMessage,
             is_redelivery: bool = False,
-        ) -> bool:
-            try:
-                execution = await Execution.from_message(
-                    self.docket, message, redelivered=is_redelivery
-                )
-            except ValueError as e:
-                logger.error(
-                    "Unable to start task: %s",
-                    e,
-                    extra=log_context,
-                )
-                return False
+        ) -> None:
+            execution = await Execution.from_message(
+                self.docket,
+                message,
+                redelivered=is_redelivery,
+                fallback_task=self.fallback_task,
+            )
 
             task = asyncio.create_task(self._execute(execution), name=execution.key)
             active_tasks[task] = message_id
@@ -443,8 +467,6 @@ class Worker:
 
             nonlocal available_slots
             available_slots -= 1
-
-            return True
 
         async def process_completed_tasks() -> None:
             completed_tasks = {task for task in active_tasks if task.done()}
@@ -501,12 +523,7 @@ class Worker:
                             if not message:  # pragma: no cover
                                 continue
 
-                            task_started = await start_task(
-                                message_id, message, is_redelivery
-                            )
-                            if not task_started:
-                                await self._delete_known_task(redis, message)
-                                await ack_message(redis, message_id)
+                            await start_task(message_id, message, is_redelivery)
 
                     if available_slots <= 0:
                         break
