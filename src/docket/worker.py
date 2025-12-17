@@ -334,11 +334,14 @@ class Worker:
         if self.schedule_automatic_tasks:
             await self._schedule_all_automatic_perpetual_tasks()
 
+        active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
+
         scheduler_task = asyncio.create_task(
             self._scheduler_loop(redis, worker_stopping)
         )
-
-        active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
+        lease_renewal_task = asyncio.create_task(
+            self._renew_leases(redis, active_tasks, worker_stopping)
+        )
         task_executions: dict[asyncio.Task[None], Execution] = {}
         available_slots = self.concurrency
 
@@ -509,6 +512,7 @@ class Worker:
 
             worker_stopping.set()
             await scheduler_task
+            await lease_renewal_task
 
     async def _scheduler_loop(
         self,
@@ -607,6 +611,47 @@ class Worker:
                 await asyncio.sleep(self.scheduling_resolution.total_seconds())
 
         logger.debug("Scheduler loop finished", extra=log_context)
+
+    async def _renew_leases(
+        self,
+        redis: Redis,
+        active_messages: dict[asyncio.Task[None], RedisMessageID],
+        worker_stopping: asyncio.Event,
+    ) -> None:
+        """Periodically renew leases on messages being processed.
+
+        Calls XCLAIM with idle=0 to reset the message's idle time, preventing
+        XAUTOCLAIM from reclaiming it while we're still processing.
+        """
+        renewal_interval = self.redelivery_timeout.total_seconds() / 4
+
+        while not worker_stopping.is_set():
+            try:
+                await asyncio.wait_for(
+                    worker_stopping.wait(),
+                    timeout=renewal_interval,
+                )
+                break  # Worker is stopping
+            except asyncio.TimeoutError:
+                pass  # Time to renew leases
+
+            # Snapshot to avoid concurrent modification with main loop
+            message_ids = list(active_messages.values())
+            if not message_ids:
+                continue
+
+            try:
+                with self._maybe_suppress_instrumentation():
+                    await redis.xclaim(
+                        name=self.docket.stream_key,
+                        groupname=self.docket.worker_group_name,
+                        consumername=self.name,
+                        min_idle_time=0,
+                        message_ids=message_ids,
+                        idle=0,
+                    )
+            except Exception:
+                logger.warning("Failed to renew message leases", exc_info=True)
 
     async def _schedule_all_automatic_perpetual_tasks(self) -> None:
         async with self.docket.redis() as redis:
