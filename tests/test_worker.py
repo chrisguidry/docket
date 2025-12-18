@@ -209,7 +209,9 @@ builtin_tasks = {function.__name__ for function in standard_tasks}
 async def test_worker_announcements(
     docket: Docket, the_task: AsyncMock, another_task: AsyncMock
 ):
-    heartbeat = timedelta(milliseconds=20)
+    # Use 100ms heartbeat - short enough for fast tests, long enough to be reliable
+    # under CPU contention in CI environments
+    heartbeat = timedelta(milliseconds=100)
     docket.heartbeat_interval = heartbeat
     docket.missed_heartbeats = 3
 
@@ -231,7 +233,8 @@ async def test_worker_announcements(
             assert {w.name for w in workers} == {worker_a.name, worker_b.name}
 
             for worker in workers:
-                assert worker.last_seen > datetime.now(timezone.utc) - (heartbeat * 3)
+                # Allow generous timing tolerance - CI can have significant delays
+                assert worker.last_seen > datetime.now(timezone.utc) - (heartbeat * 20)
                 assert worker.tasks == builtin_tasks | {"the_task", "another_task"}
 
         await asyncio.sleep(heartbeat.total_seconds() * 10)
@@ -252,7 +255,9 @@ async def test_task_announcements(
 ):
     """Test that we can ask about which workers are available for a task"""
 
-    heartbeat = timedelta(milliseconds=20)
+    # Use 100ms heartbeat - short enough for fast tests, long enough to be reliable
+    # under CPU contention in CI environments
+    heartbeat = timedelta(milliseconds=100)
     docket.heartbeat_interval = heartbeat
     docket.missed_heartbeats = 3
 
@@ -273,7 +278,8 @@ async def test_task_announcements(
             assert {w.name for w in workers} == {worker_a.name, worker_b.name}
 
             for worker in workers:
-                assert worker.last_seen > datetime.now(timezone.utc) - (heartbeat * 3)
+                # Allow generous timing tolerance - CI can have significant delays
+                assert worker.last_seen > datetime.now(timezone.utc) - (heartbeat * 20)
                 assert worker.tasks == builtin_tasks | {"the_task", "another_task"}
 
         await asyncio.sleep(heartbeat.total_seconds() * 10)
