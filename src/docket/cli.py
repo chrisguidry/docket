@@ -234,7 +234,6 @@ def worker(
         typer.Option(
             help="The URL of the Redis server",
             envvar="DOCKET_URL",
-            callback=validate_url,
         ),
     ] = "redis://localhost:6379/0",
     name: Annotated[

@@ -15,12 +15,6 @@ from docket.worker import Worker
 from tests._key_leak_checker import KeyCountChecker
 from tests.cli.run import run_cli
 
-# Skip CLI tests when using memory backend since CLI rejects memory:// URLs
-pytestmark = pytest.mark.skipif(
-    os.environ.get("REDIS_VERSION") == "memory",
-    reason="CLI commands require a persistent Redis backend",
-)
-
 
 @pytest.fixture(autouse=True)
 def reset_logging() -> None:
@@ -81,6 +75,10 @@ async def test_worker_command(
     assert "trace" in result.output
 
 
+@pytest.mark.skipif(
+    os.environ.get("REDIS_VERSION") == "memory",
+    reason="Memory backend doesn't share state across processes",
+)
 async def test_worker_command_with_fallback_task(
     docket: Docket,
 ):
@@ -248,6 +246,10 @@ async def _test_signal_graceful_shutdown(
     assert "↩" in output or "↫" in output, f"Task did not complete\n{output}"
 
 
+@pytest.mark.skipif(
+    os.environ.get("REDIS_VERSION") == "memory",
+    reason="Memory backend doesn't share state across processes",
+)
 async def test_sigterm_gracefully_drains_inflight_tasks(
     docket: Docket, key_leak_checker: KeyCountChecker
 ) -> None:
@@ -260,6 +262,10 @@ async def test_sigterm_gracefully_drains_inflight_tasks(
     await _test_signal_graceful_shutdown(docket, key_leak_checker, signal.SIGTERM)
 
 
+@pytest.mark.skipif(
+    os.environ.get("REDIS_VERSION") == "memory",
+    reason="Memory backend doesn't share state across processes",
+)
 async def test_sigint_gracefully_drains_inflight_tasks(
     docket: Docket, key_leak_checker: KeyCountChecker
 ) -> None:

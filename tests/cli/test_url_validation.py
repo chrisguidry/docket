@@ -6,7 +6,6 @@ from tests.cli.run import run_cli
 @pytest.mark.parametrize(
     "cli_args",
     [
-        ["worker", "--until-finished", "--url", "memory://", "--docket", "test-docket"],
         ["strike", "--url", "memory://", "--docket", "test-docket", "example_task"],
         ["clear", "--url", "memory://", "--docket", "test-docket"],
         ["restore", "--url", "memory://", "--docket", "test-docket", "example_task"],
@@ -57,3 +56,20 @@ def test_valid_urls_accepted(valid_url: str):
     # Should not raise any exceptions - just testing validation logic
     result = validate_url(valid_url)
     assert result == valid_url
+
+
+async def test_worker_accepts_memory_url():
+    """Worker command should accept memory:// URLs for single-process services"""
+    result = await run_cli(
+        "worker",
+        "--until-finished",
+        "--url",
+        "memory://",
+        "--docket",
+        "test-memory-worker",
+    )
+
+    # Should NOT fail with URL validation error
+    assert "not supported" not in result.output.lower()
+    # Exit code 0 means worker ran successfully (no tasks = immediate exit with --until-finished)
+    assert result.exit_code == 0
