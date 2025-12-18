@@ -293,17 +293,22 @@ class Docket:
         finally:
             await asyncio.shield(r.__aexit__(None, None, None))
 
-    def register(self, function: TaskFunction) -> None:
+    def register(self, function: TaskFunction, names: list[str] | None = None) -> None:
         """Register a task with the Docket.
 
         Args:
             function: The task to register.
+            names: Names to register the task under. Defaults to [function.__name__].
         """
         from .dependencies import validate_dependencies
 
         validate_dependencies(function)
 
-        self.tasks[function.__name__] = function
+        if not names:
+            names = [function.__name__]
+
+        for name in names:
+            self.tasks[name] = function
 
     def register_collection(self, collection_path: str) -> None:
         """
@@ -366,7 +371,9 @@ class Docket:
             when: The time to schedule the task.
             key: The key to schedule the task under.
         """
+        function_name: str | None = None
         if isinstance(function, str):
+            function_name = function
             function = self.tasks[function]
         else:
             self.register(function)
@@ -378,7 +385,16 @@ class Docket:
             key = str(uuid7())
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
-            execution = Execution(self, function, args, kwargs, key, when, attempt=1)
+            execution = Execution(
+                self,
+                function,
+                args,
+                kwargs,
+                key,
+                when,
+                attempt=1,
+                function_name=function_name,
+            )
 
             # Check if task is stricken before scheduling
             if self.strike_list.is_stricken(execution):
@@ -450,13 +466,24 @@ class Docket:
             when: The time to schedule the task.
             key: The key to schedule the task under.
         """
+        function_name: str | None = None
         if isinstance(function, str):
+            function_name = function
             function = self.tasks[function]
         else:
             self.register(function)
 
         async def scheduler(*args: P.args, **kwargs: P.kwargs) -> Execution:
-            execution = Execution(self, function, args, kwargs, key, when, attempt=1)
+            execution = Execution(
+                self,
+                function,
+                args,
+                kwargs,
+                key,
+                when,
+                attempt=1,
+                function_name=function_name,
+            )
 
             # Check if task is stricken before scheduling
             if self.strike_list.is_stricken(execution):
