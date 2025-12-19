@@ -31,6 +31,8 @@ import redis.exceptions
 from opentelemetry import trace
 from opentelemetry.instrumentation.utils import suppress_instrumentation
 from redis.asyncio import ConnectionPool, Redis
+
+from ._redis import connection_pool_from_url
 from ._uuid7 import uuid7
 
 from .execution import (
@@ -232,29 +234,7 @@ class Docket:
         self.strike_list = StrikeList()
         self._strikes_loaded = asyncio.Event()
 
-        # Check if we should use in-memory backend (fakeredis)
-        # Support memory:// URLs for in-memory dockets
-        if self.url.startswith("memory://"):
-            try:
-                from fakeredis.aioredis import FakeConnection, FakeServer
-
-                # All memory:// URLs share a single FakeServer instance
-                # Multiple dockets with different names are isolated by Redis key prefixes
-                # (e.g., docket1:stream vs docket2:stream)
-                if not hasattr(Docket, "_memory_server"):
-                    Docket._memory_server = FakeServer()  # type: ignore
-
-                server = Docket._memory_server  # type: ignore
-                self._connection_pool = ConnectionPool(
-                    connection_class=FakeConnection, server=server
-                )
-            except ImportError as e:
-                raise ImportError(
-                    "fakeredis is required for memory:// URLs. "
-                    "Install with: pip install pydocket[memory]"
-                ) from e
-        else:
-            self._connection_pool = ConnectionPool.from_url(self.url)  # type: ignore
+        self._connection_pool = await connection_pool_from_url(self.url)
 
         self._monitor_strikes_task = asyncio.create_task(self._monitor_strikes())
 
