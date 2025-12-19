@@ -48,15 +48,14 @@ tasks = [monitor, do_work]
 async def main() -> None:
     print("Starting self-contained service (memory:// backend)\n")
 
-    async with Docket(name="self-contained", url="memory://") as docket:
+    async with Docket(
+        name="self-contained", url="memory://", execution_ttl=timedelta(0)
+    ) as docket:
         for task in tasks:
             docket.register(task)
 
         async with Worker(docket) as worker:
-            try:
-                await asyncio.wait_for(worker.run_forever(), timeout=10.0)
-            except asyncio.TimeoutError:
-                print("\nDemo complete!")
+            await worker.run_forever()
 
 
 if __name__ == "__main__":

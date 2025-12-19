@@ -110,6 +110,9 @@ omit = ["src/docket/__main__.py", "src/docket/_uuid7.py"]
 branch = true
 parallel = true
 
+[tool.coverage.report]
+exclude_also = ["\\.\\.\\.$"]
+
 [tool.pyright]
 include = ["src", "tests", "chaos"]
 typeCheckingMode = "strict"
