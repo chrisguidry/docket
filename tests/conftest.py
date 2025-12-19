@@ -57,7 +57,7 @@ def _wait_for_redis(port: int) -> None:
     while True:
         try:
             with _administrative_redis(port) as r:
-                if r.ping():  # type: ignore
+                if r.ping():  # type: ignore  # pragma: no branch
                     return
         except redis.exceptions.ConnectionError:
             time.sleep(0.1)
