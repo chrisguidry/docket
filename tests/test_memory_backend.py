@@ -1,15 +1,15 @@
 import pytest
 
 from docket import Docket, Worker
-from docket._redis import _memory_servers  # type: ignore[reportPrivateUsage]
+from docket._redis import clear_memory_servers, get_memory_server
 
 # Skip all tests in this file if fakeredis is not installed
 pytest.importorskip("fakeredis")
 
 
 @pytest.fixture(autouse=True)
-def clear_memory_servers() -> None:
-    _memory_servers.clear()
+async def clear_servers() -> None:
+    await clear_memory_servers()
 
 
 async def test_docket_memory_backend():
@@ -145,11 +145,11 @@ async def test_different_memory_urls_are_isolated():
         assert result2 is None  # task_for_server2 was never called
 
     # Verify we created two separate FakeServer instances
-    assert "memory://server1" in _memory_servers
-    assert "memory://server2" in _memory_servers
-    assert (
-        _memory_servers["memory://server1"] is not _memory_servers["memory://server2"]
-    )
+    server1 = get_memory_server("memory://server1")
+    server2 = get_memory_server("memory://server2")
+    assert server1 is not None
+    assert server2 is not None
+    assert server1 is not server2
 
 
 async def test_memory_url_with_path_isolation():
@@ -174,7 +174,8 @@ async def test_memory_url_with_path_isolation():
         snapshot1 = await docket1.snapshot()
         assert snapshot1.total_tasks == 1
 
-    assert (
-        _memory_servers["memory://localhost/db1"]
-        is not _memory_servers["memory://localhost/db2"]
-    )
+    db1_server = get_memory_server("memory://localhost/db1")
+    db2_server = get_memory_server("memory://localhost/db2")
+    assert db1_server is not None
+    assert db2_server is not None
+    assert db1_server is not db2_server

@@ -17,6 +17,23 @@ _memory_servers: dict[str, "FakeServer"] = {}
 _memory_servers_lock = asyncio.Lock()
 
 
+async def clear_memory_servers() -> None:
+    """Clear all cached FakeServer instances.
+
+    This is primarily for testing to ensure isolation between tests.
+    """
+    async with _memory_servers_lock:
+        _memory_servers.clear()
+
+
+def get_memory_server(url: str) -> "FakeServer | None":
+    """Get the cached FakeServer for a URL, if any.
+
+    This is primarily for testing to verify server isolation.
+    """
+    return _memory_servers.get(url)
+
+
 async def connection_pool_from_url(url: str) -> ConnectionPool:
     """Create a Redis connection pool from a URL.
 
@@ -63,7 +80,7 @@ async def _memory_connection_pool(url: str) -> ConnectionPool:
 #
 # fakeredis creates a new lupa.LuaRuntime() for every EVAL/EVALSHA call, and
 # these runtimes don't get garbage collected properly, causing unbounded memory
-# growth. This is a known issue: https://github.com/cunla/fakeredis-py/issues/XXX
+# growth. See: https://github.com/cunla/fakeredis-py/issues/446
 #
 # Until there's an upstream fix, we monkeypatch ScriptingCommandsMixin.eval to
 # cache the LuaRuntime on the FakeServer instance and reuse it across calls.
