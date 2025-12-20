@@ -6,7 +6,8 @@ import pytest
 
 from docket import Docket, Worker
 from docket.dependencies import Perpetual
-from docket.execution import Execution, Operator, Strike, StrikeList
+from docket.execution import Execution
+from docket.strikelist import Operator, Strike, StrikeList
 
 
 async def test_all_dockets_see_all_strikes(docket: Docket):

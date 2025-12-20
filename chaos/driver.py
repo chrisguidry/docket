@@ -15,7 +15,7 @@ import redis.exceptions
 from opentelemetry import trace
 
 from docket import Docket
-from docket.execution import Operator
+from docket.strikelist import Operator
 
 from .redis import run_redis
 from .tasks import toxic

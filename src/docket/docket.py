@@ -1,7 +1,7 @@
 import asyncio
 import importlib
 import logging
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
@@ -10,11 +10,9 @@ from typing import (
     Awaitable,
     Callable,
     Collection,
-    Generator,
     Hashable,
     Iterable,
     Mapping,
-    NoReturn,
     ParamSpec,
     Protocol,
     Sequence,
@@ -29,7 +27,6 @@ from typing_extensions import Self
 
 import redis.exceptions
 from opentelemetry import trace
-from opentelemetry.instrumentation.utils import suppress_instrumentation
 from redis.asyncio import ConnectionPool, Redis
 
 from ._redis import connection_pool_from_url
@@ -38,21 +35,20 @@ from ._uuid7 import uuid7
 from .execution import (
     Execution,
     ExecutionState,
+    TaskFunction,
+)
+from .strikelist import (
     LiteralOperator,
     Operator,
     Restore,
     Strike,
-    StrikeInstruction,
     StrikeList,
-    TaskFunction,
 )
 from key_value.aio.protocols.key_value import AsyncKeyValue
 from key_value.aio.stores.redis import RedisStore
 from key_value.aio.stores.memory import MemoryStore
 
 from .instrumentation import (
-    REDIS_DISRUPTIONS,
-    STRIKES_IN_EFFECT,
     TASKS_ADDED,
     TASKS_CANCELLED,
     TASKS_REPLACED,
@@ -157,8 +153,6 @@ class Docket:
     tasks: dict[str, TaskFunction]
     strike_list: StrikeList
 
-    _monitor_strikes_task: asyncio.Task[None]
-    _strikes_loaded: asyncio.Event
     _connection_pool: ConnectionPool
     _cancel_task_script: _cancel_task | None
 
@@ -211,32 +205,21 @@ class Docket:
 
         self.tasks: dict[str, TaskFunction] = {fn.__name__: fn for fn in standard_tasks}
 
-    @contextmanager
-    def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
-        """Suppress OTel auto-instrumentation for internal Redis operations.
-
-        When enable_internal_instrumentation is False (default), this context manager
-        suppresses OpenTelemetry auto-instrumentation spans for internal Redis polling
-        operations like strike stream monitoring. This prevents noisy spans from
-        overwhelming trace storage.
-        """
-        if not self.enable_internal_instrumentation:
-            with suppress_instrumentation():
-                yield
-        else:
-            yield
-
     @property
     def worker_group_name(self) -> str:
         return "docket-workers"
 
     async def __aenter__(self) -> Self:
-        self.strike_list = StrikeList()
-        self._strikes_loaded = asyncio.Event()
+        self.strike_list = StrikeList(
+            url=self.url,
+            name=self.name,
+            enable_internal_instrumentation=self.enable_internal_instrumentation,
+        )
 
         self._connection_pool = await connection_pool_from_url(self.url)
 
-        self._monitor_strikes_task = asyncio.create_task(self._monitor_strikes())
+        # Connect the strike list to Redis and start monitoring
+        await self.strike_list.connect()
 
         if isinstance(self.result_storage, BaseContextManagerStore):
             await self.result_storage.__aenter__()
@@ -253,13 +236,9 @@ class Docket:
         if isinstance(self.result_storage, BaseContextManagerStore):
             await self.result_storage.__aexit__(exc_type, exc_value, traceback)
 
+        # Close the strike list (stops monitoring and disconnects)
+        await self.strike_list.close()
         del self.strike_list
-
-        self._monitor_strikes_task.cancel()
-        try:
-            await self._monitor_strikes_task
-        except asyncio.CancelledError:
-            pass
 
         await asyncio.shield(self._connection_pool.disconnect())
         del self._connection_pool
@@ -738,10 +717,6 @@ class Docket:
             # execution_ttl=0 means no observability - delete tombstone immediately
             await redis.delete(runs_key)
 
-    @property
-    def strike_key(self) -> str:
-        return f"{self.name}:strikes"
-
     async def strike(
         self,
         function: Callable[P, Awaitable[R]] | str | None = None,
@@ -752,18 +727,19 @@ class Docket:
         """Strike a task from the Docket.
 
         Args:
-            function: The task to strike.
-            parameter: The parameter to strike on.
-            operator: The operator to use.
+            function: The task to strike (function or name), or None for all tasks.
+            parameter: The parameter to strike on, or None for entire task.
+            operator: The comparison operator to use.
             value: The value to strike on.
         """
-        if not isinstance(function, (str, type(None))):
-            function = function.__name__
+        function_name = function.__name__ if callable(function) else function
 
-        operator = Operator(operator)
-
-        strike = Strike(function, parameter, operator, value)
-        return await self._send_strike_instruction(strike)
+        instruction = Strike(function_name, parameter, Operator(operator), value)
+        with tracer.start_as_current_span(
+            "docket.strike",
+            attributes={**self.labels(), **instruction.labels()},
+        ):
+            await self.strike_list.send_instruction(instruction)
 
     async def restore(
         self,
@@ -775,18 +751,19 @@ class Docket:
         """Restore a previously stricken task to the Docket.
 
         Args:
-            function: The task to restore.
-            parameter: The parameter to restore on.
-            operator: The operator to use.
+            function: The task to restore (function or name), or None for all tasks.
+            parameter: The parameter to restore on, or None for entire task.
+            operator: The comparison operator to use.
             value: The value to restore on.
         """
-        if not isinstance(function, (str, type(None))):
-            function = function.__name__
+        function_name = function.__name__ if callable(function) else function
 
-        operator = Operator(operator)
-
-        restore = Restore(function, parameter, operator, value)
-        return await self._send_strike_instruction(restore)
+        instruction = Restore(function_name, parameter, Operator(operator), value)
+        with tracer.start_as_current_span(
+            "docket.restore",
+            attributes={**self.labels(), **instruction.labels()},
+        ):
+            await self.strike_list.send_instruction(instruction)
 
     async def wait_for_strikes_loaded(self) -> None:
         """Wait for all existing strikes to be loaded from the stream.
@@ -796,75 +773,7 @@ class Docket:
         making decisions that depend on the current strike state, such as
         scheduling automatic perpetual tasks.
         """
-        await self._strikes_loaded.wait()
-
-    async def _send_strike_instruction(self, instruction: StrikeInstruction) -> None:
-        with tracer.start_as_current_span(
-            f"docket.{instruction.direction}",
-            attributes={
-                **self.labels(),
-                **instruction.labels(),
-            },
-        ):
-            async with self.redis() as redis:
-                message = instruction.as_message()
-                await redis.xadd(self.strike_key, message)  # type: ignore[arg-type]
-            self.strike_list.update(instruction)
-
-    async def _monitor_strikes(self) -> NoReturn:
-        last_id = "0-0"
-        initial_load_complete = False
-        while True:
-            try:
-                async with self.redis() as r:
-                    while True:
-                        with self._maybe_suppress_instrumentation():
-                            # Non-blocking for initial load (block=None), then block
-                            # for new messages (block=60_000). Note: block=0 means
-                            # "block forever" in Redis, not "non-blocking".
-                            streams: RedisReadGroupResponse = await r.xread(
-                                {self.strike_key: last_id},
-                                count=100,
-                                block=60_000 if initial_load_complete else None,
-                            )
-
-                        # If no messages and we haven't signaled yet, initial load is done
-                        if not streams and not initial_load_complete:
-                            initial_load_complete = True
-                            self._strikes_loaded.set()
-                            continue
-
-                        for _, messages in streams:
-                            for message_id, message in messages:
-                                last_id = message_id
-                                instruction = StrikeInstruction.from_message(message)
-                                self.strike_list.update(instruction)
-                                logger.info(
-                                    "%s %r",
-                                    (
-                                        "Striking"
-                                        if instruction.direction == "strike"
-                                        else "Restoring"
-                                    ),
-                                    instruction.call_repr(),
-                                    extra=self.labels(),
-                                )
-
-                                STRIKES_IN_EFFECT.add(
-                                    1 if instruction.direction == "strike" else -1,
-                                    {
-                                        **self.labels(),
-                                        **instruction.labels(),
-                                    },
-                                )
-
-            except redis.exceptions.ConnectionError:  # pragma: no cover
-                REDIS_DISRUPTIONS.add(1, {"docket": self.name})
-                logger.warning("Connection error, sleeping for 1 second...")
-                await asyncio.sleep(1)
-            except Exception:  # pragma: no cover
-                logger.exception("Error monitoring strikes")
-                await asyncio.sleep(1)
+        await self.strike_list.wait_for_strikes_loaded()
 
     async def snapshot(self) -> DocketSnapshot:
         """Get a snapshot of the Docket, including which tasks are scheduled or currently

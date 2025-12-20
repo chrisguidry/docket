@@ -27,6 +27,7 @@ from .dependencies import (
 )
 from .docket import Docket
 from .execution import Execution, ExecutionState
+from .strikelist import StrikeList
 from .worker import Worker
 from . import testing
 
@@ -46,6 +47,7 @@ __all__ = [
     "Perpetual",
     "Progress",
     "Retry",
+    "StrikeList",
     "TaskArgument",
     "TaskKey",
     "TaskLogger",
