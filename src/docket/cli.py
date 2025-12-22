@@ -26,7 +26,8 @@ from rich.table import Table
 
 from . import __version__, tasks
 from .docket import Docket, DocketSnapshot, WorkerInfo
-from .execution import ExecutionState, Operator
+from .execution import ExecutionState
+from .strikelist import Operator
 from .worker import Worker
 
 
