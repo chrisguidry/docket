@@ -777,41 +777,63 @@ class Execution:
             }
         )
 
-    async def mark_as_completed(self, result_key: str | None = None) -> None:
-        """Mark task as completed successfully.
+    async def _mark_as_terminal(
+        self,
+        state: ExecutionState,
+        *,
+        error: str | None = None,
+        result_key: str | None = None,
+    ) -> None:
+        """Mark task as having reached a terminal state.
 
         Args:
-            result_key: Optional key where the task result is stored
+            state: The terminal state (COMPLETED, FAILED, or CANCELLED)
+            error: Optional error message (for FAILED state)
+            result_key: Optional key where the result/exception is stored
 
         Sets TTL on state data (from docket.execution_ttl), or deletes state
         immediately if execution_ttl is 0. Also deletes progress data.
         """
         completed_at = datetime.now(timezone.utc).isoformat()
+
+        mapping: dict[str, str] = {
+            "state": state.value,
+            "completed_at": completed_at,
+        }
+        if error:
+            mapping["error"] = error
+        if result_key is not None:
+            mapping["result_key"] = result_key
+
         async with self.docket.redis() as redis:
-            mapping: dict[str, str] = {
-                "state": ExecutionState.COMPLETED.value,
-                "completed_at": completed_at,
-            }
-            if result_key is not None:
-                mapping["result_key"] = result_key
-            await redis.hset(
-                self._redis_key,
-                mapping=mapping,
-            )
-            # Set TTL from docket configuration, or delete if TTL=0
+            await redis.hset(self._redis_key, mapping=mapping)
             if self.docket.execution_ttl:
                 ttl_seconds = int(self.docket.execution_ttl.total_seconds())
                 await redis.expire(self._redis_key, ttl_seconds)
             else:
                 await redis.delete(self._redis_key)
-        self.state = ExecutionState.COMPLETED
-        self.result_key = result_key
-        # Delete progress data
+
+        self.state = state
+        if result_key is not None:
+            self.result_key = result_key
+
         await self.progress.delete()
-        # Publish state change event
-        await self._publish_state(
-            {"state": ExecutionState.COMPLETED.value, "completed_at": completed_at}
-        )
+
+        state_data: dict[str, str] = {
+            "state": state.value,
+            "completed_at": completed_at,
+        }
+        if error:
+            state_data["error"] = error
+        await self._publish_state(state_data)
+
+    async def mark_as_completed(self, result_key: str | None = None) -> None:
+        """Mark task as completed successfully.
+
+        Args:
+            result_key: Optional key where the task result is stored
+        """
+        await self._mark_as_terminal(ExecutionState.COMPLETED, result_key=result_key)
 
     async def mark_as_failed(
         self, error: str | None = None, result_key: str | None = None
@@ -821,39 +843,14 @@ class Execution:
         Args:
             error: Optional error message describing the failure
             result_key: Optional key where the exception is stored
-
-        Sets TTL on state data (from docket.execution_ttl), or deletes state
-        immediately if execution_ttl is 0. Also deletes progress data.
         """
-        completed_at = datetime.now(timezone.utc).isoformat()
-        async with self.docket.redis() as redis:
-            mapping = {
-                "state": ExecutionState.FAILED.value,
-                "completed_at": completed_at,
-            }
-            if error:
-                mapping["error"] = error
-            if result_key is not None:
-                mapping["result_key"] = result_key
-            await redis.hset(self._redis_key, mapping=mapping)
-            # Set TTL from docket configuration, or delete if TTL=0
-            if self.docket.execution_ttl:
-                ttl_seconds = int(self.docket.execution_ttl.total_seconds())
-                await redis.expire(self._redis_key, ttl_seconds)
-            else:
-                await redis.delete(self._redis_key)
-        self.state = ExecutionState.FAILED
-        self.result_key = result_key
-        # Delete progress data
-        await self.progress.delete()
-        # Publish state change event
-        state_data = {
-            "state": ExecutionState.FAILED.value,
-            "completed_at": completed_at,
-        }
-        if error:
-            state_data["error"] = error
-        await self._publish_state(state_data)
+        await self._mark_as_terminal(
+            ExecutionState.FAILED, error=error, result_key=result_key
+        )
+
+    async def mark_as_cancelled(self) -> None:
+        """Mark task as cancelled."""
+        await self._mark_as_terminal(ExecutionState.CANCELLED)
 
     async def get_result(
         self,

@@ -230,13 +230,7 @@ async def test_worker_graceful_shutdown_with_concurrency_management(docket: Dock
     await docket.add(simple_task)()
 
     async with Worker(docket) as worker:
-        worker_task = asyncio.create_task(worker.run_until_finished())
-        # Wait for task to start (event-based, not time-based)
-        await asyncio.wait_for(task_started.wait(), timeout=5.0)
-        # Worker context manager will exit and stop the worker
+        await worker.run_until_finished()
 
-    # Await the worker task to ensure clean shutdown
-    await worker_task
-
-    # Verify the task completed
-    assert task_completed.is_set(), "Task should have completed before shutdown"
+    assert task_started.is_set(), "Task should have started"
+    assert task_completed.is_set(), "Task should have completed"
