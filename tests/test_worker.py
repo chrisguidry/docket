@@ -26,9 +26,9 @@ from docket.tasks import standard_tasks
 from docket.worker import ms
 from tests._key_leak_checker import KeyCountChecker
 
-if sys.version_info >= (3, 11):
+if sys.version_info >= (3, 11):  # pragma: no cover
     from asyncio import timeout as async_timeout
-else:
+else:  # pragma: no cover
 
     @asynccontextmanager
     async def async_timeout(delay: float):
