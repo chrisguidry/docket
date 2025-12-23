@@ -654,11 +654,9 @@ class Worker:
             ),
         )
 
-        total_work: int = sys.maxsize
-
         log_context = self._log_context()
 
-        while not self._worker_stopping.is_set() or total_work:
+        while not self._worker_stopping.is_set():
             try:
                 logger.debug("Scheduling due tasks", extra=log_context)
                 with self._maybe_suppress_instrumentation():
@@ -689,9 +687,6 @@ class Worker:
                     self._worker_stopping.wait(),
                     timeout=self.scheduling_resolution.total_seconds(),
                 )
-                # Worker is stopping - exit if no more work to drain
-                if not total_work:
-                    break
             except asyncio.TimeoutError:
                 pass  # Time to check for due tasks again
 
