@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Callable
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError
 
@@ -18,11 +17,6 @@ if sys.version_info >= (3, 11):  # pragma: no cover
     from asyncio import timeout as async_timeout
 else:  # pragma: no cover
     from async_timeout import timeout as async_timeout
-
-
-@pytest.fixture
-def the_task() -> AsyncMock:
-    return AsyncMock(__name__="the_task", __module__="tests.test_worker_lifecycle")
 
 
 async def test_run_forever_cancels_promptly_with_future_tasks(
@@ -222,7 +216,7 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
                         # Signal that we got past the error handler
                         error_handled.set()
                         async for message in original_listen():  # pyright: ignore[reportUnknownVariableType]
-                            yield message
+                            yield message  # pragma: no cover
 
                     pubsub.listen = failing_listen
                     yield pubsub
@@ -272,7 +266,7 @@ async def test_cancellation_listener_handles_generic_exception(docket: Docket):
                         # Signal that we got past the error handler
                         error_handled.set()
                         async for message in original_listen():  # pyright: ignore[reportUnknownVariableType]
-                            yield message
+                            yield message  # pragma: no cover
 
                     pubsub.listen = failing_listen
                     yield pubsub
