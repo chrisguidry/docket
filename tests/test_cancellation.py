@@ -279,3 +279,76 @@ async def test_cancel_running_task_with_zero_execution_ttl(redis_url: str):
         async with docket.redis() as redis:
             exists = await redis.exists(f"{docket.name}:runs:{execution.key}")
         assert not exists, "execution record should be deleted with execution_ttl=0"
+
+
+async def test_cancelled_task_with_retry_does_not_retry(docket: Docket, worker: Worker):
+    """A cancelled task should NOT retry, even if it has a Retry dependency."""
+    from docket.dependencies import Retry
+
+    started = asyncio.Event()
+    execution_count = 0
+
+    async def retryable_task(retry: Retry = Retry(attempts=3)):
+        nonlocal execution_count
+        execution_count += 1
+        started.set()
+        await asyncio.sleep(60)
+
+    docket.register(retryable_task)
+    execution = await docket.add(retryable_task)()
+
+    async def run_worker():
+        await worker.run_until_finished()
+
+    worker_task = asyncio.create_task(run_worker())
+
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+
+    await docket.cancel(execution.key)
+
+    await asyncio.wait_for(worker_task, timeout=5.0)
+
+    await execution.sync()
+    assert execution.state == ExecutionState.CANCELLED
+    assert execution_count == 1, "cancelled task should not retry"
+
+
+async def test_cancelled_perpetual_task_does_not_perpetuate(
+    docket: Docket, worker: Worker
+):
+    """A cancelled Perpetual task should NOT reschedule itself."""
+    from docket.dependencies import Perpetual
+
+    started = asyncio.Event()
+    execution_count = 0
+
+    async def perpetual_task(perpetual: Perpetual = Perpetual()):
+        nonlocal execution_count
+        execution_count += 1
+        started.set()
+        await asyncio.sleep(60)
+
+    docket.register(perpetual_task)
+    execution = await docket.add(perpetual_task)()
+
+    async def run_worker():
+        await worker.run_until_finished()
+
+    worker_task = asyncio.create_task(run_worker())
+
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+
+    await docket.cancel(execution.key)
+
+    await asyncio.wait_for(worker_task, timeout=5.0)
+
+    await execution.sync()
+    assert execution.state == ExecutionState.CANCELLED
+    assert execution_count == 1, "cancelled perpetual task should not reschedule"
+
+    # Verify nothing was rescheduled in the queue
+    async with docket.redis() as redis:
+        queue_count = await redis.zcard(docket.queue_key)
+        stream_len = await redis.xlen(docket.stream_key)
+    assert queue_count == 0, "no tasks should be scheduled"
+    assert stream_len == 0, "no tasks should be in the stream"
