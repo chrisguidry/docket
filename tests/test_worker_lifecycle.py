@@ -58,7 +58,7 @@ async def test_run_until_finished_exits_promptly_with_future_tasks(
         minimum_check_interval=timedelta(milliseconds=5),
         scheduling_resolution=timedelta(milliseconds=5),
     ) as worker:
-        async with async_timeout(1.0):
+        async with async_timeout(1.0):  # pragma: no branch
             await worker.run_until_finished()
 
     the_task.assert_not_called()
@@ -108,7 +108,7 @@ async def test_worker_aexit_completes_on_immediate_cancellation(docket: Docket):
         # __aexit__ should complete promptly (within 1 second)
         # Without the fix, this would hang forever
         with suppress(asyncio.CancelledError):
-            async with async_timeout(1.0):
+            async with async_timeout(1.0):  # pragma: no branch
                 await worker_task
 
 
@@ -134,7 +134,7 @@ async def test_worker_done_set_after_early_cancellation(docket: Docket):
     assert worker._worker_done.is_set()  # pyright: ignore[reportPrivateUsage]
 
     # __aexit__ should complete promptly because _worker_done should be set
-    async with async_timeout(1.0):
+    async with async_timeout(1.0):  # pragma: no branch
         await worker.__aexit__(None, None, None)
 
 
@@ -152,7 +152,7 @@ async def test_worker_rapid_start_cancel_cycles(docket: Docket):
             worker_task.cancel()
 
             with suppress(asyncio.CancelledError):
-                async with async_timeout(1.0):
+                async with async_timeout(1.0):  # pragma: no branch
                     await worker_task
 
 
@@ -183,11 +183,11 @@ async def test_worker_cancellation_during_setup_before_scheduler_created(
         worker_task.cancel()
 
         with suppress(asyncio.CancelledError):
-            async with async_timeout(1.0):
+            async with async_timeout(1.0):  # pragma: no branch
                 await worker_task
 
     # Cleanup
-    async with async_timeout(1.0):
+    async with async_timeout(1.0):  # pragma: no branch
         await worker.__aexit__(None, None, None)
 
 
@@ -232,10 +232,10 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
         with patch.object(docket, "redis", failing_redis):
             worker_task = asyncio.create_task(worker.run_forever())
             # Wait for the error to be handled and reconnection to succeed
-            async with async_timeout(5.0):
+            async with async_timeout(5.0):  # pragma: no branch
                 await error_handled.wait()
             worker_task.cancel()
-            with suppress(asyncio.CancelledError):
+            with suppress(asyncio.CancelledError):  # pragma: no branch
                 await worker_task
 
     assert error_count >= 2  # First call raised error, second succeeded
@@ -282,10 +282,10 @@ async def test_cancellation_listener_handles_generic_exception(docket: Docket):
         with patch.object(docket, "redis", failing_redis):
             worker_task = asyncio.create_task(worker.run_forever())
             # Wait for the error to be handled and reconnection to succeed
-            async with async_timeout(5.0):
+            async with async_timeout(5.0):  # pragma: no branch
                 await error_handled.wait()
             worker_task.cancel()
-            with suppress(asyncio.CancelledError):
+            with suppress(asyncio.CancelledError):  # pragma: no branch
                 await worker_task
 
     assert error_count >= 2  # First call raised error, second succeeded
