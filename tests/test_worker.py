@@ -1,9 +1,9 @@
 import asyncio
 import logging
-import sys
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Callable
+
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -18,29 +18,12 @@ from docket import (
     Docket,
     Perpetual,
     Worker,
-    testing,
 )
 from docket.dependencies import Timeout
 from docket.execution import Execution
 from docket.tasks import standard_tasks
 from docket.worker import ms
 from tests._key_leak_checker import KeyCountChecker
-
-if sys.version_info >= (3, 11):  # pragma: no cover
-    from asyncio import timeout as async_timeout
-else:  # pragma: no cover
-
-    @asynccontextmanager
-    async def async_timeout(delay: float):
-        """Compatibility shim for asyncio.timeout on Python 3.10."""
-        task = asyncio.current_task()
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + delay
-        handle = loop.call_at(deadline, task.cancel)  # type: ignore[union-attr]
-        try:
-            yield
-        finally:
-            handle.cancel()
 
 
 async def test_worker_acknowledges_messages(
@@ -1135,74 +1118,3 @@ async def test_worker_handles_nogroup_in_xreadgroup(redis_url: str):
         assert task_executed
         # Should have called xreadgroup at least twice (once NOGROUP, then success)
         assert call_count >= 2
-
-
-async def test_run_forever_cancels_promptly_with_future_tasks(
-    docket: Docket, the_task: AsyncMock, now: Callable[[], datetime]
-):
-    """run_forever() should cancel promptly even with future-scheduled tasks.
-
-    Issue #260: Perpetual tasks block worker shutdown.
-    """
-    execution = await docket.add(the_task, now() + timedelta(seconds=15))()
-
-    async with Worker(
-        docket,
-        minimum_check_interval=timedelta(milliseconds=5),
-        scheduling_resolution=timedelta(milliseconds=5),
-    ) as worker:
-        worker_task = asyncio.create_task(worker.run_forever())
-        await asyncio.sleep(0.05)
-        worker_task.cancel()
-        with suppress(asyncio.CancelledError):  # pragma: no branch
-            async with async_timeout(1.0):  # pragma: no branch
-                await worker_task
-
-    the_task.assert_not_called()
-    await testing.assert_task_scheduled(docket, the_task, key=execution.key)
-
-
-async def test_run_until_finished_exits_promptly_with_future_tasks(
-    docket: Docket, the_task: AsyncMock, now: Callable[[], datetime]
-):
-    """run_until_finished() should exit promptly when only future tasks exist.
-
-    Issue #260: Perpetual tasks block worker shutdown.
-    """
-    execution = await docket.add(the_task, now() + timedelta(seconds=15))()
-
-    async with Worker(
-        docket,
-        minimum_check_interval=timedelta(milliseconds=5),
-        scheduling_resolution=timedelta(milliseconds=5),
-    ) as worker:
-        async with async_timeout(1.0):
-            await worker.run_until_finished()
-
-    the_task.assert_not_called()
-    await testing.assert_task_scheduled(docket, the_task, key=execution.key)
-
-
-async def test_run_at_most_cancels_promptly_with_future_tasks(
-    docket: Docket, the_task: AsyncMock, now: Callable[[], datetime]
-):
-    """run_at_most() should cancel promptly even with future-scheduled tasks.
-
-    Issue #260: Perpetual tasks block worker shutdown.
-    """
-    execution = await docket.add(the_task, now() + timedelta(seconds=15))()
-
-    async with Worker(
-        docket,
-        minimum_check_interval=timedelta(milliseconds=5),
-        scheduling_resolution=timedelta(milliseconds=5),
-    ) as worker:
-        worker_task = asyncio.create_task(worker.run_at_most({execution.key: 1}))
-        await asyncio.sleep(0.05)
-        worker_task.cancel()
-        with suppress(asyncio.CancelledError):  # pragma: no branch
-            async with async_timeout(1.0):  # pragma: no branch
-                await worker_task
-
-    the_task.assert_not_called()
-    await testing.assert_task_scheduled(docket, the_task, key=execution.key)

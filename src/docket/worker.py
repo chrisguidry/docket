@@ -205,16 +205,15 @@ class Worker:
             yield
 
     async def __aenter__(self) -> Self:
-        self._heartbeat_task = asyncio.create_task(self._heartbeat())
+        self._heartbeat_task = asyncio.create_task(
+            self._heartbeat(), name="docket.worker.heartbeat"
+        )
         self._execution_counts: dict[str, int] = {}
         # Track concurrency slots for active tasks so we can refresh them during
         # lease renewal. Maps execution.key → concurrency_key
         self._concurrency_slots: dict[str, str] = {}
         # Track running tasks for cancellation lookup
         self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
-        self._cancellation_listener_task = asyncio.create_task(
-            self._cancellation_listener()
-        )
         # Events for coordinating worker loop shutdown
         self._worker_stopping = asyncio.Event()
         self._worker_done = asyncio.Event()
@@ -232,11 +231,6 @@ class Worker:
         # Signal worker loop to stop and wait for it to drain
         self._worker_stopping.set()
         await self._worker_done.wait()
-
-        self._cancellation_listener_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await self._cancellation_listener_task
-        del self._cancellation_listener_task
 
         self._heartbeat_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -346,10 +340,12 @@ class Worker:
 
                     try:
                         if until_finished:
-                            run_task = asyncio.create_task(worker.run_until_finished())
+                            run_task = asyncio.create_task(
+                                worker.run_until_finished(), name="docket.worker.run"
+                            )
                         else:
                             run_task = asyncio.create_task(
-                                worker.run_forever()
+                                worker.run_forever(), name="docket.worker.run"
                             )  # pragma: no cover
                         await run_task
                     except asyncio.CancelledError:  # pragma: no cover
@@ -419,21 +415,16 @@ class Worker:
     async def _worker_loop(self, redis: Redis, forever: bool = False):
         self._worker_stopping.clear()
         self._worker_done.clear()
+        self._cancellation_ready.clear()  # Reset for reconnection scenarios
 
-        await self._cancellation_ready.wait()
-
-        if self.schedule_automatic_tasks:
-            await self._schedule_all_automatic_perpetual_tasks()
-
+        # Initialize task variables before try block so finally can check them.
+        # This ensures _worker_done.set() is always called if _worker_done.clear() was.
+        cancellation_listener_task: asyncio.Task[None] | None = None
+        scheduler_task: asyncio.Task[None] | None = None
+        lease_renewal_task: asyncio.Task[None] | None = None
         active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
-
-        scheduler_task = asyncio.create_task(self._scheduler_loop(redis))
-        lease_renewal_task = asyncio.create_task(
-            self._renew_leases(redis, active_tasks)
-        )
         task_executions: dict[asyncio.Task[None], Execution] = {}
         available_slots = self.concurrency
-
         log_context = self._log_context()
 
         async def check_for_work() -> bool:
@@ -547,10 +538,27 @@ class Worker:
                 )
                 await pipeline.execute()
 
-        has_work: bool = True
-        stopping = self._worker_stopping.is_set
-
         try:
+            # Start cancellation listener and wait for it to be ready
+            cancellation_listener_task = asyncio.create_task(
+                self._cancellation_listener(),
+                name="docket.worker.cancellation_listener",
+            )
+            await self._cancellation_ready.wait()
+
+            if self.schedule_automatic_tasks:
+                await self._schedule_all_automatic_perpetual_tasks()
+
+            scheduler_task = asyncio.create_task(
+                self._scheduler_loop(redis), name="docket.worker.scheduler"
+            )
+            lease_renewal_task = asyncio.create_task(
+                self._renew_leases(redis, active_tasks),
+                name="docket.worker.lease_renewal",
+            )
+
+            has_work: bool = True
+            stopping = self._worker_stopping.is_set
             while (forever or has_work or active_tasks) and not stopping():
                 await process_completed_tasks()
 
@@ -588,9 +596,21 @@ class Worker:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
                 await process_completed_tasks()
 
+            # Signal internal tasks to stop
             self._worker_stopping.set()
-            await scheduler_task
-            await lease_renewal_task
+
+            # These check _worker_stopping and exit cleanly
+            if scheduler_task is not None:
+                await scheduler_task
+            if lease_renewal_task is not None:
+                await lease_renewal_task
+
+            # Cancellation listener has while True loop, needs explicit cancellation
+            if cancellation_listener_task is not None:  # pragma: no branch
+                cancellation_listener_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await cancellation_listener_task
+
             self._worker_done.set()
 
     async def _scheduler_loop(self, redis: Redis) -> None:
@@ -1001,7 +1021,9 @@ class Worker:
                 },
             ),
         )
-        task = asyncio.create_task(task_coro)
+        task = asyncio.create_task(
+            task_coro, name=f"docket.worker.task:{execution.key}"
+        )
         try:
             while not task.done():  # pragma: no branch
                 remaining = timeout.remaining().total_seconds()

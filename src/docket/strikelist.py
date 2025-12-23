@@ -227,7 +227,9 @@ class StrikeList:
         self._connection_pool = await connection_pool_from_url(self.url)
 
         self._strikes_loaded = asyncio.Event()
-        self._monitor_task = asyncio.create_task(self._monitor_strikes())
+        self._monitor_task = asyncio.create_task(
+            self._monitor_strikes(), name="docket.strikelist.monitor"
+        )
 
     async def close(self) -> None:
         """Close the Redis connection and stop monitoring.
