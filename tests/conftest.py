@@ -17,7 +17,6 @@ from docker.models.containers import Container
 from redis import ConnectionPool, Redis
 
 from docket import Docket, Worker
-
 from tests._key_leak_checker import KeyCountChecker
 
 REDIS_VERSION = os.environ.get("REDIS_VERSION", "7.4")
@@ -59,7 +58,7 @@ def _wait_for_redis(port: int) -> None:
             with _administrative_redis(port) as r:
                 if r.ping():  # type: ignore  # pragma: no branch
                     return
-        except redis.exceptions.ConnectionError:
+        except redis.exceptions.ConnectionError:  # pragma: no cover
             time.sleep(0.1)
 
 
