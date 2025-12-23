@@ -1155,7 +1155,7 @@ async def test_run_forever_cancels_promptly_with_future_tasks(
         await asyncio.sleep(0.05)
         worker_task.cancel()
         with suppress(asyncio.CancelledError):  # pragma: no branch
-            async with async_timeout(1.0):
+            async with async_timeout(1.0):  # pragma: no branch
                 await worker_task
 
     the_task.assert_not_called()
@@ -1201,7 +1201,7 @@ async def test_run_at_most_cancels_promptly_with_future_tasks(
         await asyncio.sleep(0.05)
         worker_task.cancel()
         with suppress(asyncio.CancelledError):  # pragma: no branch
-            async with async_timeout(1.0):
+            async with async_timeout(1.0):  # pragma: no branch
                 await worker_task
 
     the_task.assert_not_called()
