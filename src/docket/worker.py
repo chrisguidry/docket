@@ -9,10 +9,19 @@ import signal
 import socket
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import Any, Coroutine, Generator, Mapping, Protocol, cast
+from typing import (
+    Any,
+    Coroutine,
+    Generator,
+    Mapping,
+    Protocol,
+    TypeAlias,
+    TypedDict,
+    cast,
+)
 
 import cloudpickle  # type: ignore[import]
 
@@ -48,7 +57,6 @@ from .docket import (
 )
 from .execution import TaskFunction, compact_signature, get_signature
 
-# Run class has been consolidated into Execution
 from .instrumentation import (
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
@@ -85,6 +93,17 @@ AUTOMATIC_PERPETUAL_LOCK_TIMEOUT_SECONDS = 10
 # Minimum TTL in seconds for Redis keys to avoid immediate expiration when
 # redelivery_timeout is very small (e.g., in tests with 200ms timeouts).
 MINIMUM_TTL_SECONDS = 1
+
+TaskKey: TypeAlias = str
+
+
+class PubSubMessage(TypedDict):
+    """Message received from Redis pub/sub pattern subscription."""
+
+    type: str
+    pattern: bytes
+    channel: bytes
+    data: bytes | str
 
 
 async def default_fallback_task(
@@ -191,6 +210,17 @@ class Worker:
         # Track concurrency slots for active tasks so we can refresh them during
         # lease renewal. Maps execution.key → concurrency_key
         self._concurrency_slots: dict[str, str] = {}
+        # Track running tasks for cancellation lookup
+        self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
+        self._cancellation_listener_task = asyncio.create_task(
+            self._cancellation_listener()
+        )
+        # Events for coordinating worker loop shutdown
+        self._worker_stopping = asyncio.Event()
+        self._worker_done = asyncio.Event()
+        self._worker_done.set()  # Initially done (not running)
+        # Signaled when cancellation listener is subscribed and ready
+        self._cancellation_ready = asyncio.Event()
         return self
 
     async def __aexit__(
@@ -199,15 +229,26 @@ class Worker:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        del self._execution_counts
-        del self._concurrency_slots
+        # Signal worker loop to stop and wait for it to drain
+        self._worker_stopping.set()
+        await self._worker_done.wait()
+
+        self._cancellation_listener_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._cancellation_listener_task
+        del self._cancellation_listener_task
 
         self._heartbeat_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await self._heartbeat_task
-        except asyncio.CancelledError:
-            pass
         del self._heartbeat_task
+
+        del self._execution_counts
+        del self._concurrency_slots
+        del self._tasks_by_key
+        del self._worker_stopping
+        del self._worker_done
+        del self._cancellation_ready
 
     def labels(self) -> Mapping[str, str]:
         return {
@@ -376,18 +417,19 @@ class Worker:
                 await asyncio.sleep(self.reconnection_delay.total_seconds())
 
     async def _worker_loop(self, redis: Redis, forever: bool = False):
-        worker_stopping = asyncio.Event()
+        self._worker_stopping.clear()
+        self._worker_done.clear()
+
+        await self._cancellation_ready.wait()
 
         if self.schedule_automatic_tasks:
             await self._schedule_all_automatic_perpetual_tasks()
 
         active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
 
-        scheduler_task = asyncio.create_task(
-            self._scheduler_loop(redis, worker_stopping)
-        )
+        scheduler_task = asyncio.create_task(self._scheduler_loop(redis))
         lease_renewal_task = asyncio.create_task(
-            self._renew_leases(redis, active_tasks, worker_stopping)
+            self._renew_leases(redis, active_tasks)
         )
         task_executions: dict[asyncio.Task[None], Execution] = {}
         available_slots = self.concurrency
@@ -466,6 +508,7 @@ class Worker:
             task = asyncio.create_task(self._execute(execution), name=execution.key)
             active_tasks[task] = message_id
             task_executions[task] = execution
+            self._tasks_by_key[execution.key] = task
 
             nonlocal available_slots
             available_slots -= 1
@@ -475,18 +518,16 @@ class Worker:
             for task in completed_tasks:
                 message_id = active_tasks.pop(task)
                 task_executions.pop(task)
+                self._tasks_by_key.pop(task.get_name(), None)
                 try:
                     await task
-                    # Task succeeded - acknowledge the message
                     await ack_message(redis, message_id)
                 except ConcurrencyBlocked as e:
-                    # Task was blocked by concurrency limits, reschedule atomically
                     logger.debug(
                         "🔒 Task %s blocked by concurrency limit, rescheduling",
                         e.execution.key,
                         extra=log_context,
                     )
-                    # Use atomic schedule(reschedule_message=...) to prevent both task loss and duplicate execution
                     e.execution.when = (
                         datetime.now(timezone.utc) + CONCURRENCY_BLOCKED_RETRY_DELAY
                     )
@@ -507,9 +548,10 @@ class Worker:
                 await pipeline.execute()
 
         has_work: bool = True
+        stopping = self._worker_stopping.is_set
 
         try:
-            while forever or has_work or active_tasks:
+            while (forever or has_work or active_tasks) and not stopping():
                 await process_completed_tasks()
 
                 available_slots = self.concurrency - len(active_tasks)
@@ -541,19 +583,17 @@ class Worker:
                     extra=log_context,
                 )
         finally:
+            # Drain any remaining active tasks
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
                 await process_completed_tasks()
 
-            worker_stopping.set()
+            self._worker_stopping.set()
             await scheduler_task
             await lease_renewal_task
+            self._worker_done.set()
 
-    async def _scheduler_loop(
-        self,
-        redis: Redis,
-        worker_stopping: asyncio.Event,
-    ) -> None:
+    async def _scheduler_loop(self, redis: Redis) -> None:
         """Loop that moves due tasks from the queue to the stream."""
 
         stream_due_tasks: _stream_due_tasks = cast(
@@ -618,7 +658,7 @@ class Worker:
 
         log_context = self._log_context()
 
-        while not worker_stopping.is_set() or total_work:
+        while not self._worker_stopping.is_set() or total_work:
             try:
                 logger.debug("Scheduling due tasks", extra=log_context)
                 with self._maybe_suppress_instrumentation():
@@ -646,7 +686,7 @@ class Worker:
             # Wait for worker to stop or scheduling interval to pass
             try:
                 await asyncio.wait_for(
-                    worker_stopping.wait(),
+                    self._worker_stopping.wait(),
                     timeout=self.scheduling_resolution.total_seconds(),
                 )
                 # Worker is stopping - exit if no more work to drain
@@ -661,7 +701,6 @@ class Worker:
         self,
         redis: Redis,
         active_messages: dict[asyncio.Task[None], RedisMessageID],
-        worker_stopping: asyncio.Event,
     ) -> None:
         """Periodically renew leases on messages and concurrency slots.
 
@@ -675,10 +714,10 @@ class Worker:
             self.redelivery_timeout.total_seconds() / LEASE_RENEWAL_FACTOR
         )
 
-        while not worker_stopping.is_set():  # pragma: no branch
+        while not self._worker_stopping.is_set():  # pragma: no branch
             try:
                 await asyncio.wait_for(
-                    worker_stopping.wait(),
+                    self._worker_stopping.wait(),
                     timeout=renewal_interval,
                 )
                 break  # Worker is stopping
@@ -898,6 +937,14 @@ class Worker:
             except ConcurrencyBlocked:
                 # Re-raise to be handled by process_completed_tasks
                 raise
+            except asyncio.CancelledError:
+                # Task was cancelled externally via docket.cancel()
+                duration = log_context["duration"] = time.time() - start
+                span.set_status(Status(StatusCode.OK))
+                await execution.mark_as_cancelled()
+                logger.info(
+                    "✗ [%s] %s (cancelled)", ms(duration), call, extra=log_context
+                )
             except Exception as e:
                 duration = log_context["duration"] = time.time() - start
                 TASKS_FAILED.add(1, counter_labels)
@@ -1099,7 +1146,7 @@ class Worker:
                     exc_info=True,
                     extra=self._log_context(),
                 )
-            except Exception:
+            except Exception:  # pragma: no cover
                 logger.exception(
                     "Error sending worker heartbeat",
                     exc_info=True,
@@ -1107,6 +1154,53 @@ class Worker:
                 )
 
             await asyncio.sleep(self.docket.heartbeat_interval.total_seconds())
+
+    async def _cancellation_listener(self) -> None:
+        """Listen for cancellation signals and cancel matching tasks."""
+        cancel_pattern = f"{self.docket.name}:cancel:*"
+        log_context = self._log_context()
+
+        while True:
+            try:
+                async with self.docket.redis() as redis:
+                    async with redis.pubsub() as pubsub:
+                        await pubsub.psubscribe(cancel_pattern)
+                        self._cancellation_ready.set()
+                        try:
+                            async for message in pubsub.listen():
+                                if message["type"] == "pmessage":
+                                    await self._handle_cancellation(message)
+                        finally:
+                            await pubsub.punsubscribe(cancel_pattern)
+            except asyncio.CancelledError:
+                return
+            except ConnectionError:
+                REDIS_DISRUPTIONS.add(1, self.labels())
+                logger.warning(
+                    "Redis connection error in cancellation listener, reconnecting...",
+                    extra=log_context,
+                )
+                await asyncio.sleep(1)
+            except Exception:
+                logger.exception(
+                    "Error in cancellation listener",
+                    exc_info=True,
+                    extra=log_context,
+                )
+                await asyncio.sleep(1)
+
+    async def _handle_cancellation(self, message: PubSubMessage) -> None:
+        """Handle a cancellation message by cancelling the matching task."""
+        data = message["data"]
+        key: TaskKey = data.decode() if isinstance(data, bytes) else data
+
+        if task := self._tasks_by_key.get(key):
+            logger.info(
+                "Cancelling running task %r",
+                key,
+                extra=self._log_context(),
+            )
+            task.cancel()
 
     async def _can_start_task(self, redis: Redis, execution: Execution) -> bool:
         """Check if a task can start based on concurrency limits.

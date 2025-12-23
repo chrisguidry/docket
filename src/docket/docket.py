@@ -506,6 +506,12 @@ class Docket:
     async def cancel(self, key: str) -> None:
         """Cancel a previously scheduled task on the Docket.
 
+        If the task is scheduled (in the queue or stream), it will be removed.
+        If the task is currently running, a cancellation signal will be sent
+        to the worker, which will attempt to cancel the asyncio task. This is
+        best-effort: if the task completes before the signal is processed,
+        the cancellation will have no effect.
+
         Args:
             key: The key of the task to cancel.
         """
@@ -515,6 +521,10 @@ class Docket:
         ):
             async with self.redis() as redis:
                 await self._cancel(redis, key)
+
+                # Publish cancellation signal for running tasks (best-effort)
+                cancellation_channel = f"{self.name}:cancel:{key}"
+                await redis.publish(cancellation_channel, key)
 
         TASKS_CANCELLED.add(1, self.labels())
 
@@ -683,8 +693,11 @@ class Docket:
                     redis.call('DEL', known_key, parked_key, stream_id_key)
                     redis.call('ZREM', queue_key, task_key)
 
-                    -- Create tombstone: set CANCELLED state with completed_at timestamp
-                    redis.call('HSET', runs_key, 'state', 'cancelled', 'completed_at', completed_at)
+                    -- Only set CANCELLED if not already in a terminal state
+                    local current_state = redis.call('HGET', runs_key, 'state')
+                    if current_state ~= 'completed' and current_state ~= 'failed' and current_state ~= 'cancelled' then
+                        redis.call('HSET', runs_key, 'state', 'cancelled', 'completed_at', completed_at)
+                    end
 
                     return 'OK'
                     """
