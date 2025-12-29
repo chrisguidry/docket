@@ -171,7 +171,7 @@ async def verify_tasks_completed(
 
     async with docket.redis() as redis:
         for key in task_keys:
-            runs_key = f"{docket.name}:runs:{key}"
+            runs_key = docket.runs_key(key)
             state: bytes | None = await redis.hget(runs_key, "state")  # type: ignore[reportUnknownMemberType]
 
             if state is None:

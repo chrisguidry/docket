@@ -1,0 +1,16 @@
+# Dockerfile for running cluster tests inside Docker
+# This allows running Redis Cluster integration tests on macOS/Windows
+# where Docker internal IPs are not routable from the host.
+
+FROM python:3.10-slim
+
+# Install git (required for setuptools-scm) and other build dependencies
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
+# Install uv for fast dependency management
+RUN pip install uv
+
+WORKDIR /app
+
+# Default command runs the cluster tests
+CMD ["uv", "run", "pytest", "tests/cluster/test_cluster.py", "-v", "-x"]

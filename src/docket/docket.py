@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
+    TYPE_CHECKING,
     AsyncGenerator,
     Awaitable,
     Callable,
@@ -18,9 +19,13 @@ from typing import (
     Sequence,
     TypedDict,
     TypeVar,
+    Union,
     cast,
     overload,
 )
+
+if TYPE_CHECKING:
+    from redis.asyncio.cluster import RedisCluster
 
 from key_value.aio.stores.base import BaseContextManagerStore
 from typing_extensions import Self
@@ -29,7 +34,12 @@ import redis.exceptions
 from opentelemetry import trace
 from redis.asyncio import ConnectionPool, Redis
 
-from ._redis import connection_pool_from_url
+from ._redis import (
+    close_cluster_client,
+    connection_pool_from_url,
+    get_cluster_client,
+    is_cluster_url,
+)
 from ._uuid7 import uuid7
 
 from .execution import (
@@ -154,6 +164,7 @@ class Docket:
     strike_list: StrikeList
 
     _connection_pool: ConnectionPool
+    _cluster_client: "RedisCluster | None"
     _cancel_task_script: _cancel_task | None
 
     def __init__(
@@ -196,9 +207,15 @@ class Docket:
         self.result_storage: AsyncKeyValue
         if url.startswith("memory://"):
             self.result_storage = MemoryStore()
+        elif is_cluster_url(url):
+            # key_value's RedisStore doesn't support Redis Cluster yet
+            # Use MemoryStore as a temporary workaround
+            # TODO: Add cluster-aware result storage when key_value supports it
+            self.result_storage = MemoryStore()
         else:
+            # Use hash_tag format for cluster slot consistency
             self.result_storage = RedisStore(
-                url=url, default_collection=f"{name}:results"
+                url=url, default_collection=f"{{{name}}}:results"
             )
 
         from .tasks import standard_tasks
@@ -209,6 +226,21 @@ class Docket:
     def worker_group_name(self) -> str:
         return "docket-workers"
 
+    @property
+    def hash_tag(self) -> str:
+        """Return the key prefix for this docket.
+
+        For Redis Cluster connections, uses hash tag format {name} to ensure
+        all keys hash to the same slot, enabling atomic Lua scripts and
+        multi-key operations.
+
+        For standalone Redis, returns the plain name to maintain backward
+        compatibility with existing deployments.
+        """
+        if self._cluster_client is not None:
+            return f"{{{self.name}}}"
+        return self.name
+
     async def __aenter__(self) -> Self:
         self.strike_list = StrikeList(
             url=self.url,
@@ -216,7 +248,14 @@ class Docket:
             enable_internal_instrumentation=self.enable_internal_instrumentation,
         )
 
-        self._connection_pool = await connection_pool_from_url(self.url)
+        # Initialize cluster client if using cluster URL
+        if is_cluster_url(self.url):
+            self._cluster_client = await get_cluster_client(self.url)
+            # Connection pool is still created but not used in cluster mode
+            self._connection_pool = await connection_pool_from_url(self.url)
+        else:
+            self._cluster_client = None
+            self._connection_pool = await connection_pool_from_url(self.url)
 
         # Connect the strike list to Redis and start monitoring
         await self.strike_list.connect()
@@ -240,17 +279,74 @@ class Docket:
         await self.strike_list.close()
         del self.strike_list
 
+        # Close cluster client if we have one
+        if self._cluster_client is not None:
+            await close_cluster_client(self.url)
+            self._cluster_client = None
+
         await asyncio.shield(self._connection_pool.disconnect())
         del self._connection_pool
 
     @asynccontextmanager
-    async def redis(self) -> AsyncGenerator[Redis, None]:
-        r = Redis(connection_pool=self._connection_pool)
-        await r.__aenter__()
-        try:
-            yield r
-        finally:
-            await asyncio.shield(r.__aexit__(None, None, None))
+    async def redis(self) -> AsyncGenerator[Union[Redis, "RedisCluster"], None]:
+        # Use cluster client if in cluster mode
+        if self._cluster_client is not None:
+            # RedisCluster manages its own connections, just yield it directly
+            yield self._cluster_client
+        else:
+            r = Redis(connection_pool=self._connection_pool)
+            await r.__aenter__()
+            try:
+                yield r
+            finally:
+                await asyncio.shield(r.__aexit__(None, None, None))
+
+    async def publish(self, channel: str, message: str) -> None:
+        """Publish a message to a Redis pub/sub channel.
+
+        Works in both standalone and cluster mode by using execute_command.
+
+        Args:
+            channel: The channel to publish to.
+            message: The message to publish (string, typically JSON).
+        """
+        async with self.redis() as redis:
+            await redis.execute_command("PUBLISH", channel, message)
+
+    @asynccontextmanager
+    async def pubsub(self) -> AsyncGenerator:
+        """Get a pub/sub connection.
+
+        In standalone mode, uses the connection pool directly.
+        In cluster mode, connects to a random primary node since pub/sub
+        in Redis Cluster is cluster-agnostic (any node works).
+
+        Yields:
+            A PubSub object with subscribe/listen methods.
+        """
+        if self._cluster_client is not None:
+            # For cluster mode, get a random primary node and connect directly
+            nodes = self._cluster_client.get_primaries()
+            if nodes:
+                node = nodes[0]
+                # Create a direct connection to this node
+                r = Redis(host=node.host, port=node.port)
+                await r.__aenter__()
+                try:
+                    async with r.pubsub() as pubsub:
+                        yield pubsub
+                finally:
+                    await asyncio.shield(r.__aexit__(None, None, None))
+            else:
+                raise RuntimeError("No primary nodes available in cluster")
+        else:
+            r = Redis(connection_pool=self._connection_pool)
+            await r.__aenter__()
+            try:
+                async with r.pubsub() as pubsub:
+                    yield pubsub
+            finally:
+                await asyncio.shield(r.__aexit__(None, None, None))
 
     def register(self, function: TaskFunction, names: list[str] | None = None) -> None:
         """Register a task with the Docket.
@@ -522,9 +618,8 @@ class Docket:
             async with self.redis() as redis:
                 await self._cancel(redis, key)
 
-                # Publish cancellation signal for running tasks (best-effort)
-                cancellation_channel = f"{self.name}:cancel:{key}"
-                await redis.publish(cancellation_channel, key)
+            # Publish cancellation signal for running tasks (best-effort)
+            await self.publish(self.cancel_channel(key), key)
 
         TASKS_CANCELLED.add(1, self.labels())
 
@@ -551,7 +646,7 @@ class Docket:
         import cloudpickle
 
         async with self.redis() as redis:
-            runs_key = f"{self.name}:runs:{key}"
+            runs_key = self.runs_key(key)
             data = await redis.hgetall(runs_key)
 
             if not data:
@@ -617,20 +712,40 @@ class Docket:
 
     @property
     def queue_key(self) -> str:
-        return f"{self.name}:queue"
+        return f"{self.hash_tag}:queue"
 
     @property
     def stream_key(self) -> str:
-        return f"{self.name}:stream"
+        return f"{self.hash_tag}:stream"
 
     def known_task_key(self, key: str) -> str:
-        return f"{self.name}:known:{key}"
+        return f"{self.hash_tag}:known:{key}"
 
     def parked_task_key(self, key: str) -> str:
-        return f"{self.name}:{key}"
+        return f"{self.hash_tag}:{key}"
 
     def stream_id_key(self, key: str) -> str:
-        return f"{self.name}:stream-id:{key}"
+        return f"{self.hash_tag}:stream-id:{key}"
+
+    def runs_key(self, key: str) -> str:
+        """Return the Redis key for storing execution state for a task."""
+        return f"{self.hash_tag}:runs:{key}"
+
+    def progress_key(self, key: str) -> str:
+        """Return the Redis key for storing progress data for a task."""
+        return f"{self.hash_tag}:progress:{key}"
+
+    def state_channel(self, key: str) -> str:
+        """Return the Redis pub/sub channel for state updates for a task."""
+        return f"{self.hash_tag}:state:{key}"
+
+    def progress_channel(self, key: str) -> str:
+        """Return the Redis pub/sub channel for progress updates for a task."""
+        return f"{self.hash_tag}:progress:{key}"
+
+    def cancel_channel(self, key: str) -> str:
+        """Return the Redis pub/sub channel for cancellation signals for a task."""
+        return f"{self.hash_tag}:cancel:{key}"
 
     async def _ensure_stream_and_group(self) -> None:
         """Create stream and consumer group if they don't exist (idempotent).
@@ -707,7 +822,7 @@ class Docket:
 
         # Create tombstone with CANCELLED state
         completed_at = datetime.now(timezone.utc).isoformat()
-        runs_key = f"{self.name}:runs:{key}"
+        runs_key = self.runs_key(key)
 
         # Execute the cancellation script
         await cancel_task(
@@ -884,13 +999,23 @@ class Docket:
 
     @property
     def workers_set(self) -> str:
-        return f"{self.name}:workers"
+        return f"{self.hash_tag}:workers"
 
     def worker_tasks_set(self, worker_name: str) -> str:
-        return f"{self.name}:worker-tasks:{worker_name}"
+        return f"{self.hash_tag}:worker-tasks:{worker_name}"
 
     def task_workers_set(self, task_name: str) -> str:
-        return f"{self.name}:task-workers:{task_name}"
+        return f"{self.hash_tag}:task-workers:{task_name}"
+
+    @property
+    def perpetual_lock_key(self) -> str:
+        """Return the Redis key for the perpetual task scheduling lock."""
+        return f"{self.hash_tag}:perpetual:lock"
+
+    @property
+    def results_collection(self) -> str:
+        """Return the key prefix for result storage."""
+        return f"{self.hash_tag}:results"
 
     async def workers(self) -> Collection[WorkerInfo]:
         """Get a list of all workers that have sent heartbeats to the Docket.
@@ -1015,21 +1140,21 @@ class Docket:
                         pipeline.delete(self.stream_id_key(key))
 
                         # Handle runs hash: set TTL or delete based on execution_ttl
-                        runs_key = f"{self.name}:runs:{key}"
+                        task_runs_key = self.runs_key(key)
                         if self.execution_ttl:
                             ttl_seconds = int(self.execution_ttl.total_seconds())
-                            pipeline.expire(runs_key, ttl_seconds)
+                            pipeline.expire(task_runs_key, ttl_seconds)
                         else:
-                            pipeline.delete(runs_key)
+                            pipeline.delete(task_runs_key)
 
                     # Handle runs hash for immediate tasks from stream
                     for key in stream_keys:
-                        runs_key = f"{self.name}:runs:{key}"
+                        task_runs_key = self.runs_key(key)
                         if self.execution_ttl:
                             ttl_seconds = int(self.execution_ttl.total_seconds())
-                            pipeline.expire(runs_key, ttl_seconds)
+                            pipeline.expire(task_runs_key, ttl_seconds)
                         else:
-                            pipeline.delete(runs_key)
+                            pipeline.delete(task_runs_key)
 
                     await pipeline.execute()
 

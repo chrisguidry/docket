@@ -1,0 +1,145 @@
+# Docker Compose for Redis Cluster testing
+# This creates a minimal 3-master + 3-replica Redis Cluster for integration tests
+#
+# Usage (Linux or inside Docker):
+#   docker compose -f tests/cluster/docker-compose.yml up -d
+#   # Wait for cluster to initialize (~10 seconds)
+#   pytest tests/cluster/test_cluster.py -v
+#   docker compose -f tests/cluster/docker-compose.yml down
+#
+# Usage (macOS/Windows - run tests inside Docker):
+#   docker compose -f tests/cluster/docker-compose.yml up -d
+#   docker compose -f tests/cluster/docker-compose.yml run --rm test-runner
+#   docker compose -f tests/cluster/docker-compose.yml down
+#
+# The cluster uses Docker internal IPs (172.30.0.x) which are routable
+# from within the Docker network but not from the host on macOS/Windows.
+
+services:
+  redis-node-1:
+    image: redis:7.4
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    ports:
+      - "7001:6379"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.11
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  redis-node-2:
+    image: redis:7.4
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    ports:
+      - "7002:6379"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.12
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  redis-node-3:
+    image: redis:7.4
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    ports:
+      - "7003:6379"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.13
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  redis-node-4:
+    image: redis:7.4
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    ports:
+      - "7004:6379"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.14
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  redis-node-5:
+    image: redis:7.4
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    ports:
+      - "7005:6379"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.15
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  redis-node-6:
+    image: redis:7.4
+    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
+    ports:
+      - "7006:6379"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.16
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  # Cluster initializer - creates the cluster from the nodes
+  cluster-init:
+    image: redis:7.4
+    depends_on:
+      redis-node-1:
+        condition: service_healthy
+      redis-node-2:
+        condition: service_healthy
+      redis-node-3:
+        condition: service_healthy
+      redis-node-4:
+        condition: service_healthy
+      redis-node-5:
+        condition: service_healthy
+      redis-node-6:
+        condition: service_healthy
+    networks:
+      - redis-cluster
+    command: bash -c "echo 'Creating Redis Cluster...' && redis-cli --cluster create 172.30.0.11:6379 172.30.0.12:6379 172.30.0.13:6379 172.30.0.14:6379 172.30.0.15:6379 172.30.0.16:6379 --cluster-replicas 1 --cluster-yes && echo 'Redis Cluster created successfully!'"
+
+  # Test runner for running tests inside Docker (needed for macOS/Windows)
+  test-runner:
+    build:
+      context: ../..
+      dockerfile: tests/cluster/Dockerfile.test
+    depends_on:
+      - cluster-init
+    networks:
+      - redis-cluster
+    environment:
+      - CLUSTER_URL=redis+cluster://172.30.0.11:6379
+    volumes:
+      - ../..:/app
+    working_dir: /app
+    profiles:
+      - test
+
+networks:
+  redis-cluster:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16

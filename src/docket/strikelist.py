@@ -32,7 +32,12 @@ from typing_extensions import Self
 if TYPE_CHECKING:
     from .execution import Execution
 
-from ._redis import connection_pool_from_url
+from ._redis import (
+    close_cluster_client,
+    connection_pool_from_url,
+    get_cluster_client,
+    is_cluster_url,
+)
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -168,6 +173,7 @@ class StrikeList:
     parameter_strikes: ParameterStrikes
     _conditions: list[Callable[["Execution"], bool]]
     _connection_pool: ConnectionPool | None
+    _cluster_client: Any  # RedisCluster | None - using Any to avoid import
     _monitor_task: asyncio.Task[NoReturn] | None
     _strikes_loaded: asyncio.Event | None
 
@@ -181,6 +187,7 @@ class StrikeList:
 
         Args:
             url: Redis connection URL. Use "memory://" for in-memory testing.
+                 Use "redis+cluster://" for Redis Cluster mode.
                  If None, no Redis connection is made (local-only mode).
             name: Name used as prefix for Redis keys (should match the Docket name
                   if you want to receive strikes from that Docket).
@@ -194,13 +201,17 @@ class StrikeList:
         self.parameter_strikes = {}
         self._conditions = [self._matches_task_or_parameter_strike]
         self._connection_pool = None
+        self._cluster_client = None
         self._monitor_task = None
         self._strikes_loaded = None
 
     @property
     def strike_key(self) -> str:
-        """Redis stream key for strike instructions."""
-        return f"{self.name}:strikes"
+        """Redis stream key for strike instructions.
+
+        Uses hash tag format {name} for Redis Cluster slot consistency.
+        """
+        return f"{{{self.name}}}:strikes"
 
     @contextmanager
     def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
@@ -221,9 +232,13 @@ class StrikeList:
         if self.url is None:
             return  # No Redis connection needed
 
-        if self._connection_pool is not None:
+        if self._connection_pool is not None or self._cluster_client is not None:
             return  # Already connected
 
+        # Initialize cluster client if using cluster URL
+        if is_cluster_url(self.url):
+            self._cluster_client = await get_cluster_client(self.url)
+        # Always create connection pool (used for non-cluster mode)
         self._connection_pool = await connection_pool_from_url(self.url)
 
         self._strikes_loaded = asyncio.Event()
@@ -246,6 +261,11 @@ class StrikeList:
             self._monitor_task = None
 
         self._strikes_loaded = None
+
+        # Close cluster client if we have one
+        if self._cluster_client is not None and self.url is not None:
+            await close_cluster_client(self.url)
+            self._cluster_client = None
 
         if self._connection_pool is not None:
             await asyncio.shield(self._connection_pool.disconnect())
@@ -296,14 +316,21 @@ class StrikeList:
         Raises:
             RuntimeError: If not connected to Redis.
         """
-        if self._connection_pool is None:
+        if self._connection_pool is None and self._cluster_client is None:
             raise RuntimeError(
                 "Cannot send strike instruction: not connected to Redis. "
                 "Use connect() or async context manager first."
             )
 
-        async with Redis(connection_pool=self._connection_pool) as r:
-            await r.xadd(self.strike_key, instruction.as_message())  # type: ignore[arg-type]
+        # Use cluster client if available, otherwise use connection pool
+        if self._cluster_client is not None:
+            await self._cluster_client.xadd(
+                self.strike_key,
+                instruction.as_message(),  # type: ignore[arg-type]
+            )
+        else:
+            async with Redis(connection_pool=self._connection_pool) as r:
+                await r.xadd(self.strike_key, instruction.as_message())  # type: ignore[arg-type]
 
         self.update(instruction)
 
@@ -550,48 +577,20 @@ class StrikeList:
         initial_load_complete = False
         while True:
             try:
-                async with Redis(connection_pool=self._connection_pool) as r:
-                    while True:
-                        with self._maybe_suppress_instrumentation():
-                            # Non-blocking for initial load (block=None), then block
-                            # for new messages (block=60_000). Note: block=0 means
-                            # "block forever" in Redis, not "non-blocking".
-                            streams = await r.xread(
-                                {self.strike_key: last_id},
-                                count=100,
-                                block=60_000 if initial_load_complete else None,
-                            )
-
-                        # If no messages and we haven't signaled yet, initial load is done
-                        if not streams and not initial_load_complete:
-                            initial_load_complete = True
-                            # _strikes_loaded is always set when _monitor_strikes runs
-                            assert self._strikes_loaded is not None
-                            self._strikes_loaded.set()
-                            continue
-
-                        for _, messages in streams:
-                            for message_id, message in messages:
-                                last_id = message_id
-                                instruction = StrikeInstruction.from_message(message)
-                                self.update(instruction)
-                                logger.info(
-                                    "%s %r",
-                                    (
-                                        "Striking"
-                                        if instruction.direction == "strike"
-                                        else "Restoring"
-                                    ),
-                                    instruction.call_repr(),
-                                )
-
-                                STRIKES_IN_EFFECT.add(
-                                    1 if instruction.direction == "strike" else -1,
-                                    {
-                                        "docket.name": self.name,
-                                        **instruction.labels(),
-                                    },
-                                )
+                # For cluster mode, use cluster client directly
+                # For standalone mode, create a Redis client from pool
+                if self._cluster_client is not None:
+                    await self._monitor_strikes_loop(
+                        self._cluster_client,
+                        last_id,
+                        initial_load_complete,
+                        STRIKES_IN_EFFECT,
+                    )
+                else:
+                    async with Redis(connection_pool=self._connection_pool) as r:
+                        await self._monitor_strikes_loop(
+                            r, last_id, initial_load_complete, STRIKES_IN_EFFECT
+                        )
 
             except redis.exceptions.ConnectionError:  # pragma: no cover
                 REDIS_DISRUPTIONS.add(1, {"docket": self.name})
@@ -600,3 +599,49 @@ class StrikeList:
             except Exception:  # pragma: no cover
                 logger.exception("Error monitoring strikes")
                 await asyncio.sleep(1)
+
+    async def _monitor_strikes_loop(
+        self, r: Any, last_id: str, initial_load_complete: bool, STRIKES_IN_EFFECT: Any
+    ) -> NoReturn:
+        """Inner loop for monitoring strikes, shared by cluster and standalone modes."""
+        while True:
+            with self._maybe_suppress_instrumentation():
+                # Non-blocking for initial load (block=None), then block
+                # for new messages (block=60_000). Note: block=0 means
+                # "block forever" in Redis, not "non-blocking".
+                streams = await r.xread(
+                    {self.strike_key: last_id},
+                    count=100,
+                    block=60_000 if initial_load_complete else None,
+                )
+
+            # If no messages and we haven't signaled yet, initial load is done
+            if not streams and not initial_load_complete:
+                initial_load_complete = True
+                # _strikes_loaded is always set when _monitor_strikes runs
+                assert self._strikes_loaded is not None
+                self._strikes_loaded.set()
+                continue
+
+            for _, messages in streams:
+                for message_id, message in messages:
+                    last_id = message_id
+                    instruction = StrikeInstruction.from_message(message)
+                    self.update(instruction)
+                    logger.info(
+                        "%s %r",
+                        (
+                            "Striking"
+                            if instruction.direction == "strike"
+                            else "Restoring"
+                        ),
+                        instruction.call_repr(),
+                    )
+
+                    STRIKES_IN_EFFECT.add(
+                        1 if instruction.direction == "strike" else -1,
+                        {
+                            "docket.name": self.name,
+                            **instruction.labels(),
+                        },
+                    )

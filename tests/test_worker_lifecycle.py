@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Callable
 from unittest.mock import AsyncMock, patch
 
-from redis.asyncio import Redis
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Worker, testing
@@ -195,41 +194,33 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
     """Test that _cancellation_listener handles ConnectionError and reconnects."""
     error_handled = asyncio.Event()
     error_count = 0
-    original_redis = docket.redis
+    original_pubsub = docket.pubsub
 
     @asynccontextmanager
-    async def failing_redis() -> AsyncGenerator[Redis, None]:
+    async def failing_pubsub() -> AsyncGenerator[Any, None]:
         nonlocal error_count
-        async with original_redis() as redis:
-            original_pubsub = redis.pubsub  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        async with original_pubsub() as pubsub:  # pyright: ignore[reportUnknownVariableType]
+            original_listen = pubsub.listen  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-            @asynccontextmanager
-            async def failing_pubsub() -> AsyncGenerator[Any, None]:
-                async with original_pubsub() as pubsub:
-                    original_listen = pubsub.listen  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+            async def failing_listen() -> AsyncGenerator[Any, None]:
+                nonlocal error_count
+                error_count += 1
+                if error_count == 1:
+                    raise ConnectionError("Test connection error")
+                # Signal that we got past the error handler
+                error_handled.set()
+                async for message in original_listen():  # pyright: ignore[reportUnknownVariableType]
+                    yield message  # pragma: no cover
 
-                    async def failing_listen() -> AsyncGenerator[Any, None]:
-                        nonlocal error_count
-                        error_count += 1
-                        if error_count == 1:
-                            raise ConnectionError("Test connection error")
-                        # Signal that we got past the error handler
-                        error_handled.set()
-                        async for message in original_listen():  # pyright: ignore[reportUnknownVariableType]
-                            yield message  # pragma: no cover
-
-                    pubsub.listen = failing_listen
-                    yield pubsub
-
-            redis.pubsub = failing_pubsub  # type: ignore[method-assign]
-            yield redis
+            pubsub.listen = failing_listen
+            yield pubsub
 
     async with Worker(
         docket,
         minimum_check_interval=timedelta(milliseconds=5),
         scheduling_resolution=timedelta(milliseconds=5),
     ) as worker:
-        with patch.object(docket, "redis", failing_redis):
+        with patch.object(docket, "pubsub", failing_pubsub):
             worker_task = asyncio.create_task(worker.run_forever())
             # Wait for the error to be handled and reconnection to succeed
             async with async_timeout(5.0):  # pragma: no branch
@@ -245,41 +236,33 @@ async def test_cancellation_listener_handles_generic_exception(docket: Docket):
     """Test that _cancellation_listener handles generic Exception and continues."""
     error_handled = asyncio.Event()
     error_count = 0
-    original_redis = docket.redis
+    original_pubsub = docket.pubsub
 
     @asynccontextmanager
-    async def failing_redis() -> AsyncGenerator[Redis, None]:
+    async def failing_pubsub() -> AsyncGenerator[Any, None]:
         nonlocal error_count
-        async with original_redis() as redis:
-            original_pubsub = redis.pubsub  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        async with original_pubsub() as pubsub:  # pyright: ignore[reportUnknownVariableType]
+            original_listen = pubsub.listen  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-            @asynccontextmanager
-            async def failing_pubsub() -> AsyncGenerator[Any, None]:
-                async with original_pubsub() as pubsub:
-                    original_listen = pubsub.listen  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+            async def failing_listen() -> AsyncGenerator[Any, None]:
+                nonlocal error_count
+                error_count += 1
+                if error_count == 1:
+                    raise RuntimeError("Test generic error")
+                # Signal that we got past the error handler
+                error_handled.set()
+                async for message in original_listen():  # pyright: ignore[reportUnknownVariableType]
+                    yield message  # pragma: no cover
 
-                    async def failing_listen() -> AsyncGenerator[Any, None]:
-                        nonlocal error_count
-                        error_count += 1
-                        if error_count == 1:
-                            raise RuntimeError("Test generic error")
-                        # Signal that we got past the error handler
-                        error_handled.set()
-                        async for message in original_listen():  # pyright: ignore[reportUnknownVariableType]
-                            yield message  # pragma: no cover
-
-                    pubsub.listen = failing_listen
-                    yield pubsub
-
-            redis.pubsub = failing_pubsub  # type: ignore[method-assign]
-            yield redis
+            pubsub.listen = failing_listen
+            yield pubsub
 
     async with Worker(
         docket,
         minimum_check_interval=timedelta(milliseconds=5),
         scheduling_resolution=timedelta(milliseconds=5),
     ) as worker:
-        with patch.object(docket, "redis", failing_redis):
+        with patch.object(docket, "pubsub", failing_pubsub):
             worker_task = asyncio.create_task(worker.run_forever())
             # Wait for the error to be handled and reconnection to succeed
             async with async_timeout(5.0):  # pragma: no branch

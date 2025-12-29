@@ -623,7 +623,7 @@ class Worker:
                 # KEYS[1]: queue key (sorted set)
                 # KEYS[2]: stream key
                 # ARGV[1]: current timestamp
-                # ARGV[2]: docket name prefix
+                # ARGV[2]: docket hash_tag prefix (e.g., "{docket}")
                 """
             local total_work = redis.call('ZCARD', KEYS[1])
             local due_work = 0
@@ -632,6 +632,7 @@ class Worker:
                 local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
 
                 for i, key in ipairs(tasks) do
+                    -- Use hash_tag prefix for cluster slot consistency
                     local hash_key = ARGV[2] .. ":" .. key
                     local task_data = redis.call('HGETALL', hash_key)
 
@@ -651,11 +652,11 @@ class Worker:
                         )
                         redis.call('DEL', hash_key)
 
-                        -- Set run state to queued
+                        -- Set run state to queued (use hash_tag prefix)
                         local run_key = ARGV[2] .. ":runs:" .. task['key']
                         redis.call('HSET', run_key, 'state', 'queued')
 
-                        -- Publish state change event to pub/sub
+                        -- Publish state change event to pub/sub (use hash_tag prefix)
                         local channel = ARGV[2] .. ":state:" .. task['key']
                         local payload = '{"type":"state","key":"' .. task['key'] .. '","state":"queued","when":"' .. task['when'] .. '"}'
                         redis.call('PUBLISH', channel, payload)
@@ -682,7 +683,10 @@ class Worker:
                 with self._maybe_suppress_instrumentation():
                     total_work, due_work = await stream_due_tasks(
                         keys=[self.docket.queue_key, self.docket.stream_key],
-                        args=[datetime.now(timezone.utc).timestamp(), self.docket.name],
+                        args=[
+                            datetime.now(timezone.utc).timestamp(),
+                            self.docket.hash_tag,
+                        ],
                     )
 
                 if due_work > 0:
@@ -784,7 +788,7 @@ class Worker:
         async with self.docket.redis() as redis:
             try:
                 async with redis.lock(
-                    f"{self.docket.name}:perpetual:lock",
+                    self.docket.perpetual_lock_key,
                     timeout=AUTOMATIC_PERPETUAL_LOCK_TIMEOUT_SECONDS,
                     blocking=False,
                 ):
@@ -807,7 +811,7 @@ class Worker:
     async def _delete_known_task(self, redis: Redis, execution: Execution) -> None:
         logger.debug("Deleting known task", extra=self._log_context())
         # Delete known/stream_id from runs hash to allow task rescheduling
-        runs_key = f"{self.docket.name}:runs:{execution.key}"
+        runs_key = self.docket.runs_key(execution.key)
         await redis.hdel(runs_key, "known", "stream_id")
 
         # TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
@@ -1174,21 +1178,20 @@ class Worker:
 
     async def _cancellation_listener(self) -> None:
         """Listen for cancellation signals and cancel matching tasks."""
-        cancel_pattern = f"{self.docket.name}:cancel:*"
+        cancel_pattern = f"{self.docket.hash_tag}:cancel:*"
         log_context = self._log_context()
 
         while True:
             try:
-                async with self.docket.redis() as redis:
-                    async with redis.pubsub() as pubsub:
-                        await pubsub.psubscribe(cancel_pattern)
-                        self._cancellation_ready.set()
-                        try:
-                            async for message in pubsub.listen():
-                                if message["type"] == "pmessage":
-                                    await self._handle_cancellation(message)
-                        finally:
-                            await pubsub.punsubscribe(cancel_pattern)
+                async with self.docket.pubsub() as pubsub:
+                    await pubsub.psubscribe(cancel_pattern)
+                    self._cancellation_ready.set()
+                    try:
+                        async for message in pubsub.listen():
+                            if message["type"] == "pmessage":
+                                await self._handle_cancellation(message)
+                    finally:
+                        await pubsub.punsubscribe(cancel_pattern)
             except asyncio.CancelledError:
                 return
             except ConnectionError:

@@ -1,16 +1,21 @@
 """Key leak detection for preventing Redis memory leaks in tests."""
 
 from fnmatch import fnmatch
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable, Union
 
 from redis.asyncio import Redis
 
+if TYPE_CHECKING:
+    from redis.asyncio.cluster import RedisCluster
+
 from docket import Docket
 
+RedisClient = Union[Redis, "RedisCluster"]
 
-async def count_redis_keys_by_type(redis: Redis, prefix: str) -> dict[str, int]:
-    """Count Redis keys by type for a given prefix."""
-    pattern = f"{prefix}:*"
+
+async def count_redis_keys_by_type(redis: RedisClient, hash_tag: str) -> dict[str, int]:
+    """Count Redis keys by type for a given hash_tag prefix."""
+    pattern = f"{hash_tag}:*"
     keys: Iterable[str] = await redis.keys(pattern)  # type: ignore
     counts: dict[str, int] = {}
 
@@ -34,22 +39,23 @@ class KeyCountChecker:
     def __init__(self, docket: Docket) -> None:
         self.docket = docket
         self.docket_name = docket.name
-        self.redis: Redis | None = None
+        self.hash_tag = docket.hash_tag
+        self.redis: RedisClient | None = None
         self.baseline_counts: dict[str, int] = {}
         self.exemptions: set[str] = set()
         self.pattern_exemptions: set[str] = set()
 
-        # Permanent keys that don't need TTL
+        # Permanent keys that don't need TTL (use hash_tag format for cluster support)
         self.permanent_keys = {
-            f"{docket.name}:stream",  # Task stream for ready-to-execute tasks
-            f"{docket.name}:workers",  # Worker heartbeat tracking
-            f"{docket.name}:strikes",  # Strike command stream
-            f"{docket.name}:queue",  # Scheduled tasks sorted set
+            f"{self.hash_tag}:stream",  # Task stream for ready-to-execute tasks
+            f"{self.hash_tag}:workers",  # Worker heartbeat tracking
+            f"{self.hash_tag}:strikes",  # Strike command stream
+            f"{self.hash_tag}:queue",  # Scheduled tasks sorted set
         }
         # Permanent key patterns (using simple prefix matching)
         self.permanent_patterns = [
-            f"{docket.name}:worker-tasks:",  # Per-worker task capability sets
-            f"{docket.name}:task-workers:",  # Per-task worker index sets
+            f"{self.hash_tag}:worker-tasks:",  # Per-worker task capability sets
+            f"{self.hash_tag}:task-workers:",  # Per-task worker index sets
         ]
 
     def add_exemption(self, key_pattern: str) -> None:
@@ -66,9 +72,7 @@ class KeyCountChecker:
     async def capture_baseline(self) -> None:
         """Capture baseline key counts after worker priming."""
         async with self.docket.redis() as redis:
-            self.baseline_counts = await count_redis_keys_by_type(
-                redis, self.docket_name
-            )
+            self.baseline_counts = await count_redis_keys_by_type(redis, self.hash_tag)
 
     async def verify_remaining_keys_have_ttl(self) -> None:
         """Verify that all remaining keys either have TTL or are explicitly permanent.
@@ -81,7 +85,7 @@ class KeyCountChecker:
         """
         async with self.docket.redis() as redis:
             # Get all keys for this docket (use :* to avoid matching dockets with suffixes)
-            pattern = f"{self.docket_name}:*"
+            pattern = f"{self.hash_tag}:*"
             all_keys: list[str] = await redis.keys(pattern)  # type: ignore
 
             keys_without_ttl: list[str] = []
@@ -121,7 +125,7 @@ class KeyCountChecker:
                 f"tasks that are still scheduled/queued (not yet executed)."
             )
 
-    async def _is_scheduled_task_key(self, key_str: str, redis: Redis) -> bool:
+    async def _is_scheduled_task_key(self, key_str: str, redis: RedisClient) -> bool:
         """Check if a key without TTL is for a task that's still scheduled/queued.
 
         Args:
@@ -133,7 +137,8 @@ class KeyCountChecker:
         """
         # Extract task key from the Redis key
         # Patterns: {docket}:{task_key} (parked data) or {docket}:runs:{task_key}
-        prefix = f"{self.docket_name}:"
+        # where {docket} is the hash_tag like {my-docket}
+        prefix = f"{self.hash_tag}:"
         if not key_str.startswith(prefix):  # pragma: no cover
             return False
 
@@ -146,7 +151,7 @@ class KeyCountChecker:
         else:
             # Parked task data key - the suffix is the task key
             task_key = suffix
-            runs_key = f"{self.docket_name}:runs:{task_key}"
+            runs_key = self.docket.runs_key(task_key)
 
         # Check the state in the runs hash
         state: str | None = await redis.hget(runs_key, "state")  # type: ignore[assignment]
@@ -168,7 +173,9 @@ class KeyCountChecker:
         # in the queue or stream (catches cases where clear() left stale runs hashes)
         return await self._task_is_actually_scheduled(task_key, redis)
 
-    async def _task_is_actually_scheduled(self, task_key: str, redis: Redis) -> bool:
+    async def _task_is_actually_scheduled(
+        self, task_key: str, redis: RedisClient
+    ) -> bool:
         """Check if a task is actually present in the queue or stream.
 
         Args:
@@ -177,23 +184,21 @@ class KeyCountChecker:
         Returns:
             True if the task is in the queue (scheduled) or stream (queued/running)
         """
-        queue_key = f"{self.docket_name}:queue"
-
         # Check if task is in the scheduled queue
-        score = await redis.zscore(queue_key, task_key)
+        score = await redis.zscore(self.docket.queue_key, task_key)
         if score is not None:
             return True
 
         # For immediate tasks in the stream, check if there's a stream_id in runs hash
         # or if parked data exists
-        runs_key = f"{self.docket_name}:runs:{task_key}"
+        runs_key = self.docket.runs_key(task_key)
         stream_id: str | None = await redis.hget(runs_key, "stream_id")  # type: ignore[assignment]
         if stream_id is not None:
             # Task is in the stream (immediate task)
             return True
 
         # Check if parked data exists (for scheduled tasks not yet in stream)
-        parked_key = f"{self.docket_name}:{task_key}"
+        parked_key = self.docket.parked_task_key(task_key)
         parked_exists = await redis.exists(parked_key)
 
         return bool(parked_exists)

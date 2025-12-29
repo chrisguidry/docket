@@ -2,7 +2,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator, Callable
+from typing import TYPE_CHECKING, AsyncGenerator, Callable, Union
 
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -11,6 +11,9 @@ import cloudpickle  # type: ignore[import]
 import pytest
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError
+
+if TYPE_CHECKING:
+    from redis.asyncio.cluster import RedisCluster
 
 from docket import (
     CurrentDocket,
@@ -322,7 +325,7 @@ async def test_worker_recovers_from_redis_errors(
     redis_calls = 0
 
     @asynccontextmanager
-    async def mock_redis() -> AsyncGenerator[Redis, None]:
+    async def mock_redis() -> AsyncGenerator[Union[Redis, "RedisCluster"], None]:
         nonlocal redis_calls, error_time
         redis_calls += 1
 
@@ -899,7 +902,7 @@ async def test_verify_remaining_keys_have_ttl_detects_leaks(
     redis_url: str, docket: Docket, worker: Worker, key_leak_checker: KeyCountChecker
 ) -> None:
     """Test that verify_remaining_keys_have_ttl properly detects keys without TTL."""
-    leak_key = f"{docket.name}:test-leak"
+    leak_key = f"{docket.hash_tag}:test-leak"
 
     # Exempt the leak from autouse checker
     key_leak_checker.add_exemption(leak_key)

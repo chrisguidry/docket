@@ -1,7 +1,7 @@
 """Redis connection management.
 
 This module is the single point of control for Redis connections, including
-the fakeredis backend used for memory:// URLs.
+the fakeredis backend used for memory:// URLs and Redis Cluster support.
 """
 
 import asyncio
@@ -11,10 +11,41 @@ from redis.asyncio import ConnectionPool
 
 if typing.TYPE_CHECKING:
     from fakeredis.aioredis import FakeServer
+    from redis.asyncio.cluster import RedisCluster
 
 # Cache of FakeServer instances keyed by URL
 _memory_servers: dict[str, "FakeServer"] = {}
 _memory_servers_lock = asyncio.Lock()
+
+# Cache of RedisCluster instances keyed by URL
+_cluster_clients: dict[str, "RedisCluster"] = {}
+_cluster_clients_lock = asyncio.Lock()
+
+
+def is_cluster_url(url: str) -> bool:
+    """Check if the URL indicates Redis Cluster mode.
+
+    Args:
+        url: Redis URL to check
+
+    Returns:
+        True if the URL uses the redis+cluster:// scheme
+    """
+    return url.startswith("redis+cluster://")
+
+
+def normalize_cluster_url(url: str) -> str:
+    """Convert a redis+cluster:// URL to a standard redis:// URL.
+
+    Args:
+        url: Redis cluster URL (redis+cluster://...)
+
+    Returns:
+        Normalized URL with redis:// scheme
+    """
+    if url.startswith("redis+cluster://"):
+        return url.replace("redis+cluster://", "redis://", 1)
+    return url
 
 
 async def clear_memory_servers() -> None:
@@ -34,20 +65,94 @@ def get_memory_server(url: str) -> "FakeServer | None":
     return _memory_servers.get(url)
 
 
+async def get_cluster_client(url: str) -> "RedisCluster":
+    """Get or create a RedisCluster client for a cluster URL.
+
+    RedisCluster manages its own connection pooling internally, so we cache
+    the client instance to avoid creating multiple clients for the same cluster.
+
+    Args:
+        url: Redis cluster URL (redis+cluster://...)
+
+    Returns:
+        A RedisCluster client instance
+    """
+    global _cluster_clients
+
+    from redis.asyncio.cluster import RedisCluster
+
+    normalized_url = normalize_cluster_url(url)
+
+    # Fast path: client already exists
+    client = _cluster_clients.get(url)
+    if client is not None:
+        return client
+
+    async with _cluster_clients_lock:
+        # Double-check after acquiring lock
+        client = _cluster_clients.get(url)
+        if client is not None:  # pragma: no cover
+            return client
+
+        # Create new cluster client and initialize it
+        client = RedisCluster.from_url(normalized_url)
+        await client.initialize()
+        _cluster_clients[url] = client
+        return client
+
+
+async def close_cluster_client(url: str) -> None:
+    """Close and remove a cached RedisCluster client.
+
+    Args:
+        url: Redis cluster URL whose client should be closed
+    """
+    async with _cluster_clients_lock:
+        client = _cluster_clients.pop(url, None)
+        if client is not None:
+            await client.aclose()
+
+
+async def clear_cluster_clients() -> None:
+    """Close and remove all cached RedisCluster clients.
+
+    This is primarily for testing to ensure isolation between tests
+    that may run in different event loops.
+    """
+    async with _cluster_clients_lock:
+        for url in list(_cluster_clients.keys()):
+            client = _cluster_clients.pop(url, None)
+            if client is not None:
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass  # Ignore errors during cleanup
+
+
 async def connection_pool_from_url(url: str) -> ConnectionPool:
     """Create a Redis connection pool from a URL.
 
-    Handles both real Redis (redis://) and in-memory fakeredis (memory://).
-    This is the only place in the codebase that imports fakeredis.
+    Handles real Redis (redis://), in-memory fakeredis (memory://), and
+    Redis Cluster (redis+cluster://). This is the only place in the codebase
+    that imports fakeredis.
+
+    Note: For Redis Cluster URLs, this returns a ConnectionPool but the actual
+    cluster client should be obtained via get_cluster_client() since RedisCluster
+    manages connections differently.
 
     Args:
-        url: Redis URL (redis://...) or memory:// for in-memory backend
+        url: Redis URL (redis://...), memory:// for in-memory backend,
+             or redis+cluster:// for Redis Cluster
 
     Returns:
         A ConnectionPool ready for use with Redis clients
     """
     if url.startswith("memory://"):
         return await _memory_connection_pool(url)
+    if is_cluster_url(url):
+        # For cluster mode, return a pool from the normalized URL
+        # The actual cluster client is obtained separately via get_cluster_client()
+        return ConnectionPool.from_url(normalize_cluster_url(url))
     return ConnectionPool.from_url(url)
 
 
