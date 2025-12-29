@@ -194,7 +194,7 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
     """Test that _cancellation_listener handles ConnectionError and reconnects."""
     error_handled = asyncio.Event()
     error_count = 0
-    original_pubsub = docket.pubsub
+    original_pubsub = docket._pubsub  # type: ignore[reportPrivateUsage]
 
     @asynccontextmanager
     async def failing_pubsub() -> AsyncGenerator[Any, None]:
@@ -220,7 +220,7 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
         minimum_check_interval=timedelta(milliseconds=5),
         scheduling_resolution=timedelta(milliseconds=5),
     ) as worker:
-        with patch.object(docket, "pubsub", failing_pubsub):
+        with patch.object(docket, "_pubsub", failing_pubsub):
             worker_task = asyncio.create_task(worker.run_forever())
             # Wait for the error to be handled and reconnection to succeed
             async with async_timeout(5.0):  # pragma: no branch
@@ -236,7 +236,7 @@ async def test_cancellation_listener_handles_generic_exception(docket: Docket):
     """Test that _cancellation_listener handles generic Exception and continues."""
     error_handled = asyncio.Event()
     error_count = 0
-    original_pubsub = docket.pubsub
+    original_pubsub = docket._pubsub  # type: ignore[reportPrivateUsage]
 
     @asynccontextmanager
     async def failing_pubsub() -> AsyncGenerator[Any, None]:
@@ -262,7 +262,7 @@ async def test_cancellation_listener_handles_generic_exception(docket: Docket):
         minimum_check_interval=timedelta(milliseconds=5),
         scheduling_resolution=timedelta(milliseconds=5),
     ) as worker:
-        with patch.object(docket, "pubsub", failing_pubsub):
+        with patch.object(docket, "_pubsub", failing_pubsub):
             worker_task = asyncio.create_task(worker.run_forever())
             # Wait for the error to be handled and reconnection to succeed
             async with async_timeout(5.0):  # pragma: no branch

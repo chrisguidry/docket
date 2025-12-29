@@ -1183,7 +1183,7 @@ class Worker:
 
         while True:
             try:
-                async with self.docket.pubsub() as pubsub:
+                async with self.docket._pubsub() as pubsub:
                     await pubsub.psubscribe(cancel_pattern)
                     self._cancellation_ready.set()
                     try:

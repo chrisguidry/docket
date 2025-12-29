@@ -91,10 +91,9 @@ class TestPrefix:
         assert docket.prefix == "my-docket"
 
     def test_prefix_cluster_mode(self) -> None:
-        """When _cluster_client is set, prefix returns braced format."""
-        docket = Docket(name="my-docket", url="memory://")
-        # Simulate cluster mode by setting _cluster_client
-        docket._cluster_client = MagicMock()  # type: ignore[assignment]
+        """When using cluster URL, prefix returns braced format."""
+        docket = Docket(name="my-docket", url="redis+cluster://localhost:7001")
+        # Prefix is determined by URL scheme, not _cluster_client
         assert docket.prefix == "{my-docket}"
         assert docket.queue_key == "{my-docket}:queue"
         assert docket.stream_key == "{my-docket}:stream"
@@ -105,18 +104,18 @@ class TestPrefix:
         assert docket.key("queue") == "my-docket:queue"
         assert docket.key("runs:task-123") == "my-docket:runs:task-123"
 
-        # In cluster mode
-        docket._cluster_client = MagicMock()  # type: ignore[assignment]
-        assert docket.key("queue") == "{my-docket}:queue"
+        # With cluster URL
+        cluster_docket = Docket(name="my-docket", url="redis+cluster://localhost:7001")
+        assert cluster_docket.key("queue") == "{my-docket}:queue"
 
     def test_results_collection(self) -> None:
         """results_collection property returns the results key prefix."""
         docket = Docket(name="my-docket", url="memory://")
         assert docket.results_collection == "my-docket:results"
 
-        # In cluster mode, should use braced prefix
-        docket._cluster_client = MagicMock()  # type: ignore[assignment]
-        assert docket.results_collection == "{my-docket}:results"
+        # With cluster URL, should use braced prefix
+        cluster_docket = Docket(name="my-docket", url="redis+cluster://localhost:7001")
+        assert cluster_docket.results_collection == "{my-docket}:results"
 
 
 class TestClusterClientManagement:
@@ -221,12 +220,15 @@ class TestDocketClusterMode:
     These tests verify cluster-specific code paths without running a real cluster.
     """
 
-    def test_docket_cluster_result_storage(self) -> None:
-        """Docket uses MemoryStore for results in cluster mode."""
-        from key_value.aio.stores.memory import MemoryStore
+    def test_docket_cluster_result_storage_deferred(self) -> None:
+        """Docket defers result storage creation in cluster mode.
 
+        For cluster URLs, result storage is created in __aenter__ when we have
+        the cluster client available. Before initialization, _result_storage is None.
+        """
         docket = Docket(name="cluster-test", url="redis+cluster://localhost:7001")
-        assert isinstance(docket.result_storage, MemoryStore)
+        # Before __aenter__, _result_storage should be None (deferred initialization)
+        assert docket._result_storage is None  # type: ignore[reportPrivateUsage]
 
     @pytest.mark.asyncio
     async def test_docket_redis_context_cluster_mode(self) -> None:
@@ -267,15 +269,15 @@ class TestDocketClusterMode:
         mock_redis.__aexit__ = AsyncMock(return_value=None)
         mock_redis.pubsub = MagicMock(return_value=mock_pubsub)
 
-        with patch("docket.docket.Redis", return_value=mock_redis):
-            async with docket.pubsub() as ps:  # type: ignore[reportUnknownVariableType]
+        with patch("docket._redis.Redis", return_value=mock_redis):
+            async with docket._pubsub() as ps:  # type: ignore[reportUnknownVariableType]
                 assert ps is mock_pubsub
 
         await docket._connection_pool.disconnect()  # type: ignore[reportPrivateUsage]
 
     @pytest.mark.asyncio
     async def test_docket_pubsub_cluster_no_primaries(self) -> None:
-        """Docket.pubsub() raises when no primary nodes available."""
+        """Docket._pubsub() raises when no primary nodes available."""
         docket = Docket(name="test", url="memory://")
         docket._connection_pool = await connection_pool_from_url("memory://")  # type: ignore[reportPrivateUsage]
 
@@ -285,7 +287,7 @@ class TestDocketClusterMode:
         docket._cluster_client = mock_cluster  # type: ignore[reportPrivateUsage]
 
         with pytest.raises(RuntimeError, match="No primary nodes"):
-            async with docket.pubsub():
+            async with docket._pubsub():  # type: ignore[reportPrivateUsage]
                 pass  # pragma: no cover - exception raised before reaching here
 
         await docket._connection_pool.disconnect()  # type: ignore[reportPrivateUsage]

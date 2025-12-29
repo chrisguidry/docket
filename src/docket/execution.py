@@ -269,8 +269,8 @@ class ExecutionProgress:
             "updated_at": data.get("updated_at"),
         }
 
-        # Publish JSON payload using docket's publish method (cluster-safe)
-        await self.docket.publish(channel, json.dumps(payload))
+        # Publish JSON payload
+        await self.docket._publish(channel, json.dumps(payload))
 
     async def subscribe(self) -> AsyncGenerator[ProgressEvent, None]:
         """Subscribe to progress updates for this task.
@@ -285,7 +285,7 @@ class ExecutionProgress:
             - updated_at: ISO 8601 timestamp
         """
         channel = self.docket.progress_channel(self.key)
-        async with self.docket.pubsub() as pubsub:
+        async with self.docket._pubsub() as pubsub:
             await pubsub.subscribe(channel)
             try:
                 async for message in pubsub.listen():  # pragma: no cover
@@ -998,8 +998,7 @@ class Execution:
             "key": self.key,
             **data,
         }
-        # Use docket's publish method (cluster-safe)
-        await self.docket.publish(channel, json.dumps(payload))
+        await self.docket._publish(channel, json.dumps(payload))
 
     async def subscribe(self) -> AsyncGenerator[StateEvent | ProgressEvent, None]:
         """Subscribe to both state and progress updates for this task.
@@ -1047,7 +1046,7 @@ class Execution:
         # Then subscribe to real-time updates
         state_channel = self.docket.state_channel(self.key)
         progress_channel = self.docket.progress_channel(self.key)
-        async with self.docket.pubsub() as pubsub:
+        async with self.docket._pubsub() as pubsub:
             await pubsub.subscribe(state_channel, progress_channel)
             try:
                 async for message in pubsub.listen():  # pragma: no cover

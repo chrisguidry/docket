@@ -26,7 +26,7 @@ from typing import (
 import cloudpickle  # type: ignore[import]
 import redis.exceptions
 from opentelemetry.instrumentation.utils import suppress_instrumentation
-from redis.asyncio import ConnectionPool, Redis
+from redis.asyncio import ConnectionPool
 from typing_extensions import Self
 
 if TYPE_CHECKING:
@@ -37,6 +37,8 @@ from ._redis import (
     connection_pool_from_url,
     get_cluster_client,
     is_cluster_url,
+    key_prefix,
+    redis_connection,
 )
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -219,9 +221,9 @@ class StrikeList:
         For standalone Redis, returns the plain name to maintain backward
         compatibility with existing deployments.
         """
-        if self._cluster_client is not None:
-            return f"{{{self.name}}}"
-        return self.name
+        if self.url is None:
+            return self.name
+        return key_prefix(self.name, self.url)
 
     @property
     def strike_key(self) -> str:
@@ -340,15 +342,14 @@ class StrikeList:
                 "Use connect() or async context manager first."
             )
 
-        # Use cluster client if available, otherwise use connection pool
-        if self._cluster_client is not None:
-            await self._cluster_client.xadd(
-                self.strike_key,
-                instruction.as_message(),  # type: ignore[arg-type]
-            )
-        else:
-            async with Redis(connection_pool=self._connection_pool) as r:
-                await r.xadd(self.strike_key, instruction.as_message())  # type: ignore[arg-type]
+        assert self.url is not None  # Checked above
+
+        async with redis_connection(
+            self.url,
+            pool=self._connection_pool,
+            cluster_client=self._cluster_client,
+        ) as r:
+            await r.xadd(self.strike_key, instruction.as_message())  # type: ignore[arg-type]
 
         self.update(instruction)
 
@@ -591,18 +592,16 @@ class StrikeList:
         """Background task that monitors Redis for strike updates."""
         from .instrumentation import REDIS_DISRUPTIONS, STRIKES_IN_EFFECT
 
+        assert self.url is not None  # Only called when connected to Redis
+
         while True:
             try:
-                # For cluster mode, use cluster client directly
-                # For standalone mode, create a Redis client from pool
-                if self._cluster_client is not None:
-                    await self._monitor_strikes_loop(
-                        self._cluster_client,
-                        STRIKES_IN_EFFECT,
-                    )
-                else:
-                    async with Redis(connection_pool=self._connection_pool) as r:
-                        await self._monitor_strikes_loop(r, STRIKES_IN_EFFECT)
+                async with redis_connection(
+                    self.url,
+                    pool=self._connection_pool,
+                    cluster_client=self._cluster_client,
+                ) as r:
+                    await self._monitor_strikes_loop(r, STRIKES_IN_EFFECT)
 
             except redis.exceptions.ConnectionError:  # pragma: no cover
                 REDIS_DISRUPTIONS.add(1, {"docket": self.name})

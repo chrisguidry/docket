@@ -38,8 +38,11 @@ from ._redis import (
     close_cluster_client,
     connection_pool_from_url,
     get_cluster_client,
-    get_connection_kwargs,
     is_cluster_url,
+    key_prefix,
+    publish_message,
+    pubsub_connection,
+    redis_connection,
 )
 from ._uuid7 import uuid7
 
@@ -206,19 +209,17 @@ class Docket:
         self._cancel_task_script = None
         self._cluster_client = None
 
-        self.result_storage: AsyncKeyValue
+        # Result storage is initialized here for memory/standalone, deferred for cluster
+        self._result_storage: AsyncKeyValue | None = None
         if url.startswith("memory://"):
-            self.result_storage = MemoryStore()
-        elif is_cluster_url(url):
-            # key_value's RedisStore doesn't support Redis Cluster yet
-            # Use MemoryStore as a temporary workaround
-            # TODO: Add cluster-aware result storage when key_value supports it
-            self.result_storage = MemoryStore()
-        else:
+            self._result_storage = MemoryStore()
+        elif not is_cluster_url(url):
             # Standalone Redis - use plain name (no braces needed)
-            self.result_storage = RedisStore(
+            self._result_storage = RedisStore(
                 url=url, default_collection=f"{name}:results"
             )
+        # For cluster mode, result_storage is created in __aenter__ when we have
+        # the cluster client
 
         from .tasks import standard_tasks
 
@@ -239,9 +240,7 @@ class Docket:
         For standalone Redis, returns the plain name to maintain backward
         compatibility with existing deployments.
         """
-        if self._cluster_client is not None:
-            return f"{{{self.name}}}"
-        return self.name
+        return key_prefix(self.name, self.url)
 
     def key(self, suffix: str) -> str:
         """Return a Redis key with the docket prefix.
@@ -254,6 +253,13 @@ class Docket:
         """
         return f"{self.prefix}:{suffix}"
 
+    @property
+    def result_storage(self) -> AsyncKeyValue:
+        """Get the result storage backend."""
+        if self._result_storage is None:  # pragma: no cover
+            raise RuntimeError("Docket not initialized - use async context manager")
+        return self._result_storage
+
     async def __aenter__(self) -> Self:
         self.strike_list = StrikeList(
             url=self.url,
@@ -264,19 +270,21 @@ class Docket:
         # Initialize cluster client if using cluster URL
         if is_cluster_url(self.url):
             self._cluster_client = await get_cluster_client(self.url)
-            # Connection pool is still created but not used in cluster mode
-            self._connection_pool = await connection_pool_from_url(self.url)
-        else:
-            self._cluster_client = None
-            self._connection_pool = await connection_pool_from_url(self.url)
+            # For cluster mode, create RedisStore with the cluster client
+            # RedisCluster has the same interface as Redis for basic operations
+            self._result_storage = RedisStore(
+                client=self._cluster_client,  # type: ignore[arg-type]
+                default_collection=f"{self.prefix}:results",
+            )
+        self._connection_pool = await connection_pool_from_url(self.url)
 
         # Connect the strike list to Redis and start monitoring
         await self.strike_list.connect()
 
-        if isinstance(self.result_storage, BaseContextManagerStore):
-            await self.result_storage.__aenter__()
+        if isinstance(self._result_storage, BaseContextManagerStore):
+            await self._result_storage.__aenter__()
         else:
-            await self.result_storage.setup()
+            await self._result_storage.setup()
         return self
 
     async def __aexit__(
@@ -285,8 +293,8 @@ class Docket:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if isinstance(self.result_storage, BaseContextManagerStore):
-            await self.result_storage.__aexit__(exc_type, exc_value, traceback)
+        if isinstance(self._result_storage, BaseContextManagerStore):
+            await self._result_storage.__aexit__(exc_type, exc_value, traceback)
 
         # Close the strike list (stops monitoring and disconnects)
         await self.strike_list.close()
@@ -302,65 +310,36 @@ class Docket:
 
     @asynccontextmanager
     async def redis(self) -> AsyncGenerator[Union[Redis, "RedisCluster"], None]:
-        # Use cluster client if in cluster mode
-        if self._cluster_client is not None:
-            # RedisCluster manages its own connections, just yield it directly
-            yield self._cluster_client
-        else:
-            r = Redis(connection_pool=self._connection_pool)
-            await r.__aenter__()
-            try:
-                yield r
-            finally:
-                await asyncio.shield(r.__aexit__(None, None, None))
+        """Get a Redis connection context manager.
 
-    async def publish(self, channel: str, message: str) -> None:
-        """Publish a message to a Redis pub/sub channel.
-
-        Works in both standalone and cluster mode by using execute_command.
-
-        Args:
-            channel: The channel to publish to.
-            message: The message to publish (string, typically JSON).
+        For cluster mode, yields the cluster client directly.
+        For standalone mode, creates a Redis client from the pool.
         """
-        async with self.redis() as redis:
-            await redis.execute_command("PUBLISH", channel, message)
+        async with redis_connection(
+            self.url,
+            pool=self._connection_pool,
+            cluster_client=self._cluster_client,
+        ) as r:
+            yield r
+
+    async def _publish(self, channel: str, message: str) -> None:
+        """Publish a message to a Redis pub/sub channel (internal use)."""
+        await publish_message(
+            channel,
+            message,
+            pool=self._connection_pool,
+            cluster_client=self._cluster_client,
+        )
 
     @asynccontextmanager
-    async def pubsub(self) -> AsyncGenerator:
-        """Get a pub/sub connection.
-
-        In standalone mode, uses the connection pool directly.
-        In cluster mode, connects to a random primary node since pub/sub
-        in Redis Cluster is cluster-agnostic (any node works).
-
-        Yields:
-            A PubSub object with subscribe/listen methods.
-        """
-        if self._cluster_client is not None:
-            # For cluster mode, get a random primary node and connect directly
-            nodes = self._cluster_client.get_primaries()
-            if nodes:
-                node = nodes[0]
-                # Create a direct connection preserving auth/SSL from original URL
-                connection_kwargs = get_connection_kwargs(self.url)
-                r = Redis(host=node.host, port=node.port, **connection_kwargs)
-                await r.__aenter__()
-                try:
-                    async with r.pubsub() as pubsub:
-                        yield pubsub
-                finally:
-                    await asyncio.shield(r.__aexit__(None, None, None))
-            else:
-                raise RuntimeError("No primary nodes available in cluster")
-        else:
-            r = Redis(connection_pool=self._connection_pool)
-            await r.__aenter__()
-            try:
-                async with r.pubsub() as pubsub:
-                    yield pubsub
-            finally:
-                await asyncio.shield(r.__aexit__(None, None, None))
+    async def _pubsub(self) -> AsyncGenerator:
+        """Get a pub/sub connection (internal use)."""
+        async with pubsub_connection(
+            self.url,
+            pool=self._connection_pool,
+            cluster_client=self._cluster_client,
+        ) as pubsub:
+            yield pubsub
 
     def register(self, function: TaskFunction, names: list[str] | None = None) -> None:
         """Register a task with the Docket.
@@ -633,7 +612,7 @@ class Docket:
                 await self._cancel(redis, key)
 
             # Publish cancellation signal for running tasks (best-effort)
-            await self.publish(self.cancel_channel(key), key)
+            await self._publish(self.cancel_channel(key), key)
 
         TASKS_CANCELLED.add(1, self.labels())
 
