@@ -203,6 +203,7 @@ class Docket:
         self.execution_ttl = execution_ttl
         self.enable_internal_instrumentation = enable_internal_instrumentation
         self._cancel_task_script = None
+        self._cluster_client = None
 
         self.result_storage: AsyncKeyValue
         if url.startswith("memory://"):
