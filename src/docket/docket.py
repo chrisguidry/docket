@@ -214,9 +214,9 @@ class Docket:
             # TODO: Add cluster-aware result storage when key_value supports it
             self.result_storage = MemoryStore()
         else:
-            # Use hash_tag format for cluster slot consistency
+            # Standalone Redis - use plain name (no braces needed)
             self.result_storage = RedisStore(
-                url=url, default_collection=f"{{{name}}}:results"
+                url=url, default_collection=f"{name}:results"
             )
 
         from .tasks import standard_tasks

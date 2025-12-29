@@ -6,78 +6,41 @@
 #
 # Tests run inside Docker on the same network as Redis nodes, avoiding NAT issues.
 
+x-redis-node: &redis-node
+  image: redis:7.4
+  command: >
+    redis-server
+    --port 6379
+    --cluster-enabled yes
+    --cluster-config-file nodes.conf
+    --cluster-node-timeout 5000
+    --appendonly yes
+  healthcheck:
+    test: ["CMD", "redis-cli", "ping"]
+    interval: 1s
+    timeout: 3s
+    retries: 30
+  networks:
+    - redis-cluster
+
 services:
   redis-node-1:
-    image: redis:7.4
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    networks:
-      redis-cluster:
-        ipv4_address: 172.30.0.11
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 1s
-      timeout: 3s
-      retries: 30
+    <<: *redis-node
 
   redis-node-2:
-    image: redis:7.4
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    networks:
-      redis-cluster:
-        ipv4_address: 172.30.0.12
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 1s
-      timeout: 3s
-      retries: 30
+    <<: *redis-node
 
   redis-node-3:
-    image: redis:7.4
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    networks:
-      redis-cluster:
-        ipv4_address: 172.30.0.13
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 1s
-      timeout: 3s
-      retries: 30
+    <<: *redis-node
 
   redis-node-4:
-    image: redis:7.4
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    networks:
-      redis-cluster:
-        ipv4_address: 172.30.0.14
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 1s
-      timeout: 3s
-      retries: 30
+    <<: *redis-node
 
   redis-node-5:
-    image: redis:7.4
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    networks:
-      redis-cluster:
-        ipv4_address: 172.30.0.15
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 1s
-      timeout: 3s
-      retries: 30
+    <<: *redis-node
 
   redis-node-6:
-    image: redis:7.4
-    command: redis-server --port 6379 --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes
-    networks:
-      redis-cluster:
-        ipv4_address: 172.30.0.16
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 1s
-      timeout: 3s
-      retries: 30
+    <<: *redis-node
 
   # Cluster initializer - creates the cluster from the nodes
   cluster-init:
@@ -97,7 +60,20 @@ services:
         condition: service_healthy
     networks:
       - redis-cluster
-    command: bash -c "echo 'Creating Redis Cluster...' && redis-cli --cluster create 172.30.0.11:6379 172.30.0.12:6379 172.30.0.13:6379 172.30.0.14:6379 172.30.0.15:6379 172.30.0.16:6379 --cluster-replicas 1 --cluster-yes && echo 'Redis Cluster created successfully!'"
+    command: >
+      bash -c "
+        echo 'Creating Redis Cluster...' &&
+        redis-cli --cluster create
+          redis-node-1:6379
+          redis-node-2:6379
+          redis-node-3:6379
+          redis-node-4:6379
+          redis-node-5:6379
+          redis-node-6:6379
+          --cluster-replicas 1
+          --cluster-yes &&
+        echo 'Redis Cluster created successfully!'
+      "
 
   # Test runner for running tests inside Docker (needed for macOS/Windows)
   test-runner:
@@ -109,7 +85,7 @@ services:
     networks:
       - redis-cluster
     environment:
-      - CLUSTER_URL=redis+cluster://172.30.0.11:6379
+      - CLUSTER_URL=redis+cluster://redis-node-1:6379
     volumes:
       - ../..:/app
     working_dir: /app
@@ -119,6 +95,3 @@ services:
 networks:
   redis-cluster:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.30.0.0/16

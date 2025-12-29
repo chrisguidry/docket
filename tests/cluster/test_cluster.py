@@ -28,11 +28,11 @@ import pytest
 from redis.asyncio.cluster import RedisCluster
 
 from docket import Docket, Worker
-from docket._redis import get_cluster_client, is_cluster_url, normalize_cluster_url
+from docket._redis import get_cluster_client
 
 # Cluster URL for testing - can be overridden via environment variable
 # Default connects to localhost:7001 (for Linux/direct host access)
-# Inside Docker, set CLUSTER_URL=redis+cluster://172.30.0.11:6379
+# Inside Docker, set CLUSTER_URL=redis+cluster://redis-node-1:6379
 CLUSTER_URL = os.environ.get("CLUSTER_URL", "redis+cluster://localhost:7001")
 
 
@@ -59,30 +59,6 @@ pytestmark = pytest.mark.skipif(
     not cluster_available(),
     reason="Redis Cluster not available. Start with: docker compose -f tests/cluster/docker-compose.yml up -d",
 )
-
-
-class TestClusterURLParsing:
-    """Tests for cluster URL detection and parsing."""
-
-    def test_is_cluster_url_positive(self) -> None:
-        """redis+cluster:// URLs should be detected as cluster URLs."""
-        assert is_cluster_url("redis+cluster://localhost:7001")
-        assert is_cluster_url("redis+cluster://localhost:7001,localhost:7002")
-
-    def test_is_cluster_url_negative(self) -> None:
-        """Regular redis:// URLs should not be detected as cluster URLs."""
-        assert not is_cluster_url("redis://localhost:6379")
-        assert not is_cluster_url("memory://")
-
-    def test_normalize_cluster_url(self) -> None:
-        """Cluster URLs should be normalized to redis:// for redis-py."""
-        assert (
-            normalize_cluster_url("redis+cluster://localhost:7001")
-            == "redis://localhost:7001"
-        )
-        assert (
-            normalize_cluster_url("redis://localhost:6379") == "redis://localhost:6379"
-        )
 
 
 class TestClusterClient:

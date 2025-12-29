@@ -102,9 +102,11 @@ class TestStrikeListBasic:
         await strikes.close()
 
     async def test_strike_key_property(self, redis_url: str, strike_name: str) -> None:
-        """Test the strike_key property uses hash tag format for cluster support."""
+        """Test the strike_key property uses plain name in standalone mode."""
         strikes = StrikeList(url=redis_url, name=strike_name)
-        assert strikes.strike_key == f"{{{strike_name}}}:strikes"
+        # Before connecting, not in cluster mode, so no braces
+        assert strikes.strike_key == f"{strike_name}:strikes"
+        assert strikes.hash_tag == strike_name
 
     async def test_local_only_mode(self, strike_name: str) -> None:
         """Test StrikeList works without Redis (local-only mode)."""

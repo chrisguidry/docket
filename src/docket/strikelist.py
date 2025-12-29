@@ -206,12 +206,23 @@ class StrikeList:
         self._strikes_loaded = None
 
     @property
-    def strike_key(self) -> str:
-        """Redis stream key for strike instructions.
+    def hash_tag(self) -> str:
+        """Return the key prefix for this strike list.
 
-        Uses hash tag format {name} for Redis Cluster slot consistency.
+        For Redis Cluster connections, uses hash tag format {name} to ensure
+        all keys hash to the same slot.
+
+        For standalone Redis, returns the plain name to maintain backward
+        compatibility with existing deployments.
         """
-        return f"{{{self.name}}}:strikes"
+        if self._cluster_client is not None:
+            return f"{{{self.name}}}"
+        return self.name
+
+    @property
+    def strike_key(self) -> str:
+        """Redis stream key for strike instructions."""
+        return f"{self.hash_tag}:strikes"
 
     @contextmanager
     def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
