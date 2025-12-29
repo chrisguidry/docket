@@ -229,7 +229,7 @@ class Docket:
         return "docket-workers"
 
     @property
-    def hash_tag(self) -> str:
+    def prefix(self) -> str:
         """Return the key prefix for this docket.
 
         For Redis Cluster connections, uses hash tag format {name} to ensure
@@ -242,6 +242,17 @@ class Docket:
         if self._cluster_client is not None:
             return f"{{{self.name}}}"
         return self.name
+
+    def key(self, suffix: str) -> str:
+        """Return a Redis key with the docket prefix.
+
+        Args:
+            suffix: The key suffix (e.g., "queue", "stream", "runs:task-123")
+
+        Returns:
+            Full Redis key like "{docket}:queue" or "docket:stream"
+        """
+        return f"{self.prefix}:{suffix}"
 
     async def __aenter__(self) -> Self:
         self.strike_list = StrikeList(
@@ -715,40 +726,40 @@ class Docket:
 
     @property
     def queue_key(self) -> str:
-        return f"{self.hash_tag}:queue"
+        return self.key("queue")
 
     @property
     def stream_key(self) -> str:
-        return f"{self.hash_tag}:stream"
+        return self.key("stream")
 
-    def known_task_key(self, key: str) -> str:
-        return f"{self.hash_tag}:known:{key}"
+    def known_task_key(self, task_key: str) -> str:
+        return self.key(f"known:{task_key}")
 
-    def parked_task_key(self, key: str) -> str:
-        return f"{self.hash_tag}:{key}"
+    def parked_task_key(self, task_key: str) -> str:
+        return self.key(task_key)
 
-    def stream_id_key(self, key: str) -> str:
-        return f"{self.hash_tag}:stream-id:{key}"
+    def stream_id_key(self, task_key: str) -> str:
+        return self.key(f"stream-id:{task_key}")
 
-    def runs_key(self, key: str) -> str:
+    def runs_key(self, task_key: str) -> str:
         """Return the Redis key for storing execution state for a task."""
-        return f"{self.hash_tag}:runs:{key}"
+        return self.key(f"runs:{task_key}")
 
-    def progress_key(self, key: str) -> str:
+    def progress_key(self, task_key: str) -> str:
         """Return the Redis key for storing progress data for a task."""
-        return f"{self.hash_tag}:progress:{key}"
+        return self.key(f"progress:{task_key}")
 
-    def state_channel(self, key: str) -> str:
+    def state_channel(self, task_key: str) -> str:
         """Return the Redis pub/sub channel for state updates for a task."""
-        return f"{self.hash_tag}:state:{key}"
+        return self.key(f"state:{task_key}")
 
-    def progress_channel(self, key: str) -> str:
+    def progress_channel(self, task_key: str) -> str:
         """Return the Redis pub/sub channel for progress updates for a task."""
-        return f"{self.hash_tag}:progress:{key}"
+        return self.key(f"progress:{task_key}")
 
-    def cancel_channel(self, key: str) -> str:
+    def cancel_channel(self, task_key: str) -> str:
         """Return the Redis pub/sub channel for cancellation signals for a task."""
-        return f"{self.hash_tag}:cancel:{key}"
+        return self.key(f"cancel:{task_key}")
 
     async def _ensure_stream_and_group(self) -> None:
         """Create stream and consumer group if they don't exist (idempotent).
@@ -1002,23 +1013,23 @@ class Docket:
 
     @property
     def workers_set(self) -> str:
-        return f"{self.hash_tag}:workers"
+        return self.key("workers")
 
     def worker_tasks_set(self, worker_name: str) -> str:
-        return f"{self.hash_tag}:worker-tasks:{worker_name}"
+        return self.key(f"worker-tasks:{worker_name}")
 
     def task_workers_set(self, task_name: str) -> str:
-        return f"{self.hash_tag}:task-workers:{task_name}"
+        return self.key(f"task-workers:{task_name}")
 
     @property
     def perpetual_lock_key(self) -> str:
         """Return the Redis key for the perpetual task scheduling lock."""
-        return f"{self.hash_tag}:perpetual:lock"
+        return self.key("perpetual:lock")
 
     @property
     def results_collection(self) -> str:
         """Return the key prefix for result storage."""
-        return f"{self.hash_tag}:results"
+        return self.key("results")
 
     async def workers(self) -> Collection[WorkerInfo]:
         """Get a list of all workers that have sent heartbeats to the Docket.

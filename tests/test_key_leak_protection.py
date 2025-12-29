@@ -20,12 +20,12 @@ async def test_leak_detection_catches_keys_without_ttl(
     key_leak_checker: KeyCountChecker,
 ) -> None:
     """Verify that the leak checker catches keys created without TTL."""
-    leaked_key = f"{docket.hash_tag}:leaked-key"
+    leaked_key = docket.key("leaked-key")
 
     async def task_that_leaks() -> None:
         """Task that intentionally creates a key without TTL."""
         async with docket.redis() as redis:
-            # Intentionally create a key without TTL (using hash_tag for cluster support)
+            # Intentionally create a key without TTL
             await redis.set(leaked_key, "oops")
 
     docket.register(task_that_leaks)
@@ -77,7 +77,7 @@ async def test_exemption_mechanism(
     key_leak_checker: KeyCountChecker,
 ) -> None:
     """Verify that test-specific exemptions work."""
-    special_key = f"{docket.hash_tag}:special-key"
+    special_key = docket.key("special-key")
 
     async def task_with_special_key() -> None:
         """Task that creates a key we want to exempt."""
@@ -103,8 +103,8 @@ async def test_multiple_exemptions(
     key_leak_checker: KeyCountChecker,
 ) -> None:
     """Verify that multiple exemptions can be added."""
-    special_key_1 = f"{docket.hash_tag}:special-key-1"
-    special_key_2 = f"{docket.hash_tag}:special-key-2"
+    special_key_1 = docket.key("special-key-1")
+    special_key_2 = docket.key("special-key-2")
 
     async def task_with_multiple_keys() -> None:
         """Task that creates multiple keys we want to exempt."""

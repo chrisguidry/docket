@@ -90,9 +90,9 @@ class TestClusterConnection:
 class TestClusterKeySlots:
     """Verify hash tags ensure keys land in same slot."""
 
-    async def test_hash_tag_format(self, docket: Docket) -> None:
-        """Cluster mode should use braced hash tags."""
-        assert docket.hash_tag == f"{{{docket.name}}}"
+    async def test_prefix_format(self, docket: Docket) -> None:
+        """Cluster mode should use braced prefix for hash tags."""
+        assert docket.prefix == f"{{{docket.name}}}"
         assert docket.queue_key.startswith(f"{{{docket.name}}}")
         assert docket.stream_key.startswith(f"{{{docket.name}}}")
 

@@ -106,7 +106,7 @@ class TestStrikeListBasic:
         strikes = StrikeList(url=redis_url, name=strike_name)
         # Before connecting, not in cluster mode, so no braces
         assert strikes.strike_key == f"{strike_name}:strikes"
-        assert strikes.hash_tag == strike_name
+        assert strikes.prefix == strike_name
 
     async def test_local_only_mode(self, strike_name: str) -> None:
         """Test StrikeList works without Redis (local-only mode)."""

@@ -13,9 +13,9 @@ from docket import Docket
 RedisClient = Union[Redis, "RedisCluster"]
 
 
-async def count_redis_keys_by_type(redis: RedisClient, hash_tag: str) -> dict[str, int]:
-    """Count Redis keys by type for a given hash_tag prefix."""
-    pattern = f"{hash_tag}:*"
+async def count_redis_keys_by_type(redis: RedisClient, prefix: str) -> dict[str, int]:
+    """Count Redis keys by type for a given prefix."""
+    pattern = f"{prefix}:*"
     keys: Iterable[str] = await redis.keys(pattern)  # type: ignore
     counts: dict[str, int] = {}
 
@@ -39,23 +39,23 @@ class KeyCountChecker:
     def __init__(self, docket: Docket) -> None:
         self.docket = docket
         self.docket_name = docket.name
-        self.hash_tag = docket.hash_tag
+        self.prefix = docket.prefix
         self.redis: RedisClient | None = None
         self.baseline_counts: dict[str, int] = {}
         self.exemptions: set[str] = set()
         self.pattern_exemptions: set[str] = set()
 
-        # Permanent keys that don't need TTL (use hash_tag format for cluster support)
+        # Permanent keys that don't need TTL
         self.permanent_keys = {
-            f"{self.hash_tag}:stream",  # Task stream for ready-to-execute tasks
-            f"{self.hash_tag}:workers",  # Worker heartbeat tracking
-            f"{self.hash_tag}:strikes",  # Strike command stream
-            f"{self.hash_tag}:queue",  # Scheduled tasks sorted set
+            docket.key("stream"),  # Task stream for ready-to-execute tasks
+            docket.key("workers"),  # Worker heartbeat tracking
+            docket.key("strikes"),  # Strike command stream
+            docket.key("queue"),  # Scheduled tasks sorted set
         }
         # Permanent key patterns (using simple prefix matching)
         self.permanent_patterns = [
-            f"{self.hash_tag}:worker-tasks:",  # Per-worker task capability sets
-            f"{self.hash_tag}:task-workers:",  # Per-task worker index sets
+            docket.key("worker-tasks:"),  # Per-worker task capability sets
+            docket.key("task-workers:"),  # Per-task worker index sets
         ]
 
     def add_exemption(self, key_pattern: str) -> None:
@@ -72,7 +72,7 @@ class KeyCountChecker:
     async def capture_baseline(self) -> None:
         """Capture baseline key counts after worker priming."""
         async with self.docket.redis() as redis:
-            self.baseline_counts = await count_redis_keys_by_type(redis, self.hash_tag)
+            self.baseline_counts = await count_redis_keys_by_type(redis, self.prefix)
 
     async def verify_remaining_keys_have_ttl(self) -> None:
         """Verify that all remaining keys either have TTL or are explicitly permanent.
@@ -85,7 +85,7 @@ class KeyCountChecker:
         """
         async with self.docket.redis() as redis:
             # Get all keys for this docket (use :* to avoid matching dockets with suffixes)
-            pattern = f"{self.hash_tag}:*"
+            pattern = f"{self.prefix}:*"
             all_keys: list[str] = await redis.keys(pattern)  # type: ignore
 
             keys_without_ttl: list[str] = []
@@ -139,12 +139,12 @@ class KeyCountChecker:
         """
         # Extract task key from the Redis key
         # Patterns: {docket}:{task_key} (parked data) or {docket}:runs:{task_key}
-        # where {docket} is the hash_tag like {my-docket}
-        prefix = f"{self.hash_tag}:"
-        if not key_str.startswith(prefix):  # pragma: no cover
+        # where {docket} is the prefix like {my-docket} (cluster) or my-docket (standalone)
+        key_prefix = f"{self.prefix}:"
+        if not key_str.startswith(key_prefix):  # pragma: no cover
             return False
 
-        suffix = key_str[len(prefix) :]
+        suffix = key_str[len(key_prefix) :]
 
         # Handle runs keys
         if suffix.startswith("runs:"):

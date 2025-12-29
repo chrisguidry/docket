@@ -623,7 +623,7 @@ class Worker:
                 # KEYS[1]: queue key (sorted set)
                 # KEYS[2]: stream key
                 # ARGV[1]: current timestamp
-                # ARGV[2]: docket hash_tag prefix (e.g., "{docket}")
+                # ARGV[2]: docket prefix (e.g., "{docket}" for cluster)
                 """
             local total_work = redis.call('ZCARD', KEYS[1])
             local due_work = 0
@@ -632,7 +632,7 @@ class Worker:
                 local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
 
                 for i, key in ipairs(tasks) do
-                    -- Use hash_tag prefix for cluster slot consistency
+                    -- Use prefix for cluster slot consistency
                     local hash_key = ARGV[2] .. ":" .. key
                     local task_data = redis.call('HGETALL', hash_key)
 
@@ -652,11 +652,11 @@ class Worker:
                         )
                         redis.call('DEL', hash_key)
 
-                        -- Set run state to queued (use hash_tag prefix)
+                        -- Set run state to queued
                         local run_key = ARGV[2] .. ":runs:" .. task['key']
                         redis.call('HSET', run_key, 'state', 'queued')
 
-                        -- Publish state change event to pub/sub (use hash_tag prefix)
+                        -- Publish state change event to pub/sub
                         local channel = ARGV[2] .. ":state:" .. task['key']
                         local payload = '{"type":"state","key":"' .. task['key'] .. '","state":"queued","when":"' .. task['when'] .. '"}'
                         redis.call('PUBLISH', channel, payload)
@@ -685,7 +685,7 @@ class Worker:
                         keys=[self.docket.queue_key, self.docket.stream_key],
                         args=[
                             datetime.now(timezone.utc).timestamp(),
-                            self.docket.hash_tag,
+                            self.docket.prefix,
                         ],
                     )
 
@@ -1178,7 +1178,7 @@ class Worker:
 
     async def _cancellation_listener(self) -> None:
         """Listen for cancellation signals and cancel matching tasks."""
-        cancel_pattern = f"{self.docket.hash_tag}:cancel:*"
+        cancel_pattern = self.docket.key("cancel:*")
         log_context = self._log_context()
 
         while True:

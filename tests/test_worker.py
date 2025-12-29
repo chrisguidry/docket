@@ -902,7 +902,7 @@ async def test_verify_remaining_keys_have_ttl_detects_leaks(
     redis_url: str, docket: Docket, worker: Worker, key_leak_checker: KeyCountChecker
 ) -> None:
     """Test that verify_remaining_keys_have_ttl properly detects keys without TTL."""
-    leak_key = f"{docket.hash_tag}:test-leak"
+    leak_key = docket.key("test-leak")
 
     # Exempt the leak from autouse checker
     key_leak_checker.add_exemption(leak_key)

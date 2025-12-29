@@ -210,7 +210,7 @@ class StrikeList:
         self._initial_load_complete = False
 
     @property
-    def hash_tag(self) -> str:
+    def prefix(self) -> str:
         """Return the key prefix for this strike list.
 
         For Redis Cluster connections, uses hash tag format {name} to ensure
@@ -226,7 +226,7 @@ class StrikeList:
     @property
     def strike_key(self) -> str:
         """Redis stream key for strike instructions."""
-        return f"{self.hash_tag}:strikes"
+        return f"{self.prefix}:strikes"
 
     @contextmanager
     def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:

@@ -73,38 +73,48 @@ class TestGetConnectionKwargs:
         assert "ssl" not in get_connection_kwargs("redis://localhost:6379?ssl=false")
 
 
-class TestHashTag:
-    """Tests for Docket hash_tag behavior."""
+class TestPrefix:
+    """Tests for Docket prefix behavior."""
 
     @pytest.mark.asyncio
-    async def test_hash_tag_standalone(self) -> None:
-        """For standalone Redis, hash_tag returns plain name (backward compatible)."""
+    async def test_prefix_standalone(self) -> None:
+        """For standalone Redis, prefix returns plain name (backward compatible)."""
         async with Docket(name="my-docket", url="memory://") as docket:
-            assert docket.hash_tag == "my-docket"
+            assert docket.prefix == "my-docket"
             assert docket.queue_key == "my-docket:queue"
             assert docket.stream_key == "my-docket:stream"
 
-    def test_hash_tag_before_connect(self) -> None:
-        """Before connecting, hash_tag returns plain name."""
+    def test_prefix_before_connect(self) -> None:
+        """Before connecting, prefix returns plain name."""
         docket = Docket(name="my-docket", url="memory://")
         # Before __aenter__, _cluster_client is None, so no braces
-        assert docket.hash_tag == "my-docket"
+        assert docket.prefix == "my-docket"
 
-    def test_hash_tag_cluster_mode(self) -> None:
-        """When _cluster_client is set, hash_tag returns braced format."""
+    def test_prefix_cluster_mode(self) -> None:
+        """When _cluster_client is set, prefix returns braced format."""
         docket = Docket(name="my-docket", url="memory://")
         # Simulate cluster mode by setting _cluster_client
         docket._cluster_client = MagicMock()  # type: ignore[assignment]
-        assert docket.hash_tag == "{my-docket}"
+        assert docket.prefix == "{my-docket}"
         assert docket.queue_key == "{my-docket}:queue"
         assert docket.stream_key == "{my-docket}:stream"
+
+    def test_key_method(self) -> None:
+        """key() method builds keys with the prefix."""
+        docket = Docket(name="my-docket", url="memory://")
+        assert docket.key("queue") == "my-docket:queue"
+        assert docket.key("runs:task-123") == "my-docket:runs:task-123"
+
+        # In cluster mode
+        docket._cluster_client = MagicMock()  # type: ignore[assignment]
+        assert docket.key("queue") == "{my-docket}:queue"
 
     def test_results_collection(self) -> None:
         """results_collection property returns the results key prefix."""
         docket = Docket(name="my-docket", url="memory://")
         assert docket.results_collection == "my-docket:results"
 
-        # In cluster mode, should use braced hash_tag
+        # In cluster mode, should use braced prefix
         docket._cluster_client = MagicMock()  # type: ignore[assignment]
         assert docket.results_collection == "{my-docket}:results"
 
@@ -328,8 +338,8 @@ class TestDocketClusterMode:
             ) as docket:
                 # Verify cluster client was set
                 assert docket._cluster_client is mock_cluster  # type: ignore[reportPrivateUsage]
-                # Verify hash_tag is in cluster format
-                assert docket.hash_tag == "{cluster-ctx-test}"
+                # Verify prefix is in cluster format
+                assert docket.prefix == "{cluster-ctx-test}"
 
             # Verify close_cluster_client was called during __aexit__
             mock_close.assert_called_once_with("redis+cluster://localhost:7001")

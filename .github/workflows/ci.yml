@@ -104,3 +104,13 @@ jobs:
 
       - name: Run prek
         uses: j178/prek-action@v1
+
+  cluster-test:
+    name: Redis Cluster integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run cluster tests
+        run: docker compose -f tests/cluster/docker-compose.yml --profile test up --build --abort-on-container-exit
