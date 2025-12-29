@@ -107,7 +107,9 @@ class KeyCountChecker:
 
                 # Skip pattern-exempted keys
                 if self.pattern_exemptions:
-                    if any(fnmatch(key_str, pat) for pat in self.pattern_exemptions):
+                    if any(
+                        fnmatch(key_str, pat) for pat in self.pattern_exemptions
+                    ):  # pragma: no branch
                         continue
 
                 # Check TTL (-1 means no expiry, -2 means key doesn't exist)

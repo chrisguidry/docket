@@ -122,7 +122,7 @@ async def clear_cluster_clients() -> None:
     async with _cluster_clients_lock:
         for url in list(_cluster_clients.keys()):
             client = _cluster_clients.pop(url, None)
-            if client is not None:
+            if client is not None:  # pragma: no branch
                 try:
                     await client.aclose()
                 except Exception:
