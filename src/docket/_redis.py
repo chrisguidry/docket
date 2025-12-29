@@ -6,6 +6,8 @@ the fakeredis backend used for memory:// URLs and Redis Cluster support.
 
 import asyncio
 import typing
+from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from redis.asyncio import ConnectionPool
 
@@ -32,6 +34,40 @@ def is_cluster_url(url: str) -> bool:
         True if the URL uses the redis+cluster:// scheme
     """
     return url.startswith("redis+cluster://")
+
+
+def get_connection_kwargs(url: str) -> dict[str, Any]:
+    """Extract connection parameters from a Redis URL.
+
+    Extracts username, password, and SSL settings from a URL so they can be
+    used when connecting directly to a specific host/port (e.g., for pub/sub
+    in cluster mode).
+
+    Args:
+        url: Redis URL (redis://, rediss://, or redis+cluster://)
+
+    Returns:
+        Dict with connection kwargs (username, password, ssl, etc.)
+    """
+    normalized = normalize_cluster_url(url)
+    parsed = urlparse(normalized)
+    kwargs: dict[str, Any] = {}
+
+    # Auth credentials
+    if parsed.username:
+        kwargs["username"] = parsed.username
+    if parsed.password:
+        kwargs["password"] = parsed.password
+
+    # SSL/TLS - rediss:// scheme or ssl query param
+    if parsed.scheme == "rediss":
+        kwargs["ssl"] = True
+    else:
+        query = parse_qs(parsed.query)
+        if query.get("ssl", [""])[0].lower() in ("true", "1", "yes"):
+            kwargs["ssl"] = True
+
+    return kwargs
 
 
 def normalize_cluster_url(url: str) -> str:

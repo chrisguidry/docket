@@ -176,6 +176,8 @@ class StrikeList:
     _cluster_client: Any  # RedisCluster | None - using Any to avoid import
     _monitor_task: asyncio.Task[NoReturn] | None
     _strikes_loaded: asyncio.Event | None
+    _last_id: str  # Stream cursor for reconnection recovery
+    _initial_load_complete: bool
 
     def __init__(
         self,
@@ -204,6 +206,8 @@ class StrikeList:
         self._cluster_client = None
         self._monitor_task = None
         self._strikes_loaded = None
+        self._last_id = "0-0"
+        self._initial_load_complete = False
 
     @property
     def hash_tag(self) -> str:
@@ -252,6 +256,9 @@ class StrikeList:
         # Always create connection pool (used for non-cluster mode)
         self._connection_pool = await connection_pool_from_url(self.url)
 
+        # Reset stream cursor for fresh connection
+        self._last_id = "0-0"
+        self._initial_load_complete = False
         self._strikes_loaded = asyncio.Event()
         self._monitor_task = asyncio.create_task(
             self._monitor_strikes(), name="docket.strikelist.monitor"
@@ -584,8 +591,6 @@ class StrikeList:
         """Background task that monitors Redis for strike updates."""
         from .instrumentation import REDIS_DISRUPTIONS, STRIKES_IN_EFFECT
 
-        last_id = "0-0"
-        initial_load_complete = False
         while True:
             try:
                 # For cluster mode, use cluster client directly
@@ -593,15 +598,11 @@ class StrikeList:
                 if self._cluster_client is not None:
                     await self._monitor_strikes_loop(
                         self._cluster_client,
-                        last_id,
-                        initial_load_complete,
                         STRIKES_IN_EFFECT,
                     )
                 else:
                     async with Redis(connection_pool=self._connection_pool) as r:
-                        await self._monitor_strikes_loop(
-                            r, last_id, initial_load_complete, STRIKES_IN_EFFECT
-                        )
+                        await self._monitor_strikes_loop(r, STRIKES_IN_EFFECT)
 
             except redis.exceptions.ConnectionError:  # pragma: no cover
                 REDIS_DISRUPTIONS.add(1, {"docket": self.name})
@@ -611,9 +612,7 @@ class StrikeList:
                 logger.exception("Error monitoring strikes")
                 await asyncio.sleep(1)
 
-    async def _monitor_strikes_loop(
-        self, r: Any, last_id: str, initial_load_complete: bool, STRIKES_IN_EFFECT: Any
-    ) -> NoReturn:
+    async def _monitor_strikes_loop(self, r: Any, STRIKES_IN_EFFECT: Any) -> NoReturn:
         """Inner loop for monitoring strikes, shared by cluster and standalone modes."""
         while True:
             with self._maybe_suppress_instrumentation():
@@ -621,14 +620,14 @@ class StrikeList:
                 # for new messages (block=60_000). Note: block=0 means
                 # "block forever" in Redis, not "non-blocking".
                 streams = await r.xread(
-                    {self.strike_key: last_id},
+                    {self.strike_key: self._last_id},
                     count=100,
-                    block=60_000 if initial_load_complete else None,
+                    block=60_000 if self._initial_load_complete else None,
                 )
 
             # If no messages and we haven't signaled yet, initial load is done
-            if not streams and not initial_load_complete:
-                initial_load_complete = True
+            if not streams and not self._initial_load_complete:
+                self._initial_load_complete = True
                 # _strikes_loaded is always set when _monitor_strikes runs
                 assert self._strikes_loaded is not None
                 self._strikes_loaded.set()
@@ -636,7 +635,7 @@ class StrikeList:
 
             for _, messages in streams:
                 for message_id, message in messages:
-                    last_id = message_id
+                    self._last_id = message_id
                     instruction = StrikeInstruction.from_message(message)
                     self.update(instruction)
                     logger.info(

@@ -12,6 +12,7 @@ from docket._redis import (
     close_cluster_client,
     connection_pool_from_url,
     get_cluster_client,
+    get_connection_kwargs,
     is_cluster_url,
     normalize_cluster_url,
 )
@@ -52,6 +53,24 @@ class TestClusterURLParsing:
             normalize_cluster_url("redis://localhost:6379") == "redis://localhost:6379"
         )
         assert normalize_cluster_url("memory://") == "memory://"
+
+
+class TestGetConnectionKwargs:
+    """Tests for extracting connection kwargs from URLs."""
+
+    def test_url_with_auth(self) -> None:
+        """URL with credentials extracts username and password."""
+        assert get_connection_kwargs("redis://localhost:6379") == {}
+        assert get_connection_kwargs("redis://user:pass@localhost:6379") == {
+            "username": "user",
+            "password": "pass",
+        }
+
+    def test_ssl_from_scheme_and_query_param(self) -> None:
+        """SSL enabled via rediss:// scheme or ssl query param."""
+        assert get_connection_kwargs("rediss://localhost:6379") == {"ssl": True}
+        assert get_connection_kwargs("redis://localhost:6379?ssl=true") == {"ssl": True}
+        assert "ssl" not in get_connection_kwargs("redis://localhost:6379?ssl=false")
 
 
 class TestHashTag:

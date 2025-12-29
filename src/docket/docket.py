@@ -38,6 +38,7 @@ from ._redis import (
     close_cluster_client,
     connection_pool_from_url,
     get_cluster_client,
+    get_connection_kwargs,
     is_cluster_url,
 )
 from ._uuid7 import uuid7
@@ -330,8 +331,9 @@ class Docket:
             nodes = self._cluster_client.get_primaries()
             if nodes:
                 node = nodes[0]
-                # Create a direct connection to this node
-                r = Redis(host=node.host, port=node.port)
+                # Create a direct connection preserving auth/SSL from original URL
+                connection_kwargs = get_connection_kwargs(self.url)
+                r = Redis(host=node.host, port=node.port, **connection_kwargs)
                 await r.__aenter__()
                 try:
                     async with r.pubsub() as pubsub:
