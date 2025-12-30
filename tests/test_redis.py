@@ -8,6 +8,7 @@ from redis.asyncio import ConnectionPool
 
 from docket import Docket
 from docket._redis import (
+    cleanup_connection,
     clear_cluster_clients,
     close_cluster_client,
     connection_pool_from_url,
@@ -213,6 +214,30 @@ class TestClusterClientManagement:
         assert pool is not None
         await pool.disconnect()
 
+    @pytest.mark.asyncio
+    async def test_cleanup_connection_cluster_mode(self) -> None:
+        """cleanup_connection calls close_cluster_client for cluster URLs."""
+        mock_client = AsyncMock()
+        mock_client.initialize = AsyncMock()
+        mock_client.aclose = AsyncMock()
+
+        with patch(
+            "redis.asyncio.cluster.RedisCluster.from_url", return_value=mock_client
+        ):
+            # Create client first
+            await get_cluster_client("redis+cluster://localhost:7007")
+
+            # cleanup_connection should close it
+            await cleanup_connection("redis+cluster://localhost:7007")
+            mock_client.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_connection_standalone_mode(self) -> None:
+        """cleanup_connection is a no-op for standalone URLs."""
+        # Should not raise and should not do anything
+        await cleanup_connection("redis://localhost:6379")
+        await cleanup_connection("memory://test")
+
 
 class TestDocketClusterMode:
     """Tests for Docket behavior in cluster mode using mocks.
@@ -332,15 +357,15 @@ class TestDocketClusterMode:
                 side_effect=mock_connection_pool,
             ),
             patch(
-                "docket.docket.close_cluster_client",
+                "docket.docket.cleanup_connection",
                 new_callable=AsyncMock,
-            ) as mock_close_docket,
+            ) as mock_cleanup_docket,
             patch(
                 "docket.docket.connection_pool_from_url",
                 side_effect=mock_connection_pool,
             ),
             patch(
-                "docket.strikelist.close_cluster_client",
+                "docket.strikelist.cleanup_connection",
                 new_callable=AsyncMock,
             ),
             patch(
@@ -355,8 +380,10 @@ class TestDocketClusterMode:
                 # Verify prefix is in cluster format
                 assert docket.prefix == "{cluster-ctx-test}"
 
-            # Verify close_cluster_client was called during __aexit__
-            mock_close_docket.assert_called_once_with("redis+cluster://localhost:7001")
+            # Verify cleanup_connection was called during __aexit__
+            mock_cleanup_docket.assert_called_once_with(
+                "redis+cluster://localhost:7001"
+            )
 
         await memory_pool.disconnect()
 
@@ -393,7 +420,7 @@ class TestDocketClusterMode:
                 side_effect=mock_connection_pool,
             ),
             patch(
-                "docket._redis.close_cluster_client",
+                "docket.strikelist.cleanup_connection",
                 new_callable=AsyncMock,
             ),
             patch(

@@ -155,6 +155,22 @@ async def close_cluster_client(url: str) -> None:
             await client.aclose()
 
 
+async def cleanup_connection(url: str) -> None:
+    """Clean up any cached connections for a Redis URL.
+
+    This is the unified cleanup function that handles both standalone and
+    cluster modes. Callers don't need to know which mode they're in.
+
+    For cluster mode, closes the cached cluster client.
+    For standalone mode, this is a no-op (pool disconnect is handled separately).
+
+    Args:
+        url: Redis URL to clean up connections for
+    """
+    if is_cluster_url(url):
+        await close_cluster_client(url)
+
+
 async def clear_cluster_clients() -> None:
     """Close and remove all cached RedisCluster clients.
 
@@ -311,7 +327,7 @@ async def create_result_storage(url: str, collection: str) -> Any:
     if is_cluster_url(url):
         cluster_client = await get_cluster_client(url)
         return RedisStore(client=cluster_client, default_collection=collection)
-    else:  # pragma: no cover - standalone uses sync initialization in Docket.__init__
+    else:
         return RedisStore(url=url, default_collection=collection)
 
 

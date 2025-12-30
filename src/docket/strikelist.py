@@ -33,9 +33,8 @@ if TYPE_CHECKING:
     from .execution import Execution
 
 from ._redis import (
-    close_cluster_client,
+    cleanup_connection,
     connection_pool_from_url,
-    is_cluster_url,
     key_prefix,
     redis_connection,
 )
@@ -275,9 +274,9 @@ class StrikeList:
 
         self._strikes_loaded = None
 
-        # Close cluster client if using cluster URL
-        if self.url is not None and is_cluster_url(self.url):
-            await close_cluster_client(self.url)
+        # Clean up any cached connections (handles cluster mode internally)
+        if self.url is not None:
+            await cleanup_connection(self.url)
 
         if self._connection_pool is not None:
             await asyncio.shield(self._connection_pool.disconnect())

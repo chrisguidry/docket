@@ -35,10 +35,9 @@ from opentelemetry import trace
 from redis.asyncio import ConnectionPool, Redis
 
 from ._redis import (
-    close_cluster_client,
+    cleanup_connection,
     connection_pool_from_url,
     create_result_storage,
-    is_cluster_url,
     key_prefix,
     publish_message,
     pubsub_connection,
@@ -59,7 +58,6 @@ from .strikelist import (
     StrikeList,
 )
 from key_value.aio.protocols.key_value import AsyncKeyValue
-from key_value.aio.stores.redis import RedisStore
 from key_value.aio.stores.memory import MemoryStore
 
 from .instrumentation import (
@@ -207,17 +205,10 @@ class Docket:
         self.enable_internal_instrumentation = enable_internal_instrumentation
         self._cancel_task_script = None
 
-        # Result storage is initialized here for memory/standalone, deferred for cluster
+        # Result storage: memory:// uses MemoryStore, Redis uses async creation in __aenter__
         self._result_storage: AsyncKeyValue | None = None
         if url.startswith("memory://"):
             self._result_storage = MemoryStore()
-        elif not is_cluster_url(url):
-            # Standalone Redis - use plain name (no braces needed)
-            self._result_storage = RedisStore(
-                url=url, default_collection=f"{name}:results"
-            )
-        # For cluster mode, result_storage is created in __aenter__ when we have
-        # the cluster client
 
         from .tasks import standard_tasks
 
@@ -265,8 +256,8 @@ class Docket:
             enable_internal_instrumentation=self.enable_internal_instrumentation,
         )
 
-        # Initialize result storage for cluster mode (deferred from __init__)
-        if is_cluster_url(self.url):
+        # Initialize result storage for Redis (deferred from __init__ for async creation)
+        if not self.url.startswith("memory://"):
             self._result_storage = await create_result_storage(
                 self.url, f"{self.prefix}:results"
             )
@@ -294,9 +285,8 @@ class Docket:
         await self.strike_list.close()
         del self.strike_list
 
-        # Close cluster client if using cluster URL
-        if is_cluster_url(self.url):
-            await close_cluster_client(self.url)
+        # Clean up any cached connections (handles cluster mode internally)
+        await cleanup_connection(self.url)
 
         await asyncio.shield(self._connection_pool.disconnect())
         del self._connection_pool
