@@ -60,20 +60,10 @@ services:
         condition: service_healthy
     networks:
       - redis-cluster
-    command: >
-      bash -c "
-        echo 'Creating Redis Cluster...' &&
-        redis-cli --cluster create
-          redis-node-1:6379
-          redis-node-2:6379
-          redis-node-3:6379
-          redis-node-4:6379
-          redis-node-5:6379
-          redis-node-6:6379
-          --cluster-replicas 1
-          --cluster-yes &&
-        echo 'Redis Cluster created successfully!'
-      "
+    command: >-
+      bash -c "echo 'Creating Redis Cluster...' &&
+      redis-cli --cluster create redis-node-1:6379 redis-node-2:6379 redis-node-3:6379 redis-node-4:6379 redis-node-5:6379 redis-node-6:6379 --cluster-replicas 1 --cluster-yes &&
+      echo 'Redis Cluster created successfully!'"
 
   # Test runner for running tests inside Docker (needed for macOS/Windows)
   test-runner:
