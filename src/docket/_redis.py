@@ -352,17 +352,9 @@ async def connection_pool_from_url(url: str) -> ConnectionPool:
     if url.startswith("memory://"):
         return await _memory_connection_pool(url)
     if is_cluster_url(url):
-        # For cluster mode, create a pool from just the first node
-        # (multi-host URLs like redis+cluster://h1:7001,h2:7002 fail urlparse)
-        # The pool isn't used in cluster mode - helpers use the cluster client
-        normalized = normalize_cluster_url(url)
-        parsed = urlparse(normalized)
-        if parsed.hostname and "," in (parsed.netloc or ""):
-            # Extract first host from multi-host URL
-            first_host = parsed.netloc.split(",")[0]
-            single_node_url = normalized.replace(parsed.netloc, first_host)
-            return ConnectionPool.from_url(single_node_url)
-        return ConnectionPool.from_url(normalized)
+        # For cluster mode, the pool isn't used (helpers use cluster client)
+        # but we still need a valid pool object for the API
+        return ConnectionPool.from_url(normalize_cluster_url(url))
     return ConnectionPool.from_url(url)
 
 

@@ -77,7 +77,6 @@ class TestGetConnectionKwargs:
 class TestPrefix:
     """Tests for Docket prefix behavior."""
 
-    @pytest.mark.asyncio
     async def test_prefix_standalone(self) -> None:
         """For standalone Redis, prefix returns plain name (backward compatible)."""
         async with Docket(name="my-docket", url="memory://") as docket:
@@ -122,7 +121,6 @@ class TestPrefix:
 class TestClusterClientManagement:
     """Tests for cluster client caching and lifecycle."""
 
-    @pytest.mark.asyncio
     async def test_get_cluster_client_creates_and_caches(self) -> None:
         """get_cluster_client creates a client and caches it."""
         mock_client = AsyncMock()
@@ -146,7 +144,6 @@ class TestClusterClientManagement:
         # Clean up
         await clear_cluster_clients()
 
-    @pytest.mark.asyncio
     async def test_close_cluster_client(self) -> None:
         """close_cluster_client closes and removes cached client."""
         mock_client = AsyncMock()
@@ -167,7 +164,6 @@ class TestClusterClientManagement:
             await close_cluster_client("redis+cluster://localhost:7002")
             assert mock_client.aclose.call_count == 1
 
-    @pytest.mark.asyncio
     async def test_clear_cluster_clients(self) -> None:
         """clear_cluster_clients closes all cached clients."""
         mock_client1 = AsyncMock()
@@ -192,7 +188,6 @@ class TestClusterClientManagement:
             mock_client1.aclose.assert_called_once()
             mock_client2.aclose.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_clear_cluster_clients_ignores_close_errors(self) -> None:
         """clear_cluster_clients handles errors during close gracefully."""
         mock_client = AsyncMock()
@@ -206,7 +201,6 @@ class TestClusterClientManagement:
             # Should not raise even though aclose fails
             await clear_cluster_clients()
 
-    @pytest.mark.asyncio
     async def test_connection_pool_from_url_cluster(self) -> None:
         """connection_pool_from_url handles cluster URLs."""
         pool = await connection_pool_from_url("redis+cluster://localhost:7006")
@@ -214,18 +208,6 @@ class TestClusterClientManagement:
         assert pool is not None
         await pool.disconnect()
 
-    @pytest.mark.asyncio
-    async def test_connection_pool_from_url_cluster_multi_host(self) -> None:
-        """connection_pool_from_url handles multi-host cluster URLs."""
-        # Multi-host URLs like redis+cluster://h1:7001,h2:7002 should work
-        # by extracting just the first host for the pool
-        pool = await connection_pool_from_url(
-            "redis+cluster://host1:7001,host2:7002,host3:7003"
-        )
-        assert pool is not None
-        await pool.disconnect()
-
-    @pytest.mark.asyncio
     async def test_cleanup_connection_cluster_mode(self) -> None:
         """cleanup_connection calls close_cluster_client for cluster URLs."""
         mock_client = AsyncMock()
@@ -242,7 +224,6 @@ class TestClusterClientManagement:
             await cleanup_connection("redis+cluster://localhost:7007")
             mock_client.aclose.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_cleanup_connection_standalone_mode(self) -> None:
         """cleanup_connection is a no-op for standalone URLs."""
         # Should not raise and should not do anything
@@ -266,7 +247,6 @@ class TestDocketClusterMode:
         # Before __aenter__, _result_storage should be None (deferred initialization)
         assert docket._result_storage is None  # type: ignore[reportPrivateUsage]
 
-    @pytest.mark.asyncio
     async def test_docket_redis_context_cluster_mode(self) -> None:
         """Docket.redis() yields cluster client when in cluster mode."""
         mock_cluster = AsyncMock()
@@ -284,7 +264,6 @@ class TestDocketClusterMode:
 
         await memory_pool.disconnect()
 
-    @pytest.mark.asyncio
     async def test_docket_pubsub_cluster_mode(self) -> None:
         """Docket.pubsub() connects to primary node in cluster mode."""
         memory_pool = await connection_pool_from_url("memory://")
@@ -319,7 +298,6 @@ class TestDocketClusterMode:
 
         await memory_pool.disconnect()
 
-    @pytest.mark.asyncio
     async def test_docket_pubsub_cluster_no_primaries(self) -> None:
         """Docket._pubsub() raises when no primary nodes available."""
         memory_pool = await connection_pool_from_url("memory://")
@@ -338,7 +316,6 @@ class TestDocketClusterMode:
 
         await memory_pool.disconnect()
 
-    @pytest.mark.asyncio
     async def test_docket_context_manager_cluster_init_and_cleanup(self) -> None:
         """Docket context manager initializes and cleans up cluster client.
 
@@ -398,7 +375,6 @@ class TestDocketClusterMode:
 
         await memory_pool.disconnect()
 
-    @pytest.mark.asyncio
     async def test_strikelist_send_instruction_cluster_mode(self) -> None:
         """StrikeList uses cluster client for send_instruction in cluster mode."""
         from docket.strikelist import Operator, Strike, StrikeList
@@ -473,7 +449,6 @@ class TestStrikeListLocalMode:
 class TestPublishMessage:
     """Tests for publish_message helper function."""
 
-    @pytest.mark.asyncio
     async def test_publish_message_cluster_mode(self) -> None:
         """publish_message uses cluster client when URL is cluster URL."""
         from docket._redis import publish_message
