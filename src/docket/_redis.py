@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Union
 from urllib.parse import parse_qs, urlparse
 
+from key_value.aio.stores.redis import RedisStore
 from redis.asyncio import ConnectionPool, Redis
 
 logger = logging.getLogger(__name__)
@@ -322,8 +323,6 @@ async def create_result_storage(url: str, collection: str) -> Any:
     Returns:
         A RedisStore instance configured for the appropriate mode
     """
-    from key_value.aio.stores.redis import RedisStore
-
     if is_cluster_url(url):
         cluster_client = await get_cluster_client(url)
         return RedisStore(client=cluster_client, default_collection=collection)

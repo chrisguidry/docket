@@ -256,7 +256,7 @@ class Docket:
             enable_internal_instrumentation=self.enable_internal_instrumentation,
         )
 
-        # Initialize result storage for Redis (deferred from __init__ for async creation)
+        # Initialize result storage for Redis
         if not self.url.startswith("memory://"):
             self._result_storage = await create_result_storage(
                 self.url, f"{self.prefix}:results"
