@@ -7,12 +7,15 @@ All cluster-awareness is centralized here to keep other modules simple.
 """
 
 import asyncio
+import logging
 import typing
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Union
 from urllib.parse import parse_qs, urlparse
 
 from redis.asyncio import ConnectionPool, Redis
+
+logger = logging.getLogger(__name__)
 
 if typing.TYPE_CHECKING:
     from fakeredis.aioredis import FakeServer
@@ -165,7 +168,9 @@ async def clear_cluster_clients() -> None:
                 try:
                     await client.aclose()
                 except Exception:
-                    pass  # Ignore errors during cleanup
+                    logger.debug(
+                        "Error closing cluster client during cleanup", exc_info=True
+                    )
 
 
 def key_prefix(name: str, url: str) -> str:

@@ -96,6 +96,16 @@ async with Docket(name="my-docket", url="memory://my-docket") as docket:
 
 See [Testing with Docket](https://chrisguidry.github.io/docket/testing/#using-in-memory-backend-no-redis-required) for more details.
 
+For Redis Cluster deployments, use the `redis+cluster://` URL scheme:
+
+```python
+from docket import Docket
+
+async with Docket(name="my-docket", url="redis+cluster://localhost:7001") as docket:
+    # Use docket normally - all operations work with cluster
+    ...
+```
+
 # Hacking on `docket`
 
 We use [`uv`](https://docs.astral.sh/uv/) for project management, so getting set up
