@@ -37,7 +37,7 @@ from redis.asyncio import ConnectionPool, Redis
 from ._redis import (
     close_cluster_client,
     connection_pool_from_url,
-    get_cluster_client,
+    create_result_storage,
     is_cluster_url,
     key_prefix,
     publish_message,
@@ -168,7 +168,6 @@ class Docket:
     strike_list: StrikeList
 
     _connection_pool: ConnectionPool
-    _cluster_client: "RedisCluster | None"
     _cancel_task_script: _cancel_task | None
 
     def __init__(
@@ -207,7 +206,6 @@ class Docket:
         self.execution_ttl = execution_ttl
         self.enable_internal_instrumentation = enable_internal_instrumentation
         self._cancel_task_script = None
-        self._cluster_client = None
 
         # Result storage is initialized here for memory/standalone, deferred for cluster
         self._result_storage: AsyncKeyValue | None = None
@@ -267,14 +265,10 @@ class Docket:
             enable_internal_instrumentation=self.enable_internal_instrumentation,
         )
 
-        # Initialize cluster client if using cluster URL
+        # Initialize result storage for cluster mode (deferred from __init__)
         if is_cluster_url(self.url):
-            self._cluster_client = await get_cluster_client(self.url)
-            # For cluster mode, create RedisStore with the cluster client
-            # RedisCluster has the same interface as Redis for basic operations
-            self._result_storage = RedisStore(
-                client=self._cluster_client,  # type: ignore[arg-type]
-                default_collection=f"{self.prefix}:results",
+            self._result_storage = await create_result_storage(
+                self.url, f"{self.prefix}:results"
             )
         self._connection_pool = await connection_pool_from_url(self.url)
 
@@ -300,10 +294,9 @@ class Docket:
         await self.strike_list.close()
         del self.strike_list
 
-        # Close cluster client if we have one
-        if self._cluster_client is not None:
+        # Close cluster client if using cluster URL
+        if is_cluster_url(self.url):
             await close_cluster_client(self.url)
-            self._cluster_client = None
 
         await asyncio.shield(self._connection_pool.disconnect())
         del self._connection_pool
@@ -315,30 +308,17 @@ class Docket:
         For cluster mode, yields the cluster client directly.
         For standalone mode, creates a Redis client from the pool.
         """
-        async with redis_connection(
-            self.url,
-            pool=self._connection_pool,
-            cluster_client=self._cluster_client,
-        ) as r:
+        async with redis_connection(self.url, self._connection_pool) as r:
             yield r
 
     async def _publish(self, channel: str, message: str) -> None:
         """Publish a message to a Redis pub/sub channel (internal use)."""
-        await publish_message(
-            channel,
-            message,
-            pool=self._connection_pool,
-            cluster_client=self._cluster_client,
-        )
+        await publish_message(self.url, channel, message, self._connection_pool)
 
     @asynccontextmanager
     async def _pubsub(self) -> AsyncGenerator:
         """Get a pub/sub connection (internal use)."""
-        async with pubsub_connection(
-            self.url,
-            pool=self._connection_pool,
-            cluster_client=self._cluster_client,
-        ) as pubsub:
+        async with pubsub_connection(self.url, self._connection_pool) as pubsub:
             yield pubsub
 
     def register(self, function: TaskFunction, names: list[str] | None = None) -> None:

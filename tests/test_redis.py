@@ -233,22 +233,25 @@ class TestDocketClusterMode:
     @pytest.mark.asyncio
     async def test_docket_redis_context_cluster_mode(self) -> None:
         """Docket.redis() yields cluster client when in cluster mode."""
-        docket = Docket(name="test", url="memory://")
-        # Manually set up for cluster mode
         mock_cluster = AsyncMock()
-        docket._cluster_client = mock_cluster  # type: ignore[reportPrivateUsage]
-        docket._connection_pool = await connection_pool_from_url("memory://")  # type: ignore[reportPrivateUsage]
+        memory_pool = await connection_pool_from_url("memory://")
 
-        async with docket.redis() as redis:
-            assert redis is mock_cluster
+        with patch(
+            "docket._redis.get_cluster_client",
+            return_value=mock_cluster,
+        ):
+            docket = Docket(name="test", url="redis+cluster://localhost:7001")
+            docket._connection_pool = memory_pool  # type: ignore[reportPrivateUsage]
 
-        await docket._connection_pool.disconnect()  # type: ignore[reportPrivateUsage]
+            async with docket.redis() as redis:
+                assert redis is mock_cluster
+
+        await memory_pool.disconnect()
 
     @pytest.mark.asyncio
     async def test_docket_pubsub_cluster_mode(self) -> None:
         """Docket.pubsub() connects to primary node in cluster mode."""
-        docket = Docket(name="test", url="memory://")
-        docket._connection_pool = await connection_pool_from_url("memory://")  # type: ignore[reportPrivateUsage]
+        memory_pool = await connection_pool_from_url("memory://")
 
         # Set up mock cluster client with a primary node
         mock_node = MagicMock()
@@ -257,7 +260,6 @@ class TestDocketClusterMode:
 
         mock_cluster = MagicMock()
         mock_cluster.get_primaries = MagicMock(return_value=[mock_node])
-        docket._cluster_client = mock_cluster  # type: ignore[reportPrivateUsage]
 
         # Mock the Redis client that will be created for pubsub
         mock_pubsub = AsyncMock()
@@ -269,28 +271,36 @@ class TestDocketClusterMode:
         mock_redis.__aexit__ = AsyncMock(return_value=None)
         mock_redis.pubsub = MagicMock(return_value=mock_pubsub)
 
-        with patch("docket._redis.Redis", return_value=mock_redis):
+        with (
+            patch("docket._redis.get_cluster_client", return_value=mock_cluster),
+            patch("docket._redis.Redis", return_value=mock_redis),
+        ):
+            docket = Docket(name="test", url="redis+cluster://localhost:7001")
+            docket._connection_pool = memory_pool  # type: ignore[reportPrivateUsage]
+
             async with docket._pubsub() as ps:  # type: ignore[reportUnknownVariableType]
                 assert ps is mock_pubsub
 
-        await docket._connection_pool.disconnect()  # type: ignore[reportPrivateUsage]
+        await memory_pool.disconnect()
 
     @pytest.mark.asyncio
     async def test_docket_pubsub_cluster_no_primaries(self) -> None:
         """Docket._pubsub() raises when no primary nodes available."""
-        docket = Docket(name="test", url="memory://")
-        docket._connection_pool = await connection_pool_from_url("memory://")  # type: ignore[reportPrivateUsage]
+        memory_pool = await connection_pool_from_url("memory://")
 
         # Set up mock cluster client with no primary nodes
         mock_cluster = MagicMock()
         mock_cluster.get_primaries = MagicMock(return_value=[])
-        docket._cluster_client = mock_cluster  # type: ignore[reportPrivateUsage]
 
-        with pytest.raises(RuntimeError, match="No primary nodes"):
-            async with docket._pubsub():  # type: ignore[reportPrivateUsage]
-                pass  # pragma: no cover - exception raised before reaching here
+        with patch("docket._redis.get_cluster_client", return_value=mock_cluster):
+            docket = Docket(name="test", url="redis+cluster://localhost:7001")
+            docket._connection_pool = memory_pool  # type: ignore[reportPrivateUsage]
 
-        await docket._connection_pool.disconnect()  # type: ignore[reportPrivateUsage]
+            with pytest.raises(RuntimeError, match="No primary nodes"):
+                async with docket._pubsub():  # type: ignore[reportPrivateUsage]
+                    pass  # pragma: no cover - exception raised before reaching here
+
+        await memory_pool.disconnect()
 
     @pytest.mark.asyncio
     async def test_docket_context_manager_cluster_init_and_cleanup(self) -> None:
@@ -311,23 +321,27 @@ class TestDocketClusterMode:
         async def mock_connection_pool(url: str) -> ConnectionPool:
             return memory_pool
 
-        # Patch at the module level where they are imported
+        # Patch at various module levels where helpers are used
         with (
             patch(
-                "docket.docket.get_cluster_client",
+                "docket._redis.get_cluster_client",
                 side_effect=mock_get_cluster_client,
+            ),
+            patch(
+                "docket._redis.connection_pool_from_url",
+                side_effect=mock_connection_pool,
             ),
             patch(
                 "docket.docket.close_cluster_client",
                 new_callable=AsyncMock,
-            ) as mock_close,
+            ) as mock_close_docket,
             patch(
                 "docket.docket.connection_pool_from_url",
                 side_effect=mock_connection_pool,
             ),
             patch(
-                "docket.strikelist.get_cluster_client",
-                side_effect=mock_get_cluster_client,
+                "docket.strikelist.close_cluster_client",
+                new_callable=AsyncMock,
             ),
             patch(
                 "docket.strikelist.connection_pool_from_url",
@@ -338,13 +352,11 @@ class TestDocketClusterMode:
             async with Docket(
                 name="cluster-ctx-test", url="redis+cluster://localhost:7001"
             ) as docket:
-                # Verify cluster client was set
-                assert docket._cluster_client is mock_cluster  # type: ignore[reportPrivateUsage]
                 # Verify prefix is in cluster format
                 assert docket.prefix == "{cluster-ctx-test}"
 
             # Verify close_cluster_client was called during __aexit__
-            mock_close.assert_called_once_with("redis+cluster://localhost:7001")
+            mock_close_docket.assert_called_once_with("redis+cluster://localhost:7001")
 
         await memory_pool.disconnect()
 
@@ -373,16 +385,20 @@ class TestDocketClusterMode:
 
         with (
             patch(
-                "docket.strikelist.get_cluster_client",
+                "docket._redis.get_cluster_client",
                 side_effect=mock_get_cluster_client,
+            ),
+            patch(
+                "docket._redis.connection_pool_from_url",
+                side_effect=mock_connection_pool,
+            ),
+            patch(
+                "docket._redis.close_cluster_client",
+                new_callable=AsyncMock,
             ),
             patch(
                 "docket.strikelist.connection_pool_from_url",
                 side_effect=mock_connection_pool,
-            ),
-            patch(
-                "docket.strikelist.close_cluster_client",
-                new_callable=AsyncMock,
             ),
         ):
             strike_list = StrikeList(
@@ -421,18 +437,24 @@ class TestPublishMessage:
 
     @pytest.mark.asyncio
     async def test_publish_message_cluster_mode(self) -> None:
-        """publish_message uses cluster client when provided."""
+        """publish_message uses cluster client when URL is cluster URL."""
         from docket._redis import publish_message
 
         mock_cluster = AsyncMock()
         mock_cluster.execute_command = AsyncMock()
 
-        await publish_message(
-            channel="test-channel",
-            message="test-message",
-            cluster_client=mock_cluster,
-        )
+        memory_pool = await connection_pool_from_url("memory://")
+
+        with patch("docket._redis.get_cluster_client", return_value=mock_cluster):
+            await publish_message(
+                url="redis+cluster://localhost:7001",
+                channel="test-channel",
+                message="test-message",
+                pool=memory_pool,
+            )
 
         mock_cluster.execute_command.assert_called_once_with(
             "PUBLISH", "test-channel", "test-message"
         )
+
+        await memory_pool.disconnect()

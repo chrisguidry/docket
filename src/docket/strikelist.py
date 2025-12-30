@@ -35,7 +35,6 @@ if TYPE_CHECKING:
 from ._redis import (
     close_cluster_client,
     connection_pool_from_url,
-    get_cluster_client,
     is_cluster_url,
     key_prefix,
     redis_connection,
@@ -175,7 +174,6 @@ class StrikeList:
     parameter_strikes: ParameterStrikes
     _conditions: list[Callable[["Execution"], bool]]
     _connection_pool: ConnectionPool | None
-    _cluster_client: Any  # RedisCluster | None - using Any to avoid import
     _monitor_task: asyncio.Task[NoReturn] | None
     _strikes_loaded: asyncio.Event | None
     _last_id: str  # Stream cursor for reconnection recovery
@@ -205,7 +203,6 @@ class StrikeList:
         self.parameter_strikes = {}
         self._conditions = [self._matches_task_or_parameter_strike]
         self._connection_pool = None
-        self._cluster_client = None
         self._monitor_task = None
         self._strikes_loaded = None
         self._last_id = "0-0"
@@ -249,13 +246,9 @@ class StrikeList:
         if self.url is None:
             return  # No Redis connection needed
 
-        if self._connection_pool is not None or self._cluster_client is not None:
+        if self._connection_pool is not None:
             return  # Already connected
 
-        # Initialize cluster client if using cluster URL
-        if is_cluster_url(self.url):
-            self._cluster_client = await get_cluster_client(self.url)
-        # Always create connection pool (used for non-cluster mode)
         self._connection_pool = await connection_pool_from_url(self.url)
 
         # Reset stream cursor for fresh connection
@@ -282,10 +275,9 @@ class StrikeList:
 
         self._strikes_loaded = None
 
-        # Close cluster client if we have one
-        if self._cluster_client is not None and self.url is not None:
+        # Close cluster client if using cluster URL
+        if self.url is not None and is_cluster_url(self.url):
             await close_cluster_client(self.url)
-            self._cluster_client = None
 
         if self._connection_pool is not None:
             await asyncio.shield(self._connection_pool.disconnect())
@@ -336,7 +328,7 @@ class StrikeList:
         Raises:
             RuntimeError: If not connected to Redis.
         """
-        if self._connection_pool is None and self._cluster_client is None:
+        if self._connection_pool is None:
             raise RuntimeError(
                 "Cannot send strike instruction: not connected to Redis. "
                 "Use connect() or async context manager first."
@@ -344,11 +336,7 @@ class StrikeList:
 
         assert self.url is not None  # Checked above
 
-        async with redis_connection(
-            self.url,
-            pool=self._connection_pool,
-            cluster_client=self._cluster_client,
-        ) as r:
+        async with redis_connection(self.url, self._connection_pool) as r:
             await r.xadd(self.strike_key, instruction.as_message())  # type: ignore[arg-type]
 
         self.update(instruction)
@@ -593,14 +581,11 @@ class StrikeList:
         from .instrumentation import REDIS_DISRUPTIONS, STRIKES_IN_EFFECT
 
         assert self.url is not None  # Only called when connected to Redis
+        assert self._connection_pool is not None  # Only called when connected
 
         while True:
             try:
-                async with redis_connection(
-                    self.url,
-                    pool=self._connection_pool,
-                    cluster_client=self._cluster_client,
-                ) as r:
+                async with redis_connection(self.url, self._connection_pool) as r:
                     await self._monitor_strikes_loop(r, STRIKES_IN_EFFECT)
 
             except redis.exceptions.ConnectionError:  # pragma: no cover

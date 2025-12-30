@@ -198,40 +198,36 @@ def key_prefix(name: str, url: str) -> str:
 @asynccontextmanager
 async def redis_connection(
     url: str,
-    pool: ConnectionPool | None = None,
-    cluster_client: "RedisCluster | None" = None,
+    pool: ConnectionPool,
 ) -> AsyncGenerator[Union[Redis, "RedisCluster"], None]:
     """Get a Redis connection, handling both standalone and cluster modes.
 
-    For cluster mode, yields the cluster client directly (it manages its own connections).
+    For cluster mode, yields the cached cluster client (it manages its own connections).
     For standalone mode, creates a Redis client from the pool.
 
     Args:
         url: Redis URL (used to detect cluster mode)
         pool: Connection pool for standalone mode
-        cluster_client: Cluster client for cluster mode
 
     Yields:
         Redis or RedisCluster client
     """
-    if cluster_client is not None:
+    if is_cluster_url(url):
+        cluster_client = await get_cluster_client(url)
         yield cluster_client
-    elif pool is not None:
+    else:
         r = Redis(connection_pool=pool)
         await r.__aenter__()
         try:
             yield r
         finally:
             await asyncio.shield(r.__aexit__(None, None, None))
-    else:  # pragma: no cover
-        raise RuntimeError("Either pool or cluster_client must be provided")
 
 
 @asynccontextmanager
 async def pubsub_connection(
     url: str,
-    pool: ConnectionPool | None = None,
-    cluster_client: "RedisCluster | None" = None,
+    pool: ConnectionPool,
 ) -> AsyncGenerator[Any, None]:
     """Get a pub/sub connection, handling both standalone and cluster modes.
 
@@ -243,13 +239,13 @@ async def pubsub_connection(
     Args:
         url: Redis URL (used to detect cluster mode and extract auth/TLS)
         pool: Connection pool for standalone mode
-        cluster_client: Cluster client for cluster mode (to get node info)
 
     Yields:
         A PubSub object with subscribe/listen methods
     """
-    if cluster_client is not None:
+    if is_cluster_url(url):
         # For cluster mode, connect directly to a primary node
+        cluster_client = await get_cluster_client(url)
         nodes = cluster_client.get_primaries()
         if not nodes:  # pragma: no cover
             raise RuntimeError("No primary nodes available in cluster")
@@ -263,7 +259,7 @@ async def pubsub_connection(
                 yield pubsub
         finally:
             await asyncio.shield(r.__aexit__(None, None, None))
-    elif pool is not None:
+    else:
         r = Redis(connection_pool=pool)
         await r.__aenter__()
         try:
@@ -271,33 +267,52 @@ async def pubsub_connection(
                 yield pubsub
         finally:
             await asyncio.shield(r.__aexit__(None, None, None))
-    else:  # pragma: no cover
-        raise RuntimeError("Either pool or cluster_client must be provided")
 
 
 async def publish_message(
+    url: str,
     channel: str,
     message: str,
-    pool: ConnectionPool | None = None,
-    cluster_client: "RedisCluster | None" = None,
+    pool: ConnectionPool,
 ) -> None:
     """Publish a message to a Redis pub/sub channel.
 
     Works in both standalone and cluster mode.
 
     Args:
+        url: Redis URL (used to detect cluster mode)
         channel: The channel to publish to
         message: The message to publish
         pool: Connection pool for standalone mode
-        cluster_client: Cluster client for cluster mode
     """
-    if cluster_client is not None:
+    if is_cluster_url(url):
+        cluster_client = await get_cluster_client(url)
         await cluster_client.execute_command("PUBLISH", channel, message)
-    elif pool is not None:
+    else:
         async with Redis(connection_pool=pool) as r:
             await r.publish(channel, message)
-    else:  # pragma: no cover
-        raise RuntimeError("Either pool or cluster_client must be provided")
+
+
+async def create_result_storage(url: str, collection: str) -> Any:
+    """Create a result storage backend appropriate for the Redis mode.
+
+    For cluster mode, uses a RedisStore with the cluster client.
+    For standalone mode, uses a RedisStore with the URL.
+
+    Args:
+        url: Redis URL (used to detect cluster mode)
+        collection: The default collection name for results
+
+    Returns:
+        A RedisStore instance configured for the appropriate mode
+    """
+    from key_value.aio.stores.redis import RedisStore
+
+    if is_cluster_url(url):
+        cluster_client = await get_cluster_client(url)
+        return RedisStore(client=cluster_client, default_collection=collection)
+    else:  # pragma: no cover - standalone uses sync initialization in Docket.__init__
+        return RedisStore(url=url, default_collection=collection)
 
 
 async def connection_pool_from_url(url: str) -> ConnectionPool:
