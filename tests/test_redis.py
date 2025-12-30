@@ -215,6 +215,17 @@ class TestClusterClientManagement:
         await pool.disconnect()
 
     @pytest.mark.asyncio
+    async def test_connection_pool_from_url_cluster_multi_host(self) -> None:
+        """connection_pool_from_url handles multi-host cluster URLs."""
+        # Multi-host URLs like redis+cluster://h1:7001,h2:7002 should work
+        # by extracting just the first host for the pool
+        pool = await connection_pool_from_url(
+            "redis+cluster://host1:7001,host2:7002,host3:7003"
+        )
+        assert pool is not None
+        await pool.disconnect()
+
+    @pytest.mark.asyncio
     async def test_cleanup_connection_cluster_mode(self) -> None:
         """cleanup_connection calls close_cluster_client for cluster URLs."""
         mock_client = AsyncMock()
