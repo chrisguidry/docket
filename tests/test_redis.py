@@ -403,3 +403,36 @@ class TestDocketClusterMode:
             await strike_list.close()
 
         await memory_pool.disconnect()
+
+
+class TestStrikeListLocalMode:
+    """Tests for StrikeList local-only mode (no Redis connection)."""
+
+    def test_prefix_without_url(self) -> None:
+        """StrikeList.prefix returns plain name when URL is None."""
+        from docket.strikelist import StrikeList
+
+        strike_list = StrikeList(name="local-only")
+        assert strike_list.prefix == "local-only"
+
+
+class TestPublishMessage:
+    """Tests for publish_message helper function."""
+
+    @pytest.mark.asyncio
+    async def test_publish_message_cluster_mode(self) -> None:
+        """publish_message uses cluster client when provided."""
+        from docket._redis import publish_message
+
+        mock_cluster = AsyncMock()
+        mock_cluster.execute_command = AsyncMock()
+
+        await publish_message(
+            channel="test-channel",
+            message="test-message",
+            cluster_client=mock_cluster,
+        )
+
+        mock_cluster.execute_command.assert_called_once_with(
+            "PUBLISH", "test-channel", "test-message"
+        )
