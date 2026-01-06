@@ -29,7 +29,9 @@ import redis.exceptions
 from opentelemetry import trace
 from redis.asyncio import ConnectionPool, Redis
 
-from ._redis import connection_pool_from_url
+from redis.asyncio.client import PubSub
+
+from ._redis import connection_pool_from_url, pubsub_connection, redis_connection
 from ._uuid7 import uuid7
 
 from .execution import (
@@ -264,12 +266,13 @@ class Docket:
 
     @asynccontextmanager
     async def redis(self) -> AsyncGenerator[Redis, None]:
-        r = Redis(connection_pool=self._connection_pool)
-        await r.__aenter__()
-        try:
+        async with redis_connection(self.url, self._connection_pool) as r:
             yield r
-        finally:
-            await asyncio.shield(r.__aexit__(None, None, None))
+
+    @asynccontextmanager
+    async def _pubsub(self) -> AsyncGenerator[PubSub, None]:
+        async with pubsub_connection(self.url, self._connection_pool) as pubsub:
+            yield pubsub
 
     def register(self, function: TaskFunction, names: list[str] | None = None) -> None:
         """Register a task with the Docket.

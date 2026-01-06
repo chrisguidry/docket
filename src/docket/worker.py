@@ -1179,16 +1179,15 @@ class Worker:
 
         while True:
             try:
-                async with self.docket.redis() as redis:
-                    async with redis.pubsub() as pubsub:
-                        await pubsub.psubscribe(cancel_pattern)
-                        self._cancellation_ready.set()
-                        try:
-                            async for message in pubsub.listen():
-                                if message["type"] == "pmessage":
-                                    await self._handle_cancellation(message)
-                        finally:
-                            await pubsub.punsubscribe(cancel_pattern)
+                async with self.docket._pubsub() as pubsub:
+                    await pubsub.psubscribe(cancel_pattern)
+                    self._cancellation_ready.set()
+                    try:
+                        async for message in pubsub.listen():
+                            if message["type"] == "pmessage":
+                                await self._handle_cancellation(message)
+                    finally:
+                        await pubsub.punsubscribe(cancel_pattern)
             except asyncio.CancelledError:
                 return
             except ConnectionError:
