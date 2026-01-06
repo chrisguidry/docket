@@ -2,12 +2,20 @@
 
 This module is the single point of control for Redis connections, including
 the fakeredis backend used for memory:// URLs.
+
+This module is designed to be the single point of cluster-awareness, so that
+other modules can remain simple. When Redis Cluster support is added, only
+this module will need to change.
 """
 
 import asyncio
 import typing
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 
-from redis.asyncio import ConnectionPool
+from redis.asyncio.client import PubSub
+
+from redis.asyncio import ConnectionPool, Redis
 
 if typing.TYPE_CHECKING:
     from fakeredis.aioredis import FakeServer
@@ -34,10 +42,87 @@ def get_memory_server(url: str) -> "FakeServer | None":
     return _memory_servers.get(url)
 
 
+def is_cluster_url(url: str) -> bool:
+    """Check if the URL indicates Redis Cluster mode.
+
+    Args:
+        url: Redis URL to check
+
+    Returns:
+        True if the URL uses the redis+cluster:// scheme
+    """
+    return url.startswith("redis+cluster://")
+
+
+@asynccontextmanager
+async def redis_connection(
+    url: str,
+    pool: ConnectionPool,
+) -> AsyncGenerator[Redis, None]:
+    """Get a Redis connection, handling both standalone and cluster modes.
+
+    For standalone mode, creates a Redis client from the pool.
+    For cluster mode, raises NotImplementedError (not yet supported).
+
+    Args:
+        url: Redis URL (used to detect cluster mode)
+        pool: Connection pool for standalone mode
+
+    Yields:
+        Redis client
+    """
+    if is_cluster_url(url):
+        raise NotImplementedError(
+            "Redis Cluster support is not yet implemented. "
+            "Use a standalone Redis URL (redis://) instead of redis+cluster://."
+        )
+
+    r = Redis(connection_pool=pool)
+    await r.__aenter__()
+    try:
+        yield r
+    finally:
+        await asyncio.shield(r.__aexit__(None, None, None))
+
+
+@asynccontextmanager
+async def pubsub_connection(
+    url: str,
+    pool: ConnectionPool,
+) -> AsyncGenerator[PubSub, None]:
+    """Get a pub/sub connection, handling both standalone and cluster modes.
+
+    For standalone mode, creates a Redis client from the pool and gets its pubsub.
+    For cluster mode, raises NotImplementedError (not yet supported).
+
+    Args:
+        url: Redis URL (used to detect cluster mode)
+        pool: Connection pool for standalone mode
+
+    Yields:
+        A PubSub object with subscribe/listen methods
+    """
+    if is_cluster_url(url):
+        raise NotImplementedError(
+            "Redis Cluster pub/sub is not yet implemented. "
+            "Use a standalone Redis URL (redis://) instead of redis+cluster://."
+        )
+
+    r = Redis(connection_pool=pool)
+    await r.__aenter__()
+    try:
+        async with r.pubsub() as pubsub:
+            yield pubsub
+    finally:
+        await asyncio.shield(r.__aexit__(None, None, None))
+
+
 async def connection_pool_from_url(url: str) -> ConnectionPool:
     """Create a Redis connection pool from a URL.
 
-    Handles both real Redis (redis://) and in-memory fakeredis (memory://).
+    Handles real Redis (redis://), in-memory fakeredis (memory://), and
+    detects Redis Cluster URLs (redis+cluster://).
+
     This is the only place in the codebase that imports fakeredis.
 
     Args:
@@ -45,7 +130,16 @@ async def connection_pool_from_url(url: str) -> ConnectionPool:
 
     Returns:
         A ConnectionPool ready for use with Redis clients
+
+    Raises:
+        NotImplementedError: If a redis+cluster:// URL is provided
     """
+    if is_cluster_url(url):
+        raise NotImplementedError(
+            "Redis Cluster support is not yet implemented. "
+            "Use a standalone Redis URL (redis://) instead of redis+cluster://."
+        )
+
     if url.startswith("memory://"):
         return await _memory_connection_pool(url)
     return ConnectionPool.from_url(url)
@@ -75,17 +169,10 @@ async def _memory_connection_pool(url: str) -> ConnectionPool:
         return ConnectionPool(connection_class=FakeConnection, server=server)
 
 
-# ------------------------------------------------------------------------------
-# fakeredis Lua runtime memory leak workaround
-#
-# fakeredis creates a new lupa.LuaRuntime() for every EVAL/EVALSHA call, and
-# these runtimes don't get garbage collected properly, causing unbounded memory
-# growth. See: https://github.com/cunla/fakeredis-py/issues/446
-#
-# Until there's an upstream fix, we monkeypatch ScriptingCommandsMixin.eval to
-# cache the LuaRuntime on the FakeServer instance and reuse it across calls.
-# ------------------------------------------------------------------------------
-
+# fakeredis Lua runtime memory leak workaround: fakeredis creates a new
+# lupa.LuaRuntime() for every EVAL/EVALSHA call, and these runtimes don't get
+# garbage collected properly, causing unbounded memory growth.
+# See: https://github.com/cunla/fakeredis-py/issues/446
 _lua_patch_applied = False
 
 

@@ -287,16 +287,15 @@ class ExecutionProgress:
             - updated_at: ISO 8601 timestamp
         """
         channel = f"{self.docket.name}:progress:{self.key}"
-        async with self.docket.redis() as redis:
-            async with redis.pubsub() as pubsub:
-                await pubsub.subscribe(channel)
-                try:
-                    async for message in pubsub.listen():  # pragma: no cover
-                        if message["type"] == "message":
-                            yield json.loads(message["data"])
-                finally:
-                    # Explicitly unsubscribe to ensure clean shutdown
-                    await pubsub.unsubscribe(channel)
+        async with self.docket._pubsub() as pubsub:
+            await pubsub.subscribe(channel)
+            try:
+                async for message in pubsub.listen():  # pragma: no cover
+                    if message["type"] == "message":
+                        yield json.loads(message["data"])
+            finally:
+                # Explicitly unsubscribe to ensure clean shutdown
+                await pubsub.unsubscribe(channel)
 
 
 class Execution:
@@ -1051,21 +1050,20 @@ class Execution:
         # Then subscribe to real-time updates
         state_channel = f"{self.docket.name}:state:{self.key}"
         progress_channel = f"{self.docket.name}:progress:{self.key}"
-        async with self.docket.redis() as redis:
-            async with redis.pubsub() as pubsub:
-                await pubsub.subscribe(state_channel, progress_channel)
-                try:
-                    async for message in pubsub.listen():  # pragma: no cover
-                        if message["type"] == "message":
-                            message_data = json.loads(message["data"])
-                            if message_data["type"] == "state":
-                                message_data["state"] = ExecutionState(
-                                    message_data["state"]
-                                )
-                            yield message_data
-                finally:
-                    # Explicitly unsubscribe to ensure clean shutdown
-                    await pubsub.unsubscribe(state_channel, progress_channel)
+        async with self.docket._pubsub() as pubsub:
+            await pubsub.subscribe(state_channel, progress_channel)
+            try:
+                async for message in pubsub.listen():  # pragma: no cover
+                    if message["type"] == "message":
+                        message_data = json.loads(message["data"])
+                        if message_data["type"] == "state":
+                            message_data["state"] = ExecutionState(
+                                message_data["state"]
+                            )
+                        yield message_data
+            finally:
+                # Explicitly unsubscribe to ensure clean shutdown
+                await pubsub.unsubscribe(state_channel, progress_channel)
 
 
 def compact_signature(signature: inspect.Signature) -> str:
