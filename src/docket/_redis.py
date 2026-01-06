@@ -77,12 +77,8 @@ async def redis_connection(
             "Use a standalone Redis URL (redis://) instead of redis+cluster://."
         )
 
-    r = Redis(connection_pool=pool)
-    await r.__aenter__()
-    try:
+    async with Redis(connection_pool=pool) as r:
         yield r
-    finally:
-        await asyncio.shield(r.__aexit__(None, None, None))
 
 
 @asynccontextmanager
@@ -108,13 +104,9 @@ async def pubsub_connection(
             "Use a standalone Redis URL (redis://) instead of redis+cluster://."
         )
 
-    r = Redis(connection_pool=pool)
-    await r.__aenter__()
-    try:
+    async with Redis(connection_pool=pool) as r:
         async with r.pubsub() as pubsub:
             yield pubsub
-    finally:
-        await asyncio.shield(r.__aexit__(None, None, None))
 
 
 async def connection_pool_from_url(url: str) -> ConnectionPool:
