@@ -101,10 +101,15 @@ class TestStrikeListBasic:
         # Second close should be a no-op
         await strikes.close()
 
-    async def test_strike_key_property(self, redis_url: str, strike_name: str) -> None:
-        """Test the strike_key property."""
+    async def test_prefix_property(self, redis_url: str, strike_name: str) -> None:
+        """Test the prefix property returns the name."""
         strikes = StrikeList(url=redis_url, name=strike_name)
-        assert strikes.strike_key == f"{strike_name}:strikes"
+        assert strikes.prefix == strike_name
+
+    async def test_strike_key_property(self, redis_url: str, strike_name: str) -> None:
+        """Test the strike_key property uses prefix."""
+        strikes = StrikeList(url=redis_url, name=strike_name)
+        assert strikes.strike_key == f"{strikes.prefix}:strikes"
 
     async def test_local_only_mode(self, strike_name: str) -> None:
         """Test StrikeList works without Redis (local-only mode)."""

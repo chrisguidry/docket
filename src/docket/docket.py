@@ -198,7 +198,7 @@ class Docket:
             self.result_storage = MemoryStore()
         else:
             self.result_storage = RedisStore(
-                url=url, default_collection=f"{name}:results"
+                url=url, default_collection=self.results_collection
             )
 
         from .tasks import standard_tasks
@@ -208,6 +208,25 @@ class Docket:
     @property
     def worker_group_name(self) -> str:
         return "docket-workers"
+
+    @property
+    def prefix(self) -> str:
+        """Return the key prefix for this docket.
+
+        All Redis keys for this docket are prefixed with this value.
+        """
+        return self.name
+
+    def key(self, suffix: str) -> str:
+        """Return a Redis key with the docket prefix.
+
+        Args:
+            suffix: The key suffix (e.g., "queue", "stream", "runs:task-123")
+
+        Returns:
+            Full Redis key like "docket:queue" or "docket:stream"
+        """
+        return f"{self.prefix}:{suffix}"
 
     async def __aenter__(self) -> Self:
         self.strike_list = StrikeList(
@@ -523,8 +542,7 @@ class Docket:
                 await self._cancel(redis, key)
 
                 # Publish cancellation signal for running tasks (best-effort)
-                cancellation_channel = f"{self.name}:cancel:{key}"
-                await redis.publish(cancellation_channel, key)
+                await redis.publish(self.cancel_channel(key), key)
 
         TASKS_CANCELLED.add(1, self.labels())
 
@@ -551,8 +569,7 @@ class Docket:
         import cloudpickle
 
         async with self.redis() as redis:
-            runs_key = f"{self.name}:runs:{key}"
-            data = await redis.hgetall(runs_key)
+            data = await redis.hgetall(self.runs_key(key))
 
             if not data:
                 return None
@@ -617,20 +634,33 @@ class Docket:
 
     @property
     def queue_key(self) -> str:
-        return f"{self.name}:queue"
+        return self.key("queue")
 
     @property
     def stream_key(self) -> str:
-        return f"{self.name}:stream"
+        return self.key("stream")
 
-    def known_task_key(self, key: str) -> str:
-        return f"{self.name}:known:{key}"
+    def known_task_key(self, task_key: str) -> str:
+        return self.key(f"known:{task_key}")
 
-    def parked_task_key(self, key: str) -> str:
-        return f"{self.name}:{key}"
+    def parked_task_key(self, task_key: str) -> str:
+        return self.key(task_key)
 
-    def stream_id_key(self, key: str) -> str:
-        return f"{self.name}:stream-id:{key}"
+    def stream_id_key(self, task_key: str) -> str:
+        return self.key(f"stream-id:{task_key}")
+
+    def runs_key(self, task_key: str) -> str:
+        """Return the Redis key for storing execution state for a task."""
+        return self.key(f"runs:{task_key}")
+
+    def cancel_channel(self, task_key: str) -> str:
+        """Return the Redis pub/sub channel for cancellation signals for a task."""
+        return self.key(f"cancel:{task_key}")
+
+    @property
+    def results_collection(self) -> str:
+        """Return the collection name for result storage."""
+        return self.key("results")
 
     async def _ensure_stream_and_group(self) -> None:
         """Create stream and consumer group if they don't exist (idempotent).
@@ -707,7 +737,7 @@ class Docket:
 
         # Create tombstone with CANCELLED state
         completed_at = datetime.now(timezone.utc).isoformat()
-        runs_key = f"{self.name}:runs:{key}"
+        task_runs_key = self.runs_key(key)
 
         # Execute the cancellation script
         await cancel_task(
@@ -717,7 +747,7 @@ class Docket:
                 self.parked_task_key(key),
                 self.queue_key,
                 self.stream_id_key(key),
-                runs_key,
+                task_runs_key,
             ],
             args=[key, completed_at],
         )
@@ -725,10 +755,10 @@ class Docket:
         # Apply TTL or delete tombstone based on execution_ttl
         if self.execution_ttl:
             ttl_seconds = int(self.execution_ttl.total_seconds())
-            await redis.expire(runs_key, ttl_seconds)
+            await redis.expire(task_runs_key, ttl_seconds)
         else:
             # execution_ttl=0 means no observability - delete tombstone immediately
-            await redis.delete(runs_key)
+            await redis.delete(task_runs_key)
 
     async def strike(
         self,
@@ -884,13 +914,13 @@ class Docket:
 
     @property
     def workers_set(self) -> str:
-        return f"{self.name}:workers"
+        return self.key("workers")
 
     def worker_tasks_set(self, worker_name: str) -> str:
-        return f"{self.name}:worker-tasks:{worker_name}"
+        return self.key(f"worker-tasks:{worker_name}")
 
     def task_workers_set(self, task_name: str) -> str:
-        return f"{self.name}:task-workers:{task_name}"
+        return self.key(f"task-workers:{task_name}")
 
     async def workers(self) -> Collection[WorkerInfo]:
         """Get a list of all workers that have sent heartbeats to the Docket.
@@ -1009,27 +1039,27 @@ class Docket:
 
                     # Clear parked task data and known task keys for scheduled tasks
                     for key_bytes in scheduled_keys:
-                        key = key_bytes.decode()
-                        pipeline.delete(self.parked_task_key(key))
-                        pipeline.delete(self.known_task_key(key))
-                        pipeline.delete(self.stream_id_key(key))
+                        task_key = key_bytes.decode()
+                        pipeline.delete(self.parked_task_key(task_key))
+                        pipeline.delete(self.known_task_key(task_key))
+                        pipeline.delete(self.stream_id_key(task_key))
 
                         # Handle runs hash: set TTL or delete based on execution_ttl
-                        runs_key = f"{self.name}:runs:{key}"
+                        task_runs_key = self.runs_key(task_key)
                         if self.execution_ttl:
                             ttl_seconds = int(self.execution_ttl.total_seconds())
-                            pipeline.expire(runs_key, ttl_seconds)
+                            pipeline.expire(task_runs_key, ttl_seconds)
                         else:
-                            pipeline.delete(runs_key)
+                            pipeline.delete(task_runs_key)
 
                     # Handle runs hash for immediate tasks from stream
-                    for key in stream_keys:
-                        runs_key = f"{self.name}:runs:{key}"
+                    for task_key in stream_keys:
+                        task_runs_key = self.runs_key(task_key)
                         if self.execution_ttl:
                             ttl_seconds = int(self.execution_ttl.total_seconds())
-                            pipeline.expire(runs_key, ttl_seconds)
+                            pipeline.expire(task_runs_key, ttl_seconds)
                         else:
-                            pipeline.delete(runs_key)
+                            pipeline.delete(task_runs_key)
 
                     await pipeline.execute()
 

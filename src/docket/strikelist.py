@@ -198,9 +198,17 @@ class StrikeList:
         self._strikes_loaded = None
 
     @property
+    def prefix(self) -> str:
+        """Return the key prefix for this strike list.
+
+        All Redis keys for this strike list are prefixed with this value.
+        """
+        return self.name
+
+    @property
     def strike_key(self) -> str:
         """Redis stream key for strike instructions."""
-        return f"{self.name}:strikes"
+        return f"{self.prefix}:strikes"
 
     @contextmanager
     def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
