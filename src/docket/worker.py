@@ -784,7 +784,7 @@ class Worker:
         async with self.docket.redis() as redis:
             try:
                 async with redis.lock(
-                    f"{self.docket.name}:perpetual:lock",
+                    self.docket.key("perpetual:lock"),
                     timeout=AUTOMATIC_PERPETUAL_LOCK_TIMEOUT_SECONDS,
                     blocking=False,
                 ):
@@ -807,7 +807,7 @@ class Worker:
     async def _delete_known_task(self, redis: Redis, execution: Execution) -> None:
         logger.debug("Deleting known task", extra=self._log_context())
         # Delete known/stream_id from runs hash to allow task rescheduling
-        runs_key = f"{self.docket.name}:runs:{execution.key}"
+        runs_key = self.docket.runs_key(execution.key)
         await redis.hdel(runs_key, "known", "stream_id")
 
         # TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
@@ -1174,7 +1174,7 @@ class Worker:
 
     async def _cancellation_listener(self) -> None:
         """Listen for cancellation signals and cancel matching tasks."""
-        cancel_pattern = f"{self.docket.name}:cancel:*"
+        cancel_pattern = self.docket.key("cancel:*")
         log_context = self._log_context()
 
         while True:
