@@ -46,7 +46,6 @@ from .strikelist import (
 )
 from key_value.aio.protocols.key_value import AsyncKeyValue
 from key_value.aio.stores.redis import RedisStore
-from key_value.aio.stores.memory import MemoryStore
 
 from .instrumentation import (
     TASKS_ADDED,
@@ -192,14 +191,7 @@ class Docket:
         self.execution_ttl = execution_ttl
         self.enable_internal_instrumentation = enable_internal_instrumentation
         self._cancel_task_script = None
-
-        self.result_storage: AsyncKeyValue
-        if url.startswith("memory://"):
-            self.result_storage = MemoryStore()
-        else:
-            self.result_storage = RedisStore(
-                url=url, default_collection=self.results_collection
-            )
+        self._user_result_storage = result_storage
 
         from .tasks import standard_tasks
 
@@ -240,6 +232,23 @@ class Docket:
         # Connect the strike list to Redis and start monitoring
         await self.strike_list.connect()
 
+        # Initialize result storage
+        # We use a separate connection pool for result storage because RedisStore
+        # requires decode_responses=True while Docket's internal Redis usage
+        # expects bytes (decode_responses=False). We also pass a client to
+        # RedisStore to work around a py-key-value bug that ignores username
+        # in URLs (github.com/strawgate/py-key-value/issues/254).
+        if self._user_result_storage is not None:
+            self.result_storage: AsyncKeyValue = self._user_result_storage
+        else:
+            self._result_storage_pool = await connection_pool_from_url(
+                self.url, decode_responses=True
+            )
+            result_client = Redis(connection_pool=self._result_storage_pool)
+            self.result_storage = RedisStore(
+                client=result_client, default_collection=self.results_collection
+            )
+
         if isinstance(self.result_storage, BaseContextManagerStore):
             await self.result_storage.__aenter__()
         else:
@@ -254,6 +263,11 @@ class Docket:
     ) -> None:
         if isinstance(self.result_storage, BaseContextManagerStore):
             await self.result_storage.__aexit__(exc_type, exc_value, traceback)
+
+        # Close the result storage pool if we created it
+        if hasattr(self, "_result_storage_pool"):
+            await asyncio.shield(self._result_storage_pool.disconnect())
+            del self._result_storage_pool
 
         # Close the strike list (stops monitoring and disconnects)
         await self.strike_list.close()
