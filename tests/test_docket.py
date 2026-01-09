@@ -82,6 +82,17 @@ class TestPrefixAndKeyMethods:
         docket = Docket(name="test", url="memory://")
         assert docket.task_workers_set("my_task") == "test:task-workers:my_task"
 
+    def test_worker_group_name_not_prefixed(self):
+        """worker_group_name is not prefixed because consumer groups are stream-scoped.
+
+        Consumer groups are namespaced to their parent stream, so "docket-workers" on
+        stream "app1:stream" is completely separate from "docket-workers" on "app2:stream".
+        The group name doesn't need a prefix for isolation, and isn't validated against
+        ACL key patterns (it's passed as ARGV in Lua scripts, not KEYS).
+        """
+        docket = Docket(name="test", url="memory://")
+        assert docket.worker_group_name == "docket-workers"
+
 
 async def test_docket_propagates_connection_errors_on_operation():
     """Connection errors should propagate when operations are attempted."""
