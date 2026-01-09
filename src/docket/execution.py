@@ -514,8 +514,8 @@ class Execution:
                 schedule_script = cast(
                     _schedule_task,
                     redis.register_script(
-                        # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key, runs_key, worker_group_key
-                        # ARGV: task_key, when_timestamp, is_immediate, replace, reschedule_message_id, ...message_fields
+                        # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key, runs_key
+                        # ARGV: task_key, when_timestamp, is_immediate, replace, reschedule_message_id, worker_group_name, ...message_fields
                         """
                             local stream_key = KEYS[1]
                             -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
@@ -524,21 +524,21 @@ class Execution:
                             local queue_key = KEYS[4]
                             local stream_id_key = KEYS[5]
                             local runs_key = KEYS[6]
-                            local worker_group_name = KEYS[7]
 
                             local task_key = ARGV[1]
                             local when_timestamp = ARGV[2]
                             local is_immediate = ARGV[3] == '1'
                             local replace = ARGV[4] == '1'
                             local reschedule_message_id = ARGV[5]
+                            local worker_group_name = ARGV[6]
 
-                            -- Extract message fields from ARGV[6] onwards
+                            -- Extract message fields from ARGV[7] onwards
                             local message = {}
                             local function_name = nil
                             local args_data = nil
                             local kwargs_data = nil
 
-                            for i = 6, #ARGV, 2 do
+                            for i = 7, #ARGV, 2 do
                                 local field_name = ARGV[i]
                                 local field_value = ARGV[i + 1]
                                 message[#message + 1] = field_name
@@ -664,7 +664,6 @@ class Execution:
                         self.docket.queue_key,
                         self.docket.stream_id_key(key),
                         self._redis_key,
-                        self.docket.worker_group_name,
                     ],
                     args=[
                         key,
@@ -672,6 +671,7 @@ class Execution:
                         "1" if is_immediate else "0",
                         "1" if replace else "0",
                         reschedule_message or b"",
+                        self.docket.worker_group_name,
                         *[
                             item
                             for field, value in message.items()

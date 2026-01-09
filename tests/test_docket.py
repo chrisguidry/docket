@@ -82,6 +82,20 @@ class TestPrefixAndKeyMethods:
         docket = Docket(name="test", url="memory://")
         assert docket.task_workers_set("my_task") == "test:task-workers:my_task"
 
+    def test_worker_group_name_is_not_a_key(self):
+        """worker_group_name should not be prefixed (it's a consumer group name, not a key).
+
+        This is important for Redis ACL compatibility - consumer group names are not
+        subject to key pattern validation. The schedule script passes worker_group_name
+        as ARGV (not KEYS) to avoid ACL failures when users restrict access to key
+        patterns like "myapp:*".
+        """
+        docket = Docket(name="test", url="memory://")
+        # worker_group_name is NOT prefixed - it's a consumer group name, not a key
+        assert docket.worker_group_name == "docket-workers"
+        # It should NOT match the key pattern
+        assert not docket.worker_group_name.startswith(docket.prefix)
+
 
 async def test_docket_propagates_connection_errors_on_operation():
     """Connection errors should propagate when operations are attempted."""
