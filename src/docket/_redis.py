@@ -34,7 +34,9 @@ def get_memory_server(url: str) -> "FakeServer | None":
     return _memory_servers.get(url)
 
 
-async def connection_pool_from_url(url: str) -> ConnectionPool:
+async def connection_pool_from_url(
+    url: str, decode_responses: bool = False
+) -> ConnectionPool:
     """Create a Redis connection pool from a URL.
 
     Handles both real Redis (redis://) and in-memory fakeredis (memory://).
@@ -42,16 +44,19 @@ async def connection_pool_from_url(url: str) -> ConnectionPool:
 
     Args:
         url: Redis URL (redis://...) or memory:// for in-memory backend
+        decode_responses: If True, decode Redis responses from bytes to strings
 
     Returns:
         A ConnectionPool ready for use with Redis clients
     """
     if url.startswith("memory://"):
-        return await _memory_connection_pool(url)
-    return ConnectionPool.from_url(url)
+        return await _memory_connection_pool(url, decode_responses)
+    return ConnectionPool.from_url(url, decode_responses=decode_responses)
 
 
-async def _memory_connection_pool(url: str) -> ConnectionPool:
+async def _memory_connection_pool(
+    url: str, decode_responses: bool = False
+) -> ConnectionPool:
     """Create a connection pool for a memory:// URL using fakeredis."""
     global _memory_servers
 
@@ -63,16 +68,28 @@ async def _memory_connection_pool(url: str) -> ConnectionPool:
     # Fast path: server already exists
     server = _memory_servers.get(url)
     if server is not None:
-        return ConnectionPool(connection_class=FakeConnection, server=server)
+        return ConnectionPool(
+            connection_class=FakeConnection,
+            server=server,
+            decode_responses=decode_responses,
+        )
 
     async with _memory_servers_lock:
         server = _memory_servers.get(url)
         if server is not None:  # pragma: no cover
-            return ConnectionPool(connection_class=FakeConnection, server=server)
+            return ConnectionPool(
+                connection_class=FakeConnection,
+                server=server,
+                decode_responses=decode_responses,
+            )
 
         server = FakeServer()
         _memory_servers[url] = server
-        return ConnectionPool(connection_class=FakeConnection, server=server)
+        return ConnectionPool(
+            connection_class=FakeConnection,
+            server=server,
+            decode_responses=decode_responses,
+        )
 
 
 # ------------------------------------------------------------------------------
