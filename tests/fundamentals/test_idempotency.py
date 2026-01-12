@@ -11,7 +11,7 @@ from docket import Docket, Worker, testing
 async def test_adding_is_idempotent(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
 ):
-    """docket should allow for rescheduling a task for later"""
+    """Adding a task with the same key twice should only run the first one."""
 
     key = f"my-cool-task:{uuid4()}"
 
@@ -33,7 +33,7 @@ async def test_adding_is_idempotent(
 async def test_task_keys_are_idempotent_in_the_future(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
 ):
-    """docket should only allow one task with the same key to be scheduled or due"""
+    """A future task blocks an immediate task with the same key."""
 
     key = f"my-cool-task:{uuid4()}"
 
@@ -57,7 +57,7 @@ async def test_task_keys_are_idempotent_in_the_future(
 async def test_task_keys_are_idempotent_between_the_future_and_present(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
 ):
-    """docket should only allow one task with the same key to be scheduled or due"""
+    """An immediate task blocks a future task with the same key."""
 
     key = f"my-cool-task:{uuid4()}"
 
@@ -81,7 +81,7 @@ async def test_task_keys_are_idempotent_between_the_future_and_present(
 async def test_task_keys_are_idempotent_in_the_present(
     docket: Docket, worker: Worker, the_task: AsyncMock, now: Callable[[], datetime]
 ):
-    """docket should only allow one task with the same key to be scheduled or due"""
+    """Two immediate tasks with the same key only runs the first one."""
 
     key = f"my-cool-task:{uuid4()}"
 

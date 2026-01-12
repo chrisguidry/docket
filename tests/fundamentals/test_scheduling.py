@@ -20,7 +20,7 @@ async def test_immediate_task_execution(
     the_task.assert_awaited_once_with("a", "b", c="c")
 
 
-async def test_immedate_task_execution_by_name(
+async def test_immediate_task_execution_by_name(
     docket: Docket, worker: Worker, the_task: AsyncMock
 ):
     """docket should execute a task immediately by name."""

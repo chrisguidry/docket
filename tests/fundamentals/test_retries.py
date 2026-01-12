@@ -174,7 +174,7 @@ async def test_supports_exponential_backoff_retries(
 async def test_supports_exponential_backoff_retries_under_maximum_delay(
     docket: Docket, worker: Worker, now: Callable[[], datetime]
 ):
-    """docket should support exponential backoff retries"""
+    """Exponential backoff should cap delays at the configured maximum."""
 
     calls = 0
 

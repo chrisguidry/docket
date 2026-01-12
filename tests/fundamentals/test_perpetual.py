@@ -86,7 +86,7 @@ async def test_perpetual_tasks_can_change_their_parameters(
 async def test_perpetual_tasks_perpetuate_even_after_errors(
     docket: Docket, worker: Worker
 ):
-    """Perpetual tasks may change their parameters each time"""
+    """Perpetual tasks keep rescheduling even when they raise exceptions."""
     calls = 0
 
     async def perpetual_task(
