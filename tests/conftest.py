@@ -53,6 +53,12 @@ def acl_credentials(testrun_uid: str) -> ACLCredentials:
     return ACLCredentials(testrun_uid)
 
 
+@pytest.fixture(scope="session")
+def xdist_worker_count() -> int:
+    """Number of pytest-xdist workers running in parallel."""
+    return int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "4"))
+
+
 @pytest.fixture(autouse=True)
 def log_level(caplog: pytest.LogCaptureFixture) -> Generator[None, None, None]:
     with caplog.at_level(logging.DEBUG):
@@ -100,39 +106,28 @@ def _wait_for_redis(port: int) -> None:
 
 
 def _setup_acl(
-    port: int, creds: ACLCredentials, num_workers: int = 8
+    port: int, creds: ACLCredentials, num_workers: int
 ) -> None:  # pragma: no cover
     """Configure Redis ACL for testing with restricted permissions."""
     with _administrative_redis(port) as r:
-        # Create restricted ACL user for Docket tests
-        # Channel patterns needed:
-        # - &{prefix}-db{N}:* for SUBSCRIBE/PUBLISH (state, progress channels)
-        # - &{prefix}-db{N}:cancel:* for PSUBSCRIBE (cancellation listener)
-        # PSUBSCRIBE requires literal pattern matches in ACLs
+        # PSUBSCRIBE requires literal pattern matches in ACLs, so we enumerate
+        # explicit patterns for each worker and docket counter value
         channel_patterns: list[str] = []
         for i in range(num_workers):
-            # For regular SUBSCRIBE/PUBLISH on state/progress channels
-            # Use db{i}* to allow suffixes like -db0-1, -db0-2 for tests creating multiple dockets
             channel_patterns.append(f"{creds.docket_prefix}-db{i}*:*")
-            # For PSUBSCRIBE on cancellation pattern - add patterns for multiple counter values
-            # because make_docket_name returns -db{i}-{counter}
             channel_patterns.append(f"{creds.docket_prefix}-db{i}:cancel:*")
-            for j in range(1, 20):  # Support up to 20 dockets per test
+            for j in range(1, num_workers + 1):
                 channel_patterns.append(f"{creds.docket_prefix}-db{i}-{j}:cancel:*")
 
         r.acl_setuser(  # type: ignore[reportUnknownMemberType]
             creds.username,
             enabled=True,
             passwords=[f"+{creds.password}"],
-            keys=[
-                f"{creds.docket_prefix}*:*",  # docket-scoped keys
-                "my-application:*",  # user-managed keys outside docket namespace
-            ],
+            keys=[f"{creds.docket_prefix}*:*", "my-application:*"],
             channels=channel_patterns,
             commands=["+@all"],
         )
 
-        # Set password on default user to prevent unauthenticated connections
         r.acl_setuser(  # type: ignore[reportUnknownMemberType]
             "default",
             enabled=True,
@@ -142,7 +137,10 @@ def _setup_acl(
 
 @pytest.fixture(scope="session")
 def redis_server(
-    testrun_uid: str, worker_id: str, acl_credentials: ACLCredentials
+    testrun_uid: str,
+    worker_id: str,
+    acl_credentials: ACLCredentials,
+    xdist_worker_count: int,
 ) -> Generator[Container | None, None, None]:
     if BASE_REDIS_VERSION == "memory":  # pragma: no cover
         yield None
@@ -204,7 +202,7 @@ def redis_server(
             _wait_for_redis(redis_port)
 
             if ACL_ENABLED:  # pragma: no cover
-                _setup_acl(redis_port, acl_credentials)
+                _setup_acl(redis_port, acl_credentials, xdist_worker_count)
         else:
             port_bindings = container.attrs["HostConfig"]["PortBindings"]["6379/tcp"]
             redis_port = int(port_bindings[0]["HostPort"])
@@ -253,7 +251,7 @@ def redis_url(redis_port: int, redis_db: int, acl_credentials: ACLCredentials) -
             f"redis://{acl_credentials.username}:{acl_credentials.password}"
             f"@localhost:{redis_port}/{redis_db}"
         )
-    else:
+    else:  # pragma: no cover
         url = f"redis://localhost:{redis_port}/{redis_db}"
     with _sync_redis(url) as r:
         r.flushdb()  # type: ignore
@@ -269,7 +267,7 @@ async def docket(
     # isolation between parallel test workers.
     if ACL_ENABLED:  # pragma: no cover
         name = f"{acl_credentials.docket_prefix}-db{redis_db}"
-    else:
+    else:  # pragma: no cover
         name = f"{acl_credentials.docket_prefix}-{uuid4()}"
     async with Docket(name=name, url=redis_url) as docket:
         yield docket
@@ -304,7 +302,7 @@ def make_docket_name(
         counter += 1
         if ACL_ENABLED:  # pragma: no cover
             return f"{acl_credentials.docket_prefix}-db{redis_db}-{counter}"
-        return f"{acl_credentials.docket_prefix}-{uuid4()}"
+        return f"{acl_credentials.docket_prefix}-{uuid4()}"  # pragma: no cover
 
     return _make_name
 
