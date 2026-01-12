@@ -64,9 +64,14 @@ ruff format
 pyright
 pyright tests
 
+# File size limits
+loq
+
 # Run all prek hooks
 uv run prek run --all-files
 ```
+
+**File size limits**: This project uses [loq](https://github.com/jakekaplan/loq) to enforce file size limits. The default limit is 500 lines. Existing large files have baselines in `loq.toml`. If you need to exceed a limit, run `loq baseline` to update the configuration.
 
 ### Development Setup
 

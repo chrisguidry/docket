@@ -1,0 +1,73 @@
+default_max_lines = 500
+respect_gitignore = true
+exclude = ["**/uv.lock", "**/.git/**"]
+
+# Source files - current state baselines
+[[rules]]
+path = "src/docket/worker.py"
+max_lines = 1375
+
+[[rules]]
+path = "src/docket/cli.py"
+max_lines = 1207
+
+[[rules]]
+path = "src/docket/execution.py"
+max_lines = 1099
+
+[[rules]]
+path = "src/docket/docket.py"
+max_lines = 1081
+
+[[rules]]
+path = "src/docket/dependencies.py"
+max_lines = 808
+
+[[rules]]
+path = "src/docket/strikelist.py"
+max_lines = 610
+
+# Test files - allow more flexibility (600 default)
+[[rules]]
+path = "tests/**/*"
+max_lines = 600
+
+[[rules]]
+path = "tests/test_fundamentals.py"
+max_lines = 2003
+
+[[rules]]
+path = "tests/test_worker.py"
+max_lines = 1120
+
+[[rules]]
+path = "tests/test_instrumentation.py"
+max_lines = 976
+
+[[rules]]
+path = "tests/test_docket.py"
+max_lines = 919
+
+[[rules]]
+path = "tests/test_dependencies.py"
+max_lines = 666
+
+[[rules]]
+path = "tests/test_results.py"
+max_lines = 542
+
+[[rules]]
+path = "tests/test_execution_progress.py"
+max_lines = 817
+
+[[rules]]
+path = "docs/dependencies.md"
+max_lines = 539
+
+[[rules]]
+path = "docs/production.md"
+max_lines = 555
+
+[[rules]]
+path = "docs/advanced-patterns.md"
+max_lines = 1106

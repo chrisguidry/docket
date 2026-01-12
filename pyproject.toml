@@ -43,6 +43,7 @@ dev = [
     "codespell>=2.4.1",
     "docker>=7.1.0",
     "ipython>=8.0.0",
+    "loq>=0.1.0a1",
     "mypy>=1.14.1",
     "opentelemetry-distro>=0.60b0",
     "opentelemetry-exporter-otlp>=1.33.0",
