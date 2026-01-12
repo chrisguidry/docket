@@ -1633,7 +1633,7 @@ dev = [
     { name = "codespell", specifier = ">=2.4.1" },
     { name = "docker", specifier = ">=7.1.0" },
     { name = "ipython", specifier = ">=8.0.0" },
-    { name = "loq", specifier = ">=0.1.0a1" },
+    { name = "loq", specifier = ">=0.1.0a3" },
     { name = "mypy", specifier = ">=1.14.1" },
     { name = "opentelemetry-distro", specifier = ">=0.60b0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.33.0" },
