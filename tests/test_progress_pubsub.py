@@ -250,7 +250,7 @@ async def test_end_to_end_progress_monitoring_with_worker(
 
     # Verify state transitions occurred
     # Note: scheduled may happen before subscriber connects
-    state_sequence: list[ExecutionState] = [e["state"] for e in state_events]
+    state_sequence = [e["state"] for e in state_events]
     assert state_sequence == [
         ExecutionState.QUEUED,
         ExecutionState.RUNNING,
