@@ -172,9 +172,40 @@ Docket requires a single Redis instance and does not currently support Redis Clu
 - **Managed Redis services** like AWS ElastiCache, Google Cloud Memorystore, or Redis Cloud
 - **Redis replicas** with manual failover procedures
 
+### Authentication
+
+Docket supports Redis authentication via URL credentials:
+
 ```python
-# With authentication
+# Password-only authentication (Redis default user)
 docket_url = "redis://:password@redis.prod.com:6379/0"
+
+# Username and password authentication (Redis 6.0+ ACL)
+docket_url = "redis://myuser:mypassword@redis.prod.com:6379/0"
+```
+
+### ACL Configuration
+
+When using Redis ACLs with a restricted user, grant access to the key pattern matching your docket name. All Docket keys follow the pattern `{docket_name}:*`:
+
+```bash
+# Create a user with restricted permissions for a docket named "orders"
+ACL SETUSER docket-user on >secure-password ~orders:* &orders:* +@all
+```
+
+The required permissions are:
+
+- **Key pattern**: `~{docket_name}:*` - matches all Redis keys used by Docket
+- **Channel pattern**: `&{docket_name}:*` - required for task cancellation pub/sub
+- **Commands**: `+@all` or the specific command categories Docket uses
+
+For production deployments, you may restrict to only the required command categories:
+
+```bash
+# More restrictive command permissions
+ACL SETUSER docket-user on >secure-password \
+  ~orders:* &orders:* \
+  +@read +@write +@set +@sortedset +@hash +@stream +@pubsub +@scripting +@connection
 ```
 
 ### Valkey Support

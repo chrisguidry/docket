@@ -8,32 +8,27 @@ from docket.dependencies import CurrentExecution, Perpetual
 from docket.execution import Execution
 
 
-async def test_perpetual_task_with_ttl_zero(docket: Docket, worker: Worker) -> None:
+async def test_perpetual_task_with_ttl_zero(zero_ttl_docket: Docket) -> None:
     """Perpetual tasks should work correctly with TTL of 0."""
-    async with Docket(
-        name="test-perpetual-ttl-zero",
-        url=docket.url,
-        execution_ttl=timedelta(0),
-    ) as docket_with_zero_ttl:
-        executions: list[str] = []
+    executions: list[str] = []
 
-        async def perpetual_task(
-            execution: Execution = CurrentExecution(),
-            perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
-        ) -> None:
-            executions.append(execution.key)
-            if len(executions) >= 3:
-                perpetual.cancel()
+    async def perpetual_task(
+        execution: Execution = CurrentExecution(),
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
+    ) -> None:
+        executions.append(execution.key)
+        if len(executions) >= 3:
+            perpetual.cancel()
 
-        docket_with_zero_ttl.register(perpetual_task)
+    zero_ttl_docket.register(perpetual_task)
 
-        async with Worker(docket=docket_with_zero_ttl) as worker_with_zero_ttl:
-            execution = await docket_with_zero_ttl.add(perpetual_task)()
-            await worker_with_zero_ttl.run_at_most({execution.key: 3})
+    async with Worker(docket=zero_ttl_docket) as worker:
+        execution = await zero_ttl_docket.add(perpetual_task)()
+        await worker.run_at_most({execution.key: 3})
 
-            assert len(executions) == 3
-            # All executions should have the SAME key
-            assert len(set(executions)) == 1, "Perpetual task should reuse same key"
+        assert len(executions) == 3
+        # All executions should have the SAME key
+        assert len(set(executions)) == 1, "Perpetual task should reuse same key"
 
 
 async def test_perpetual_task_state_isolation(docket: Docket, worker: Worker) -> None:
@@ -58,42 +53,35 @@ async def test_perpetual_task_state_isolation(docket: Docket, worker: Worker) ->
 
 
 async def test_perpetual_task_no_state_accumulation_with_ttl_zero(
-    docket: Docket, worker: Worker
+    zero_ttl_docket: Docket,
 ) -> None:
     """Perpetual tasks with TTL=0 should not accumulate state records."""
-    async with Docket(
-        name="test-no-accumulation",
-        url=docket.url,
-        execution_ttl=timedelta(0),
-    ) as docket_with_zero_ttl:
-        executions: list[str] = []
+    executions: list[str] = []
 
-        async def perpetual_task(
-            execution: Execution = CurrentExecution(),
-            perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
-        ) -> None:
-            executions.append(execution.key)
-            if len(executions) >= 5:
-                perpetual.cancel()
+    async def perpetual_task(
+        execution: Execution = CurrentExecution(),
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
+    ) -> None:
+        executions.append(execution.key)
+        if len(executions) >= 5:
+            perpetual.cancel()
 
-        docket_with_zero_ttl.register(perpetual_task)
+    zero_ttl_docket.register(perpetual_task)
 
-        async with Worker(docket=docket_with_zero_ttl) as worker_with_zero_ttl:
-            execution = await docket_with_zero_ttl.add(perpetual_task)()
-            await worker_with_zero_ttl.run_at_most({execution.key: 5})
+    async with Worker(docket=zero_ttl_docket) as worker:
+        execution = await zero_ttl_docket.add(perpetual_task)()
+        await worker.run_at_most({execution.key: 5})
 
-            assert len(executions) == 5
+        assert len(executions) == 5
 
-            # Small delay for Redis to process expirations
-            await asyncio.sleep(0.2)
+        # Small delay for Redis to process expirations
+        await asyncio.sleep(0.2)
 
-            # Check that we're not accumulating state records
-            # With TTL=0, state records should be deleted immediately
-            async with docket_with_zero_ttl.redis() as redis:  # pragma: no branch
-                keys = await redis.keys(f"{docket_with_zero_ttl.name}:runs:*")  # type: ignore
-                assert len(keys) == 0, (
-                    f"Should have no state records, found {len(keys)}"
-                )
+        # Check that we're not accumulating state records
+        # With TTL=0, state records should be deleted immediately
+        async with zero_ttl_docket.redis() as redis:  # pragma: no branch
+            keys = await redis.keys(f"{zero_ttl_docket.name}:runs:*")  # type: ignore
+            assert len(keys) == 0, f"Should have no state records, found {len(keys)}"
 
 
 async def test_rapid_perpetual_tasks_no_conflicts(

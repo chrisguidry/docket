@@ -2,7 +2,6 @@
 
 import asyncio
 from datetime import timedelta
-from uuid import uuid4
 
 import pytest
 
@@ -233,52 +232,47 @@ async def test_cancel_only_affects_running_worker(
     assert execution.state == ExecutionState.CANCELLED
 
 
-async def test_cancel_running_task_with_zero_execution_ttl(redis_url: str):
+async def test_cancel_running_task_with_zero_execution_ttl(zero_ttl_docket: Docket):
     """Cancellation with execution_ttl=0 deletes the execution record immediately."""
-    async with Docket(
-        name=f"test-docket-{uuid4()}",
-        url=redis_url,
-        execution_ttl=timedelta(0),
-    ) as docket:
-        started = asyncio.Event()
-        cancelled = asyncio.Event()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
 
-        async def slow_task():
-            started.set()
-            try:
-                await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                cancelled.set()
-                raise
+    async def slow_task():
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
 
-        docket.register(slow_task)
-        execution = await docket.add(slow_task)()
+    zero_ttl_docket.register(slow_task)
+    execution = await zero_ttl_docket.add(slow_task)()
 
-        async with Worker(
-            docket,
-            minimum_check_interval=timedelta(milliseconds=5),
-            scheduling_resolution=timedelta(milliseconds=5),
-        ) as worker:
+    async with Worker(
+        zero_ttl_docket,
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as worker:
 
-            async def run_worker():
-                await worker.run_until_finished()
+        async def run_worker():
+            await worker.run_until_finished()
 
-            worker_task = asyncio.create_task(run_worker())
+        worker_task = asyncio.create_task(run_worker())
 
-            await asyncio.wait_for(started.wait(), timeout=5.0)
+        await asyncio.wait_for(started.wait(), timeout=5.0)
 
-            await docket.cancel(execution.key)
+        await zero_ttl_docket.cancel(execution.key)
 
-            await asyncio.wait_for(cancelled.wait(), timeout=5.0)
+        await asyncio.wait_for(cancelled.wait(), timeout=5.0)
 
-            await asyncio.wait_for(worker_task, timeout=5.0)
+        await asyncio.wait_for(worker_task, timeout=5.0)
 
-        # With execution_ttl=0, execution data is deleted after terminal state
-        # Verify the task was cancelled and execution record was cleaned up
-        assert cancelled.is_set()
-        async with docket.redis() as redis:
-            exists = await redis.exists(f"{docket.name}:runs:{execution.key}")
-        assert not exists, "execution record should be deleted with execution_ttl=0"
+    # With execution_ttl=0, execution data is deleted after terminal state
+    # Verify the task was cancelled and execution record was cleaned up
+    assert cancelled.is_set()
+    async with zero_ttl_docket.redis() as redis:
+        exists = await redis.exists(f"{zero_ttl_docket.name}:runs:{execution.key}")
+    assert not exists, "execution record should be deleted with execution_ttl=0"
 
 
 async def test_cancelled_task_with_retry_does_not_retry(docket: Docket, worker: Worker):

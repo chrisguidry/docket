@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 from unittest.mock import AsyncMock
 
 import pytest
@@ -208,12 +209,14 @@ async def test_run_state_ttl_after_completion(
         assert 0 < ttl <= expected_ttl  # TTL should be set and reasonable
 
 
-async def test_custom_execution_ttl(redis_url: str, the_task: AsyncMock):
+async def test_custom_execution_ttl(
+    redis_url: str, the_task: AsyncMock, make_docket_name: Callable[[], str]
+):
     """Docket should respect custom execution_ttl configuration."""
     # Create docket with custom 5-minute TTL
     custom_ttl = timedelta(minutes=5)
     async with Docket(
-        name="test-custom-ttl", url=redis_url, execution_ttl=custom_ttl
+        name=make_docket_name(), url=redis_url, execution_ttl=custom_ttl
     ) as docket:
         async with Worker(docket) as worker:
             execution = await docket.add(the_task)()

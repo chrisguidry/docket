@@ -20,6 +20,43 @@ from docket import Docket, Worker
 from tests._key_leak_checker import KeyCountChecker
 
 REDIS_VERSION = os.environ.get("REDIS_VERSION", "7.4")
+ACL_ENABLED = REDIS_VERSION.endswith("-acl")
+BASE_REDIS_VERSION = (
+    REDIS_VERSION.removesuffix("-acl") if ACL_ENABLED else REDIS_VERSION
+)
+
+
+class ACLCredentials:
+    """ACL credentials generated deterministically from testrun_uid.
+
+    Using testrun_uid ensures all pytest-xdist workers use the same credentials,
+    since only one worker sets up the ACL in Redis.
+    """
+
+    def __init__(self, testrun_uid: str) -> None:
+        if not ACL_ENABLED:  # pragma: no cover
+            self.username = ""
+            self.password = ""
+            self.admin_password = ""
+            self.docket_prefix = "test-docket"
+        else:  # pragma: no cover
+            # Use testrun_uid to generate deterministic credentials across xdist workers
+            self.username = f"docket-user-{testrun_uid[:8]}"
+            self.password = f"pass-{testrun_uid}"
+            self.admin_password = f"admin-{testrun_uid}"
+            self.docket_prefix = f"acl-test-{testrun_uid[:8]}"
+
+
+@pytest.fixture(scope="session")
+def acl_credentials(testrun_uid: str) -> ACLCredentials:
+    """Session-scoped ACL credentials for consistent test isolation."""
+    return ACLCredentials(testrun_uid)
+
+
+@pytest.fixture(scope="session")
+def xdist_worker_count() -> int:
+    """Number of pytest-xdist workers running in parallel."""
+    return int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "4"))
 
 
 @pytest.fixture(autouse=True)
@@ -47,8 +84,14 @@ def _sync_redis(url: str) -> Generator[Redis, None, None]:
 
 
 @contextmanager
-def _administrative_redis(port: int) -> Generator[Redis, None, None]:
-    with _sync_redis(f"redis://localhost:{port}/15") as r:
+def _administrative_redis(
+    port: int, password: str = ""
+) -> Generator[Redis, None, None]:
+    if password:  # pragma: no cover
+        url = f"redis://:{password}@localhost:{port}/15"
+    else:
+        url = f"redis://localhost:{port}/15"
+    with _sync_redis(url) as r:
         yield r
 
 
@@ -62,11 +105,44 @@ def _wait_for_redis(port: int) -> None:
             time.sleep(0.1)
 
 
+def _setup_acl(
+    port: int, creds: ACLCredentials, num_workers: int
+) -> None:  # pragma: no cover
+    """Configure Redis ACL for testing with restricted permissions."""
+    with _administrative_redis(port) as r:
+        # PSUBSCRIBE requires literal pattern matches in ACLs, so we enumerate
+        # explicit patterns for each worker and docket counter value
+        channel_patterns: list[str] = []
+        for i in range(num_workers):
+            channel_patterns.append(f"{creds.docket_prefix}-db{i}*:*")
+            channel_patterns.append(f"{creds.docket_prefix}-db{i}:cancel:*")
+            for j in range(1, num_workers + 1):
+                channel_patterns.append(f"{creds.docket_prefix}-db{i}-{j}:cancel:*")
+
+        r.acl_setuser(  # type: ignore[reportUnknownMemberType]
+            creds.username,
+            enabled=True,
+            passwords=[f"+{creds.password}"],
+            keys=[f"{creds.docket_prefix}*:*", "my-application:*"],
+            channels=channel_patterns,
+            commands=["+@all"],
+        )
+
+        r.acl_setuser(  # type: ignore[reportUnknownMemberType]
+            "default",
+            enabled=True,
+            passwords=[f"+{creds.admin_password}"],
+        )
+
+
 @pytest.fixture(scope="session")
 def redis_server(
-    testrun_uid: str, worker_id: str
+    testrun_uid: str,
+    worker_id: str,
+    acl_credentials: ACLCredentials,
+    xdist_worker_count: int,
 ) -> Generator[Container | None, None, None]:
-    if REDIS_VERSION == "memory":  # pragma: no cover
+    if BASE_REDIS_VERSION == "memory":  # pragma: no cover
         yield None
         return
 
@@ -108,9 +184,9 @@ def redis_server(
                 s.bind(("127.0.0.1", 0))
                 redis_port = s.getsockname()[1]
 
-            image = f"redis:{REDIS_VERSION}"
-            if REDIS_VERSION.startswith("valkey-"):  # pragma: no cover
-                image = f"valkey/valkey:{REDIS_VERSION.replace('valkey-', '')}"
+            image = f"redis:{BASE_REDIS_VERSION}"
+            if BASE_REDIS_VERSION.startswith("valkey-"):  # pragma: no cover
+                image = f"valkey/valkey:{BASE_REDIS_VERSION.replace('valkey-', '')}"
 
             container = client.containers.run(
                 image,
@@ -124,17 +200,22 @@ def redis_server(
             )
 
             _wait_for_redis(redis_port)
+
+            if ACL_ENABLED:  # pragma: no cover
+                _setup_acl(redis_port, acl_credentials, xdist_worker_count)
         else:
             port_bindings = container.attrs["HostConfig"]["PortBindings"]["6379/tcp"]
             redis_port = int(port_bindings[0]["HostPort"])
 
-        with _administrative_redis(redis_port) as r:
+        admin_password = acl_credentials.admin_password if ACL_ENABLED else ""
+        with _administrative_redis(redis_port, admin_password) as r:
             r.sadd(f"docket-unit-tests:{testrun_uid}", worker_id)
 
     try:
         yield container
     finally:
-        with _administrative_redis(redis_port) as r:
+        admin_password = acl_credentials.admin_password if ACL_ENABLED else ""
+        with _administrative_redis(redis_port, admin_password) as r:
             with r.pipeline() as pipe:  # type: ignore
                 pipe.srem(f"docket-unit-tests:{testrun_uid}", worker_id)
                 pipe.scard(f"docket-unit-tests:{testrun_uid}")
@@ -161,20 +242,69 @@ def redis_db(worker_id: str) -> int:
 
 
 @pytest.fixture
-def redis_url(redis_port: int, redis_db: int) -> str:
-    if REDIS_VERSION == "memory":  # pragma: no cover
+def redis_url(redis_port: int, redis_db: int, acl_credentials: ACLCredentials) -> str:
+    if BASE_REDIS_VERSION == "memory":  # pragma: no cover
         return "memory://"
 
-    url = f"redis://localhost:{redis_port}/{redis_db}"
+    if ACL_ENABLED:  # pragma: no cover
+        url = (
+            f"redis://{acl_credentials.username}:{acl_credentials.password}"
+            f"@localhost:{redis_port}/{redis_db}"
+        )
+    else:  # pragma: no cover
+        url = f"redis://localhost:{redis_port}/{redis_db}"
     with _sync_redis(url) as r:
         r.flushdb()  # type: ignore
     return url
 
 
 @pytest.fixture
-async def docket(redis_url: str) -> AsyncGenerator[Docket, None]:
-    async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
+async def docket(
+    redis_url: str, redis_db: int, acl_credentials: ACLCredentials
+) -> AsyncGenerator[Docket, None]:
+    # For ACL tests, the docket name must match the ACL pattern exactly since
+    # PSUBSCRIBE requires literal pattern matches. We include redis_db to provide
+    # isolation between parallel test workers.
+    if ACL_ENABLED:  # pragma: no cover
+        name = f"{acl_credentials.docket_prefix}-db{redis_db}"
+    else:  # pragma: no cover
+        name = f"{acl_credentials.docket_prefix}-{uuid4()}"
+    async with Docket(name=name, url=redis_url) as docket:
         yield docket
+
+
+@pytest.fixture
+async def zero_ttl_docket(
+    redis_url: str, make_docket_name: Callable[[], str]
+) -> AsyncGenerator[Docket, None]:
+    """Docket with execution_ttl=0 for tests that verify immediate expiration."""
+    async with Docket(
+        name=make_docket_name(),
+        url=redis_url,
+        execution_ttl=timedelta(0),
+    ) as docket:
+        yield docket
+
+
+@pytest.fixture
+def make_docket_name(
+    acl_credentials: ACLCredentials, redis_db: int
+) -> Callable[[], str]:
+    """Factory fixture that generates ACL-compatible docket names.
+
+    Use this in tests that create their own Docket instances to ensure
+    the names match the ACL key pattern when running with ACL enabled.
+    """
+    counter = 0
+
+    def _make_name() -> str:
+        nonlocal counter
+        counter += 1
+        if ACL_ENABLED:  # pragma: no cover
+            return f"{acl_credentials.docket_prefix}-db{redis_db}-{counter}"
+        return f"{acl_credentials.docket_prefix}-{uuid4()}"  # pragma: no cover
+
+    return _make_name
 
 
 @pytest.fixture

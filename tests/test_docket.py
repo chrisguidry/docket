@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import cast
+from typing import Callable, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -823,28 +823,28 @@ async def test_alias_appears_in_worker_announcements(docket: Docket):
         assert w.name in {worker.name for worker in workers}
 
 
-async def test_stream_not_created_on_docket_init(redis_url: str):
+async def test_stream_not_created_on_docket_init(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
     """Stream and consumer group should NOT be created when Docket is initialized.
 
     Issue #206: Lazy stream/consumer group bootstrap.
     """
-    from uuid import uuid4
-
-    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+    docket = Docket(name=make_docket_name(), url=redis_url)
     async with docket:
         async with docket.redis() as redis:
             stream_exists = await redis.exists(docket.stream_key)
             assert not stream_exists, "Stream should not exist on Docket init"
 
 
-async def test_ensure_stream_and_group_is_idempotent(redis_url: str):
+async def test_ensure_stream_and_group_is_idempotent(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
     """Calling _ensure_stream_and_group multiple times should not raise errors.
 
     Issue #206: Lazy stream/consumer group bootstrap.
     """
-    from uuid import uuid4
-
-    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+    docket = Docket(name=make_docket_name(), url=redis_url)
     async with docket:
         await docket._ensure_stream_and_group()  # pyright: ignore[reportPrivateUsage]
         await docket._ensure_stream_and_group()  # pyright: ignore[reportPrivateUsage]
@@ -856,14 +856,14 @@ async def test_ensure_stream_and_group_is_idempotent(redis_url: str):
             assert groups[0]["name"] == docket.worker_group_name.encode()
 
 
-async def test_docket_without_worker_does_not_create_group(redis_url: str):
+async def test_docket_without_worker_does_not_create_group(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
     """A Docket used only for adding tasks should not create consumer group.
 
     Issue #206: Lazy stream/consumer group bootstrap.
     """
-    from uuid import uuid4
-
-    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+    docket = Docket(name=make_docket_name(), url=redis_url)
 
     async def dummy_task(): ...
 
@@ -880,7 +880,9 @@ async def test_docket_without_worker_does_not_create_group(redis_url: str):
 
 
 @pytest.mark.parametrize("redis_url", ["real"], indirect=True)
-async def test_snapshot_handles_nogroup_with_real_redis(redis_url: str):
+async def test_snapshot_handles_nogroup_with_real_redis(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
     """Snapshot should handle NOGROUP error and create group automatically.
 
     Issue #206: Lazy stream/consumer group bootstrap.
@@ -889,9 +891,7 @@ async def test_snapshot_handles_nogroup_with_real_redis(redis_url: str):
     handling path in snapshot(), since the memory:// backend proactively
     creates the group to work around a fakeredis bug.
     """
-    from uuid import uuid4
-
-    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+    docket = Docket(name=make_docket_name(), url=redis_url)
 
     async def dummy_task(): ...
 

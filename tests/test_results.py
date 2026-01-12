@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -217,12 +217,14 @@ async def test_get_result_timeout(docket: Docket, worker: Worker):
     await worker_task
 
 
-async def test_result_ttl_matches_execution_ttl(docket: Docket, worker: Worker):
+async def test_result_ttl_matches_execution_ttl(
+    docket: Docket, worker: Worker, make_docket_name: Callable[[], str]
+):
     """Test that result TTL matches execution TTL."""
     # Create docket with short TTL
     execution_ttl = timedelta(seconds=2)
     async with Docket(
-        name=f"test-ttl-{docket.name}", url=docket.url, execution_ttl=execution_ttl
+        name=make_docket_name(), url=docket.url, execution_ttl=execution_ttl
     ) as ttl_docket:
 
         async def returns_value() -> int:
@@ -500,43 +502,43 @@ async def test_get_result_timeout_on_pending_task(docket: Docket, worker: Worker
     await worker_task
 
 
-async def test_result_storage_uses_provided_or_default(redis_url: str):
-    """Test that result_storage uses your store if provided, RedisStore if not."""
-    from unittest.mock import AsyncMock, MagicMock
+async def test_result_storage_uses_provided_or_default(docket: Docket):
+    """Test that result_storage uses RedisStore by default."""
     from urllib.parse import urlparse
 
-    from key_value.aio.protocols.key_value import AsyncKeyValue
     from key_value.aio.stores.redis import RedisStore
 
-    # If you give us one, it's yours
+    assert isinstance(docket.result_storage, RedisStore)
+
+    # Verify it's connected to the same Redis
+    result_client = docket.result_storage._client  # type: ignore[attr-defined]
+    pool_kwargs: dict[str, Any] = result_client.connection_pool.connection_kwargs  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+
+    if docket.url.startswith("memory://"):  # pragma: no cover
+        assert "server" in pool_kwargs
+    else:
+        parsed = urlparse(docket.url)
+        assert pool_kwargs.get("host") == (parsed.hostname or "localhost")
+        assert pool_kwargs.get("port") == (parsed.port or 6379)
+        expected_db = (
+            int(parsed.path.lstrip("/")) if parsed.path and parsed.path != "/" else 0
+        )
+        assert pool_kwargs.get("db") == expected_db
+
+
+async def test_result_storage_uses_custom_when_provided(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
+    """Test that result_storage uses your store if provided."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from key_value.aio.protocols.key_value import AsyncKeyValue
+
     custom_storage = MagicMock(spec=AsyncKeyValue)
     custom_storage.setup = AsyncMock()
     async with Docket(
-        name="test-custom-storage",
+        name=make_docket_name(),
         url=redis_url,
         result_storage=custom_storage,
-    ) as docket:
-        assert docket.result_storage is custom_storage
-
-    # If you don't, it's a RedisStore pointing at the same server
-    async with Docket(name="test-default-storage", url=redis_url) as docket:
-        assert isinstance(docket.result_storage, RedisStore)
-
-        # Verify it's connected to the same Redis
-        result_client = docket.result_storage._client  # type: ignore[attr-defined]
-        pool_kwargs: dict[str, Any] = result_client.connection_pool.connection_kwargs  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-
-        if redis_url.startswith("memory://"):  # pragma: no cover
-            # For memory://, just verify it has a server (fakeredis)
-            assert "server" in pool_kwargs
-        else:
-            # For real Redis, verify host/port/db match
-            parsed = urlparse(redis_url)
-            assert pool_kwargs.get("host") == (parsed.hostname or "localhost")
-            assert pool_kwargs.get("port") == (parsed.port or 6379)
-            expected_db = (
-                int(parsed.path.lstrip("/"))
-                if parsed.path and parsed.path != "/"
-                else 0
-            )
-            assert pool_kwargs.get("db") == expected_db
+    ) as custom_docket:
+        assert custom_docket.result_storage is custom_storage

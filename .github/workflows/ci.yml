@@ -60,6 +60,21 @@ jobs:
               redis-py-version: ">=5"
             cov-threshold: 95
             pytest-args: "--cov-config=.coveragerc-memory"
+          # ACL variants only run on latest Python to save CI time
+          - python-version: "3.14"
+            backend:
+              name: "Redis 8.0 with ACL"
+              redis-version: "8.0-acl"
+              redis-py-version: ">=5"
+            cov-threshold: 100
+            pytest-args: ""
+          - python-version: "3.14"
+            backend:
+              name: "Valkey 8.0 with ACL"
+              redis-version: "valkey-8.0-acl"
+              redis-py-version: ">=5"
+            cov-threshold: 100
+            pytest-args: ""
 
     steps:
       - uses: actions/checkout@v6
