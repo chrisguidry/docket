@@ -26,31 +26,3 @@ max_lines = 808
 [[rules]]
 path = "src/docket/strikelist.py"
 max_lines = 610
-
-[[rules]]
-path = "tests/test_fundamentals.py"
-max_lines = 2003
-
-[[rules]]
-path = "tests/test_worker.py"
-max_lines = 1128
-
-[[rules]]
-path = "tests/test_instrumentation.py"
-max_lines = 976
-
-[[rules]]
-path = "tests/test_docket.py"
-max_lines = 919
-
-[[rules]]
-path = "tests/test_dependencies.py"
-max_lines = 666
-
-[[rules]]
-path = "tests/test_results.py"
-max_lines = 545
-
-[[rules]]
-path = "tests/test_execution_progress.py"
-max_lines = 820
