@@ -276,6 +276,19 @@ async def docket(
 
 
 @pytest.fixture
+async def zero_ttl_docket(
+    redis_url: str, make_docket_name: Callable[[], str]
+) -> AsyncGenerator[Docket, None]:
+    """Docket with execution_ttl=0 for tests that verify immediate expiration."""
+    async with Docket(
+        name=make_docket_name(),
+        url=redis_url,
+        execution_ttl=timedelta(0),
+    ) as docket:
+        yield docket
+
+
+@pytest.fixture
 def make_docket_name(
     acl_credentials: ACLCredentials, redis_db: int
 ) -> Callable[[], str]:

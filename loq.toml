@@ -33,7 +33,7 @@ max_lines = 2003
 
 [[rules]]
 path = "tests/test_worker.py"
-max_lines = 1120
+max_lines = 1128
 
 [[rules]]
 path = "tests/test_instrumentation.py"
@@ -49,8 +49,8 @@ max_lines = 666
 
 [[rules]]
 path = "tests/test_results.py"
-max_lines = 542
+max_lines = 545
 
 [[rules]]
 path = "tests/test_execution_progress.py"
-max_lines = 817
+max_lines = 820
