@@ -39,7 +39,7 @@ class ACLCredentials:
             self.password = ""
             self.admin_password = ""
             self.docket_prefix = "test-docket"
-        else:
+        else:  # pragma: no cover
             # Use testrun_uid to generate deterministic credentials across xdist workers
             self.username = f"docket-user-{testrun_uid[:8]}"
             self.password = f"pass-{testrun_uid}"
@@ -81,7 +81,7 @@ def _sync_redis(url: str) -> Generator[Redis, None, None]:
 def _administrative_redis(
     port: int, password: str = ""
 ) -> Generator[Redis, None, None]:
-    if password:
+    if password:  # pragma: no cover
         url = f"redis://:{password}@localhost:{port}/15"
     else:
         url = f"redis://localhost:{port}/15"
