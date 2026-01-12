@@ -30,8 +30,7 @@ async def test_registered_task_usable_after_aenter():
     """Tasks registered before __aenter__ should be usable inside the context."""
     docket = Docket(name="test-pre-register-usable", url="memory://")
 
-    async def my_task(_value: str) -> None:
-        pass
+    async def my_task(_value: str) -> None: ...
 
     docket.register(my_task)
 
