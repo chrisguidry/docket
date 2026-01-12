@@ -6,10 +6,10 @@ import logging
 import os
 import socket
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Collection, Protocol, TypeVar
+from typing import Any, Collection
 
 import typer
 from rich.console import Console
@@ -17,20 +17,10 @@ from rich.table import Table
 
 from .docket import DocketSnapshot, WorkerInfo
 
-T_co = TypeVar("T_co", covariant=True)
-T = TypeVar("T")
-
-
-class _ClosableAsyncIterator(Protocol[T_co]):
-    """Protocol for async iterators that support closing."""
-
-    def __anext__(self) -> Awaitable[T_co]: ...
-    def aclose(self) -> Awaitable[None]: ...
-
 
 async def iterate_with_timeout(
-    iterator: _ClosableAsyncIterator[T], timeout: float
-) -> AsyncGenerator[T | None, None]:
+    iterator: AsyncIterator[dict[str, Any]], timeout: float
+) -> AsyncGenerator[dict[str, Any] | None, None]:
     """Iterate over an async iterator with timeout, ensuring proper cleanup.
 
     Wraps an async iterator to add timeout support and guaranteed cleanup.
