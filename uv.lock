@@ -660,6 +660,21 @@ wheels = [
 ]
 
 [[package]]
+name = "loq"
+version = "0.1.0a3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/87/2d/911c0ca3175aa30358eb0b1dd4789e3695292db63dc50da34be0d8aa001a/loq-0.1.0a3.tar.gz", hash = "sha256:8f34ed32eed79d3257fc6c6e2ffc4970795bae0fbd7dee95cdb027d351a87839", size = 49278, upload-time = "2026-01-12T05:13:34.14Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6a/7c/d028a1041caef85844b7a68926138daedac6ab4aa720f6cb8c77a30dcb49/loq-0.1.0a3-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:e65cb220446f1a2fad5c0e3e0c97715204652cb3896b35bb50967745d1f74ade", size = 1285120, upload-time = "2026-01-12T05:13:29.418Z" },
+    { url = "https://files.pythonhosted.org/packages/91/49/cfa207080940c9d447ca4633d7a25790d50e936de29d154dcc1941c45e54/loq-0.1.0a3-py3-none-macosx_11_0_arm64.whl", hash = "sha256:20afc0638df897312ea33f064cd8d05ee437c77ff6fca890ac33d41cc5fe9dbd", size = 1212512, upload-time = "2026-01-12T05:13:26.353Z" },
+    { url = "https://files.pythonhosted.org/packages/80/d9/68f2418009771b764fc6fcbd379892464c7d96cf668ea570f8b3d6e93806/loq-0.1.0a3-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:efb606799326bdba9e0931ae6664076eb24ea9ce29f540ec62071f3da7d89753", size = 1232624, upload-time = "2026-01-12T05:13:30.431Z" },
+    { url = "https://files.pythonhosted.org/packages/cc/27/10e195de9e4e843fed4a098f4a7b3e2b78a0218d317adb3ea83b341fa8e9/loq-0.1.0a3-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:63a146821abc50f9166fdec83a92330ddec81d78fc02d0956cf00957fc02f4e6", size = 1324994, upload-time = "2026-01-12T05:13:27.895Z" },
+    { url = "https://files.pythonhosted.org/packages/98/09/76677afb5f9d380a89cf59489f03cdb7c1c6318d1c81c6fc3073cce93893/loq-0.1.0a3-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:afc46f65303b9ff64ae0e517f4834cf0e5b97cd5b375cbfd66dadf267f94f725", size = 1272635, upload-time = "2026-01-12T05:13:23.759Z" },
+    { url = "https://files.pythonhosted.org/packages/65/77/fda09acd73fc44f6a7cfa9851dd8d8fdab0829311b9c7fa1f1af30b3affa/loq-0.1.0a3-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:3e5501abcbab67d14e6c71a6c010609430a9495a888e10047d5542ffd46acd65", size = 1389293, upload-time = "2026-01-12T05:13:32.655Z" },
+    { url = "https://files.pythonhosted.org/packages/39/68/2dbb5e29e0333f036b92b09f6b54bbd8e68b51b780051f01e15c307b6ab1/loq-0.1.0a3-py3-none-win_amd64.whl", hash = "sha256:51cd849b94f09d211bb842809cce4172ee0904092be2643bdb9629001745f3b9", size = 1283650, upload-time = "2026-01-12T05:13:25.042Z" },
+]
+
+[[package]]
 name = "lupa"
 version = "2.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1565,6 +1580,7 @@ dev = [
     { name = "docker" },
     { name = "ipython", version = "8.37.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "ipython", version = "9.6.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "loq" },
     { name = "mypy" },
     { name = "opentelemetry-distro" },
     { name = "opentelemetry-exporter-otlp" },
@@ -1617,6 +1633,7 @@ dev = [
     { name = "codespell", specifier = ">=2.4.1" },
     { name = "docker", specifier = ">=7.1.0" },
     { name = "ipython", specifier = ">=8.0.0" },
+    { name = "loq", specifier = ">=0.1.0a3" },
     { name = "mypy", specifier = ">=1.14.1" },
     { name = "opentelemetry-distro", specifier = ">=0.60b0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.33.0" },
