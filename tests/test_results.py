@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -217,12 +217,14 @@ async def test_get_result_timeout(docket: Docket, worker: Worker):
     await worker_task
 
 
-async def test_result_ttl_matches_execution_ttl(docket: Docket, worker: Worker):
+async def test_result_ttl_matches_execution_ttl(
+    docket: Docket, worker: Worker, make_docket_name: Callable[[], str]
+):
     """Test that result TTL matches execution TTL."""
     # Create docket with short TTL
     execution_ttl = timedelta(seconds=2)
     async with Docket(
-        name=f"test-ttl-{docket.name}", url=docket.url, execution_ttl=execution_ttl
+        name=make_docket_name(), url=docket.url, execution_ttl=execution_ttl
     ) as ttl_docket:
 
         async def returns_value() -> int:

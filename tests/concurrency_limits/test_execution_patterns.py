@@ -83,11 +83,12 @@ async def test_worker_concurrency_limits_different_scopes(docket: Docket):
     """Test that concurrency limits work correctly with different scopes"""
     task_executions: list[tuple[str, int]] = []
 
+    # Use my-application: prefix for custom scopes (allowed by ACL for user-managed keys)
     async def scoped_task(
         customer_id: int,
         scope_name: str,
         concurrency: ConcurrencyLimit = ConcurrencyLimit(
-            "customer_id", max_concurrent=1, scope="custom_scope"
+            "customer_id", max_concurrent=1, scope="my-application:custom"
         ),
     ):
         task_executions.append((scope_name, customer_id))

@@ -3,7 +3,7 @@ import decimal
 from datetime import timedelta
 import os
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
@@ -18,165 +18,157 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-async def test_strike(redis_url: str):
+async def test_strike(docket: Docket):
     """Should strike a task"""
-    async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        result = await run_cli(
-            "strike",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "example_task",
-            "some_parameter",
-            "==",
-            "some_value",
-        )
+    result = await run_cli(
+        "strike",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "example_task",
+        "some_parameter",
+        "==",
+        "some_value",
+    )
 
-        assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, result.output
 
-        assert "Striking example_task some_parameter == 'some_value'" in result.output
+    assert "Striking example_task some_parameter == 'some_value'" in result.output
 
-        await asyncio.sleep(0.25)
+    await asyncio.sleep(0.25)
 
-        assert "example_task" in docket.strike_list.task_strikes
+    assert "example_task" in docket.strike_list.task_strikes
 
 
-async def test_restore(redis_url: str):
+async def test_restore(docket: Docket):
     """Should restore a task"""
-    async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        await docket.strike("example_task", "some_parameter", "==", "some_value")
-        assert "example_task" in docket.strike_list.task_strikes
+    await docket.strike("example_task", "some_parameter", "==", "some_value")
+    assert "example_task" in docket.strike_list.task_strikes
 
-        result = await run_cli(
-            "restore",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "example_task",
-            "some_parameter",
-            "==",
-            "some_value",
-        )
+    result = await run_cli(
+        "restore",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "example_task",
+        "some_parameter",
+        "==",
+        "some_value",
+    )
 
-        assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, result.output
 
-        assert "Restoring example_task some_parameter == 'some_value'" in result.output
+    assert "Restoring example_task some_parameter == 'some_value'" in result.output
 
-        await asyncio.sleep(0.25)
+    await asyncio.sleep(0.25)
 
-        assert "example_task" not in docket.strike_list.task_strikes
+    assert "example_task" not in docket.strike_list.task_strikes
 
 
-async def test_task_only_strike(redis_url: str):
+async def test_task_only_strike(docket: Docket):
     """Should strike a task without specifying parameter conditions"""
-    async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        result = await run_cli(
-            "strike",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "example_task",
-        )
+    result = await run_cli(
+        "strike",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "example_task",
+    )
 
-        assert result.exit_code == 0, result.output
-        assert "Striking example_task" in result.output
+    assert result.exit_code == 0, result.output
+    assert "Striking example_task" in result.output
 
-        await asyncio.sleep(0.25)
+    await asyncio.sleep(0.25)
 
-        assert "example_task" in docket.strike_list.task_strikes
+    assert "example_task" in docket.strike_list.task_strikes
 
 
-async def test_task_only_restore(redis_url: str):
+async def test_task_only_restore(docket: Docket):
     """Should restore a task without specifying parameter conditions"""
-    async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        await docket.strike("example_task")
+    await docket.strike("example_task")
 
-    async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        result = await run_cli(
-            "restore",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "example_task",
-        )
+    result = await run_cli(
+        "restore",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "example_task",
+    )
 
-        assert result.exit_code == 0, result.output
-        assert "Restoring example_task" in result.output
+    assert result.exit_code == 0, result.output
+    assert "Restoring example_task" in result.output
 
-        await asyncio.sleep(0.25)
+    await asyncio.sleep(0.25)
 
-        assert "example_task" not in docket.strike_list.task_strikes
+    assert "example_task" not in docket.strike_list.task_strikes
 
 
-async def test_parameter_only_strike(redis_url: str):
+async def test_parameter_only_strike(docket: Docket):
     """Should strike tasks with matching parameter conditions regardless of task name"""
-    async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        result = await run_cli(
-            "strike",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "",
-            "some_parameter",
-            "==",
-            "some_value",
-        )
+    result = await run_cli(
+        "strike",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "",
+        "some_parameter",
+        "==",
+        "some_value",
+    )
 
-        assert result.exit_code == 0, result.output
-        assert "Striking (all tasks) some_parameter == 'some_value'" in result.output
+    assert result.exit_code == 0, result.output
+    assert "Striking (all tasks) some_parameter == 'some_value'" in result.output
 
-        await asyncio.sleep(0.25)
+    await asyncio.sleep(0.25)
 
-        assert "some_parameter" in docket.strike_list.parameter_strikes
-        parameter_strikes = docket.strike_list.parameter_strikes["some_parameter"]
-        assert ("==", "some_value") in parameter_strikes
+    assert "some_parameter" in docket.strike_list.parameter_strikes
+    parameter_strikes = docket.strike_list.parameter_strikes["some_parameter"]
+    assert ("==", "some_value") in parameter_strikes
 
 
-async def test_parameter_only_restore(redis_url: str):
+async def test_parameter_only_restore(docket: Docket):
     """Should restore tasks with matching parameter conditions regardless of task
     name"""
-    async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        await docket.strike("", "some_parameter", "==", "some_value")
+    await docket.strike("", "some_parameter", "==", "some_value")
 
-        result = await run_cli(
-            "restore",
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "",
-            "some_parameter",
-            "==",
-            "some_value",
-        )
+    result = await run_cli(
+        "restore",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "",
+        "some_parameter",
+        "==",
+        "some_value",
+    )
 
-        assert result.exit_code == 0, result.output
-        assert "Restoring (all tasks) some_parameter == 'some_value'" in result.output
+    assert result.exit_code == 0, result.output
+    assert "Restoring (all tasks) some_parameter == 'some_value'" in result.output
 
-        await asyncio.sleep(0.25)
+    await asyncio.sleep(0.25)
 
-        assert "some_parameter" not in docket.strike_list.parameter_strikes
+    assert "some_parameter" not in docket.strike_list.parameter_strikes
 
 
 @pytest.mark.parametrize("operation", ["strike", "restore"])
-async def test_strike_with_no_function_or_parameter(redis_url: str, operation: str):
+async def test_strike_with_no_function_or_parameter(docket: Docket, operation: str):
     """Should fail when neither function nor parameter is provided"""
-    async with Docket(name=f"test-docket-{uuid4()}", url=redis_url) as docket:
-        result = await run_cli(
-            operation,
-            "--url",
-            docket.url,
-            "--docket",
-            docket.name,
-            "",
-        )
+    result = await run_cli(
+        operation,
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "",
+    )
 
-        assert result.exit_code != 0, result.output
+    assert result.exit_code != 0, result.output
 
 
 @pytest.mark.parametrize(

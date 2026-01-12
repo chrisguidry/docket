@@ -2,16 +2,19 @@
 
 import asyncio
 from datetime import timedelta
+from typing import Callable
 
 from docket import Docket, Worker
 from docket.dependencies import CurrentExecution, Perpetual
 from docket.execution import Execution
 
 
-async def test_perpetual_task_with_ttl_zero(docket: Docket, worker: Worker) -> None:
+async def test_perpetual_task_with_ttl_zero(
+    docket: Docket, worker: Worker, make_docket_name: Callable[[], str]
+) -> None:
     """Perpetual tasks should work correctly with TTL of 0."""
     async with Docket(
-        name="test-perpetual-ttl-zero",
+        name=make_docket_name(),
         url=docket.url,
         execution_ttl=timedelta(0),
     ) as docket_with_zero_ttl:
@@ -58,11 +61,11 @@ async def test_perpetual_task_state_isolation(docket: Docket, worker: Worker) ->
 
 
 async def test_perpetual_task_no_state_accumulation_with_ttl_zero(
-    docket: Docket, worker: Worker
+    docket: Docket, worker: Worker, make_docket_name: Callable[[], str]
 ) -> None:
     """Perpetual tasks with TTL=0 should not accumulate state records."""
     async with Docket(
-        name="test-no-accumulation",
+        name=make_docket_name(),
         url=docket.url,
         execution_ttl=timedelta(0),
     ) as docket_with_zero_ttl:

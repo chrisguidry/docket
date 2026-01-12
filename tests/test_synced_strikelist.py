@@ -3,8 +3,7 @@
 # pyright: reportPrivateUsage=false
 
 import asyncio
-from typing import Any
-from uuid import uuid4
+from typing import Any, Callable
 
 import pytest
 from redis.asyncio import Redis
@@ -14,9 +13,13 @@ from docket.strikelist import Operator, Restore, Strike
 
 
 @pytest.fixture
-def strike_name() -> str:
-    """Unique name for each test to avoid collisions."""
-    return f"test-strikes-{uuid4()}"
+def strike_name(make_docket_name: Callable[[], str]) -> str:
+    """Unique name for each test to avoid collisions.
+
+    Uses make_docket_name to ensure ACL compatibility when running
+    with Redis ACL enabled.
+    """
+    return make_docket_name()
 
 
 async def send_strike(

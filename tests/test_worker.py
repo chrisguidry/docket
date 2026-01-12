@@ -669,7 +669,7 @@ async def test_rapid_replace_operations(
     "execution_ttl", [None, timedelta(0)], ids=["default_ttl", "zero_ttl"]
 )
 async def test_duplicate_execution_race_condition_non_perpetual_task(
-    redis_url: str, execution_ttl: timedelta | None
+    redis_url: str, execution_ttl: timedelta | None, make_docket_name: Callable[[], str]
 ):
     """Reproduce race condition where non-perpetual tasks execute multiple times.
 
@@ -699,7 +699,7 @@ async def test_duplicate_execution_race_condition_non_perpetual_task(
         await asyncio.sleep(0.3)
 
     docket_kwargs: dict[str, object] = {
-        "name": f"test-race-{uuid4()}",
+        "name": make_docket_name(),
         "url": redis_url,
     }
     if execution_ttl is not None:
@@ -954,12 +954,14 @@ async def test_worker_run_classmethod_memory_backend() -> None:
     )
 
 
-async def test_consumer_group_created_on_first_worker_read(redis_url: str):
+async def test_consumer_group_created_on_first_worker_read(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
     """Consumer group should be created when worker first tries to read.
 
     Issue #206: Lazy stream/consumer group bootstrap.
     """
-    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+    docket = Docket(name=make_docket_name(), url=redis_url)
 
     async def dummy_task():
         pass
@@ -987,12 +989,14 @@ async def test_consumer_group_created_on_first_worker_read(redis_url: str):
             assert groups[0]["name"] == docket.worker_group_name.encode()
 
 
-async def test_multiple_workers_racing_to_create_group(redis_url: str):
+async def test_multiple_workers_racing_to_create_group(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
     """Multiple workers starting simultaneously should all succeed.
 
     Issue #206: Lazy stream/consumer group bootstrap.
     """
-    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+    docket = Docket(name=make_docket_name(), url=redis_url)
     call_counts: dict[str, int] = {}
 
     async def counting_task(worker: Worker = CurrentWorker()):
@@ -1029,12 +1033,14 @@ async def test_multiple_workers_racing_to_create_group(redis_url: str):
             assert len(groups) == 1
 
 
-async def test_worker_handles_nogroup_error_gracefully(redis_url: str):
+async def test_worker_handles_nogroup_error_gracefully(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
     """Worker should handle NOGROUP error and create group automatically.
 
     Issue #206: Lazy stream/consumer group bootstrap.
     """
-    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+    docket = Docket(name=make_docket_name(), url=redis_url)
     task_executed = False
 
     async def simple_task():
@@ -1060,7 +1066,9 @@ async def test_worker_handles_nogroup_error_gracefully(redis_url: str):
         assert task_executed, "Task should have been executed"
 
 
-async def test_worker_handles_nogroup_in_xreadgroup(redis_url: str):
+async def test_worker_handles_nogroup_in_xreadgroup(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
     """Worker should handle NOGROUP error in xreadgroup and retry.
 
     Issue #206: Lazy stream/consumer group bootstrap.
@@ -1073,7 +1081,7 @@ async def test_worker_handles_nogroup_in_xreadgroup(redis_url: str):
     import redis.asyncio
     from redis.exceptions import ResponseError
 
-    docket = Docket(name=f"fresh-docket-{uuid4()}", url=redis_url)
+    docket = Docket(name=make_docket_name(), url=redis_url)
     task_executed = False
 
     async def simple_task():

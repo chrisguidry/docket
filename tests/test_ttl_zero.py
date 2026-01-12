@@ -1,15 +1,18 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 import pytest
 
 from docket import Docket, Worker
 
 
-async def test_task_executes_with_ttl_zero(docket: Docket, worker: Worker) -> None:
+async def test_task_executes_with_ttl_zero(
+    docket: Docket, worker: Worker, make_docket_name: Callable[[], str]
+) -> None:
     """Tasks should execute successfully when execution_ttl is set to 0."""
     async with Docket(
-        name="test-ttl-zero",
+        name=make_docket_name(),
         url=docket.url,
         execution_ttl=timedelta(0),
     ) as docket_with_zero_ttl:
@@ -30,11 +33,11 @@ async def test_task_executes_with_ttl_zero(docket: Docket, worker: Worker) -> No
 
 
 async def test_state_record_expires_immediately_with_ttl_zero(
-    docket: Docket, worker: Worker
+    docket: Docket, worker: Worker, make_docket_name: Callable[[], str]
 ) -> None:
     """State records should be deleted immediately when execution_ttl is 0."""
     async with Docket(
-        name="test-ttl-zero-state",
+        name=make_docket_name(),
         url=docket.url,
         execution_ttl=timedelta(0),
     ) as docket_with_zero_ttl:
@@ -60,10 +63,12 @@ async def test_state_record_expires_immediately_with_ttl_zero(
                 )
 
 
-async def test_result_storage_with_ttl_zero(docket: Docket, worker: Worker) -> None:
+async def test_result_storage_with_ttl_zero(
+    docket: Docket, worker: Worker, make_docket_name: Callable[[], str]
+) -> None:
     """Results should be stored with TTL of 0 when execution_ttl is 0."""
     async with Docket(
-        name="test-ttl-zero-result",
+        name=make_docket_name(),
         url=docket.url,
         execution_ttl=timedelta(0),
     ) as docket_with_zero_ttl:
@@ -84,10 +89,12 @@ async def test_result_storage_with_ttl_zero(docket: Docket, worker: Worker) -> N
                 await execution.get_result(deadline=deadline)
 
 
-async def test_failed_task_with_ttl_zero(docket: Docket, worker: Worker) -> None:
+async def test_failed_task_with_ttl_zero(
+    docket: Docket, worker: Worker, make_docket_name: Callable[[], str]
+) -> None:
     """Failed tasks should handle TTL=0 correctly."""
     async with Docket(
-        name="test-failed-ttl-zero",
+        name=make_docket_name(),
         url=docket.url,
         execution_ttl=timedelta(0),
     ) as docket_with_zero_ttl:
@@ -110,16 +117,18 @@ async def test_failed_task_with_ttl_zero(docket: Docket, worker: Worker) -> None
                 await execution.get_result(deadline=deadline)
 
 
-async def test_mixed_ttl_workload(docket: Docket, worker: Worker) -> None:
+async def test_mixed_ttl_workload(
+    docket: Docket, worker: Worker, make_docket_name: Callable[[], str]
+) -> None:
     """Tasks with different TTL settings should not interfere with each other."""
     async with (  # pragma: no branch
         Docket(
-            name="test-with-ttl",
+            name=make_docket_name(),
             url=docket.url,
             execution_ttl=timedelta(seconds=60),
         ) as docket_with_ttl,
         Docket(
-            name="test-zero-ttl",
+            name=make_docket_name(),
             url=docket.url,
             execution_ttl=timedelta(0),
         ) as docket_with_zero_ttl,

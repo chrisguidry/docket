@@ -2,11 +2,10 @@
 
 import asyncio
 from datetime import timedelta
-from uuid import uuid4
 
 import pytest
 
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 
 from docket import Docket, ExecutionState, Worker
 from docket.execution import ProgressEvent, StateEvent
@@ -233,10 +232,12 @@ async def test_cancel_only_affects_running_worker(
     assert execution.state == ExecutionState.CANCELLED
 
 
-async def test_cancel_running_task_with_zero_execution_ttl(redis_url: str):
+async def test_cancel_running_task_with_zero_execution_ttl(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
     """Cancellation with execution_ttl=0 deletes the execution record immediately."""
     async with Docket(
-        name=f"test-docket-{uuid4()}",
+        name=make_docket_name(),
         url=redis_url,
         execution_ttl=timedelta(0),
     ) as docket:
