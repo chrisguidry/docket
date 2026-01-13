@@ -20,7 +20,7 @@ from rich.progress import (
 from rich.table import Table
 
 from . import __version__, tasks
-from ._cli_utils import (
+from ._cli_support import (
     LogLevel,
     LogFormat,
     default_worker_name,

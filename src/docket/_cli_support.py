@@ -1,4 +1,4 @@
-"""Utility functions for the docket CLI."""
+"""Support functions for the docket CLI."""
 
 import enum
 import importlib

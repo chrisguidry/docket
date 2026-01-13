@@ -177,7 +177,7 @@ def test_relative_time(
     def consistent_format(dt: datetime) -> str:
         return dt.strftime("%Y-%m-%d %H:%M:%S %z")
 
-    monkeypatch.setattr("docket._cli_utils.local_time", consistent_format)
+    monkeypatch.setattr("docket._cli_support.local_time", consistent_format)
 
     assert relative_time(now, when) == expected
 
