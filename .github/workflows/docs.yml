@@ -76,6 +76,14 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
+      # Clean up any stale github-pages artifacts from previous attempts
+      # See: https://github.com/actions/upload-pages-artifact/issues/97
+      - name: Delete stale Pages artifacts
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: github-pages
+          failOnError: false
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
