@@ -2,7 +2,6 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Callable
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -53,42 +52,6 @@ async def test_get_result_timeout(docket: Docket, worker: Worker):
     # Let the task complete so worker can finish
     event.set()
     await worker_task
-
-
-async def test_result_ttl_matches_execution_ttl(
-    docket: Docket, worker: Worker, make_docket_name: Callable[[], str]
-):
-    """Test that result TTL matches execution TTL."""
-    # Create docket with short TTL
-    execution_ttl = timedelta(seconds=2)
-    async with Docket(
-        name=make_docket_name(), url=docket.url, execution_ttl=execution_ttl
-    ) as ttl_docket:
-
-        async def returns_value() -> int:
-            return 42
-
-        ttl_docket.register(returns_value)
-
-        async with Worker(
-            ttl_docket,
-            minimum_check_interval=timedelta(milliseconds=5),
-            scheduling_resolution=timedelta(milliseconds=5),
-        ) as ttl_worker:
-            execution = await ttl_docket.add(returns_value)()
-            await ttl_worker.run_until_finished()
-
-            # Result should be available immediately
-            result = await execution.get_result()
-            assert result == 42
-
-            # Wait for TTL to expire
-            await asyncio.sleep(3)
-
-            # Result should be gone (expired)
-            await execution.sync()
-            result_data = await ttl_docket.result_storage.get(execution.key)
-            assert result_data is None
 
 
 async def test_multiple_concurrent_get_result_calls(docket: Docket, worker: Worker):

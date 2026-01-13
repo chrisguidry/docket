@@ -2,27 +2,28 @@ default_max_lines = 500
 respect_gitignore = true
 exclude = ["**/uv.lock", "**/.git/**", "**/docs/**"]
 
-# Source files - current state baselines
+# Source files get a higher default limit (750)
+[[rules]]
+path = "src/**/*.py"
+max_lines = 750
+
+# Source files that still need exceptions above 750
 [[rules]]
 path = "src/docket/worker.py"
 max_lines = 1375
 
 [[rules]]
 path = "src/docket/cli.py"
-max_lines = 1207
+max_lines = 950
 
 [[rules]]
 path = "src/docket/execution.py"
-max_lines = 1099
+max_lines = 900
 
 [[rules]]
 path = "src/docket/docket.py"
-max_lines = 1081
+max_lines = 875
 
 [[rules]]
 path = "src/docket/dependencies.py"
 max_lines = 808
-
-[[rules]]
-path = "src/docket/strikelist.py"
-max_lines = 610

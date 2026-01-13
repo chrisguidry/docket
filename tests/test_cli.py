@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, AsyncGenerator, cast
+from typing import Any
 
 import pytest
 
@@ -68,10 +68,7 @@ async def test_iterate_with_timeout_cleanup_on_break():
             close_called = True
 
     mock_iter = MockAsyncIterator()
-    gen = cast(
-        AsyncGenerator[dict[str, Any] | None, None],
-        iterate_with_timeout(mock_iter, timeout=1.0),
-    )
+    gen = iterate_with_timeout(mock_iter, timeout=1.0)
     async for _item in gen:  # pragma: no branch
         break
         # pragma: no cover - we always break in this test
