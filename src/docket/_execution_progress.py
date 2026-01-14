@@ -214,16 +214,15 @@ class ExecutionProgress:
             - updated_at: ISO 8601 timestamp
         """
         channel = self.docket.key(f"progress:{self.key}")
-        async with self.docket.redis() as redis:
-            async with redis.pubsub() as pubsub:
-                await pubsub.subscribe(channel)
-                try:
-                    async for message in pubsub.listen():  # pragma: no cover
-                        if message["type"] == "message":
-                            yield json.loads(message["data"])
-                finally:
-                    # Explicitly unsubscribe to ensure clean shutdown
-                    await pubsub.unsubscribe(channel)
+        async with self.docket._pubsub() as pubsub:
+            await pubsub.subscribe(channel)
+            try:
+                async for message in pubsub.listen():  # pragma: no cover
+                    if message["type"] == "message":
+                        yield json.loads(message["data"])
+            finally:
+                # Explicitly unsubscribe to ensure clean shutdown
+                await pubsub.unsubscribe(channel)
 
 
 __all__ = [
