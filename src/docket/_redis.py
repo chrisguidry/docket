@@ -2,12 +2,19 @@
 
 This module is the single point of control for Redis connections, including
 the fakeredis backend used for memory:// URLs.
+
+This module is designed to be the single point of cluster-awareness, so that
+other modules can remain simple. When Redis Cluster support is added, only
+this module will need to change.
 """
 
 import asyncio
 import typing
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 
-from redis.asyncio import ConnectionPool
+from redis.asyncio import ConnectionPool, Redis
+from redis.asyncio.client import PubSub
 
 if typing.TYPE_CHECKING:
     from fakeredis.aioredis import FakeServer
@@ -32,6 +39,73 @@ def get_memory_server(url: str) -> "FakeServer | None":
     This is primarily for testing to verify server isolation.
     """
     return _memory_servers.get(url)
+
+
+def is_cluster_url(url: str) -> bool:
+    """Check if the URL indicates Redis Cluster mode.
+
+    Args:
+        url: Redis URL to check
+
+    Returns:
+        True if the URL uses the redis+cluster:// scheme
+    """
+    return url.startswith("redis+cluster://")
+
+
+@asynccontextmanager
+async def redis_connection(
+    url: str,
+    pool: ConnectionPool,
+) -> AsyncGenerator[Redis, None]:
+    """Get a Redis connection, handling both standalone and cluster modes.
+
+    For standalone mode, creates a Redis client from the pool.
+    For cluster mode, raises NotImplementedError (not yet supported).
+
+    Args:
+        url: Redis URL (used to detect cluster mode)
+        pool: Connection pool for standalone mode
+
+    Yields:
+        Redis client
+    """
+    if is_cluster_url(url):
+        raise NotImplementedError(
+            "Redis Cluster support is not yet implemented. "
+            "Use a standalone Redis URL (redis://) instead of redis+cluster://."
+        )
+
+    async with Redis(connection_pool=pool) as r:
+        yield r
+
+
+@asynccontextmanager
+async def pubsub_connection(
+    url: str,
+    pool: ConnectionPool,
+) -> AsyncGenerator[PubSub, None]:
+    """Get a pub/sub connection, handling both standalone and cluster modes.
+
+    For standalone mode, creates a Redis client from the pool and gets its pubsub.
+    For cluster mode, raises NotImplementedError (not yet supported).
+
+    Args:
+        url: Redis URL (used to detect cluster mode)
+        pool: Connection pool for standalone mode
+
+    Yields:
+        A PubSub object with subscribe/listen methods
+    """
+    if is_cluster_url(url):
+        raise NotImplementedError(
+            "Redis Cluster pub/sub is not yet implemented. "
+            "Use a standalone Redis URL (redis://) instead of redis+cluster://."
+        )
+
+    async with Redis(connection_pool=pool) as r:
+        async with r.pubsub() as pubsub:
+            yield pubsub
 
 
 async def connection_pool_from_url(
