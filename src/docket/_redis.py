@@ -70,7 +70,7 @@ async def redis_connection(
     Yields:
         Redis client
     """
-    if is_cluster_url(url):
+    if is_cluster_url(url):  # pragma: no cover
         raise NotImplementedError(
             "Redis Cluster support is not yet implemented. "
             "Use a standalone Redis URL (redis://) instead of redis+cluster://."
@@ -97,7 +97,7 @@ async def pubsub_connection(
     Yields:
         A PubSub object with subscribe/listen methods
     """
-    if is_cluster_url(url):
+    if is_cluster_url(url):  # pragma: no cover
         raise NotImplementedError(
             "Redis Cluster pub/sub is not yet implemented. "
             "Use a standalone Redis URL (redis://) instead of redis+cluster://."

@@ -112,7 +112,7 @@ branch = true
 parallel = true
 
 [tool.coverage.report]
-exclude_also = ["\\.\\.\\.$", "raise NotImplementedError"]
+exclude_also = ["\\.\\.\\.$"]
 
 [tool.pyright]
 include = ["src", "tests", "chaos"]
