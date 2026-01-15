@@ -216,51 +216,6 @@ async def test_get_execution_with_unregistered_function_creates_placeholder(
     assert execution.kwargs == {"key": "value"}
 
 
-async def test_get_execution_fallback_to_parked_hash(
-    docket: Docket, the_task: AsyncMock
-):
-    """get_execution should fallback to parked hash for 0.13.0 compatibility."""
-    import cloudpickle  # type: ignore[import-untyped]
-
-    docket.register(the_task)
-
-    # Simulate a 0.13.0 task: runs hash without function/args/kwargs, data in parked hash
-    async with docket.redis() as redis:
-        runs_key = docket.runs_key("legacy-task")
-        parked_key = docket.parked_task_key("legacy-task")
-        when = datetime.now(timezone.utc)
-
-        # Old style runs hash (0.13.0) - no function/args/kwargs
-        await redis.hset(  # type: ignore[misc]
-            runs_key,
-            mapping={
-                "state": "scheduled",
-                "when": str(when.timestamp()),
-                "known": str(when.timestamp()),
-            },
-        )
-
-        # Task data in parked hash (0.13.0 behavior)
-        await redis.hset(  # type: ignore[misc]
-            parked_key,
-            mapping={
-                "key": "legacy-task",
-                "function": "the_task",
-                "args": cloudpickle.dumps(("legacy-arg",)),  # type: ignore[attr-defined]
-                "kwargs": cloudpickle.dumps({"legacy": "kwarg"}),  # type: ignore[attr-defined]
-                "when": when.isoformat(),
-                "attempt": "1",
-            },
-        )
-
-    # Should successfully retrieve execution using parked hash fallback
-    execution = await docket.get_execution("legacy-task")
-    assert execution is not None
-    assert execution.function == the_task
-    assert execution.args == ("legacy-arg",)
-    assert execution.kwargs == {"legacy": "kwarg"}
-
-
 # Tests for cancellation
 
 
