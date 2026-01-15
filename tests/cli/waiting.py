@@ -154,7 +154,7 @@ async def wait_for_watch_subscribed(
     Raises:
         TimeoutError: If watch doesn't subscribe within timeout
     """
-    from redis.asyncio import Redis
+    from redis.asyncio import ConnectionPool, Redis
     from redis.asyncio.cluster import RedisCluster
 
     start_time = time.monotonic()
@@ -166,8 +166,13 @@ async def wait_for_watch_subscribed(
             if isinstance(redis, RedisCluster):  # pragma: no cover
                 # Get any node and check pubsub_numsub on it
                 node = redis.get_default_node()
-                async with Redis(host=node.host, port=int(node.port)) as node_client:
+                pool = ConnectionPool(host=node.host, port=int(node.port))
+                node_client = Redis(connection_pool=pool)
+                try:
                     result = await node_client.pubsub_numsub(state_channel)  # type: ignore[reportUnknownMemberType]
+                finally:
+                    await node_client.aclose()
+                    await pool.aclose()
             else:  # pragma: no cover
                 result = await redis.pubsub_numsub(state_channel)  # type: ignore[misc]
             # Returns list of tuples: [(channel_bytes, count), ...]
