@@ -241,11 +241,16 @@ class RedisConnection:
                 return await node_client.publish(channel, message)
             finally:
                 # Shield all cleanup in a single coroutine to ensure atomic cleanup
+                # Suppress CancelledError after cleanup completes - the shield ensures
+                # cleanup runs, but it re-raises the cancellation afterward
                 async def cleanup() -> None:
                     await node_client.aclose()
                     await pool.aclose()
 
-                await asyncio.shield(cleanup())
+                try:
+                    await asyncio.shield(cleanup())
+                except asyncio.CancelledError:
+                    pass
         else:
             async with Redis(connection_pool=self._connection_pool) as r:
                 return await r.publish(channel, message)
@@ -295,12 +300,17 @@ class RedisConnection:
             yield pubsub
         finally:
             # Shield all cleanup in a single coroutine to ensure atomic cleanup
+            # Suppress CancelledError after cleanup completes - the shield ensures
+            # cleanup runs, but it re-raises the cancellation afterward
             async def cleanup() -> None:
                 await pubsub.aclose()
                 await node_client.aclose()
                 await pool.aclose()
 
-            await asyncio.shield(cleanup())
+            try:
+                await asyncio.shield(cleanup())
+            except asyncio.CancelledError:
+                pass
 
 
 # ------------------------------------------------------------------------------
