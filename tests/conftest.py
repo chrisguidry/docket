@@ -269,7 +269,7 @@ def redis_server(
     if BASE_VERSION.startswith("valkey-"):  # pragma: no cover
         base_image = f"valkey/valkey:{BASE_VERSION.replace('valkey-', '')}"
     else:
-        base_image = f"redis:{BASE_VERSION}"
+        base_image = f"redis:{BASE_VERSION}"  # pragma: no cover
 
     container: Container
     cluster_ports: tuple[int, int, int] | None = None
