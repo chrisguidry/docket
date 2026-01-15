@@ -116,6 +116,8 @@ omit = [
     "src/docket/_result_store.py",
     # Fixture branches vary by Redis config (cluster, ACL, memory, valkey)
     "**/conftest.py",
+    # Test infrastructure with conditional branches for cluster/standalone
+    "tests/_key_leak_checker.py",
 ]
 branch = true
 parallel = true

@@ -137,7 +137,7 @@ class KeyCountChecker:
         # Extract task key from the Redis key
         # Patterns: {docket}:{task_key} (parked data) or {docket}:runs:{task_key}
         prefix = f"{self.docket_prefix}:"
-        if not key_str.startswith(prefix):  # pragma: no cover
+        if not key_str.startswith(prefix):
             return False
 
         suffix = key_str[len(prefix) :]
@@ -159,12 +159,12 @@ class KeyCountChecker:
             return False
 
         # Decode if bytes
-        if isinstance(state, bytes):  # pragma: no cover
+        if isinstance(state, bytes):
             state = state.decode()
 
         # Tasks that completed/failed should have TTL
         completed_states = {"completed", "failed", "cancelled"}
-        if state in completed_states:  # pragma: no cover
+        if state in completed_states:
             return False
 
         # For scheduled/queued/running states, verify the task is actually present
