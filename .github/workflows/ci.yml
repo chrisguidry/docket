@@ -34,6 +34,9 @@ jobs:
           - name: "Memory (in-memory backend)"
             redis-version: "memory"
             redis-py-version: ">=5"
+          - name: "Redis 8.0 Cluster"
+            redis-version: "8.0-cluster"
+            redis-py-version: ">=5"
         include:
           - python-version: "3.10"
             cov-threshold: 100

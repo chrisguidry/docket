@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Self, SupportsFloat
+from typing import TYPE_CHECKING, Any, SupportsFloat
+
+from typing_extensions import Self
 
 from key_value.aio.stores.redis import RedisStore
 from redis.asyncio import ConnectionPool, Redis
