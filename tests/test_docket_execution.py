@@ -1,6 +1,7 @@
 """Tests for Docket execution retrieval, scheduling, and cancellation."""
 
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 from unittest.mock import AsyncMock
 
 from docket import Execution
@@ -308,11 +309,13 @@ async def test_cancelled_state_respects_ttl(docket: Docket, the_task: AsyncMock)
         assert ttl <= int(docket.execution_ttl.total_seconds())
 
 
-async def test_cancelled_state_with_ttl_zero(docket: Docket, the_task: AsyncMock):
+async def test_cancelled_state_with_ttl_zero(
+    docket: Docket, the_task: AsyncMock, make_docket_name: Callable[[], str]
+):
     """Cancelled task with execution_ttl=0 should delete tombstone immediately."""
     # Create docket with TTL=0
     async with Docket(
-        name=f"{docket.name}-ttl-zero",
+        name=make_docket_name(),
         url=docket.url,
         execution_ttl=timedelta(0),
     ) as zero_ttl_docket:

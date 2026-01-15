@@ -108,14 +108,19 @@ def _wait_for_redis(port: int) -> None:
 def _setup_acl(port: int, creds: ACLCredentials) -> None:  # pragma: no cover
     """Configure Redis ACL for testing with restricted permissions."""
     with _administrative_redis(port) as r:
-        # For per-worker Redis, we don't need complex channel patterns
-        # since each worker owns its Redis instance
+        # PSUBSCRIBE requires literal pattern matches in ACLs.
+        # Enumerate patterns for counter-based docket names (1-200).
+        channel_patterns: list[str] = []
+        for i in range(1, 201):
+            channel_patterns.append(f"{creds.docket_prefix}-{i}:cancel:*")
+            channel_patterns.append(f"{creds.docket_prefix}-{i}:state:*")
+            channel_patterns.append(f"{creds.docket_prefix}-{i}:progress:*")
         r.acl_setuser(  # type: ignore[reportUnknownMemberType]
             creds.username,
             enabled=True,
             passwords=[f"+{creds.password}"],
             keys=[f"{creds.docket_prefix}*:*", "my-application:*"],
-            channels=[f"{creds.docket_prefix}*:*"],
+            channels=channel_patterns,
             commands=["+@all"],
         )
 
@@ -132,13 +137,19 @@ def _setup_cluster_acl(
     """Configure ACL on all cluster nodes."""
     for port in ports:
         with _administrative_redis(port) as r:
-            # Hash-tagged pattern for cluster
+            # PSUBSCRIBE requires literal pattern matches in ACLs.
+            # Enumerate patterns for counter-based docket names (1-200).
+            channel_patterns: list[str] = []
+            for i in range(1, 201):
+                channel_patterns.append(f"{{{creds.docket_prefix}-{i}}}:cancel:*")
+                channel_patterns.append(f"{{{creds.docket_prefix}-{i}}}:state:*")
+                channel_patterns.append(f"{{{creds.docket_prefix}-{i}}}:progress:*")
             r.acl_setuser(  # type: ignore[reportUnknownMemberType]
                 creds.username,
                 enabled=True,
                 passwords=[f"+{creds.password}"],
                 keys=[f"{{{creds.docket_prefix}*}}:*", "{my-application}:*"],
-                channels=[f"{{{creds.docket_prefix}*}}:*"],
+                channels=channel_patterns,
                 commands=["+@all"],
             )
 
@@ -377,10 +388,9 @@ def redis_url(redis_port: int, acl_credentials: ACLCredentials) -> str:
 
 @pytest.fixture
 async def docket(
-    redis_url: str, acl_credentials: ACLCredentials
+    redis_url: str, make_docket_name: Callable[[], str]
 ) -> AsyncGenerator[Docket, None]:
-    # Each test uses a unique name for isolation
-    name = f"{acl_credentials.docket_prefix}-{uuid4()}"
+    name = make_docket_name()
     async with Docket(name=name, url=redis_url) as docket:
         yield docket
 
@@ -402,8 +412,8 @@ async def zero_ttl_docket(
 def make_docket_name(acl_credentials: ACLCredentials) -> Callable[[], str]:
     """Factory fixture that generates ACL-compatible docket names.
 
-    Use this in tests that create their own Docket instances to ensure
-    the names match the ACL key pattern when running with ACL enabled.
+    For ACL mode, uses predictable counter-based names that match the
+    enumerated ACL channel patterns. For non-ACL mode, uses UUIDs.
     """
     counter = 0
 
@@ -411,7 +421,8 @@ def make_docket_name(acl_credentials: ACLCredentials) -> Callable[[], str]:
         nonlocal counter
         counter += 1
         if ACL_ENABLED:  # pragma: no cover
-            return f"{acl_credentials.docket_prefix}-{counter}-{uuid4()}"
+            # Predictable names for ACL pattern matching
+            return f"{acl_credentials.docket_prefix}-{counter}"
         return f"{acl_credentials.docket_prefix}-{uuid4()}"
 
     return _make_name
