@@ -39,7 +39,7 @@ class ACLCredentials:
     """ACL credentials generated deterministically from worker_id."""
 
     def __init__(self, worker_id: str) -> None:
-        if not ACL_ENABLED:
+        if not ACL_ENABLED:  # pragma: no cover
             self.username = ""
             self.password = ""
             self.admin_password = ""
@@ -378,7 +378,7 @@ def redis_url(redis_port: int, acl_credentials: ACLCredentials) -> str:
             f"@localhost:{redis_port}/0"
         )
     else:
-        url = f"redis://localhost:{redis_port}/0"
+        url = f"redis://localhost:{redis_port}/0"  # pragma: no cover
 
     # Each worker owns its Redis, so FLUSHALL is safe
     with _sync_redis(url) as r:
@@ -423,7 +423,7 @@ def make_docket_name(acl_credentials: ACLCredentials) -> Callable[[], str]:
         if ACL_ENABLED:  # pragma: no cover
             # Predictable names for ACL pattern matching
             return f"{acl_credentials.docket_prefix}-{counter}"
-        return f"{acl_credentials.docket_prefix}-{uuid4()}"
+        return f"{acl_credentials.docket_prefix}-{uuid4()}"  # pragma: no cover
 
     return _make_name
 

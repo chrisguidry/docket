@@ -283,7 +283,8 @@ class RedisConnection:
             async with node_client.pubsub() as pubsub:
                 yield pubsub
         finally:
-            await node_client.aclose()
+            # Shield to ensure cleanup completes even when cancelled
+            await asyncio.shield(node_client.aclose())
 
 
 # ------------------------------------------------------------------------------
