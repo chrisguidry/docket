@@ -115,7 +115,7 @@ omit = [
     # Cluster-only code paths not exercised in standalone tests
     "src/docket/_result_store.py",
     # Fixture branches vary by Redis config (cluster, ACL, memory, valkey)
-    "*/conftest.py",
+    "**/conftest.py",
 ]
 branch = true
 parallel = true
