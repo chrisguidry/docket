@@ -1184,12 +1184,9 @@ class Worker:
                 async with self.docket._pubsub() as pubsub:
                     await pubsub.psubscribe(cancel_pattern)
                     self._cancellation_ready.set()
-                    try:
-                        async for message in pubsub.listen():
-                            if message["type"] == "pmessage":
-                                await self._handle_cancellation(message)
-                    finally:
-                        await pubsub.punsubscribe(cancel_pattern)
+                    async for message in pubsub.listen():
+                        if message["type"] == "pmessage":
+                            await self._handle_cancellation(message)
             except asyncio.CancelledError:
                 return
             except ConnectionError:

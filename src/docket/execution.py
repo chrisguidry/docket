@@ -833,18 +833,12 @@ class Execution:
         progress_channel = self.docket.key(f"progress:{self.key}")
         async with self.docket._pubsub() as pubsub:
             await pubsub.subscribe(state_channel, progress_channel)
-            try:
-                async for message in pubsub.listen():  # pragma: no cover
-                    if message["type"] == "message":
-                        message_data = json.loads(message["data"])
-                        if message_data["type"] == "state":
-                            message_data["state"] = ExecutionState(
-                                message_data["state"]
-                            )
-                        yield message_data
-            finally:
-                # Explicitly unsubscribe to ensure clean shutdown
-                await pubsub.unsubscribe(state_channel, progress_channel)
+            async for message in pubsub.listen():  # pragma: no cover
+                if message["type"] == "message":
+                    message_data = json.loads(message["data"])
+                    if message_data["type"] == "state":
+                        message_data["state"] = ExecutionState(message_data["state"])
+                    yield message_data
 
 
 def compact_signature(signature: inspect.Signature) -> str:
