@@ -1,5 +1,6 @@
 # Coverage configuration for memory backend testing
 # CLI tests are skipped with memory:// URLs, so exclude CLI from coverage
+# conftest.py has many conditional branches for different Redis configs
 
 [run]
 branch = true
@@ -7,5 +8,7 @@ parallel = true
 omit =
     src/docket/__main__.py
     src/docket/_uuid7.py
+    src/docket/_result_store.py
     src/docket/cli.py
     tests/cli/test_*.py
+    **/conftest.py
