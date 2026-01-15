@@ -240,8 +240,12 @@ class RedisConnection:
             try:
                 return await node_client.publish(channel, message)
             finally:
-                # Shield to ensure cleanup completes even when cancelled
-                await asyncio.shield(pool.disconnect())
+                # Shield all cleanup in a single coroutine to ensure atomic cleanup
+                async def cleanup() -> None:
+                    await node_client.aclose()
+                    await pool.disconnect()
+
+                await asyncio.shield(cleanup())
         else:
             async with Redis(connection_pool=self._connection_pool) as r:
                 return await r.publish(channel, message)
@@ -286,12 +290,17 @@ class RedisConnection:
             A PubSub object connected to a cluster node
         """
         node_client, pool = await self._get_node_client()
+        pubsub = node_client.pubsub()
         try:
-            async with node_client.pubsub() as pubsub:
-                yield pubsub
+            yield pubsub
         finally:
-            # Shield to ensure cleanup completes even when cancelled
-            await asyncio.shield(pool.disconnect())
+            # Shield all cleanup in a single coroutine to ensure atomic cleanup
+            async def cleanup() -> None:
+                await pubsub.aclose()
+                await node_client.aclose()
+                await pool.disconnect()
+
+            await asyncio.shield(cleanup())
 
 
 # ------------------------------------------------------------------------------

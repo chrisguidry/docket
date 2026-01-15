@@ -179,6 +179,7 @@ class ResultStorage:
 
     _store: RedisStore | ClusterKeyValueStore | None
     _pool: ConnectionPool | None
+    _client: Redis | None
 
     def __init__(
         self,
@@ -189,6 +190,7 @@ class ResultStorage:
         self._default_collection = default_collection
         self._store = None
         self._pool = None
+        self._client = None
 
     async def __aenter__(self) -> Self:
         if self._redis.is_cluster:  # pragma: no cover
@@ -203,9 +205,9 @@ class ResultStorage:
             self._pool = await self._redis._connection_pool_from_url(
                 decode_responses=True
             )
-            client = Redis(connection_pool=self._pool)
+            self._client = Redis(connection_pool=self._pool)
             self._store = RedisStore(
-                client=client, default_collection=self._default_collection
+                client=self._client, default_collection=self._default_collection
             )
 
         await self._store.setup()
@@ -217,6 +219,10 @@ class ResultStorage:
         exc_val: BaseException | None,
         exc_tb: object,
     ) -> None:
+        # Close client first to release connections, then disconnect pool
+        if self._client is not None:
+            await asyncio.shield(self._client.aclose())
+            self._client = None
         if self._pool is not None:
             await asyncio.shield(self._pool.disconnect())
             self._pool = None
