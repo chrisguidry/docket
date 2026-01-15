@@ -227,7 +227,7 @@ async def test_watch_task_with_initial_progress(docket: Docket, worker: Worker):
         docket.url,
         "--docket",
         docket.name,
-        timeout=3.0,
+        timeout=5.0,  # Cluster mode needs extra time for pubsub setup
     )
 
     await worker_task

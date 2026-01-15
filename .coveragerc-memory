@@ -9,6 +9,7 @@ omit =
     src/docket/__main__.py
     src/docket/_uuid7.py
     src/docket/_result_store.py
+    src/docket/_cli_support.py
     src/docket/cli.py
     tests/cli/test_*.py
     **/conftest.py
