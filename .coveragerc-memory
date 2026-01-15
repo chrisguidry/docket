@@ -12,4 +12,6 @@ omit =
     src/docket/_cli_support.py
     src/docket/cli.py
     tests/cli/test_*.py
+    # Timing-dependent coverage varies between memory and real Redis
+    tests/concurrency_limits/test_*.py
     **/conftest.py
