@@ -34,7 +34,7 @@ async def wait_for_progress_data(
         TimeoutError: If condition not met within timeout
     """
     start_time = time.monotonic()
-    progress_key = f"{docket.name}:progress:{key}"
+    progress_key = docket.key(f"progress:{key}")
 
     while time.monotonic() - start_time < timeout:
         async with docket.redis() as redis:
@@ -75,7 +75,7 @@ async def wait_for_execution_state(
         TimeoutError: If state not reached within timeout
     """
     start_time = time.monotonic()
-    execution_key = f"{docket.name}:runs:{key}"
+    execution_key = docket.runs_key(key)
 
     while time.monotonic() - start_time < timeout:
         async with docket.redis() as redis:
@@ -116,7 +116,7 @@ async def wait_for_worker_assignment(
         TimeoutError: If no worker assigned within timeout
     """
     start_time = time.monotonic()
-    execution_key = f"{docket.name}:runs:{key}"
+    execution_key = docket.runs_key(key)
 
     while time.monotonic() - start_time < timeout:
         async with docket.redis() as redis:
@@ -154,12 +154,22 @@ async def wait_for_watch_subscribed(
     Raises:
         TimeoutError: If watch doesn't subscribe within timeout
     """
+    from redis.asyncio import Redis
+    from redis.asyncio.cluster import RedisCluster
+
     start_time = time.monotonic()
-    state_channel = f"{docket.name}:state:{key}"
+    state_channel = docket.key(f"state:{key}")
 
     while time.monotonic() - start_time < timeout:
         async with docket.redis() as redis:
-            result = await redis.pubsub_numsub(state_channel)  # type: ignore[misc]
+            # RedisCluster doesn't have pubsub_numsub, so we need to use a node client
+            if isinstance(redis, RedisCluster):  # pragma: no cover
+                # Get any node and check pubsub_numsub on it
+                node = redis.get_default_node()
+                async with Redis(host=node.host, port=int(node.port)) as node_client:
+                    result = await node_client.pubsub_numsub(state_channel)  # type: ignore[reportUnknownMemberType]
+            else:
+                result = await redis.pubsub_numsub(state_channel)  # type: ignore[misc]
             # Returns list of tuples: [(channel_bytes, count), ...]
             for channel, count in result:  # type: ignore[misc]
                 if isinstance(channel, bytes):  # pragma: no branch

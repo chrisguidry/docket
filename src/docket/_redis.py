@@ -12,9 +12,11 @@ import asyncio
 import typing
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+from urllib.parse import ParseResult, urlparse, urlunparse
 
 from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import PubSub
+from redis.asyncio.cluster import RedisCluster
 
 if typing.TYPE_CHECKING:
     from fakeredis.aioredis import FakeServer
@@ -41,129 +43,247 @@ def get_memory_server(url: str) -> "FakeServer | None":
     return _memory_servers.get(url)
 
 
-def is_cluster_url(url: str) -> bool:
-    """Check if the URL indicates Redis Cluster mode.
+class RedisConnection:
+    """Manages Redis connections for both standalone and cluster modes.
 
-    Args:
-        url: Redis URL to check
+    This class encapsulates the lifecycle management of Redis connections,
+    hiding whether the underlying connection is to a standalone Redis server
+    or a Redis Cluster. It provides a unified interface for getting Redis
+    clients, pub/sub connections, and publishing messages.
 
-    Returns:
-        True if the URL uses the redis+cluster:// scheme
+    Example:
+        async with RedisConnection("redis://localhost:6379/0") as connection:
+            async with connection.client() as r:
+                await r.set("key", "value")
     """
-    return url.startswith("redis+cluster://")
 
+    _connection_pool: ConnectionPool | None
+    _cluster_client: RedisCluster | None
+    _parsed: ParseResult
 
-@asynccontextmanager
-async def redis_connection(
-    url: str,
-    pool: ConnectionPool,
-) -> AsyncGenerator[Redis, None]:
-    """Get a Redis connection, handling both standalone and cluster modes.
+    def __init__(self, url: str) -> None:
+        """Initialize a Redis connection manager.
 
-    For standalone mode, creates a Redis client from the pool.
-    For cluster mode, raises NotImplementedError (not yet supported).
+        Args:
+            url: Redis URL (redis://, rediss://, redis+cluster://, or memory://)
+        """
+        self.url = url
+        self._parsed = urlparse(url)
+        self._connection_pool = None
+        self._cluster_client = None
 
-    Args:
-        url: Redis URL (used to detect cluster mode)
-        pool: Connection pool for standalone mode
+    async def __aenter__(self) -> "RedisConnection":
+        """Connect to Redis when entering the context."""
+        if self.is_connected:
+            return self
+        if self.is_cluster:  # pragma: no cover
+            self._cluster_client = await self._create_cluster_client()
+        else:
+            self._connection_pool = await self._connection_pool_from_url()
+        return self
 
-    Yields:
-        Redis client
-    """
-    if is_cluster_url(url):  # pragma: no cover
-        raise NotImplementedError(
-            "Redis Cluster support is not yet implemented. "
-            "Use a standalone Redis URL (redis://) instead of redis+cluster://."
-        )
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
+        """Close the Redis connection when exiting the context."""
+        if self._cluster_client is not None:  # pragma: no cover
+            await asyncio.shield(self._cluster_client.aclose())
+            self._cluster_client = None
+        elif self._connection_pool is not None:
+            await asyncio.shield(self._connection_pool.disconnect())
+            self._connection_pool = None
 
-    async with Redis(connection_pool=pool) as r:
-        yield r
+    @property
+    def is_connected(self) -> bool:
+        """Check if the connection is established."""
+        return self._connection_pool is not None or self._cluster_client is not None
 
+    @property
+    def is_cluster(self) -> bool:
+        """Check if this connection is to a Redis Cluster."""
+        return self._parsed.scheme in ("redis+cluster", "rediss+cluster")
 
-@asynccontextmanager
-async def pubsub_connection(
-    url: str,
-    pool: ConnectionPool,
-) -> AsyncGenerator[PubSub, None]:
-    """Get a pub/sub connection, handling both standalone and cluster modes.
+    @property
+    def is_memory(self) -> bool:
+        """Check if this connection is to an in-memory fakeredis backend."""
+        return self._parsed.scheme == "memory"
 
-    For standalone mode, creates a Redis client from the pool and gets its pubsub.
-    For cluster mode, raises NotImplementedError (not yet supported).
+    @property
+    def cluster_client(self) -> RedisCluster | None:
+        """Get the cluster client, if connected in cluster mode."""
+        return self._cluster_client
 
-    Args:
-        url: Redis URL (used to detect cluster mode)
-        pool: Connection pool for standalone mode
+    def prefix(self, name: str) -> str:
+        """Return a prefix, hash-tagged for cluster mode key slot hashing.
 
-    Yields:
-        A PubSub object with subscribe/listen methods
-    """
-    if is_cluster_url(url):  # pragma: no cover
-        raise NotImplementedError(
-            "Redis Cluster pub/sub is not yet implemented. "
-            "Use a standalone Redis URL (redis://) instead of redis+cluster://."
-        )
+        In Redis Cluster mode, keys with the same hash tag {name} are
+        guaranteed to be on the same slot, which is required for multi-key
+        operations.
 
-    async with Redis(connection_pool=pool) as r:
-        async with r.pubsub() as pubsub:
-            yield pubsub
+        Args:
+            name: The base name for the prefix
 
+        Returns:
+            "{name}" for cluster mode, or just "name" for standalone mode
+        """
+        if self.is_cluster:
+            return f"{{{name}}}"
+        return name
 
-async def connection_pool_from_url(
-    url: str, decode_responses: bool = False
-) -> ConnectionPool:
-    """Create a Redis connection pool from a URL.
+    def _normalized_url(self) -> str:
+        """Convert a cluster URL to a standard Redis URL for redis-py.
 
-    Handles both real Redis (redis://) and in-memory fakeredis (memory://).
-    This is the only place in the codebase that imports fakeredis.
+        redis-py doesn't support the redis+cluster:// scheme, so we normalize
+        it to redis:// (or rediss://) before passing to RedisCluster.from_url().
 
-    Args:
-        url: Redis URL (redis://...) or memory:// for in-memory backend
-        decode_responses: If True, decode Redis responses from bytes to strings
+        Returns:
+            The URL with +cluster removed from the scheme if cluster mode,
+            otherwise the original URL
+        """
+        if not self.is_cluster:
+            return self.url
+        new_scheme = self._parsed.scheme.replace("+cluster", "")
+        return urlunparse(self._parsed._replace(scheme=new_scheme))
 
-    Returns:
-        A ConnectionPool ready for use with Redis clients
-    """
-    if url.startswith("memory://"):
-        return await _memory_connection_pool(url, decode_responses)
-    return ConnectionPool.from_url(url, decode_responses=decode_responses)
+    async def _create_cluster_client(self) -> RedisCluster:  # pragma: no cover
+        """Create and initialize an async RedisCluster client.
 
+        Returns:
+            An initialized RedisCluster client ready for use
+        """
+        client: RedisCluster = RedisCluster.from_url(self._normalized_url())
+        await client.initialize()
+        return client
 
-async def _memory_connection_pool(
-    url: str, decode_responses: bool = False
-) -> ConnectionPool:
-    """Create a connection pool for a memory:// URL using fakeredis."""
-    global _memory_servers
+    async def _connection_pool_from_url(
+        self, decode_responses: bool = False
+    ) -> ConnectionPool:
+        """Create a Redis connection pool from the URL.
 
-    from fakeredis.aioredis import FakeConnection, FakeServer
+        Handles real Redis (redis://) and in-memory fakeredis (memory://).
 
-    # Apply Lua runtime patch on first use
-    _patch_fakeredis_lua_runtime()
+        Args:
+            decode_responses: If True, decode Redis responses from bytes to strings
 
-    # Fast path: server already exists
-    server = _memory_servers.get(url)
-    if server is not None:
-        return ConnectionPool(
-            connection_class=FakeConnection,
-            server=server,
-            decode_responses=decode_responses,
-        )
+        Returns:
+            A ConnectionPool ready for use with Redis clients
+        """
+        if self.is_memory:
+            return await self._memory_connection_pool(decode_responses)
+        return ConnectionPool.from_url(self.url, decode_responses=decode_responses)
 
-    async with _memory_servers_lock:
-        server = _memory_servers.get(url)
-        if server is not None:  # pragma: no cover
+    async def _memory_connection_pool(
+        self, decode_responses: bool = False
+    ) -> ConnectionPool:
+        """Create a connection pool for a memory:// URL using fakeredis."""
+        global _memory_servers
+
+        from fakeredis.aioredis import FakeConnection, FakeServer
+
+        # Apply Lua runtime patch on first use
+        _patch_fakeredis_lua_runtime()
+
+        # Fast path: server already exists
+        server = _memory_servers.get(self.url)
+        if server is not None:
             return ConnectionPool(
                 connection_class=FakeConnection,
                 server=server,
                 decode_responses=decode_responses,
             )
 
-        server = FakeServer()
-        _memory_servers[url] = server
-        return ConnectionPool(
-            connection_class=FakeConnection,
-            server=server,
-            decode_responses=decode_responses,
+        async with _memory_servers_lock:
+            server = _memory_servers.get(self.url)
+            if server is not None:  # pragma: no cover
+                return ConnectionPool(
+                    connection_class=FakeConnection,
+                    server=server,
+                    decode_responses=decode_responses,
+                )
+
+            server = FakeServer()
+            _memory_servers[self.url] = server
+            return ConnectionPool(
+                connection_class=FakeConnection,
+                server=server,
+                decode_responses=decode_responses,
+            )
+
+    @asynccontextmanager
+    async def client(self) -> AsyncGenerator[Redis | RedisCluster, None]:
+        """Get a Redis client, handling both standalone and cluster modes."""
+        if self._cluster_client is not None:  # pragma: no cover
+            yield self._cluster_client
+        else:
+            async with Redis(connection_pool=self._connection_pool) as r:
+                yield r
+
+    @asynccontextmanager
+    async def pubsub(self) -> AsyncGenerator[PubSub, None]:
+        """Get a pub/sub connection, handling both standalone and cluster modes."""
+        if self._cluster_client is not None:  # pragma: no cover
+            async with self._cluster_pubsub() as ps:
+                yield ps
+        else:
+            async with Redis(connection_pool=self._connection_pool) as r:
+                async with r.pubsub() as pubsub:
+                    yield pubsub
+
+    async def publish(self, channel: str, message: str) -> int:
+        """Publish a message to a pub/sub channel."""
+        if self._cluster_client is not None:  # pragma: no cover
+            node_client = await self._get_node_client()
+            try:
+                return await node_client.publish(channel, message)
+            finally:
+                await node_client.aclose()
+        else:
+            async with Redis(connection_pool=self._connection_pool) as r:
+                return await r.publish(channel, message)
+
+    async def _get_node_client(self) -> Redis:  # pragma: no cover
+        """Create a Redis client connected to a cluster node for pub/sub.
+
+        Redis Cluster doesn't natively support pub/sub through the cluster client,
+        so we connect a regular Redis client directly to one of the cluster nodes.
+
+        Returns:
+            A Redis client connected to a cluster primary node
+        """
+        assert self._cluster_client is not None
+        nodes = self._cluster_client.get_primaries()
+        if not nodes:
+            raise RuntimeError("No primary nodes available in cluster")
+
+        node = nodes[0]
+        return Redis(
+            host=node.host,
+            port=int(node.port),
+            username=self._parsed.username,
+            password=self._parsed.password,
+            ssl=self._parsed.scheme == "rediss+cluster",
+            decode_responses=False,
         )
+
+    @asynccontextmanager
+    async def _cluster_pubsub(self) -> AsyncGenerator[PubSub, None]:  # pragma: no cover
+        """Create a pub/sub connection to a cluster node.
+
+        Redis Cluster doesn't natively support pub/sub through the cluster client,
+        so we connect a regular Redis client directly to one of the cluster nodes.
+
+        Yields:
+            A PubSub object connected to a cluster node
+        """
+        node_client = await self._get_node_client()
+        try:
+            async with node_client.pubsub() as pubsub:
+                yield pubsub
+        finally:
+            await node_client.aclose()
 
 
 # ------------------------------------------------------------------------------

@@ -192,11 +192,11 @@ async def test_get_execution_with_unregistered_function_creates_placeholder(
     import cloudpickle  # type: ignore[import-untyped]
 
     # This test manually creates incomplete test data
-    key_leak_checker.add_exemption(f"{docket.name}:runs:unregistered-task")
+    runs_key = docket.runs_key("unregistered-task")
+    key_leak_checker.add_exemption(runs_key)
 
     # Manually create runs hash with unregistered function
     async with docket.redis() as redis:
-        runs_key = f"{docket.name}:runs:unregistered-task"
         await redis.hset(  # type: ignore[misc]
             runs_key,
             mapping={
@@ -225,7 +225,7 @@ async def test_get_execution_fallback_to_parked_hash(
 
     # Simulate a 0.13.0 task: runs hash without function/args/kwargs, data in parked hash
     async with docket.redis() as redis:
-        runs_key = f"{docket.name}:runs:legacy-task"
+        runs_key = docket.runs_key("legacy-task")
         parked_key = docket.parked_task_key("legacy-task")
         when = datetime.now(timezone.utc)
 
@@ -299,7 +299,7 @@ async def test_cancelled_state_respects_ttl(docket: Docket, the_task: AsyncMock)
 
     # Check that the runs hash has TTL set
     async with docket.redis() as redis:
-        runs_key = f"{docket.name}:runs:{execution.key}"
+        runs_key = docket.runs_key(execution.key)
         ttl = await redis.ttl(runs_key)
 
         # TTL should be set (not -1 which means no expiry)

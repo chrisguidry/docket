@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from redis.asyncio import Redis
+from redis.asyncio.cluster import RedisCluster
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Perpetual, Retry, Timeout, Worker
@@ -351,9 +352,10 @@ async def test_lease_renewal_recovers_from_redis_error(
 
     # Track XCLAIM calls to inject error on first call only
     xclaim_calls = 0
-    original_xclaim = Redis.xclaim
+    original_redis_xclaim = Redis.xclaim
+    original_cluster_xclaim = RedisCluster.xclaim
 
-    async def mock_xclaim(
+    async def mock_redis_xclaim(
         self: Redis,  # type: ignore[type-arg]
         *args: object,
         **kwargs: object,
@@ -362,9 +364,23 @@ async def test_lease_renewal_recovers_from_redis_error(
         xclaim_calls += 1
         if xclaim_calls == 1:
             raise ConnectionError("Simulated Redis error")
-        return await original_xclaim(self, *args, **kwargs)  # type: ignore[arg-type]
+        return await original_redis_xclaim(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    with patch.object(Redis, "xclaim", mock_xclaim):
+    async def mock_cluster_xclaim(  # pragma: no cover
+        self: RedisCluster,  # type: ignore[type-arg]
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        nonlocal xclaim_calls
+        xclaim_calls += 1
+        if xclaim_calls == 1:
+            raise ConnectionError("Simulated Redis error")
+        return await original_cluster_xclaim(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        patch.object(Redis, "xclaim", mock_redis_xclaim),
+        patch.object(RedisCluster, "xclaim", mock_cluster_xclaim),
+    ):
         async with Worker(
             docket,
             redelivery_timeout=timedelta(milliseconds=200),

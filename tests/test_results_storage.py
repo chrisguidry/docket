@@ -1,12 +1,17 @@
 """Tests for task result storage and serialization."""
 
-from typing import Any, Callable
+# pyright: reportPrivateUsage=false, reportAttributeAccessIssue=false, reportUnknownMemberType=false
+
+from typing import TYPE_CHECKING, Any, Callable
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from docket import Docket, Worker
 from docket.execution import ExecutionState
+
+if TYPE_CHECKING:
+    from tests._key_leak_checker import KeyCountChecker
 
 
 class CustomError(Exception):
@@ -188,27 +193,41 @@ async def test_result_key_stored_in_execution_record(docket: Docket, worker: Wor
 
 
 async def test_result_storage_uses_provided_or_default(docket: Docket):
-    """Test that result_storage uses RedisStore by default."""
+    """Test that result_storage uses appropriate store type by default."""
     from urllib.parse import urlparse
 
     from key_value.aio.stores.redis import RedisStore
 
-    assert isinstance(docket.result_storage, RedisStore)
+    from docket._result_store import ClusterKeyValueStore, ResultStorage
 
-    # Verify it's connected to the same Redis
-    result_client = docket.result_storage._client  # type: ignore[attr-defined]
-    pool_kwargs: dict[str, Any] = result_client.connection_pool.connection_kwargs  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    # docket.result_storage should be a ResultStorage wrapper
+    assert isinstance(docket.result_storage, ResultStorage)
 
-    if docket.url.startswith("memory://"):  # pragma: no cover
-        assert "server" in pool_kwargs
+    # Check the internal store type
+    store = docket.result_storage._store
+    if docket._redis.is_cluster:  # pragma: no cover
+        # Cluster mode uses ClusterKeyValueStore
+        assert isinstance(store, ClusterKeyValueStore)
     else:
-        parsed = urlparse(docket.url)
-        assert pool_kwargs.get("host") == (parsed.hostname or "localhost")
-        assert pool_kwargs.get("port") == (parsed.port or 6379)
-        expected_db = (
-            int(parsed.path.lstrip("/")) if parsed.path and parsed.path != "/" else 0
-        )
-        assert pool_kwargs.get("db") == expected_db
+        # Standalone mode uses RedisStore
+        assert isinstance(store, RedisStore)
+
+        # Verify it's connected to the same Redis
+        result_client = store._client  # type: ignore[attr-defined]
+        pool_kwargs: dict[str, Any] = result_client.connection_pool.connection_kwargs  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+
+        if docket.url.startswith("memory://"):  # pragma: no cover
+            assert "server" in pool_kwargs
+        else:
+            parsed = urlparse(docket.url)
+            assert pool_kwargs.get("host") == (parsed.hostname or "localhost")
+            assert pool_kwargs.get("port") == (parsed.port or 6379)
+            expected_db = (
+                int(parsed.path.lstrip("/"))
+                if parsed.path and parsed.path != "/"
+                else 0
+            )
+            assert pool_kwargs.get("db") == expected_db
 
 
 async def test_result_storage_uses_custom_when_provided(
@@ -225,3 +244,199 @@ async def test_result_storage_uses_custom_when_provided(
         result_storage=custom_storage,
     ) as custom_docket:
         assert custom_docket.result_storage is custom_storage
+
+
+async def test_result_storage_custom_without_setup(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
+    """Test that custom storage works without a setup method."""
+    from key_value.aio.protocols.key_value import AsyncKeyValue
+
+    # Create a mock without the setup method
+    custom_storage = MagicMock(spec=AsyncKeyValue)
+    del custom_storage.setup  # Remove the setup method from the mock
+    assert not hasattr(custom_storage, "setup")
+
+    async with Docket(
+        name=make_docket_name(),
+        url=redis_url,
+        result_storage=custom_storage,
+    ) as custom_docket:
+        assert custom_docket.result_storage is custom_storage
+
+
+# ClusterKeyValueStore-specific tests (only run in cluster mode)
+
+
+async def test_cluster_store_get_nonexistent(docket: Docket):  # pragma: no cover
+    """Test ClusterKeyValueStore.get returns None for missing keys."""
+    from docket._result_store import ClusterKeyValueStore
+
+    if not docket._redis.is_cluster:
+        pytest.skip("Only runs in cluster mode")
+
+    store = docket.result_storage
+    assert isinstance(store._store, ClusterKeyValueStore)
+
+    result = await store.get("nonexistent-key-test")
+    assert result is None
+
+
+async def test_cluster_store_ttl(  # pragma: no cover
+    docket: Docket, key_leak_checker: "KeyCountChecker"
+):
+    """Test ClusterKeyValueStore.ttl method."""
+    from docket._result_store import ClusterKeyValueStore
+
+    if not docket._redis.is_cluster:
+        pytest.skip("Only runs in cluster mode")
+
+    store = docket.result_storage
+    assert isinstance(store._store, ClusterKeyValueStore)
+
+    # Exempt test keys from leak checker
+    key_leak_checker.add_pattern_exemption(f"{docket.results_collection}:*")
+
+    # Put with TTL
+    await store.put("ttl-test", {"value": 123}, ttl=300)
+    data, ttl_val = await store.ttl("ttl-test")
+    assert data == {"value": 123}
+    assert ttl_val is not None
+    assert 0 < ttl_val <= 300
+
+    # Put without TTL
+    await store.put("no-ttl-test", {"value": 456})
+    data, ttl_val = await store.ttl("no-ttl-test")
+    assert data == {"value": 456}
+    assert ttl_val is None
+
+    # Nonexistent key
+    data, ttl_val = await store.ttl("nonexistent-ttl-test")
+    assert data is None
+    assert ttl_val is None
+
+
+async def test_cluster_store_delete(docket: Docket):  # pragma: no cover
+    """Test ClusterKeyValueStore.delete method."""
+    from docket._result_store import ClusterKeyValueStore
+
+    if not docket._redis.is_cluster:
+        pytest.skip("Only runs in cluster mode")
+
+    store = docket.result_storage
+    assert isinstance(store._store, ClusterKeyValueStore)
+
+    await store.put("delete-test", {"value": 789})
+    assert await store.get("delete-test") == {"value": 789}
+
+    result = await store.delete("delete-test")
+    assert result is True
+    assert await store.get("delete-test") is None
+
+    # Delete nonexistent
+    result = await store.delete("already-deleted")
+    assert result is False
+
+
+async def test_cluster_store_get_many(  # pragma: no cover
+    docket: Docket, key_leak_checker: "KeyCountChecker"
+):
+    """Test ClusterKeyValueStore.get_many method."""
+    from docket._result_store import ClusterKeyValueStore
+
+    if not docket._redis.is_cluster:
+        pytest.skip("Only runs in cluster mode")
+
+    store = docket.result_storage
+    assert isinstance(store._store, ClusterKeyValueStore)
+
+    # Exempt test keys from leak checker
+    key_leak_checker.add_pattern_exemption(f"{docket.results_collection}:*")
+
+    await store.put("many-1", {"a": 1})
+    await store.put("many-2", {"b": 2})
+
+    results = await store.get_many(["many-1", "many-2", "many-nonexistent"])
+    assert results == [{"a": 1}, {"b": 2}, None]
+
+    # Empty list
+    results = await store.get_many([])
+    assert results == []
+
+
+async def test_cluster_store_ttl_many(  # pragma: no cover
+    docket: Docket, key_leak_checker: "KeyCountChecker"
+):
+    """Test ClusterKeyValueStore.ttl_many method."""
+    from docket._result_store import ClusterKeyValueStore
+
+    if not docket._redis.is_cluster:
+        pytest.skip("Only runs in cluster mode")
+
+    store = docket.result_storage
+    assert isinstance(store._store, ClusterKeyValueStore)
+
+    # Exempt test keys from leak checker
+    key_leak_checker.add_pattern_exemption(f"{docket.results_collection}:*")
+
+    await store.put("ttl-many-1", {"a": 1}, ttl=300)
+    await store.put("ttl-many-2", {"b": 2})  # No TTL initially
+
+    results = await store.ttl_many(["ttl-many-1", "ttl-many-2", "nonexistent-ttl"])
+    assert len(results) == 3
+    assert results[0][0] == {"a": 1}
+    assert results[0][1] is not None  # Has TTL
+    assert results[1][0] == {"b": 2}
+    assert results[1][1] is None  # No TTL
+    assert results[2] == (None, None)
+
+    # Empty list
+    results = await store.ttl_many([])
+    assert results == []
+
+
+async def test_cluster_store_put_many(docket: Docket):  # pragma: no cover
+    """Test ClusterKeyValueStore.put_many method."""
+    from docket._result_store import ClusterKeyValueStore
+
+    if not docket._redis.is_cluster:
+        pytest.skip("Only runs in cluster mode")
+
+    store = docket.result_storage
+    assert isinstance(store._store, ClusterKeyValueStore)
+
+    await store.put_many(
+        ["put-many-1", "put-many-2"],
+        [{"x": 1}, {"y": 2}],
+        ttl=300,
+    )
+
+    assert await store.get("put-many-1") == {"x": 1}
+    assert await store.get("put-many-2") == {"y": 2}
+
+    # Empty list
+    await store.put_many([], [])
+
+
+async def test_cluster_store_delete_many(docket: Docket):  # pragma: no cover
+    """Test ClusterKeyValueStore.delete_many method."""
+    from docket._result_store import ClusterKeyValueStore
+
+    if not docket._redis.is_cluster:
+        pytest.skip("Only runs in cluster mode")
+
+    store = docket.result_storage
+    assert isinstance(store._store, ClusterKeyValueStore)
+
+    await store.put("del-many-1", {"a": 1})
+    await store.put("del-many-2", {"b": 2})
+
+    count = await store.delete_many(["del-many-1", "del-many-2", "nonexistent"])
+    assert count == 2
+
+    assert await store.get("del-many-1") is None
+    assert await store.get("del-many-2") is None
+
+    # Empty list
+    count = await store.delete_many([])
+    assert count == 0

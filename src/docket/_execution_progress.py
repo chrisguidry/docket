@@ -186,20 +186,15 @@ class ExecutionProgress:
             data: Progress data to publish (partial update)
         """
         channel = self.docket.key(f"progress:{self.key}")
-        # Create ephemeral Redis client for publishing
-        async with self.docket.redis() as redis:
-            # Use instance attributes for current state
-            payload: ProgressEvent = {
-                "type": "progress",
-                "key": self.key,
-                "current": self.current if self.current is not None else 0,
-                "total": self.total,
-                "message": self.message,
-                "updated_at": data.get("updated_at"),
-            }
-
-            # Publish JSON payload
-            await redis.publish(channel, json.dumps(payload))
+        payload: ProgressEvent = {
+            "type": "progress",
+            "key": self.key,
+            "current": self.current if self.current is not None else 0,
+            "total": self.total,
+            "message": self.message,
+            "updated_at": data.get("updated_at"),
+        }
+        await self.docket._publish(channel, json.dumps(payload))
 
     async def subscribe(self) -> AsyncGenerator[ProgressEvent, None]:
         """Subscribe to progress updates for this task.

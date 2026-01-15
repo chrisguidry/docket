@@ -23,7 +23,7 @@ from typing import (
     cast,
 )
 
-import cloudpickle  # type: ignore[import]
+import cloudpickle
 
 if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
@@ -56,7 +56,6 @@ from .docket import (
     RedisReadGroupResponse,
 )
 from .execution import TaskFunction, compact_signature, get_signature
-
 from .instrumentation import (
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
@@ -682,7 +681,10 @@ class Worker:
                 with self._maybe_suppress_instrumentation():
                     total_work, due_work = await stream_due_tasks(
                         keys=[self.docket.queue_key, self.docket.stream_key],
-                        args=[datetime.now(timezone.utc).timestamp(), self.docket.name],
+                        args=[
+                            datetime.now(timezone.utc).timestamp(),
+                            self.docket.prefix,
+                        ],
                     )
 
                 if due_work > 0:
@@ -770,8 +772,8 @@ class Worker:
                         )
                         async with redis.pipeline() as pipe:
                             for task_key, concurrency_key in concurrency_slots.items():
-                                pipe.zadd(concurrency_key, {task_key: current_time})  # type: ignore
-                                pipe.expire(concurrency_key, key_ttl)  # type: ignore
+                                pipe.zadd(concurrency_key, {task_key: current_time})
+                                pipe.expire(concurrency_key, key_ttl)
                             await pipe.execute()
             except Exception:
                 logger.warning("Failed to renew leases", exc_info=True)

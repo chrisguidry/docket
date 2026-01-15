@@ -4,7 +4,7 @@ Running Docket at scale requires understanding its Redis-based architecture, con
 
 ## Redis Streams Architecture
 
-Docket uses Redis streams and sorted sets to provide reliable task delivery with at-least-once semantics. Note that Docket requires a single Redis instance and does not support Redis Cluster.
+Docket uses Redis streams and sorted sets to provide reliable task delivery with at-least-once semantics.
 
 ### Task Lifecycle
 
@@ -167,10 +167,46 @@ async with Docket(name="orders", connection_pool=pool) as docket:
 
 ### Redis Requirements
 
-Docket requires a single Redis instance and does not currently support Redis Cluster. For high availability, consider:
+Docket supports both standalone Redis and Redis Cluster deployments. For high availability, consider:
 
 - **Managed Redis services** like AWS ElastiCache, Google Cloud Memorystore, or Redis Cloud
-- **Redis replicas** with manual failover procedures
+- **Redis Cluster** for horizontal scaling and automatic failover
+- **Redis replicas** with manual failover procedures for standalone deployments
+
+### Redis Cluster Support
+
+Docket supports Redis Cluster using the `redis+cluster://` URL scheme:
+
+```python
+# Connect to Redis Cluster
+async with Docket(
+    name="orders",
+    url="redis+cluster://cluster-node-1:6379/0"
+) as docket:
+    pass
+
+# With authentication
+async with Docket(
+    name="orders",
+    url="redis+cluster://user:password@cluster-node-1:6379/0"
+) as docket:
+    pass
+
+# TLS connection to cluster
+async with Docket(
+    name="orders",
+    url="rediss+cluster://cluster-node-1:6379/0"
+) as docket:
+    pass
+```
+
+When using cluster mode, Docket automatically:
+
+- Uses hash-tagged keys (`{docket_name}:*`) to ensure all keys hash to the same slot
+- Manages cluster client lifecycle and connection distribution
+- Handles pub/sub through a dedicated node connection (cluster pub/sub limitation)
+
+**Note:** All Docket data for a single docket name will be stored on the same cluster shard. This ensures atomicity for Lua scripts and simplifies data management, but means individual dockets don't benefit from cluster data distribution.
 
 ### Authentication
 
@@ -186,25 +222,39 @@ docket_url = "redis://myuser:mypassword@redis.prod.com:6379/0"
 
 ### ACL Configuration
 
-When using Redis ACLs with a restricted user, grant access to the key pattern matching your docket name. All Docket keys follow the pattern `{docket_name}:*`:
+When using Redis ACLs with a restricted user, grant access to the key pattern matching your docket name.
+
+**Standalone Redis:** Keys follow the pattern `{docket_name}:*`
 
 ```bash
 # Create a user with restricted permissions for a docket named "orders"
 ACL SETUSER docket-user on >secure-password ~orders:* &orders:* +@all
 ```
 
+**Redis Cluster:** Keys are hash-tagged with curly braces `{docket_name}:*`
+
+```bash
+# For cluster mode, the pattern includes the hash tag braces
+ACL SETUSER docket-user on >secure-password ~{orders}:* &{orders}:* +@all
+```
+
 The required permissions are:
 
-- **Key pattern**: `~{docket_name}:*` - matches all Redis keys used by Docket
-- **Channel pattern**: `&{docket_name}:*` - required for task cancellation pub/sub
+- **Key pattern**: `~{docket_name}:*` (standalone) or `~\{docket_name\}:*` (cluster) - matches all Redis keys used by Docket
+- **Channel pattern**: `&{docket_name}:*` (standalone) or `&\{docket_name\}:*` (cluster) - required for task cancellation pub/sub
 - **Commands**: `+@all` or the specific command categories Docket uses
 
 For production deployments, you may restrict to only the required command categories:
 
 ```bash
-# More restrictive command permissions
+# More restrictive command permissions (standalone)
 ACL SETUSER docket-user on >secure-password \
   ~orders:* &orders:* \
+  +@read +@write +@set +@sortedset +@hash +@stream +@pubsub +@scripting +@connection
+
+# More restrictive command permissions (cluster)
+ACL SETUSER docket-user on >secure-password \
+  ~{orders}:* &{orders}:* \
   +@read +@write +@set +@sortedset +@hash +@stream +@pubsub +@scripting +@connection
 ```
 
@@ -579,8 +629,9 @@ docket restore problematic_function
 
 **Redis scaling:**
 
-- Use managed Redis services for high availability (Redis Cluster is not supported)
+- Use managed Redis services for high availability
+- Deploy Redis Cluster for horizontal scaling with the `redis+cluster://` URL scheme
 - Monitor memory usage and eviction policies
-- Scale vertically for larger workloads
+- Scale vertically for larger workloads on standalone Redis
 
 Running Docket in production requires attention to these operational details, but the Redis-based architecture and monitoring support can help with demanding production workloads.

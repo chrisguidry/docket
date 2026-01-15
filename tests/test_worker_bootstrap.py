@@ -113,7 +113,7 @@ async def test_verify_remaining_keys_have_ttl_detects_leaks(
     redis_url: str, docket: Docket, worker: Worker, key_leak_checker: KeyCountChecker
 ) -> None:
     """Test that verify_remaining_keys_have_ttl properly detects keys without TTL."""
-    leak_key = f"{docket.name}:test-leak"
+    leak_key = docket.key("test-leak")
 
     # Exempt the leak from autouse checker
     key_leak_checker.add_exemption(leak_key)
@@ -278,9 +278,10 @@ async def test_worker_handles_nogroup_in_xreadgroup(
 
         # Track how many times xreadgroup is called
         call_count = 0
-        original_xreadgroup = redis.asyncio.Redis.xreadgroup
+        original_redis_xreadgroup = redis.asyncio.Redis.xreadgroup
+        original_cluster_xreadgroup = redis.asyncio.RedisCluster.xreadgroup
 
-        async def mock_xreadgroup(  # pyright: ignore[reportUnknownParameterType]
+        async def mock_redis_xreadgroup(  # pyright: ignore[reportUnknownParameterType]
             self: redis.asyncio.Redis,  # type: ignore[type-arg]
             *args: object,
             **kwargs: object,
@@ -288,13 +289,25 @@ async def test_worker_handles_nogroup_in_xreadgroup(
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # First call raises NOGROUP (simulating group deletion)
                 raise ResponseError("NOGROUP No such key or consumer group")
-            # Subsequent calls use real implementation
-            return await original_xreadgroup(self, *args, **kwargs)  # type: ignore[arg-type]
+            return await original_redis_xreadgroup(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        async def mock_cluster_xreadgroup(  # pragma: no cover  # pyright: ignore[reportUnknownParameterType]
+            self: redis.asyncio.RedisCluster,  # type: ignore[type-arg]
+            *args: object,
+            **kwargs: object,
+        ) -> object:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ResponseError("NOGROUP No such key or consumer group")
+            return await original_cluster_xreadgroup(self, *args, **kwargs)  # type: ignore[arg-type]
 
         with (
-            patch.object(redis.asyncio.Redis, "xreadgroup", mock_xreadgroup),
+            patch.object(redis.asyncio.Redis, "xreadgroup", mock_redis_xreadgroup),
+            patch.object(
+                redis.asyncio.RedisCluster, "xreadgroup", mock_cluster_xreadgroup
+            ),
             caplog.at_level(logging.DEBUG),
         ):
             async with Worker(

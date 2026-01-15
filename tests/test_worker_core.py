@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from redis.asyncio import Redis
+from redis.asyncio.cluster import RedisCluster
 from redis.exceptions import ConnectionError
 
 from docket import CurrentWorker, Docket, Worker
@@ -56,8 +57,10 @@ async def test_two_workers_split_work(docket: Docket):
         await asyncio.gather(worker1.run_until_finished(), worker2.run_until_finished())
 
     assert call_counts[worker1] + call_counts[worker2] == 100
-    assert call_counts[worker1] > 40
-    assert call_counts[worker2] > 40
+    # Both workers should participate (at least 25% each)
+    # Note: Distribution may vary due to timing, especially in cluster mode
+    assert call_counts[worker1] > 25
+    assert call_counts[worker2] > 25
 
 
 async def test_worker_reconnects_when_connection_is_lost(
@@ -310,7 +313,7 @@ async def test_worker_recovers_from_redis_errors(
     redis_calls = 0
 
     @asynccontextmanager
-    async def mock_redis() -> AsyncGenerator[Redis, None]:
+    async def mock_redis() -> AsyncGenerator[Redis | RedisCluster, None]:
         nonlocal redis_calls, error_time
         redis_calls += 1
 

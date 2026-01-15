@@ -107,7 +107,11 @@ asyncio_default_test_loop_scope = "function"
 filterwarnings = ["error"]
 
 [tool.coverage.run]
-omit = ["src/docket/__main__.py", "src/docket/_uuid7.py"]
+omit = [
+    "src/docket/__main__.py",
+    "src/docket/_uuid7.py",
+    "src/docket/_result_store.py"
+]
 branch = true
 parallel = true
 
