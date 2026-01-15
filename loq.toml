@@ -22,7 +22,7 @@ max_lines = 878
 
 [[rules]]
 path = "src/docket/docket.py"
-max_lines = 867
+max_lines = 852
 
 [[rules]]
 path = "src/docket/dependencies.py"

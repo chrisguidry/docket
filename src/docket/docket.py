@@ -550,21 +550,7 @@ class Docket(DocketSnapshotMixin):
             args_data = data.get(b"args")
             kwargs_data = data.get(b"kwargs")
 
-            # TODO: Remove in next breaking release (v0.14.0) - fallback for 0.13.0 compatibility
-            # Check parked hash if runs hash incomplete (0.13.0 didn't store task data in runs hash)
-            if (
-                not function_name or not args_data or not kwargs_data
-            ):  # pragma: no cover
-                parked_key = self.parked_task_key(key)
-                parked_data = await redis.hgetall(parked_key)
-                if parked_data:
-                    function_name = parked_data.get(b"function")
-                    args_data = parked_data.get(b"args")
-                    kwargs_data = parked_data.get(b"kwargs")
-
-            if (
-                not function_name or not args_data or not kwargs_data
-            ):  # pragma: no cover
+            if not function_name or not args_data or not kwargs_data:
                 return None
 
             # Look up function in registry, or create a placeholder if not found
