@@ -144,11 +144,11 @@ async def test_get_execution_with_incomplete_data(
 ):
     """get_execution should return None when runs hash has incomplete data."""
     # This test manually creates incomplete test data
-    key_leak_checker.add_exemption(f"{docket.name}:runs:incomplete-task")
+    runs_key = docket.runs_key("incomplete-task")
+    key_leak_checker.add_exemption(runs_key)
 
     # Manually create runs hash with missing fields
     async with docket.redis() as redis:
-        runs_key = f"{docket.name}:runs:incomplete-task"
         # Only set state, missing function/args/kwargs
         await redis.hset(runs_key, mapping={"state": "scheduled"})  # type: ignore[misc]
 
@@ -165,11 +165,11 @@ async def test_get_execution_with_missing_when(
     docket.register(the_task)
 
     # This test manually creates incomplete test data
-    key_leak_checker.add_exemption(f"{docket.name}:runs:no-when-task")
+    runs_key = docket.runs_key("no-when-task")
+    key_leak_checker.add_exemption(runs_key)
 
     # Manually create runs hash with function/args/kwargs but no when
     async with docket.redis() as redis:
-        runs_key = f"{docket.name}:runs:no-when-task"
         await redis.hset(  # type: ignore[misc]
             runs_key,
             mapping={
