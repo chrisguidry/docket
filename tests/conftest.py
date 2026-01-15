@@ -39,12 +39,12 @@ class ACLCredentials:
     """ACL credentials generated deterministically from worker_id."""
 
     def __init__(self, worker_id: str) -> None:
-        if not ACL_ENABLED:  # pragma: no cover
+        if not ACL_ENABLED:
             self.username = ""
             self.password = ""
             self.admin_password = ""
             self.docket_prefix = "test-docket"
-        else:  # pragma: no cover
+        else:
             # Use worker_id for deterministic credentials per worker
             worker_suffix = worker_id or "main"
             self.username = f"docket-user-{worker_suffix}"
@@ -79,7 +79,7 @@ def _sync_redis(url: str) -> Generator[Redis, None, None]:
             pool = redis.connection_pool  # type: ignore
             yield redis
     finally:
-        if pool:  # pragma: no branch
+        if pool:
             pool.disconnect()
 
 
@@ -87,7 +87,7 @@ def _sync_redis(url: str) -> Generator[Redis, None, None]:
 def _administrative_redis(
     port: int, password: str = ""
 ) -> Generator[Redis, None, None]:
-    if password:  # pragma: no cover
+    if password:
         url = f"redis://:{password}@localhost:{port}/0"
     else:
         url = f"redis://localhost:{port}/0"
@@ -99,13 +99,13 @@ def _wait_for_redis(port: int) -> None:
     while True:
         try:
             with _administrative_redis(port) as r:
-                if r.ping():  # type: ignore  # pragma: no branch
+                if r.ping():  # type: ignore
                     return
-        except redis.exceptions.ConnectionError:  # pragma: no cover
+        except redis.exceptions.ConnectionError:
             time.sleep(0.1)
 
 
-def _setup_acl(port: int, creds: ACLCredentials) -> None:  # pragma: no cover
+def _setup_acl(port: int, creds: ACLCredentials) -> None:
     """Configure Redis ACL for testing with restricted permissions."""
     with _administrative_redis(port) as r:
         # PSUBSCRIBE requires literal pattern matches in ACLs.
@@ -131,9 +131,7 @@ def _setup_acl(port: int, creds: ACLCredentials) -> None:  # pragma: no cover
         )
 
 
-def _setup_cluster_acl(
-    ports: tuple[int, int, int], creds: ACLCredentials
-) -> None:  # pragma: no cover
+def _setup_cluster_acl(ports: tuple[int, int, int], creds: ACLCredentials) -> None:
     """Configure ACL on all cluster nodes."""
     for port in ports:
         with _administrative_redis(port) as r:
@@ -160,9 +158,7 @@ def _setup_cluster_acl(
             )
 
 
-def _build_cluster_image(
-    client: DockerClient, base_image: str
-) -> str:  # pragma: no cover
+def _build_cluster_image(client: DockerClient, base_image: str) -> str:
     """Build cluster image from base image, return image tag."""
     tag = f"docket-cluster:{base_image.replace('/', '-').replace(':', '-')}"
 
@@ -181,7 +177,7 @@ def _build_cluster_image(
     return tag
 
 
-def _allocate_cluster_ports() -> tuple[int, int, int]:  # pragma: no cover
+def _allocate_cluster_ports() -> tuple[int, int, int]:
     """Allocate 3 free ports for cluster nodes.
 
     Ports must be < 55536 because Redis cluster bus ports are data_port + 10000,
@@ -200,7 +196,7 @@ def _allocate_cluster_ports() -> tuple[int, int, int]:  # pragma: no cover
     return ports[0], ports[1], ports[2]
 
 
-def _wait_for_cluster(port: int) -> None:  # pragma: no cover
+def _wait_for_cluster(port: int) -> None:
     """Wait for Redis cluster to be healthy and fully accessible."""
     while True:
         try:
@@ -241,7 +237,7 @@ def _cleanup_stale_containers(docker_client: DockerClient) -> None:
             filters={"label": "source=docket-unit-tests"},
         ),
     )
-    for c in containers:  # pragma: no cover
+    for c in containers:
         try:
             created_str = c.attrs.get("Created", "")
             if created_str:
@@ -264,7 +260,7 @@ def redis_server(
     This eliminates cross-worker coordination complexity and allows using
     FLUSHALL between tests since each worker owns its Redis instance.
     """
-    if BASE_VERSION == "memory":  # pragma: no cover
+    if BASE_VERSION == "memory":
         yield None
         return
 
@@ -277,15 +273,15 @@ def redis_server(
     container_label = f"docket-test-{worker_id or 'main'}-{os.getpid()}"
 
     # Determine base image
-    if BASE_VERSION.startswith("valkey-"):  # pragma: no cover
+    if BASE_VERSION.startswith("valkey-"):
         base_image = f"valkey/valkey:{BASE_VERSION.replace('valkey-', '')}"
     else:
-        base_image = f"redis:{BASE_VERSION}"  # pragma: no cover
+        base_image = f"redis:{BASE_VERSION}"
 
     container: Container
     cluster_ports: tuple[int, int, int] | None = None
 
-    if CLUSTER_ENABLED:  # pragma: no cover
+    if CLUSTER_ENABLED:
         cluster_image = _build_cluster_image(docker_client, base_image)
         cluster_ports = _allocate_cluster_ports()
         port0, port1, port2 = cluster_ports
@@ -336,7 +332,7 @@ def redis_server(
 
         _wait_for_redis(redis_port)
 
-        if ACL_ENABLED:  # pragma: no cover
+        if ACL_ENABLED:
             _setup_acl(redis_port, acl_credentials)
 
     try:
@@ -347,9 +343,9 @@ def redis_server(
 
 @pytest.fixture(scope="session")
 def redis_port(redis_server: Container | None) -> int:
-    if redis_server is None:  # pragma: no cover
+    if redis_server is None:
         return 0
-    if CLUSTER_ENABLED:  # pragma: no cover
+    if CLUSTER_ENABLED:
         env_list = redis_server.attrs["Config"]["Env"]
         for env in env_list:
             if env.startswith("CLUSTER_PORT_0="):
@@ -361,10 +357,10 @@ def redis_port(redis_server: Container | None) -> int:
 
 @pytest.fixture
 def redis_url(redis_port: int, acl_credentials: ACLCredentials) -> str:
-    if BASE_VERSION == "memory":  # pragma: no cover
+    if BASE_VERSION == "memory":
         return "memory://"
 
-    if CLUSTER_ENABLED:  # pragma: no cover
+    if CLUSTER_ENABLED:
         if ACL_ENABLED:
             return (
                 f"redis+cluster://{acl_credentials.username}:{acl_credentials.password}"
@@ -372,13 +368,13 @@ def redis_url(redis_port: int, acl_credentials: ACLCredentials) -> str:
             )
         return f"redis+cluster://localhost:{redis_port}"
 
-    if ACL_ENABLED:  # pragma: no cover
+    if ACL_ENABLED:
         url = (
             f"redis://{acl_credentials.username}:{acl_credentials.password}"
             f"@localhost:{redis_port}/0"
         )
     else:
-        url = f"redis://localhost:{redis_port}/0"  # pragma: no cover
+        url = f"redis://localhost:{redis_port}/0"
 
     # Each worker owns its Redis, so FLUSHALL is safe
     with _sync_redis(url) as r:
@@ -420,10 +416,10 @@ def make_docket_name(acl_credentials: ACLCredentials) -> Callable[[], str]:
     def _make_name() -> str:
         nonlocal counter
         counter += 1
-        if ACL_ENABLED:  # pragma: no cover
+        if ACL_ENABLED:
             # Predictable names for ACL pattern matching
             return f"{acl_credentials.docket_prefix}-{counter}"
-        return f"{acl_credentials.docket_prefix}-{uuid4()}"  # pragma: no cover
+        return f"{acl_credentials.docket_prefix}-{uuid4()}"
 
     return _make_name
 

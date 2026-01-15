@@ -108,9 +108,14 @@ filterwarnings = ["error"]
 
 [tool.coverage.run]
 omit = [
+    # Entry point wrapper
     "src/docket/__main__.py",
+    # Vendored uuid7 implementation
     "src/docket/_uuid7.py",
-    "src/docket/_result_store.py"
+    # Cluster-only code paths not exercised in standalone tests
+    "src/docket/_result_store.py",
+    # Fixture branches vary by Redis config (cluster, ACL, memory, valkey)
+    "tests/conftest.py",
 ]
 branch = true
 parallel = true
