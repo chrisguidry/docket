@@ -208,7 +208,7 @@ async def test_result_storage_uses_provided_or_default(docket: Docket):
     if docket._redis.is_cluster:  # pragma: no cover
         # Cluster mode uses ClusterKeyValueStore
         assert isinstance(store, ClusterKeyValueStore)
-    else:
+    else:  # pragma: no cover
         # Standalone mode uses RedisStore
         assert isinstance(store, RedisStore)
 

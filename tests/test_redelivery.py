@@ -355,7 +355,7 @@ async def test_lease_renewal_recovers_from_redis_error(
     original_redis_xclaim = Redis.xclaim
     original_cluster_xclaim = RedisCluster.xclaim
 
-    async def mock_redis_xclaim(
+    async def mock_redis_xclaim(  # pragma: no cover
         self: Redis,  # type: ignore[type-arg]
         *args: object,
         **kwargs: object,

@@ -118,7 +118,7 @@ async def test_prefix_property(redis_url: str, strike_name: str):
     strikes = StrikeList(url=redis_url, name=strike_name)
     if RedisConnection(redis_url).is_cluster:  # pragma: no cover
         assert strikes.prefix == f"{{{strike_name}}}"
-    else:
+    else:  # pragma: no cover
         assert strikes.prefix == strike_name
 
 

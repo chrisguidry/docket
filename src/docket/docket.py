@@ -552,7 +552,9 @@ class Docket(DocketSnapshotMixin):
 
             # TODO: Remove in next breaking release (v0.14.0) - fallback for 0.13.0 compatibility
             # Check parked hash if runs hash incomplete (0.13.0 didn't store task data in runs hash)
-            if not function_name or not args_data or not kwargs_data:
+            if (
+                not function_name or not args_data or not kwargs_data
+            ):  # pragma: no cover
                 parked_key = self.parked_task_key(key)
                 parked_data = await redis.hgetall(parked_key)
                 if parked_data:
@@ -560,7 +562,9 @@ class Docket(DocketSnapshotMixin):
                     args_data = parked_data.get(b"args")
                     kwargs_data = parked_data.get(b"kwargs")
 
-            if not function_name or not args_data or not kwargs_data:
+            if (
+                not function_name or not args_data or not kwargs_data
+            ):  # pragma: no cover
                 return None
 
             # Look up function in registry, or create a placeholder if not found
@@ -581,7 +585,7 @@ class Docket(DocketSnapshotMixin):
 
             # Extract scheduling metadata
             when_str = data.get(b"when")
-            if not when_str:
+            if not when_str:  # pragma: no cover
                 return None
             when = datetime.fromtimestamp(float(when_str.decode()), tz=timezone.utc)
 

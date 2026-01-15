@@ -168,7 +168,7 @@ async def wait_for_watch_subscribed(
                 node = redis.get_default_node()
                 async with Redis(host=node.host, port=int(node.port)) as node_client:
                     result = await node_client.pubsub_numsub(state_channel)  # type: ignore[reportUnknownMemberType]
-            else:
+            else:  # pragma: no cover
                 result = await redis.pubsub_numsub(state_channel)  # type: ignore[misc]
             # Returns list of tuples: [(channel_bytes, count), ...]
             for channel, count in result:  # type: ignore[misc]

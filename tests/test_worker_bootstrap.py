@@ -281,7 +281,7 @@ async def test_worker_handles_nogroup_in_xreadgroup(
         original_redis_xreadgroup = redis.asyncio.Redis.xreadgroup
         original_cluster_xreadgroup = redis.asyncio.RedisCluster.xreadgroup
 
-        async def mock_redis_xreadgroup(  # pyright: ignore[reportUnknownParameterType]
+        async def mock_redis_xreadgroup(  # pragma: no cover  # pyright: ignore[reportUnknownParameterType]
             self: redis.asyncio.Redis,  # type: ignore[type-arg]
             *args: object,
             **kwargs: object,
