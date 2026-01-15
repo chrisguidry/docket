@@ -17,6 +17,7 @@ from urllib.parse import ParseResult, urlparse, urlunparse
 from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
+from redis.asyncio.connection import Connection, SSLConnection
 
 if typing.TYPE_CHECKING:
     from fakeredis.aioredis import FakeServer
@@ -235,23 +236,26 @@ class RedisConnection:
     async def publish(self, channel: str, message: str) -> int:
         """Publish a message to a pub/sub channel."""
         if self._cluster_client is not None:  # pragma: no cover
-            node_client = await self._get_node_client()
+            node_client, pool = await self._get_node_client()
             try:
                 return await node_client.publish(channel, message)
             finally:
-                await node_client.aclose()
+                # Shield to ensure cleanup completes even when cancelled
+                await asyncio.shield(pool.disconnect())
         else:
             async with Redis(connection_pool=self._connection_pool) as r:
                 return await r.publish(channel, message)
 
-    async def _get_node_client(self) -> Redis:  # pragma: no cover
+    async def _get_node_client(
+        self,
+    ) -> tuple[Redis, ConnectionPool]:  # pragma: no cover
         """Create a Redis client connected to a cluster node for pub/sub.
 
         Redis Cluster doesn't natively support pub/sub through the cluster client,
         so we connect a regular Redis client directly to one of the cluster nodes.
 
         Returns:
-            A Redis client connected to a cluster primary node
+            A tuple of (Redis client, ConnectionPool) - caller must disconnect pool
         """
         assert self._cluster_client is not None
         nodes = self._cluster_client.get_primaries()
@@ -259,14 +263,17 @@ class RedisConnection:
             raise RuntimeError("No primary nodes available in cluster")
 
         node = nodes[0]
-        return Redis(
+        pool = ConnectionPool(
             host=node.host,
             port=int(node.port),
             username=self._parsed.username,
             password=self._parsed.password,
-            ssl=self._parsed.scheme == "rediss+cluster",
+            connection_class=SSLConnection
+            if self._parsed.scheme == "rediss+cluster"
+            else Connection,
             decode_responses=False,
         )
+        return Redis(connection_pool=pool), pool
 
     @asynccontextmanager
     async def _cluster_pubsub(self) -> AsyncGenerator[PubSub, None]:  # pragma: no cover
@@ -278,13 +285,13 @@ class RedisConnection:
         Yields:
             A PubSub object connected to a cluster node
         """
-        node_client = await self._get_node_client()
+        node_client, pool = await self._get_node_client()
         try:
             async with node_client.pubsub() as pubsub:
                 yield pubsub
         finally:
             # Shield to ensure cleanup completes even when cancelled
-            await asyncio.shield(node_client.aclose())
+            await asyncio.shield(pool.disconnect())
 
 
 # ------------------------------------------------------------------------------
