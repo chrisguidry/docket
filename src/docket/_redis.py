@@ -94,7 +94,7 @@ class RedisConnection:
             await asyncio.shield(self._cluster_client.aclose())
             self._cluster_client = None
         elif self._connection_pool is not None:
-            await asyncio.shield(self._connection_pool.disconnect())
+            await asyncio.shield(self._connection_pool.aclose())
             self._connection_pool = None
 
     @property
@@ -243,7 +243,7 @@ class RedisConnection:
                 # Shield all cleanup in a single coroutine to ensure atomic cleanup
                 async def cleanup() -> None:
                     await node_client.aclose()
-                    await pool.disconnect()
+                    await pool.aclose()
 
                 await asyncio.shield(cleanup())
         else:
@@ -298,7 +298,7 @@ class RedisConnection:
             async def cleanup() -> None:
                 await pubsub.aclose()
                 await node_client.aclose()
-                await pool.disconnect()
+                await pool.aclose()
 
             await asyncio.shield(cleanup())
 

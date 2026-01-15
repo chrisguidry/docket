@@ -219,12 +219,12 @@ class ResultStorage:
         exc_val: BaseException | None,
         exc_tb: object,
     ) -> None:
-        # Close client first to release connections, then disconnect pool
+        # Close client first to release connections, then close pool
         if self._client is not None:
             await asyncio.shield(self._client.aclose())
             self._client = None
         if self._pool is not None:
-            await asyncio.shield(self._pool.disconnect())
+            await asyncio.shield(self._pool.aclose())
             self._pool = None
 
     # AsyncKeyValue protocol - delegate to self._store
