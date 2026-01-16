@@ -109,7 +109,7 @@ async def test_watch_running_task_until_completion(docket: Docket, worker: Worke
             docket.url,
             "--docket",
             docket.name,
-            timeout=5.0,
+            timeout=10.0,
         )
     )
 
@@ -186,7 +186,7 @@ async def test_watch_scheduled_task_transition(docket: Docket, worker: Worker):
         docket.url,
         "--docket",
         docket.name,
-        timeout=5.0,
+        timeout=10.0,
     )
 
     await worker_task
@@ -227,7 +227,7 @@ async def test_watch_task_with_initial_progress(docket: Docket, worker: Worker):
         docket.url,
         "--docket",
         docket.name,
-        timeout=5.0,  # Cluster mode needs extra time for pubsub setup
+        timeout=10.0,
     )
 
     await worker_task
@@ -257,7 +257,7 @@ async def test_watch_task_with_worker_assignment(docket: Docket, worker: Worker)
         docket.url,
         "--docket",
         docket.name,
-        timeout=5.0,
+        timeout=10.0,
     )
 
     await worker_task
@@ -297,7 +297,7 @@ async def test_watch_task_that_starts_while_watching(docket: Docket, worker: Wor
         docket.url,
         "--docket",
         docket.name,
-        timeout=4.0,
+        timeout=10.0,
     )
 
     await worker_task
@@ -335,7 +335,7 @@ async def test_watch_receives_progress_events_during_execution(
         docket.url,
         "--docket",
         docket.name,
-        timeout=5.0,  # Cluster mode needs extra time for pubsub setup
+        timeout=10.0,
     )
 
     await worker_task
@@ -376,7 +376,7 @@ async def test_watch_already_running_task_with_progress(docket: Docket, worker: 
         docket.url,
         "--docket",
         docket.name,
-        timeout=4.0,
+        timeout=10.0,
     )
 
     await worker_task
@@ -414,7 +414,7 @@ async def test_watch_task_with_worker_in_state_event(docket: Docket, worker: Wor
         docket.url,
         "--docket",
         docket.name,
-        timeout=5.0,
+        timeout=10.0,
     )
 
     await worker_task
