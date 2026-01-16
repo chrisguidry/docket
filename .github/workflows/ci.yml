@@ -63,6 +63,13 @@ jobs:
               redis-py-version: ">=5"
             cov-threshold: 95
             pytest-args: "--cov-config=.coveragerc-memory"
+          # TODO: Cluster mode has socket leak issues on 3.14, ignore for now
+          - python-version: "3.14"
+            backend:
+              name: "Redis 8.0 Cluster"
+              redis-version: "8.0-cluster"
+              redis-py-version: ">=5"
+            pytest-args: "-W ignore::ResourceWarning"
           # ACL variants only run on latest Python to save CI time
           - python-version: "3.14"
             backend:
