@@ -42,6 +42,8 @@ dependencies = [
 dev = [
     "codespell>=2.4.1",
     "docker>=7.1.0",
+    # Security: urllib3 >=2.6.3 fixes decompression bomb vulnerabilities
+    "urllib3>=2.6.3",
     "ipython>=8.0.0",
     "loq>=0.1.0a3",
     "mypy>=1.14.1",
@@ -69,7 +71,13 @@ docs = [
     "mkdocstrings>=0.24.1",
     "mkdocstrings-python>=1.8.0",
 ]
-examples = ["fastapi>=0.120.0", "pydantic>=2.11.10", "uvicorn>=0.38.0"]
+examples = [
+    "fastapi>=0.120.0",
+    "pydantic>=2.11.10",
+    # Security: starlette >=0.49.1 fixes session middleware vulnerability
+    "starlette>=0.49.1",
+    "uvicorn>=0.38.0",
+]
 
 [project.scripts]
 docket = "docket.__main__:app"
