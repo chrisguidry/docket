@@ -105,7 +105,7 @@ async def test_worker_respects_concurrency_limit(docket: Docket, worker: Worker)
         currently_running += 1
         max_concurrency_observed = max(max_concurrency_observed, currently_running)
 
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.1)  # Long enough to overlap even on slow CI runners
         task_results.add(index)
 
         currently_running -= 1
