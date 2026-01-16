@@ -184,7 +184,7 @@ class ResultStorage:
 
     def __init__(
         self,
-        redis: RedisConnection,
+        redis: "RedisConnection",
         default_collection: str,
     ) -> None:
         self._redis = redis
