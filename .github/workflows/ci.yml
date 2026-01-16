@@ -69,12 +69,28 @@ jobs:
               name: "Redis 8.0 Cluster"
               redis-version: "8.0-cluster"
               redis-py-version: ">=5"
-            pytest-args: "-v -s"
-          # Cluster mode on Python 3.14 emits ResourceWarning about unclosed
-          # sockets during test teardown. The warnings appear related to
-          # redis-py's cluster pub/sub connection management, likely an
-          # incompatibility between asyncio changes in 3.14 and redis-py.
-          # Ignoring these warnings until upstream fixes land.
+            pytest-args: "-v -s -W ignore::ResourceWarning"
+          # Cluster mode emits ResourceWarning about unclosed sockets during
+          # test teardown. The warnings appear related to redis-py's cluster
+          # pub/sub connection management. Ignoring until upstream fixes land.
+          - python-version: "3.10"
+            backend:
+              name: "Redis 8.0 Cluster"
+              redis-version: "8.0-cluster"
+              redis-py-version: ">=5"
+            pytest-args: "-W ignore::ResourceWarning"
+          - python-version: "3.11"
+            backend:
+              name: "Redis 8.0 Cluster"
+              redis-version: "8.0-cluster"
+              redis-py-version: ">=5"
+            pytest-args: "-W ignore::ResourceWarning"
+          - python-version: "3.13"
+            backend:
+              name: "Redis 8.0 Cluster"
+              redis-version: "8.0-cluster"
+              redis-py-version: ">=5"
+            pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.14"
             backend:
               name: "Redis 8.0 Cluster"
