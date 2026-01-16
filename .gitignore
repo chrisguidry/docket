@@ -12,4 +12,3 @@ wheels/
 
 .coverage.*
 .loq_cache
-coverage.xml
