@@ -1,6 +1,7 @@
 """Tests for Docket execution retrieval, scheduling, and cancellation."""
 
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 from unittest.mock import AsyncMock
 
 from docket import Execution
@@ -143,11 +144,11 @@ async def test_get_execution_with_incomplete_data(
 ):
     """get_execution should return None when runs hash has incomplete data."""
     # This test manually creates incomplete test data
-    key_leak_checker.add_exemption(f"{docket.name}:runs:incomplete-task")
+    runs_key = docket.runs_key("incomplete-task")
+    key_leak_checker.add_exemption(runs_key)
 
     # Manually create runs hash with missing fields
     async with docket.redis() as redis:
-        runs_key = f"{docket.name}:runs:incomplete-task"
         # Only set state, missing function/args/kwargs
         await redis.hset(runs_key, mapping={"state": "scheduled"})  # type: ignore[misc]
 
@@ -164,11 +165,11 @@ async def test_get_execution_with_missing_when(
     docket.register(the_task)
 
     # This test manually creates incomplete test data
-    key_leak_checker.add_exemption(f"{docket.name}:runs:no-when-task")
+    runs_key = docket.runs_key("no-when-task")
+    key_leak_checker.add_exemption(runs_key)
 
     # Manually create runs hash with function/args/kwargs but no when
     async with docket.redis() as redis:
-        runs_key = f"{docket.name}:runs:no-when-task"
         await redis.hset(  # type: ignore[misc]
             runs_key,
             mapping={
@@ -192,11 +193,11 @@ async def test_get_execution_with_unregistered_function_creates_placeholder(
     import cloudpickle  # type: ignore[import-untyped]
 
     # This test manually creates incomplete test data
-    key_leak_checker.add_exemption(f"{docket.name}:runs:unregistered-task")
+    runs_key = docket.runs_key("unregistered-task")
+    key_leak_checker.add_exemption(runs_key)
 
     # Manually create runs hash with unregistered function
     async with docket.redis() as redis:
-        runs_key = f"{docket.name}:runs:unregistered-task"
         await redis.hset(  # type: ignore[misc]
             runs_key,
             mapping={
@@ -213,51 +214,6 @@ async def test_get_execution_with_unregistered_function_creates_placeholder(
     assert execution.function.__name__ == "unknown_function"
     assert execution.args == ("arg1",)
     assert execution.kwargs == {"key": "value"}
-
-
-async def test_get_execution_fallback_to_parked_hash(
-    docket: Docket, the_task: AsyncMock
-):
-    """get_execution should fallback to parked hash for 0.13.0 compatibility."""
-    import cloudpickle  # type: ignore[import-untyped]
-
-    docket.register(the_task)
-
-    # Simulate a 0.13.0 task: runs hash without function/args/kwargs, data in parked hash
-    async with docket.redis() as redis:
-        runs_key = f"{docket.name}:runs:legacy-task"
-        parked_key = docket.parked_task_key("legacy-task")
-        when = datetime.now(timezone.utc)
-
-        # Old style runs hash (0.13.0) - no function/args/kwargs
-        await redis.hset(  # type: ignore[misc]
-            runs_key,
-            mapping={
-                "state": "scheduled",
-                "when": str(when.timestamp()),
-                "known": str(when.timestamp()),
-            },
-        )
-
-        # Task data in parked hash (0.13.0 behavior)
-        await redis.hset(  # type: ignore[misc]
-            parked_key,
-            mapping={
-                "key": "legacy-task",
-                "function": "the_task",
-                "args": cloudpickle.dumps(("legacy-arg",)),  # type: ignore[attr-defined]
-                "kwargs": cloudpickle.dumps({"legacy": "kwarg"}),  # type: ignore[attr-defined]
-                "when": when.isoformat(),
-                "attempt": "1",
-            },
-        )
-
-    # Should successfully retrieve execution using parked hash fallback
-    execution = await docket.get_execution("legacy-task")
-    assert execution is not None
-    assert execution.function == the_task
-    assert execution.args == ("legacy-arg",)
-    assert execution.kwargs == {"legacy": "kwarg"}
 
 
 # Tests for cancellation
@@ -299,7 +255,7 @@ async def test_cancelled_state_respects_ttl(docket: Docket, the_task: AsyncMock)
 
     # Check that the runs hash has TTL set
     async with docket.redis() as redis:
-        runs_key = f"{docket.name}:runs:{execution.key}"
+        runs_key = docket.runs_key(execution.key)
         ttl = await redis.ttl(runs_key)
 
         # TTL should be set (not -1 which means no expiry)
@@ -308,11 +264,13 @@ async def test_cancelled_state_respects_ttl(docket: Docket, the_task: AsyncMock)
         assert ttl <= int(docket.execution_ttl.total_seconds())
 
 
-async def test_cancelled_state_with_ttl_zero(docket: Docket, the_task: AsyncMock):
+async def test_cancelled_state_with_ttl_zero(
+    docket: Docket, the_task: AsyncMock, make_docket_name: Callable[[], str]
+):
     """Cancelled task with execution_ttl=0 should delete tombstone immediately."""
     # Create docket with TTL=0
     async with Docket(
-        name=f"{docket.name}-ttl-zero",
+        name=make_docket_name(),
         url=docket.url,
         execution_ttl=timedelta(0),
     ) as zero_ttl_docket:

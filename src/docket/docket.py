@@ -20,24 +20,31 @@ from typing import (
     overload,
 )
 
-from key_value.aio.stores.base import BaseContextManagerStore
-from typing_extensions import Self
-
 import redis.exceptions
+from key_value.aio.protocols.key_value import AsyncKeyValue
 from opentelemetry import trace
-from redis.asyncio import ConnectionPool, Redis
+from redis.asyncio import Redis
 from redis.asyncio.client import PubSub
+from redis.asyncio.cluster import RedisCluster
+from typing_extensions import Self
 
 from ._docket_snapshot import DocketSnapshot as DocketSnapshot
 from ._docket_snapshot import DocketSnapshotMixin
 from ._docket_snapshot import RunningExecution as RunningExecution
 from ._docket_snapshot import WorkerInfo as WorkerInfo
-from ._redis import connection_pool_from_url, pubsub_connection, redis_connection
+from ._redis import RedisConnection
+from ._result_store import ResultStorage
 from ._uuid7 import uuid7
-
 from .execution import (
     Execution,
     TaskFunction,
+)
+from .instrumentation import (
+    TASKS_ADDED,
+    TASKS_CANCELLED,
+    TASKS_REPLACED,
+    TASKS_SCHEDULED,
+    TASKS_STRICKEN,
 )
 from .strikelist import (
     LiteralOperator,
@@ -45,16 +52,6 @@ from .strikelist import (
     Restore,
     Strike,
     StrikeList,
-)
-from key_value.aio.protocols.key_value import AsyncKeyValue
-from key_value.aio.stores.redis import RedisStore
-
-from .instrumentation import (
-    TASKS_ADDED,
-    TASKS_CANCELLED,
-    TASKS_REPLACED,
-    TASKS_SCHEDULED,
-    TASKS_STRICKEN,
 )
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -105,7 +102,8 @@ class Docket(DocketSnapshotMixin):
     tasks: dict[str, TaskFunction]
     strike_list: StrikeList
 
-    _connection_pool: ConnectionPool
+    _redis: RedisConnection
+    _result_storage: ResultStorage | None
     _cancel_task_script: _cancel_task | None
 
     def __init__(
@@ -145,6 +143,7 @@ class Docket(DocketSnapshotMixin):
         self.enable_internal_instrumentation = enable_internal_instrumentation
         self._cancel_task_script = None
         self._user_result_storage = result_storage
+        self._redis = RedisConnection(url)
 
         from .tasks import standard_tasks
 
@@ -159,8 +158,11 @@ class Docket(DocketSnapshotMixin):
         """Return the key prefix for this docket.
 
         All Redis keys for this docket are prefixed with this value.
+
+        For Redis Cluster mode, returns a hash-tagged prefix like "{myapp}"
+        to ensure all keys hash to the same slot.
         """
-        return self.name
+        return self._redis.prefix(self.name)
 
     def key(self, suffix: str) -> str:
         """Return a Redis key with the docket prefix.
@@ -180,32 +182,23 @@ class Docket(DocketSnapshotMixin):
             enable_internal_instrumentation=self.enable_internal_instrumentation,
         )
 
-        self._connection_pool = await connection_pool_from_url(self.url)
+        # Connect to Redis (handles cluster vs standalone)
+        await self._redis.__aenter__()
 
         # Connect the strike list to Redis and start monitoring
-        await self.strike_list.connect()
+        await self.strike_list.__aenter__()
 
         # Initialize result storage
-        # We use a separate connection pool for result storage because RedisStore
-        # requires decode_responses=True while Docket's internal Redis usage
-        # expects bytes (decode_responses=False). We also pass a client to
-        # RedisStore to work around a py-key-value bug that ignores username
-        # in URLs (github.com/strawgate/py-key-value/issues/254).
         if self._user_result_storage is not None:
             self.result_storage: AsyncKeyValue = self._user_result_storage
+            self._result_storage = None
+            # User-provided storage should handle its own initialization
+            if hasattr(self.result_storage, "setup"):
+                await self.result_storage.setup()  # type: ignore[union-attr]
         else:
-            self._result_storage_pool = await connection_pool_from_url(
-                self.url, decode_responses=True
-            )
-            result_client = Redis(connection_pool=self._result_storage_pool)
-            self.result_storage = RedisStore(
-                client=result_client, default_collection=self.results_collection
-            )
-
-        if isinstance(self.result_storage, BaseContextManagerStore):
-            await self.result_storage.__aenter__()
-        else:
-            await self.result_storage.setup()
+            self._result_storage = ResultStorage(self._redis, self.results_collection)
+            await self._result_storage.__aenter__()
+            self.result_storage = self._result_storage
         return self
 
     async def __aexit__(
@@ -214,30 +207,48 @@ class Docket(DocketSnapshotMixin):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if isinstance(self.result_storage, BaseContextManagerStore):
-            await self.result_storage.__aexit__(exc_type, exc_value, traceback)
-
-        # Close the result storage pool if we created it
-        if hasattr(self, "_result_storage_pool"):
-            await asyncio.shield(self._result_storage_pool.disconnect())
-            del self._result_storage_pool
+        if self._result_storage is not None:
+            try:
+                await asyncio.shield(
+                    self._result_storage.__aexit__(exc_type, exc_value, traceback)
+                )
+            except (Exception, asyncio.CancelledError):
+                logger.warning("Failed to close result storage", exc_info=True)
+            finally:
+                self._result_storage = None
 
         # Close the strike list (stops monitoring and disconnects)
-        await self.strike_list.close()
+        await self.strike_list.__aexit__(exc_type, exc_value, traceback)
         del self.strike_list
 
-        await asyncio.shield(self._connection_pool.disconnect())
-        del self._connection_pool
+        try:
+            await asyncio.shield(self._redis.__aexit__(exc_type, exc_value, traceback))
+        except (Exception, asyncio.CancelledError):
+            logger.warning("Failed to close docket Redis connection", exc_info=True)
 
     @asynccontextmanager
-    async def redis(self) -> AsyncGenerator[Redis, None]:
-        async with redis_connection(self.url, self._connection_pool) as r:
+    async def redis(self) -> AsyncGenerator[Redis | RedisCluster, None]:
+        async with self._redis.client() as r:
             yield r
 
     @asynccontextmanager
     async def _pubsub(self) -> AsyncGenerator[PubSub, None]:
-        async with pubsub_connection(self.url, self._connection_pool) as pubsub:
+        async with self._redis.pubsub() as pubsub:
             yield pubsub
+
+    async def _publish(self, channel: str, message: str) -> int:
+        """Publish a message to a pub/sub channel.
+
+        This handles both standalone and cluster modes transparently.
+
+        Args:
+            channel: The pub/sub channel to publish to
+            message: The message to publish
+
+        Returns:
+            Number of subscribers that received the message
+        """
+        return await self._redis.publish(channel, message)
 
     def register(self, function: TaskFunction, names: list[str] | None = None) -> None:
         """Register a task with the Docket.
@@ -509,8 +520,8 @@ class Docket(DocketSnapshotMixin):
             async with self.redis() as redis:
                 await self._cancel(redis, key)
 
-                # Publish cancellation signal for running tasks (best-effort)
-                await redis.publish(self.cancel_channel(key), key)
+            # Publish cancellation signal for running tasks (best-effort)
+            await self._publish(self.cancel_channel(key), key)
 
         TASKS_CANCELLED.add(1, self.labels())
 
@@ -547,16 +558,6 @@ class Docket(DocketSnapshotMixin):
             args_data = data.get(b"args")
             kwargs_data = data.get(b"kwargs")
 
-            # TODO: Remove in next breaking release (v0.14.0) - fallback for 0.13.0 compatibility
-            # Check parked hash if runs hash incomplete (0.13.0 didn't store task data in runs hash)
-            if not function_name or not args_data or not kwargs_data:
-                parked_key = self.parked_task_key(key)
-                parked_data = await redis.hgetall(parked_key)
-                if parked_data:
-                    function_name = parked_data.get(b"function")
-                    args_data = parked_data.get(b"args")
-                    kwargs_data = parked_data.get(b"kwargs")
-
             if not function_name or not args_data or not kwargs_data:
                 return None
 
@@ -578,7 +579,7 @@ class Docket(DocketSnapshotMixin):
 
             # Extract scheduling metadata
             when_str = data.get(b"when")
-            if not when_str:
+            if not when_str:  # pragma: no cover
                 return None
             when = datetime.fromtimestamp(float(when_str.decode()), tz=timezone.utc)
 
@@ -649,7 +650,7 @@ class Docket(DocketSnapshotMixin):
             if "BUSYGROUP" not in str(e):
                 raise  # pragma: no cover
 
-    async def _cancel(self, redis: Redis, key: str) -> None:
+    async def _cancel(self, redis: Redis | RedisCluster, key: str) -> None:
         """Cancel a task atomically.
 
         Handles cancellation regardless of task location:

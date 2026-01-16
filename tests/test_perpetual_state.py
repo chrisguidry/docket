@@ -136,7 +136,12 @@ async def test_perpetual_same_key_no_state_accumulation(
     # Check state records - with default 15min TTL, the last completed state should exist
     async with docket.redis() as redis:
         # Since all executions share the same key, there should be exactly 1 state record
-        keys = await redis.keys(f"{docket.name}:runs:*")  # type: ignore
+        # Use SCAN instead of KEYS because KEYS with hash-tagged patterns doesn't work
+        # reliably in cluster mode (curly braces confuse pattern matching)
+        pattern = f"{docket.prefix}:runs:*"
+        keys: list[bytes] = []
+        async for key in redis.scan_iter(match=pattern):  # type: ignore
+            keys.append(key)  # type: ignore[reportUnknownArgumentType]
         assert len(keys) == 1, (
             f"Should have exactly one state record, found {len(keys)}"
         )

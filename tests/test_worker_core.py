@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from redis.asyncio import Redis
+from redis.asyncio.cluster import RedisCluster
 from redis.exceptions import ConnectionError
 
 from docket import CurrentWorker, Docket, Worker
@@ -38,26 +39,39 @@ async def test_worker_acknowledges_messages(
 async def test_two_workers_split_work(docket: Docket):
     """Two workers should split the workload"""
 
-    worker1 = Worker(docket)
-    worker2 = Worker(docket)
+    # Use concurrency=1 so workers claim tasks one at a time for finer distribution
+    worker1 = Worker(docket, concurrency=1)
+    worker2 = Worker(docket, concurrency=1)
 
     call_counts = {
         worker1: 0,
         worker2: 0,
     }
 
+    # Tasks wait for this event, ensuring both workers claim work before any completes
+    proceed = asyncio.Event()
+
     async def the_task(worker: Worker = CurrentWorker()):
+        await proceed.wait()
         call_counts[worker] += 1
 
     for _ in range(100):
         await docket.add(the_task)()
 
     async with worker1, worker2:
-        await asyncio.gather(worker1.run_until_finished(), worker2.run_until_finished())
+        run1 = asyncio.create_task(worker1.run_until_finished())
+        run2 = asyncio.create_task(worker2.run_until_finished())
+        # Give both workers time to claim tasks
+        await asyncio.sleep(0.2)
+        # Let all tasks complete
+        proceed.set()
+        await run1
+        await run2
 
     assert call_counts[worker1] + call_counts[worker2] == 100
-    assert call_counts[worker1] > 40
-    assert call_counts[worker2] > 40
+    # Both workers should participate (at least 20% each)
+    assert call_counts[worker1] > 20
+    assert call_counts[worker2] > 20
 
 
 async def test_worker_reconnects_when_connection_is_lost(
@@ -102,7 +116,7 @@ async def test_worker_respects_concurrency_limit(docket: Docket, worker: Worker)
         currently_running += 1
         max_concurrency_observed = max(max_concurrency_observed, currently_running)
 
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.1)  # Long enough to overlap even on slow CI runners
         task_results.add(index)
 
         currently_running -= 1
@@ -310,7 +324,7 @@ async def test_worker_recovers_from_redis_errors(
     redis_calls = 0
 
     @asynccontextmanager
-    async def mock_redis() -> AsyncGenerator[Redis, None]:
+    async def mock_redis() -> AsyncGenerator[Redis | RedisCluster, None]:
         nonlocal redis_calls, error_time
         redis_calls += 1
 

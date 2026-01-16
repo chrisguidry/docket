@@ -6,7 +6,6 @@ import asyncio
 from typing import Any, Callable
 
 import pytest
-from redis.asyncio import Redis
 
 from docket import StrikeList
 from docket.strikelist import Operator, Restore, Strike
@@ -30,7 +29,8 @@ async def send_strike(
 ) -> None:
     """Send a strike instruction directly to Redis."""
     instruction = Strike(None, parameter, Operator(operator), value)
-    async with Redis(connection_pool=strikes._connection_pool) as r:
+    assert strikes._redis is not None
+    async with strikes._redis.client() as r:
         await r.xadd(strikes.strike_key, instruction.as_message())  # type: ignore[arg-type]
 
 
@@ -42,7 +42,8 @@ async def send_restore(
 ) -> None:
     """Send a restore instruction directly to Redis."""
     instruction = Restore(None, parameter, Operator(operator), value)
-    async with Redis(connection_pool=strikes._connection_pool) as r:
+    assert strikes._redis is not None
+    async with strikes._redis.client() as r:
         await r.xadd(strikes.strike_key, instruction.as_message())  # type: ignore[arg-type]
 
 
@@ -52,62 +53,73 @@ async def send_restore(
 async def test_context_manager(redis_url: str, strike_name: str):
     """Test async context manager works correctly."""
     async with StrikeList(url=redis_url, name=strike_name) as strikes:
-        assert strikes._connection_pool is not None
+        # Should be connected
+        assert strikes._redis is not None
+        assert strikes._redis.is_connected
         assert strikes._monitor_task is not None
 
-    # After exit, resources should be cleaned up
-    assert strikes._connection_pool is None
+    # After exit, resources should be cleaned up (connection closed, not deleted)
+    assert strikes._redis is not None
+    assert not strikes._redis.is_connected
     assert strikes._monitor_task is None
 
 
-async def test_explicit_connect_close(redis_url: str, strike_name: str):
-    """Test explicit connect/close lifecycle."""
+async def test_explicit_aenter_aexit(redis_url: str, strike_name: str):
+    """Test explicit __aenter__/__aexit__ lifecycle."""
     strikes = StrikeList(url=redis_url, name=strike_name)
 
-    # Initially not connected
-    assert strikes._connection_pool is None
+    # _redis is created in __init__, but not yet connected
+    assert strikes._redis is not None
+    assert not strikes._redis.is_connected
     assert strikes._monitor_task is None
 
-    # Connect
-    await strikes.connect()
-    assert strikes._connection_pool is not None
+    # Connect via __aenter__
+    await strikes.__aenter__()
+    assert strikes._redis is not None
+    assert strikes._redis.is_connected
     assert strikes._monitor_task is not None
 
-    # Close
-    await strikes.close()
-    assert strikes._connection_pool is None
+    # Close via __aexit__
+    await strikes.__aexit__(None, None, None)
+    assert strikes._redis is not None
+    assert not strikes._redis.is_connected
     assert strikes._monitor_task is None
 
 
-async def test_connect_is_idempotent(redis_url: str, strike_name: str):
-    """Test that calling connect multiple times is safe."""
+async def test_aenter_is_idempotent(redis_url: str, strike_name: str):
+    """Test that calling __aenter__ multiple times is safe."""
     strikes = StrikeList(url=redis_url, name=strike_name)
 
-    await strikes.connect()
-    pool1 = strikes._connection_pool
+    await strikes.__aenter__()
+    redis1 = strikes._redis
 
-    # Second connect should be a no-op
-    await strikes.connect()
-    assert strikes._connection_pool is pool1
+    # Second __aenter__ should be a no-op
+    await strikes.__aenter__()
+    assert strikes._redis is redis1
 
-    await strikes.close()
+    await strikes.__aexit__(None, None, None)
 
 
-async def test_close_is_idempotent(redis_url: str, strike_name: str):
-    """Test that calling close multiple times is safe."""
+async def test_aexit_is_idempotent(redis_url: str, strike_name: str):
+    """Test that calling __aexit__ multiple times is safe."""
     strikes = StrikeList(url=redis_url, name=strike_name)
 
-    await strikes.connect()
-    await strikes.close()
+    await strikes.__aenter__()
+    await strikes.__aexit__(None, None, None)
 
-    # Second close should be a no-op
-    await strikes.close()
+    # Second __aexit__ should be a no-op
+    await strikes.__aexit__(None, None, None)
 
 
 async def test_prefix_property(redis_url: str, strike_name: str):
-    """Test the prefix property returns the name."""
+    """Test the prefix property returns the name (hash-tagged for cluster mode)."""
+    from docket._redis import RedisConnection
+
     strikes = StrikeList(url=redis_url, name=strike_name)
-    assert strikes.prefix == strike_name
+    if RedisConnection(redis_url).is_cluster:  # pragma: no cover
+        assert strikes.prefix == f"{{{strike_name}}}"
+    else:  # pragma: no cover
+        assert strikes.prefix == strike_name
 
 
 async def test_strike_key_property(redis_url: str, strike_name: str):
@@ -120,9 +132,9 @@ async def test_local_only_mode(strike_name: str):
     """Test StrikeList works without Redis (local-only mode)."""
     # No URL = local-only mode
     strikes = StrikeList(name=strike_name)
-    await strikes.connect()  # Should be a no-op
+    await strikes.__aenter__()  # Should be a no-op
 
-    assert strikes._connection_pool is None
+    assert strikes._redis is None
     assert strikes._monitor_task is None
     assert strikes._strikes_loaded is None
 
@@ -134,7 +146,7 @@ async def test_local_only_mode(strike_name: str):
     assert strikes.is_stricken({"customer_id": "blocked"})
     assert not strikes.is_stricken({"customer_id": "allowed"})
 
-    await strikes.close()
+    await strikes.__aexit__(None, None, None)
 
 
 async def test_memory_url_without_fakeredis(
@@ -149,7 +161,7 @@ async def test_memory_url_without_fakeredis(
 
     strikes = StrikeList(url="memory://", name=strike_name)
     with pytest.raises((ImportError, ModuleNotFoundError), match="fakeredis"):
-        await strikes.connect()
+        await strikes.__aenter__()
 
 
 async def test_send_instruction_requires_connection(strike_name: str):
@@ -300,3 +312,30 @@ async def test_type_mismatch_handled_gracefully(
         result = strikes.is_stricken({"amount": "not a number"})
         assert result is False
         assert "Incompatible type" in caplog.text
+
+
+async def test_strikelist_aexit_handles_redis_close_error(
+    redis_url: str, strike_name: str, caplog: pytest.LogCaptureFixture
+):
+    """StrikeList should handle errors when closing Redis connection."""
+    from unittest.mock import AsyncMock
+
+    import redis.exceptions
+
+    strikes = StrikeList(url=redis_url, name=strike_name)
+    await strikes.__aenter__()
+
+    # Make _redis.__aexit__ raise an exception
+    assert strikes._redis is not None
+    original_aexit = strikes._redis.__aexit__
+    strikes._redis.__aexit__ = AsyncMock(
+        side_effect=redis.exceptions.ConnectionError("boom")
+    )
+
+    # Should not raise, just log the warning
+    await strikes.__aexit__(None, None, None)
+
+    assert "Failed to close strikelist Redis connection" in caplog.text
+
+    # Clean up the original connection
+    await original_aexit(None, None, None)

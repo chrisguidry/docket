@@ -16,7 +16,7 @@ from typing import (
     cast,
 )
 
-import cloudpickle  # type: ignore[import]
+import cloudpickle
 import opentelemetry.context
 from opentelemetry import propagate, trace
 from typing_extensions import Self
@@ -177,8 +177,8 @@ class Execution:
             b"key": self.key.encode(),
             b"when": self.when.isoformat().encode(),
             b"function": self.function_name.encode(),
-            b"args": cloudpickle.dumps(self.args),  # type: ignore[arg-type]
-            b"kwargs": cloudpickle.dumps(self.kwargs),  # type: ignore[arg-type]
+            b"args": cloudpickle.dumps(self.args),
+            b"kwargs": cloudpickle.dumps(self.kwargs),
             b"attempt": str(self.attempt).encode(),
         }
 
@@ -778,15 +778,12 @@ class Execution:
             data: State data to publish
         """
         channel = self.docket.key(f"state:{self.key}")
-        # Create ephemeral Redis client for publishing
-        async with self.docket.redis() as redis:
-            # Build payload with all relevant state information
-            payload = {
-                "type": "state",
-                "key": self.key,
-                **data,
-            }
-            await redis.publish(channel, json.dumps(payload))
+        payload = {
+            "type": "state",
+            "key": self.key,
+            **data,
+        }
+        await self.docket._publish(channel, json.dumps(payload))
 
     async def subscribe(self) -> AsyncGenerator[StateEvent | ProgressEvent, None]:
         """Subscribe to both state and progress updates for this task.
@@ -810,9 +807,9 @@ class Execution:
             "when": self.when.isoformat(),
             "worker": self.worker,
             "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": self.completed_at.isoformat()
-            if self.completed_at
-            else None,
+            "completed_at": (
+                self.completed_at.isoformat() if self.completed_at else None
+            ),
             "error": self.error,
         }
 
@@ -836,18 +833,12 @@ class Execution:
         progress_channel = self.docket.key(f"progress:{self.key}")
         async with self.docket._pubsub() as pubsub:
             await pubsub.subscribe(state_channel, progress_channel)
-            try:
-                async for message in pubsub.listen():  # pragma: no cover
-                    if message["type"] == "message":
-                        message_data = json.loads(message["data"])
-                        if message_data["type"] == "state":
-                            message_data["state"] = ExecutionState(
-                                message_data["state"]
-                            )
-                        yield message_data
-            finally:
-                # Explicitly unsubscribe to ensure clean shutdown
-                await pubsub.unsubscribe(state_channel, progress_channel)
+            async for message in pubsub.listen():  # pragma: no cover
+                if message["type"] == "message":
+                    message_data = json.loads(message["data"])
+                    if message_data["type"] == "state":
+                        message_data["state"] = ExecutionState(message_data["state"])
+                    yield message_data
 
 
 def compact_signature(signature: inspect.Signature) -> str:

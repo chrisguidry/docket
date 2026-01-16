@@ -1,12 +1,13 @@
 """Snapshot and worker tracking mixin for Docket."""
 
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Collection, Sequence, cast
 
 import redis.exceptions
 from redis.asyncio import Redis
+from redis.asyncio.cluster import RedisCluster
 
 from .execution import Execution, ExecutionState
 
@@ -89,7 +90,7 @@ class DocketSnapshotMixin:
 
         def key(self, suffix: str) -> str: ...
         def parked_task_key(self, task_key: str) -> str: ...
-        def redis(self) -> AbstractAsyncContextManager[Redis]: ...  # type: ignore[type-arg]
+        def redis(self) -> AbstractAsyncContextManager[Redis | RedisCluster]: ...
         async def _ensure_stream_and_group(self) -> None: ...
 
     @property
