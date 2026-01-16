@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import logging
 from contextlib import asynccontextmanager
@@ -206,17 +207,24 @@ class Docket(DocketSnapshotMixin):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        # Close result storage if we created it
         if self._result_storage is not None:
-            await self._result_storage.__aexit__(exc_type, exc_value, traceback)
-            self._result_storage = None
+            try:
+                await asyncio.shield(
+                    self._result_storage.__aexit__(exc_type, exc_value, traceback)
+                )
+            except (Exception, asyncio.CancelledError):
+                logger.warning("Failed to close result storage", exc_info=True)
+            finally:
+                self._result_storage = None
 
         # Close the strike list (stops monitoring and disconnects)
         await self.strike_list.__aexit__(exc_type, exc_value, traceback)
         del self.strike_list
 
-        # Close Redis connection
-        await self._redis.__aexit__(exc_type, exc_value, traceback)
+        try:
+            await asyncio.shield(self._redis.__aexit__(exc_type, exc_value, traceback))
+        except (Exception, asyncio.CancelledError):
+            logger.warning("Failed to close docket Redis connection", exc_info=True)
 
     @asynccontextmanager
     async def redis(self) -> AsyncGenerator[Redis | RedisCluster, None]:

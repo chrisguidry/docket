@@ -63,7 +63,11 @@ jobs:
               redis-py-version: ">=5"
             cov-threshold: 95
             pytest-args: "--cov-config=.coveragerc-memory"
-          # TODO: Cluster mode has socket leak issues on 3.14, ignore for now
+          # Cluster mode on Python 3.14 emits ResourceWarning about unclosed
+          # sockets during test teardown. The warnings appear related to
+          # redis-py's cluster pub/sub connection management, likely an
+          # incompatibility between asyncio changes in 3.14 and redis-py.
+          # Ignoring these warnings until upstream fixes land.
           - python-version: "3.14"
             backend:
               name: "Redis 8.0 Cluster"

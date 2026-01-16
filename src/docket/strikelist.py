@@ -230,11 +230,9 @@ class StrikeList:
         if self._redis is None:
             return self  # No Redis connection needed (local-only mode)
 
-        # Already connected
         if self._redis.is_connected:
             return self
 
-        # Connect to Redis (handles cluster vs standalone)
         await self._redis.__aenter__()
 
         self._strikes_loaded = asyncio.Event()
@@ -260,9 +258,13 @@ class StrikeList:
 
         self._strikes_loaded = None
 
-        # Close Redis connection
         if self._redis is not None and self._redis.is_connected:
-            await self._redis.__aexit__(None, None, None)
+            try:
+                await asyncio.shield(self._redis.__aexit__(None, None, None))
+            except (Exception, asyncio.CancelledError):
+                logger.warning(
+                    "Failed to close strikelist Redis connection", exc_info=True
+                )
 
     def add_condition(self, condition: Callable[["Execution"], bool]) -> None:
         """Adds a temporary condition that indicates an execution is stricken."""

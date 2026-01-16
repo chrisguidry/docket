@@ -6,8 +6,6 @@ This module provides:
   or py-key-value's RedisStore, managing connection pool lifecycle internally
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
