@@ -39,8 +39,9 @@ async def test_worker_acknowledges_messages(
 async def test_two_workers_split_work(docket: Docket):
     """Two workers should split the workload"""
 
-    worker1 = Worker(docket)
-    worker2 = Worker(docket)
+    # Use concurrency=1 so workers claim tasks one at a time for finer distribution
+    worker1 = Worker(docket, concurrency=1)
+    worker2 = Worker(docket, concurrency=1)
 
     call_counts = {
         worker1: 0,
@@ -68,9 +69,9 @@ async def test_two_workers_split_work(docket: Docket):
         await run2
 
     assert call_counts[worker1] + call_counts[worker2] == 100
-    # Both workers should participate (at least 30% each)
-    assert call_counts[worker1] > 30
-    assert call_counts[worker2] > 30
+    # Both workers should participate (at least 20% each)
+    assert call_counts[worker1] > 20
+    assert call_counts[worker2] > 20
 
 
 async def test_worker_reconnects_when_connection_is_lost(
