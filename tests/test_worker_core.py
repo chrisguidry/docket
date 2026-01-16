@@ -47,19 +47,30 @@ async def test_two_workers_split_work(docket: Docket):
         worker2: 0,
     }
 
+    # Tasks wait for this event, ensuring both workers claim work before any completes
+    proceed = asyncio.Event()
+
     async def the_task(worker: Worker = CurrentWorker()):
+        await proceed.wait()
         call_counts[worker] += 1
 
     for _ in range(100):
         await docket.add(the_task)()
 
     async with worker1, worker2:
-        await asyncio.gather(worker1.run_until_finished(), worker2.run_until_finished())
+        run1 = asyncio.create_task(worker1.run_until_finished())
+        run2 = asyncio.create_task(worker2.run_until_finished())
+        # Give both workers time to claim tasks
+        await asyncio.sleep(0.2)
+        # Let all tasks complete
+        proceed.set()
+        await run1
+        await run2
 
     assert call_counts[worker1] + call_counts[worker2] == 100
-    # Both workers should participate - distribution varies due to timing
-    assert call_counts[worker1] > 5
-    assert call_counts[worker2] > 5
+    # Both workers should participate (at least 30% each)
+    assert call_counts[worker1] > 30
+    assert call_counts[worker2] > 30
 
 
 async def test_worker_reconnects_when_connection_is_lost(
