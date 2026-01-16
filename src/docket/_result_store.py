@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, SupportsFloat
 
@@ -21,6 +22,8 @@ from redis.asyncio.cluster import RedisCluster
 
 if TYPE_CHECKING:
     from docket._redis import RedisConnection
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 
 class ClusterKeyValueStore:
@@ -220,12 +223,21 @@ class ResultStorage:
         exc_tb: object,
     ) -> None:
         # Close client first to release connections, then close pool
+        # Each step is isolated so failures don't prevent subsequent cleanup
         if self._client is not None:
-            await asyncio.shield(self._client.aclose())
-            self._client = None
+            try:
+                await asyncio.shield(self._client.aclose())
+            except Exception:
+                logger.warning("Failed to close result storage client", exc_info=True)
+            finally:
+                self._client = None
         if self._pool is not None:
-            await asyncio.shield(self._pool.aclose())
-            self._pool = None
+            try:
+                await asyncio.shield(self._pool.aclose())
+            except Exception:
+                logger.warning("Failed to close result storage pool", exc_info=True)
+            finally:
+                self._pool = None
 
     # AsyncKeyValue protocol - delegate to self._store
 
