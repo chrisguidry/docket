@@ -227,14 +227,14 @@ class ResultStorage:
         if self._client is not None:
             try:
                 await asyncio.shield(self._client.aclose())
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 logger.warning("Failed to close result storage client", exc_info=True)
             finally:
                 self._client = None
         if self._pool is not None:
             try:
                 await asyncio.shield(self._pool.aclose())
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 logger.warning("Failed to close result storage pool", exc_info=True)
             finally:
                 self._pool = None
