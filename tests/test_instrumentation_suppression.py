@@ -14,11 +14,16 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from docket import Docket, Worker
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope="module")
 def tracer_provider() -> TracerProvider:
-    """Sets up a "real" TracerProvider so that spans are recorded for the tests"""
-    provider = TracerProvider()
-    trace.set_tracer_provider(provider)
+    """Sets up a TracerProvider for these tests.
+
+    Uses the existing provider if one is set, otherwise creates a new one.
+    """
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        provider = TracerProvider()
+        trace.set_tracer_provider(provider)
     return provider
 
 
