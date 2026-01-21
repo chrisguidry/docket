@@ -16,7 +16,7 @@ from ._contextual import (
     TaskKey,
     TaskLogger,
 )
-from ._depends import (
+from ._functional import (
     Depends,
     DependencyFunction,
     Shared,
@@ -45,7 +45,7 @@ __all__ = [
     "TaskArgument",
     "TaskKey",
     "TaskLogger",
-    # Depends and Shared
+    # Functional dependencies
     "Depends",
     "DependencyFunction",
     "Shared",

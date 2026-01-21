@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Generator
 
 import pytest
 
@@ -165,7 +165,10 @@ async def test_shared_depending_on_depends(docket: Docket, worker: Worker):
     await worker.run_until_finished()
 
     assert call_count == 1
-    assert results == ["pool(postgres://localhost/db1)", "pool(postgres://localhost/db1)"]
+    assert results == [
+        "pool(postgres://localhost/db1)",
+        "pool(postgres://localhost/db1)",
+    ]
 
 
 async def test_shared_can_access_current_docket_and_worker(docket: Docket):
@@ -298,8 +301,7 @@ async def test_shared_cleanup_on_init_failure(
         raise ValueError("🦆 QUACK! The rubber duck factory exploded! 🦆")
         yield  # pragma: no cover
 
-    async def task_using_bad(b: str = Shared(create_bad)):
-        ...
+    async def task_using_bad(b: str = Shared(create_bad)): ...
 
     with caplog.at_level(logging.ERROR):
         async with Worker(
@@ -315,3 +317,79 @@ async def test_shared_cleanup_on_init_failure(
 
     # The error should appear in logs so operators can diagnose the issue
     assert "rubber duck factory exploded" in caplog.text
+
+
+async def test_shared_async_function_factory(docket: Docket, worker: Worker):
+    """Shared can use an async function that returns a value (not a context manager)."""
+    init_count = 0
+
+    async def load_config() -> dict[str, str]:
+        nonlocal init_count
+        init_count += 1
+        return {"api_url": "https://api.example.com", "version": f"v{init_count}"}
+
+    results: list[dict[str, str]] = []
+
+    async def task_using_config(config: dict[str, str] = Shared(load_config)):
+        results.append(config)
+
+    docket.register(task_using_config)
+
+    await docket.add(task_using_config)()
+    await docket.add(task_using_config)()
+    await worker.run_until_finished()
+
+    assert init_count == 1
+    assert len(results) == 2
+    assert results[0] is results[1]
+    assert results[0]["version"] == "v1"
+
+
+async def test_shared_sync_function_factory(docket: Docket, worker: Worker):
+    """Shared can use a sync function that returns a value (not a context manager)."""
+    init_count = 0
+
+    def create_config() -> dict[str, str]:
+        nonlocal init_count
+        init_count += 1
+        return {"db_host": "localhost", "init": str(init_count)}
+
+    results: list[dict[str, str]] = []
+
+    async def task_using_config(config: dict[str, str] = Shared(create_config)):
+        results.append(config)
+
+    docket.register(task_using_config)
+
+    await docket.add(task_using_config)()
+    await docket.add(task_using_config)()
+    await worker.run_until_finished()
+
+    assert init_count == 1
+    assert len(results) == 2
+    assert results[0] is results[1]
+    assert results[0]["init"] == "1"
+
+
+async def test_shared_sync_context_manager_factory(docket: Docket):
+    """Shared can use a sync context manager with cleanup."""
+    stages: list[str] = []
+
+    @contextmanager
+    def create_resource() -> Generator[str, None, None]:
+        stages.append("startup")
+        yield "sync-resource"
+        stages.append("shutdown")
+
+    async def task_using_resource(r: str = Shared(create_resource)):
+        stages.append(f"task-ran:{r}")
+
+    async with Worker(
+        docket, minimum_check_interval=timedelta(milliseconds=5)
+    ) as worker:
+        docket.register(task_using_resource)
+        await docket.add(task_using_resource)()
+        await worker.run_until_finished()
+        assert stages == ["startup", "task-ran:sync-resource"]
+
+    assert stages == ["startup", "task-ran:sync-resource", "shutdown"]

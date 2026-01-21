@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Counter, TypeVar
 
 from ._base import Dependency
 from ._contextual import _TaskArgument
-from ._depends import _Depends, get_dependency_parameters
+from ._functional import _Depends, get_dependency_parameters
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution, TaskFunction

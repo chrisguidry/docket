@@ -8,7 +8,7 @@ import pytest
 
 from docket import CurrentDocket, Docket, Worker
 from docket.dependencies import Depends, Dependency, resolved_dependencies
-from docket.dependencies._depends import _Depends
+from docket.dependencies._functional import _Depends  # pyright: ignore[reportPrivateUsage]
 from docket.execution import Execution
 
 

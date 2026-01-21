@@ -1,4 +1,4 @@
-"""Core Depends and Shared dependency resolution."""
+"""Functional dependencies: Depends and Shared."""
 
 from __future__ import annotations
 
@@ -220,12 +220,24 @@ class _Shared(Dependency, Generic[R]):
             if self.factory in resolved:  # pragma: no cover
                 return resolved[self.factory]
 
-            # Enter the context and store the value
             stack = SharedContext.stack.get()
-            context_manager = self.factory(**arguments)
-            value = await stack.enter_async_context(context_manager)
-            resolved[self.factory] = value
-            return value
+            raw_value: R | Awaitable[R] | ContextManager[R] | AsyncContextManager[R] = (
+                self.factory(**arguments)
+            )
+
+            # Handle different return types from the factory function
+            resolved_value: R
+            if isinstance(raw_value, AsyncContextManager):
+                resolved_value = await stack.enter_async_context(raw_value)
+            elif isinstance(raw_value, ContextManager):
+                resolved_value = stack.enter_context(raw_value)
+            elif inspect.iscoroutine(raw_value) or isinstance(raw_value, Awaitable):
+                resolved_value = await cast(Awaitable[R], raw_value)
+            else:
+                resolved_value = cast(R, raw_value)
+
+            resolved[self.factory] = resolved_value
+            return resolved_value
 
     async def _resolve_parameters(self) -> dict[str, Any]:
         """Resolve parameters for the factory function."""
@@ -288,14 +300,19 @@ class SharedContext:
 def Shared(factory: DependencyFunction[R]) -> R:
     """Declare a worker-scoped dependency shared across all tasks.
 
-    The factory must be an async context manager (decorated with @asynccontextmanager).
-    It initializes once when first needed and the yielded value is shared by all tasks
-    for the lifetime of the worker.
+    The factory initializes once when first needed and the returned/yielded value is
+    shared by all tasks for the lifetime of the worker. Factories may be:
+    - Synchronous functions returning a value
+    - Asynchronous functions returning a value (awaitable)
+    - Synchronous context managers (using @contextmanager)
+    - Asynchronous context managers (using @asynccontextmanager)
+
+    Context managers are useful when cleanup is needed at worker shutdown.
 
     Identity is the factory function - multiple Shared(same_factory) calls anywhere
     in the codebase resolve to the same cached value.
 
-    Example:
+    Example with async context manager (for resources needing cleanup):
 
     ```python
     from contextlib import asynccontextmanager
@@ -312,11 +329,18 @@ def Shared(factory: DependencyFunction[R]) -> R:
     async def my_task(pool: Pool = Shared(create_db_pool)):
         async with pool.connection() as conn:
             await conn.execute("SELECT ...")
+    ```
+
+    Example with async function (for simple shared values):
+
+    ```python
+    async def load_config() -> Config:
+        return await fetch_config_from_remote()
 
     @task
-    async def other_task(pool: Pool = Shared(create_db_pool)):
-        # Same pool instance as my_task!
-        ...
+    async def my_task(config: Config = Shared(load_config)):
+        # Same config instance across all tasks
+        print(config.api_url)
     ```
 
     Shared dependencies can depend on other Shared dependencies, Depends, and
