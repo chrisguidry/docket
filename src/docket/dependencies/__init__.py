@@ -4,6 +4,8 @@ This module provides the dependency injection primitives used to inject
 resources, context, and behavior into task functions.
 """
 
+from __future__ import annotations
+
 from ._base import Dependency
 from ._concurrency import ConcurrencyLimit
 from ._context import (

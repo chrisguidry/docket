@@ -1,5 +1,7 @@
 """Tests for Shared (worker-scoped) dependencies."""
 
+from __future__ import annotations
+
 import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
