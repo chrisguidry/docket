@@ -7,12 +7,8 @@ from datetime import datetime, timezone
 import pytest
 
 from docket import CurrentDocket, Docket, Worker
-from docket.dependencies import (
-    Depends,
-    Dependency,
-    _Depends,  # type: ignore[attr-defined]
-    resolved_dependencies,
-)
+from docket.dependencies import Depends, Dependency, resolved_dependencies
+from docket.dependencies._depends import _Depends
 from docket.execution import Execution
 
 

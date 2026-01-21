@@ -1,4 +1,4 @@
-"""Context dependencies for accessing current Docket, Worker, Execution, etc."""
+"""Contextual dependencies for accessing current Docket, Worker, Execution, etc."""
 
 from __future__ import annotations
 

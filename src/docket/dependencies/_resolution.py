@@ -6,7 +6,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Counter, TypeVar
 
 from ._base import Dependency
-from ._context import _TaskArgument
+from ._contextual import _TaskArgument
 from ._depends import _Depends, get_dependency_parameters
 
 if TYPE_CHECKING:  # pragma: no cover

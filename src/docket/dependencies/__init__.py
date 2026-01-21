@@ -8,24 +8,19 @@ from __future__ import annotations
 
 from ._base import Dependency
 from ._concurrency import ConcurrencyLimit
-from ._context import (
+from ._contextual import (
     CurrentDocket,
     CurrentExecution,
     CurrentWorker,
     TaskArgument,
     TaskKey,
     TaskLogger,
-    _CurrentDocket,
-    _CurrentExecution,
-    _CurrentWorker,
-    _TaskArgument,
-    _TaskKey,
-    _TaskLogger,
 )
 from ._depends import (
     Depends,
     DependencyFunction,
-    _Depends,
+    Shared,
+    SharedContext,
     get_dependency_parameters,
 )
 from ._perpetual import Perpetual
@@ -38,36 +33,24 @@ from ._resolution import (
     validate_dependencies,
 )
 from ._retry import ExponentialRetry, ForcedRetry, Retry
-from ._shared import Shared, SharedContext, SharedFactory, _Shared
 from ._timeout import Timeout
 
 __all__ = [
     # Base
     "Dependency",
-    # Context dependencies
+    # Contextual dependencies
     "CurrentDocket",
     "CurrentExecution",
     "CurrentWorker",
     "TaskArgument",
     "TaskKey",
     "TaskLogger",
-    # Internal context classes (used in some tests)
-    "_CurrentDocket",
-    "_CurrentExecution",
-    "_CurrentWorker",
-    "_TaskArgument",
-    "_TaskKey",
-    "_TaskLogger",
-    # Depends
+    # Depends and Shared
     "Depends",
     "DependencyFunction",
-    "_Depends",
-    "get_dependency_parameters",
-    # Shared
     "Shared",
     "SharedContext",
-    "SharedFactory",
-    "_Shared",
+    "get_dependency_parameters",
     # Retry
     "ForcedRetry",
     "Retry",
