@@ -354,7 +354,8 @@ class _CustomCollector:
                     metric_family_id_metric_family[metric_family_id].add_metric(
                         labels=label_values,
                         buckets=_convert_buckets(
-                            value["bucket_counts"], value["explicit_bounds"]  # type: ignore[index]
+                            value["bucket_counts"],
+                            value["explicit_bounds"],  # type: ignore[index]
                         ),
                         sum_value=value["sum"],  # type: ignore[index]
                     )
