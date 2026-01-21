@@ -25,10 +25,11 @@ from typing import (
 
 import cloudpickle
 import redis.exceptions
-from opentelemetry.instrumentation.utils import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.asyncio.cluster import RedisCluster
 from typing_extensions import Self
+
+from ._telemetry import suppress_instrumentation
 
 if TYPE_CHECKING:
     from .execution import Execution

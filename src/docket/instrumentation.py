@@ -3,10 +3,8 @@ from threading import Thread
 from typing import Generator, cast
 
 from opentelemetry import metrics
-from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.metrics import set_meter_provider
 from opentelemetry.propagators.textmap import Getter, Setter
-from opentelemetry.sdk.metrics import MeterProvider
 
 meter: metrics.Meter = metrics.get_meter("docket")
 
@@ -195,6 +193,16 @@ def metrics_server(
 
     import sys
     from typing import Any
+
+    try:
+        from opentelemetry.sdk.metrics import MeterProvider
+    except ImportError as e:
+        raise ImportError(
+            "Metrics endpoint requires opentelemetry-sdk. "
+            "Install with: pip install pydocket[metrics]"
+        ) from e
+
+    from ._prometheus_exporter import PrometheusMetricReader
 
     # wsgiref.types was added in Python 3.11
     if sys.version_info >= (3, 11):  # pragma: no cover

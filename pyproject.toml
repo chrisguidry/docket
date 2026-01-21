@@ -27,8 +27,6 @@ dependencies = [
     "exceptiongroup>=1.2.0; python_version < '3.11'",
     "fakeredis[lua]>=2.32.1",
     "opentelemetry-api>=1.33.0",
-    "opentelemetry-exporter-prometheus>=0.60b0",
-    "opentelemetry-instrumentation>=0.60b0",
     "prometheus-client>=0.21.1",
     "py-key-value-aio[memory,redis]>=0.3.0",
     "python-json-logger>=2.0.7",
@@ -36,6 +34,11 @@ dependencies = [
     "rich>=13.9.4",
     "typer>=0.15.1",
     "typing_extensions>=4.12.0",
+]
+
+[project.optional-dependencies]
+metrics = [
+    "opentelemetry-sdk>=1.33.0",
 ]
 
 [dependency-groups]
@@ -53,7 +56,7 @@ dev = [
     "opentelemetry-instrumentation-redis>=0.60b0",
     "opentelemetry-sdk>=1.33.0",
     "prek>=0.2.13",
-    "pyright>=1.1.398",
+    "pyright>=1.1.408",
     "pytest>=8.3.4",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
@@ -120,6 +123,8 @@ omit = [
     "src/docket/__main__.py",
     # Vendored uuid7 implementation
     "src/docket/_uuid7.py",
+    # Vendored OpenTelemetry prometheus exporter
+    "src/docket/_prometheus_exporter.py",
     # Cluster-only code paths not exercised in standalone tests
     "src/docket/_result_store.py",
     # Fixture branches vary by Redis config (cluster, ACL, memory, valkey)

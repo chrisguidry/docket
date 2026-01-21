@@ -26,4 +26,4 @@ max_lines = 860
 
 [[rules]]
 path = "src/docket/strikelist.py"
-max_lines = 618
+max_lines = 619
