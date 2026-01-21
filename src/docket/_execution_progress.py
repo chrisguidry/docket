@@ -65,7 +65,7 @@ class ExecutionProgress:
         if not self.docket.enable_internal_instrumentation:
             with suppress_instrumentation():
                 yield
-        else:
+        else:  # pragma: no cover
             yield
 
     @classmethod

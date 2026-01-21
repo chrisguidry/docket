@@ -181,7 +181,7 @@ class Execution:
         if not self._docket.enable_internal_instrumentation:
             with suppress_instrumentation():
                 yield
-        else:
+        else:  # pragma: no cover
             yield
 
     def as_message(self) -> Message:
