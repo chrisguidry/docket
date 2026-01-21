@@ -1,9 +1,11 @@
 """Progress tracking for task executions."""
 
 import json
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Generator, Literal, TypedDict
 
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from typing_extensions import Self
 
 if TYPE_CHECKING:
@@ -56,6 +58,15 @@ class ExecutionProgress:
         self.total: int = 1
         self.message: str | None = None
         self.updated_at: datetime | None = None
+
+    @contextmanager
+    def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
+        """Suppress OTel auto-instrumentation for internal Redis operations."""
+        if not self.docket.enable_internal_instrumentation:
+            with suppress_instrumentation():
+                yield
+        else:  # pragma: no cover
+            yield
 
     @classmethod
     async def create(cls, docket: "Docket", key: str) -> Self:
@@ -149,30 +160,34 @@ class ExecutionProgress:
         Updates self.current, self.total, self.message, and self.updated_at
         with values from Redis. Sets attributes to None if no data exists.
         """
-        async with self.docket.redis() as redis:
-            data = await redis.hgetall(self._redis_key)
-            if data:
-                self.current = int(data.get(b"current", b"0"))
-                self.total = int(data.get(b"total", b"100"))
-                self.message = data[b"message"].decode() if b"message" in data else None
-                self.updated_at = (
-                    datetime.fromisoformat(data[b"updated_at"].decode())
-                    if b"updated_at" in data
-                    else None
-                )
-            else:
-                self.current = None
-                self.total = 100
-                self.message = None
-                self.updated_at = None
+        with self._maybe_suppress_instrumentation():
+            async with self.docket.redis() as redis:
+                data = await redis.hgetall(self._redis_key)
+                if data:
+                    self.current = int(data.get(b"current", b"0"))
+                    self.total = int(data.get(b"total", b"100"))
+                    self.message = (
+                        data[b"message"].decode() if b"message" in data else None
+                    )
+                    self.updated_at = (
+                        datetime.fromisoformat(data[b"updated_at"].decode())
+                        if b"updated_at" in data
+                        else None
+                    )
+                else:
+                    self.current = None
+                    self.total = 100
+                    self.message = None
+                    self.updated_at = None
 
     async def delete(self) -> None:
         """Delete the progress data from Redis.
 
         Called internally when task execution completes.
         """
-        async with self.docket.redis() as redis:
-            await redis.delete(self._redis_key)
+        with self._maybe_suppress_instrumentation():
+            async with self.docket.redis() as redis:
+                await redis.delete(self._redis_key)
         # Reset instance attributes
         self.current = None
         self.total = 100

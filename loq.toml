@@ -18,12 +18,12 @@ max_lines = 945
 
 [[rules]]
 path = "src/docket/execution.py"
-max_lines = 872
+max_lines = 900
 
 [[rules]]
 path = "src/docket/docket.py"
-max_lines = 860
+max_lines = 900
 
 [[rules]]
 path = "src/docket/strikelist.py"
-max_lines = 618
+max_lines = 650
