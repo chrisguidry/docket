@@ -4,6 +4,7 @@ import enum
 import inspect
 import json
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import (
     TYPE_CHECKING,
@@ -11,6 +12,7 @@ from typing import (
     AsyncGenerator,
     Awaitable,
     Callable,
+    Generator,
     Mapping,
     Protocol,
     cast,
@@ -19,6 +21,7 @@ from typing import (
 import cloudpickle
 import opentelemetry.context
 from opentelemetry import propagate, trace
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from typing_extensions import Self
 
 from ._execution_progress import ExecutionProgress, ProgressEvent, StateEvent
@@ -171,6 +174,15 @@ class Execution:
     def redelivered(self) -> bool:
         """Whether this message was redelivered."""
         return self._redelivered
+
+    @contextmanager
+    def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
+        """Suppress OTel auto-instrumentation for internal Redis operations."""
+        if not self._docket.enable_internal_instrumentation:
+            with suppress_instrumentation():
+                yield
+        else:
+            yield
 
     def as_message(self) -> Message:
         return {
@@ -497,52 +509,53 @@ class Execution:
         started_at = datetime.now(timezone.utc)
         started_at_iso = started_at.isoformat()
 
-        async with self.docket.redis() as redis:
-            claim_script = redis.register_script(
-                # KEYS: runs_key, progress_key, known_key, stream_id_key
-                # ARGV: worker, started_at_iso
-                """
-                local runs_key = KEYS[1]
-                local progress_key = KEYS[2]
-                -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
-                local known_key = KEYS[3]
-                local stream_id_key = KEYS[4]
+        with self._maybe_suppress_instrumentation():
+            async with self.docket.redis() as redis:
+                claim_script = redis.register_script(
+                    # KEYS: runs_key, progress_key, known_key, stream_id_key
+                    # ARGV: worker, started_at_iso
+                    """
+                    local runs_key = KEYS[1]
+                    local progress_key = KEYS[2]
+                    -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
+                    local known_key = KEYS[3]
+                    local stream_id_key = KEYS[4]
 
-                local worker = ARGV[1]
-                local started_at = ARGV[2]
+                    local worker = ARGV[1]
+                    local started_at = ARGV[2]
 
-                -- Update execution state to running
-                redis.call('HSET', runs_key,
-                    'state', 'running',
-                    'worker', worker,
-                    'started_at', started_at
+                    -- Update execution state to running
+                    redis.call('HSET', runs_key,
+                        'state', 'running',
+                        'worker', worker,
+                        'started_at', started_at
+                    )
+
+                    -- Initialize progress tracking
+                    redis.call('HSET', progress_key,
+                        'current', '0',
+                        'total', '100'
+                    )
+
+                    -- Delete known/stream_id fields to allow task rescheduling
+                    redis.call('HDEL', runs_key, 'known', 'stream_id')
+
+                    -- TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
+                    redis.call('DEL', known_key, stream_id_key)
+
+                    return 'OK'
+                    """
                 )
 
-                -- Initialize progress tracking
-                redis.call('HSET', progress_key,
-                    'current', '0',
-                    'total', '100'
+                await claim_script(
+                    keys=[
+                        self._redis_key,  # runs_key
+                        self.progress._redis_key,  # progress_key
+                        self.docket.known_task_key(self.key),  # legacy known_key
+                        self.docket.stream_id_key(self.key),  # legacy stream_id_key
+                    ],
+                    args=[worker, started_at_iso],
                 )
-
-                -- Delete known/stream_id fields to allow task rescheduling
-                redis.call('HDEL', runs_key, 'known', 'stream_id')
-
-                -- TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
-                redis.call('DEL', known_key, stream_id_key)
-
-                return 'OK'
-                """
-            )
-
-            await claim_script(
-                keys=[
-                    self._redis_key,  # runs_key
-                    self.progress._redis_key,  # progress_key
-                    self.docket.known_task_key(self.key),  # legacy known_key
-                    self.docket.stream_id_key(self.key),  # legacy stream_id_key
-                ],
-                args=[worker, started_at_iso],
-            )
 
         # Update local state
         self.state = ExecutionState.RUNNING
@@ -588,13 +601,14 @@ class Execution:
         if result_key is not None:
             mapping["result_key"] = result_key
 
-        async with self.docket.redis() as redis:
-            await redis.hset(self._redis_key, mapping=mapping)
-            if self.docket.execution_ttl:
-                ttl_seconds = int(self.docket.execution_ttl.total_seconds())
-                await redis.expire(self._redis_key, ttl_seconds)
-            else:
-                await redis.delete(self._redis_key)
+        with self._maybe_suppress_instrumentation():
+            async with self.docket.redis() as redis:
+                await redis.hset(self._redis_key, mapping=mapping)
+                if self.docket.execution_ttl:
+                    ttl_seconds = int(self.docket.execution_ttl.total_seconds())
+                    await redis.expire(self._redis_key, ttl_seconds)
+                else:
+                    await redis.delete(self._redis_key)
 
         self.state = state
         if result_key is not None:
@@ -733,40 +747,43 @@ class Execution:
         Updates self.state, execution metadata, and progress data from Redis.
         Sets attributes to None if no data exists.
         """
-        async with self.docket.redis() as redis:
-            data = await redis.hgetall(self._redis_key)
-            if data:
-                # Update state
-                state_value = data.get(b"state")
-                if state_value:
-                    if isinstance(state_value, bytes):
-                        state_value = state_value.decode()
-                    self.state = ExecutionState(state_value)
+        with self._maybe_suppress_instrumentation():
+            async with self.docket.redis() as redis:
+                data = await redis.hgetall(self._redis_key)
+                if data:
+                    # Update state
+                    state_value = data.get(b"state")
+                    if state_value:
+                        if isinstance(state_value, bytes):
+                            state_value = state_value.decode()
+                        self.state = ExecutionState(state_value)
 
-                # Update metadata
-                self.worker = data[b"worker"].decode() if b"worker" in data else None
-                self.started_at = (
-                    datetime.fromisoformat(data[b"started_at"].decode())
-                    if b"started_at" in data
-                    else None
-                )
-                self.completed_at = (
-                    datetime.fromisoformat(data[b"completed_at"].decode())
-                    if b"completed_at" in data
-                    else None
-                )
-                self.error = data[b"error"].decode() if b"error" in data else None
-                self.result_key = (
-                    data[b"result_key"].decode() if b"result_key" in data else None
-                )
-            else:
-                # No data exists - reset to defaults
-                self.state = ExecutionState.SCHEDULED
-                self.worker = None
-                self.started_at = None
-                self.completed_at = None
-                self.error = None
-                self.result_key = None
+                    # Update metadata
+                    self.worker = (
+                        data[b"worker"].decode() if b"worker" in data else None
+                    )
+                    self.started_at = (
+                        datetime.fromisoformat(data[b"started_at"].decode())
+                        if b"started_at" in data
+                        else None
+                    )
+                    self.completed_at = (
+                        datetime.fromisoformat(data[b"completed_at"].decode())
+                        if b"completed_at" in data
+                        else None
+                    )
+                    self.error = data[b"error"].decode() if b"error" in data else None
+                    self.result_key = (
+                        data[b"result_key"].decode() if b"result_key" in data else None
+                    )
+                else:
+                    # No data exists - reset to defaults
+                    self.state = ExecutionState.SCHEDULED
+                    self.worker = None
+                    self.started_at = None
+                    self.completed_at = None
+                    self.error = None
+                    self.result_key = None
 
         # Sync progress data
         await self.progress.sync()
