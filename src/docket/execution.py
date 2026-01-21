@@ -21,7 +21,7 @@ from typing import (
 import cloudpickle
 import opentelemetry.context
 from opentelemetry import propagate, trace
-from opentelemetry.instrumentation.utils import suppress_instrumentation
+from ._telemetry import suppress_instrumentation
 from typing_extensions import Self
 
 from ._execution_progress import ExecutionProgress, ProgressEvent, StateEvent

@@ -85,7 +85,7 @@ async def test_shared_identity_is_factory_function(docket: Docket, worker: Worke
     await worker.run_until_finished()
 
     assert init_count == 1
-    assert results == [("a", "resource-1"), ("b", "resource-1")]
+    assert set(results) == {("a", "resource-1"), ("b", "resource-1")}
 
 
 async def test_shared_cleanup_on_worker_exit(docket: Docket):

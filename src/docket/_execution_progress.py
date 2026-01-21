@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Generator, Literal, TypedDict
 
-from opentelemetry.instrumentation.utils import suppress_instrumentation
+from ._telemetry import suppress_instrumentation
 from typing_extensions import Self
 
 if TYPE_CHECKING:

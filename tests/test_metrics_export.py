@@ -227,3 +227,24 @@ def test_healthcheck_server_returns_ok(healthcheck_port: int):
         assert response.status == 200
         assert response.headers["Content-Type"] == "text/plain"
         assert response.read().decode() == "OK"
+
+
+def test_metrics_server_raises_import_error_without_sdk(
+    monkeypatch: pytest.MonkeyPatch, metrics_port: int
+):
+    """Should raise ImportError with helpful message when SDK is not installed."""
+    import builtins
+    from typing import Any
+
+    original_import = builtins.__import__
+
+    def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "opentelemetry.sdk.metrics":
+            raise ImportError("No module named 'opentelemetry.sdk'")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", mock_import)
+
+    with pytest.raises(ImportError, match="pip install pydocket\\[metrics\\]"):
+        with metrics_server(port=metrics_port):
+            ...

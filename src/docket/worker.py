@@ -29,8 +29,9 @@ if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
 
 from opentelemetry import trace
-from opentelemetry.instrumentation.utils import suppress_instrumentation
 from opentelemetry.trace import Status, StatusCode, Tracer
+
+from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
 from typing_extensions import Self
