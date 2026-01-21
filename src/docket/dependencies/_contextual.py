@@ -155,4 +155,4 @@ def TaskLogger() -> logging.LoggerAdapter[logging.Logger]:
         logger.info("Hello, world!")
     ```
     """
-    return cast(logging.LoggerAdapter[logging.Logger], _TaskLogger())
+    return cast("logging.LoggerAdapter[logging.Logger]", _TaskLogger())
