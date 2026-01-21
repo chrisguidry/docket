@@ -36,6 +36,41 @@ DependencyFunction = Callable[
 ]
 
 
+class _FunctionalDependency(Dependency, Generic[R]):
+    """Base class for functional dependencies (Depends and Shared).
+
+    Functional dependencies wrap a factory function that returns (or yields) a value.
+    This base class provides the common factory storage and value resolution logic.
+    """
+
+    factory: DependencyFunction[R]
+
+    def __init__(self, factory: DependencyFunction[R]) -> None:
+        self.factory = factory
+
+    async def _resolve_factory_value(
+        self,
+        stack: AsyncExitStack,
+        raw_value: R | Awaitable[R] | ContextManager[R] | AsyncContextManager[R],
+    ) -> R:
+        """Resolve a DependencyFunction's return value to its final form.
+
+        Handles the four possible return types:
+        - AsyncContextManager: enters and returns yielded value
+        - ContextManager: enters and returns yielded value
+        - Awaitable: awaits and returns result
+        - Plain value: returns as-is
+        """
+        if isinstance(raw_value, AsyncContextManager):
+            return await stack.enter_async_context(raw_value)
+        elif isinstance(raw_value, ContextManager):
+            return stack.enter_context(raw_value)
+        elif inspect.iscoroutine(raw_value) or isinstance(raw_value, Awaitable):
+            return await cast(Awaitable[R], raw_value)
+        else:
+            return cast(R, raw_value)
+
+
 _parameter_cache: dict[
     TaskFunction | DependencyFunction[Any],
     dict[str, Dependency],
@@ -64,19 +99,13 @@ def get_dependency_parameters(
     return dependencies
 
 
-class _Depends(Dependency, Generic[R]):
-    dependency: DependencyFunction[R]
+class _Depends(_FunctionalDependency[R]):
+    """Task-scoped dependency resolved fresh for each task."""
 
-    cache: ContextVar[dict[DependencyFunction[Any], Any]] = ContextVar("cache")
-    stack: ContextVar[AsyncExitStack] = ContextVar("stack")
-
-    def __init__(
-        self,
-        dependency: Callable[
-            [], R | Awaitable[R] | ContextManager[R] | AsyncContextManager[R]
-        ],
-    ) -> None:
-        self.dependency = dependency
+    cache: ClassVar[ContextVar[dict[DependencyFunction[Any], Any]]] = ContextVar(
+        "cache"
+    )
+    stack: ClassVar[ContextVar[AsyncExitStack]] = ContextVar("stack")
 
     async def _resolve_parameters(
         self,
@@ -100,32 +129,15 @@ class _Depends(Dependency, Generic[R]):
     async def __aenter__(self) -> R:
         cache = self.cache.get()
 
-        if self.dependency in cache:
-            return cache[self.dependency]
+        if self.factory in cache:
+            return cache[self.factory]
 
         stack = self.stack.get()
-        arguments = await self._resolve_parameters(self.dependency)
+        arguments = await self._resolve_parameters(self.factory)
+        raw_value = self.factory(**arguments)
+        resolved_value = await self._resolve_factory_value(stack, raw_value)
 
-        raw_value: R | Awaitable[R] | ContextManager[R] | AsyncContextManager[R] = (
-            self.dependency(**arguments)
-        )
-
-        # Handle different return types from the dependency function
-        resolved_value: R
-        if isinstance(raw_value, AsyncContextManager):
-            # Async context manager: await enter_async_context
-            resolved_value = await stack.enter_async_context(raw_value)
-        elif isinstance(raw_value, ContextManager):
-            # Sync context manager: use enter_context (no await needed)
-            resolved_value = stack.enter_context(raw_value)
-        elif inspect.iscoroutine(raw_value) or isinstance(raw_value, Awaitable):
-            # Async function returning awaitable: await it
-            resolved_value = await cast(Awaitable[R], raw_value)
-        else:
-            # Sync function returning a value directly, use as-is
-            resolved_value = cast(R, raw_value)
-
-        cache[self.dependency] = resolved_value
+        cache[self.factory] = resolved_value
         return resolved_value
 
 
@@ -192,16 +204,13 @@ def Depends(dependency: DependencyFunction[R]) -> R:
     return cast(R, _Depends(dependency))
 
 
-class _Shared(Dependency, Generic[R]):
+class _Shared(_FunctionalDependency[R]):
     """Worker-scoped dependency resolved once and shared across all tasks.
 
     Unlike Depends (which resolves per-task), Shared dependencies initialize once
     at worker startup (or lazily on first use) and the same instance is provided
     to all tasks throughout the worker's lifetime.
     """
-
-    def __init__(self, factory: DependencyFunction[R]) -> None:
-        self.factory = factory
 
     async def __aenter__(self) -> R:
         resolved = SharedContext.resolved.get()
@@ -221,20 +230,8 @@ class _Shared(Dependency, Generic[R]):
                 return resolved[self.factory]
 
             stack = SharedContext.stack.get()
-            raw_value: R | Awaitable[R] | ContextManager[R] | AsyncContextManager[R] = (
-                self.factory(**arguments)
-            )
-
-            # Handle different return types from the factory function
-            resolved_value: R
-            if isinstance(raw_value, AsyncContextManager):
-                resolved_value = await stack.enter_async_context(raw_value)
-            elif isinstance(raw_value, ContextManager):
-                resolved_value = stack.enter_context(raw_value)
-            elif inspect.iscoroutine(raw_value) or isinstance(raw_value, Awaitable):
-                resolved_value = await cast(Awaitable[R], raw_value)
-            else:
-                resolved_value = cast(R, raw_value)
+            raw_value = self.factory(**arguments)
+            resolved_value = await self._resolve_factory_value(stack, raw_value)
 
             resolved[self.factory] = resolved_value
             return resolved_value
