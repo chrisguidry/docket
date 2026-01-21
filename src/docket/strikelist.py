@@ -223,7 +223,7 @@ class StrikeList:
         if not self.enable_internal_instrumentation:
             with suppress_instrumentation():
                 yield
-        else:
+        else:  # pragma: no cover
             yield
 
     async def __aenter__(self) -> Self:

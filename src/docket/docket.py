@@ -353,25 +353,33 @@ class Docket(DocketSnapshotMixin):
                 function_name=function_name,
             )
 
-            # Check if task is stricken before scheduling
-            if self.strike_list.is_stricken(execution):
-                logger.warning(
-                    "%r is stricken, skipping schedule of %r",
-                    execution.function_name,
-                    execution.key,
-                )
-                TASKS_STRICKEN.add(
-                    1,
-                    {
-                        **self.labels(),
-                        **execution.general_labels(),
-                        "docket.where": "docket",
-                    },
-                )
-                return execution
+            with tracer.start_as_current_span(
+                "docket.add",
+                attributes={
+                    **self.labels(),
+                    **execution.specific_labels(),
+                    "code.function.name": execution.function_name,
+                },
+            ):
+                # Check if task is stricken before scheduling
+                if self.strike_list.is_stricken(execution):
+                    logger.warning(
+                        "%r is stricken, skipping schedule of %r",
+                        execution.function_name,
+                        execution.key,
+                    )
+                    TASKS_STRICKEN.add(
+                        1,
+                        {
+                            **self.labels(),
+                            **execution.general_labels(),
+                            "docket.where": "docket",
+                        },
+                    )
+                    return execution
 
-            # Schedule atomically (includes state record write)
-            await execution.schedule(replace=False)
+                # Schedule atomically (includes state record write)
+                await execution.schedule(replace=False)
 
             TASKS_ADDED.add(1, {**self.labels(), **execution.general_labels()})
             TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
@@ -442,25 +450,33 @@ class Docket(DocketSnapshotMixin):
                 function_name=function_name,
             )
 
-            # Check if task is stricken before scheduling
-            if self.strike_list.is_stricken(execution):
-                logger.warning(
-                    "%r is stricken, skipping schedule of %r",
-                    execution.function_name,
-                    execution.key,
-                )
-                TASKS_STRICKEN.add(
-                    1,
-                    {
-                        **self.labels(),
-                        **execution.general_labels(),
-                        "docket.where": "docket",
-                    },
-                )
-                return execution
+            with tracer.start_as_current_span(
+                "docket.replace",
+                attributes={
+                    **self.labels(),
+                    **execution.specific_labels(),
+                    "code.function.name": execution.function_name,
+                },
+            ):
+                # Check if task is stricken before scheduling
+                if self.strike_list.is_stricken(execution):
+                    logger.warning(
+                        "%r is stricken, skipping schedule of %r",
+                        execution.function_name,
+                        execution.key,
+                    )
+                    TASKS_STRICKEN.add(
+                        1,
+                        {
+                            **self.labels(),
+                            **execution.general_labels(),
+                            "docket.where": "docket",
+                        },
+                    )
+                    return execution
 
-            # Schedule atomically (includes state record write)
-            await execution.schedule(replace=True)
+                # Schedule atomically (includes state record write)
+                await execution.schedule(replace=True)
 
             TASKS_REPLACED.add(1, {**self.labels(), **execution.general_labels()})
             TASKS_CANCELLED.add(1, {**self.labels(), **execution.general_labels()})
