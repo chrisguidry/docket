@@ -1151,6 +1151,20 @@ wheels = [
 ]
 
 [[package]]
+name = "opentelemetry-exporter-prometheus"
+version = "0.60b1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+    { name = "prometheus-client" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/14/39/7dafa6fff210737267bed35a8855b6ac7399b9e582b8cf1f25f842517012/opentelemetry_exporter_prometheus-0.60b1.tar.gz", hash = "sha256:a4011b46906323f71724649d301b4dc188aaa068852e814f4df38cc76eac616b", size = 14976, upload-time = "2025-12-11T13:32:42.944Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/0d/4be6bf5477a3eb3d917d2f17d3c0b6720cd6cb97898444a61d43cc983f5c/opentelemetry_exporter_prometheus-0.60b1-py3-none-any.whl", hash = "sha256:49f59178de4f4590e3cef0b8b95cf6e071aae70e1f060566df5546fad773b8fd", size = 13019, upload-time = "2025-12-11T13:32:23.974Z" },
+]
+
+[[package]]
 name = "opentelemetry-instrumentation"
 version = "0.60b1"
 source = { registry = "https://pypi.org/simple" }
@@ -1573,6 +1587,8 @@ dev = [
     { name = "mypy" },
     { name = "opentelemetry-distro" },
     { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-exporter-prometheus" },
+    { name = "opentelemetry-instrumentation" },
     { name = "opentelemetry-instrumentation-logging" },
     { name = "opentelemetry-instrumentation-redis" },
     { name = "opentelemetry-sdk" },
@@ -1628,6 +1644,8 @@ dev = [
     { name = "mypy", specifier = ">=1.14.1" },
     { name = "opentelemetry-distro", specifier = ">=0.60b0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.33.0" },
+    { name = "opentelemetry-exporter-prometheus", specifier = ">=0.60b0" },
+    { name = "opentelemetry-instrumentation", specifier = ">=0.60b0" },
     { name = "opentelemetry-instrumentation-logging", specifier = ">=0.60b0" },
     { name = "opentelemetry-instrumentation-redis", specifier = ">=0.60b0" },
     { name = "opentelemetry-sdk", specifier = ">=1.33.0" },
