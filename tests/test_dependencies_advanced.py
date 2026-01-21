@@ -7,12 +7,8 @@ from datetime import datetime, timezone
 import pytest
 
 from docket import CurrentDocket, Docket, Worker
-from docket.dependencies import (
-    Depends,
-    Dependency,
-    _Depends,  # type: ignore[attr-defined]
-    resolved_dependencies,
-)
+from docket.dependencies import Depends, Dependency, resolved_dependencies
+from docket.dependencies._functional import _Depends  # pyright: ignore[reportPrivateUsage]
 from docket.execution import Execution
 
 
@@ -240,7 +236,11 @@ async def test_contextvar_isolation_between_tasks(docket: Docket, worker: Worker
 
 
 async def test_contextvar_cleanup_after_task(docket: Docket, worker: Worker):
-    """Contextvars should be reset after task execution completes"""
+    """Task-scoped contextvars are reset after task execution completes.
+
+    Worker-scoped contextvars (Dependency.docket, Dependency.worker) remain
+    set for the entire worker lifetime to support Shared dependencies.
+    """
     captured_stack = None
     captured_cache = None
 
@@ -253,8 +253,7 @@ async def test_contextvar_cleanup_after_task(docket: Docket, worker: Worker):
     await docket.add(capture_task)()
     await worker.run_until_finished()
 
-    # After the task completes, the contextvars should be reset
-    # Attempting to get them should raise LookupError
+    # Task-scoped contextvars should be reset after the task completes
     with pytest.raises(LookupError):
         _Depends.stack.get()
 
@@ -264,11 +263,10 @@ async def test_contextvar_cleanup_after_task(docket: Docket, worker: Worker):
     with pytest.raises(LookupError):
         Dependency.execution.get()
 
-    with pytest.raises(LookupError):
-        Dependency.worker.get()
-
-    with pytest.raises(LookupError):
-        Dependency.docket.get()
+    # Worker-scoped contextvars (docket, worker) remain set for the worker's
+    # lifetime to support Shared dependency initialization
+    assert Dependency.docket.get() is docket
+    assert Dependency.worker.get() is worker
 
 
 async def test_dependency_cache_isolated_between_tasks(docket: Docket, worker: Worker):

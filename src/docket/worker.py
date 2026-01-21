@@ -42,6 +42,7 @@ from .dependencies import (
     FailedDependency,
     Perpetual,
     Retry,
+    SharedContext,
     TaskLogger,
     Timeout,
     get_single_dependency_of_type,
@@ -219,6 +220,11 @@ class Worker:
         self._worker_done.set()  # Initially done (not running)
         # Signaled when cancellation listener is subscribed and ready
         self._cancellation_ready = asyncio.Event()
+
+        # Set up Shared dependency infrastructure
+        self._shared_context = SharedContext(self.docket, self)
+        await self._shared_context.__aenter__()
+
         return self
 
     async def __aexit__(
@@ -242,6 +248,10 @@ class Worker:
         del self._worker_stopping
         del self._worker_done
         del self._cancellation_ready
+
+        # Clean up Shared dependencies (closes context managers in reverse order)
+        await self._shared_context.__aexit__(exc_type, exc_value, traceback)
+        del self._shared_context
 
     def labels(self) -> Mapping[str, str]:
         return {
