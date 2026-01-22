@@ -8,7 +8,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from ._base import Dependency
+from ._base import AdmissionBlocked, Dependency
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +28,16 @@ LEASE_RENEWAL_FACTOR = 4
 MINIMUM_TTL_SECONDS = 1
 
 
-class AdmissionBlocked(Exception):
-    """Raised when a task cannot start due to admission control (e.g., concurrency limits)."""
+class ConcurrencyBlocked(AdmissionBlocked):
+    """Raised when a task cannot start due to concurrency limits."""
 
-    def __init__(self, execution: Execution):
-        self.execution = execution
-        super().__init__(f"Task {execution.key} blocked by admission control")
-
-
-# Backward compatibility alias
-ConcurrencyBlocked = AdmissionBlocked
+    def __init__(
+        self, execution: Execution, concurrency_key: str, max_concurrent: int
+    ):
+        self.concurrency_key = concurrency_key
+        self.max_concurrent = max_concurrent
+        reason = f"concurrency limit ({max_concurrent} max) on {concurrency_key}"
+        super().__init__(execution, reason=reason)
 
 
 class ConcurrencyLimit(Dependency):
@@ -132,7 +132,9 @@ class ConcurrencyLimit(Dependency):
                 redis, execution.redelivered, worker.redelivery_timeout
             )
             if not acquired:
-                raise AdmissionBlocked(execution)
+                raise ConcurrencyBlocked(
+                    execution, concurrency_key, self.max_concurrent
+                )
 
         # Spawn background task for lease renewal
         limit._renewal_task = asyncio.create_task(
