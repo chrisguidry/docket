@@ -52,8 +52,6 @@ __all__ = [
     "DependencyFunction",
     "Shared",
     "SharedContext",
-    "_Depends",
-    "_parameter_cache",
     "get_dependency_parameters",
     # Retry
     "ForcedRetry",
@@ -72,4 +70,7 @@ __all__ = [
     "get_single_dependency_parameter_of_type",
     "resolved_dependencies",
     "validate_dependencies",
+    # fastmcp uses these for its DI integration; do not remove
+    "_Depends",
+    "_parameter_cache",
 ]
