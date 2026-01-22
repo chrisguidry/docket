@@ -282,3 +282,32 @@ async def test_docket_aexit_handles_result_storage_close_error(
 
     # Clean up - call original to close resources
     await original_aexit(None, None, None)
+
+
+async def test_redis_connection_client_raises_when_not_connected():
+    """RedisConnection.client() should raise RuntimeError when not connected."""
+    connection = RedisConnection("memory://")
+    # Don't call __aenter__
+
+    with pytest.raises(RuntimeError, match="RedisConnection not connected"):
+        async with connection.client():
+            pass
+
+
+async def test_redis_connection_pubsub_raises_when_not_connected():
+    """RedisConnection.pubsub() should raise RuntimeError when not connected."""
+    connection = RedisConnection("memory://")
+    # Don't call __aenter__
+
+    with pytest.raises(RuntimeError, match="RedisConnection not connected"):
+        async with connection.pubsub():
+            pass
+
+
+async def test_redis_connection_publish_raises_when_not_connected():
+    """RedisConnection.publish() should raise RuntimeError when not connected."""
+    connection = RedisConnection("memory://")
+    # Don't call __aenter__
+
+    with pytest.raises(RuntimeError, match="RedisConnection not connected"):
+        await connection.publish("channel", "message")

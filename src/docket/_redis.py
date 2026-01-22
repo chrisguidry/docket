@@ -105,21 +105,27 @@ class RedisConnection:
             if self._node_pool is not None:
                 try:
                     await asyncio.shield(self._node_pool.aclose())
-                except (Exception, asyncio.CancelledError):
+                except asyncio.CancelledError:
+                    logger.debug("Node pool close interrupted by cancellation")
+                except Exception:
                     logger.warning("Failed to close node pool", exc_info=True)
                 finally:
                     self._node_pool = None
             # Then close cluster client
             try:
                 await asyncio.shield(self._cluster_client.aclose())
-            except (Exception, asyncio.CancelledError):
+            except asyncio.CancelledError:
+                logger.debug("Cluster client close interrupted by cancellation")
+            except Exception:
                 logger.warning("Failed to close cluster client", exc_info=True)
             finally:
                 self._cluster_client = None
         elif self._connection_pool is not None:
             try:
                 await asyncio.shield(self._connection_pool.aclose())
-            except (Exception, asyncio.CancelledError):  # pragma: no cover
+            except asyncio.CancelledError:  # pragma: no cover
+                logger.debug("Connection pool close interrupted by cancellation")
+            except Exception:  # pragma: no cover
                 logger.warning("Failed to close connection pool", exc_info=True)
             finally:
                 self._connection_pool = None
@@ -272,6 +278,11 @@ class RedisConnection:
         if self._cluster_client is not None:  # pragma: no cover
             yield self._cluster_client
         else:
+            if self._connection_pool is None:
+                raise RuntimeError(
+                    "RedisConnection not connected. Use 'async with' or call "
+                    "__aenter__() before accessing the client."
+                )
             async with Redis(connection_pool=self._connection_pool) as r:
                 yield r
 
@@ -282,6 +293,11 @@ class RedisConnection:
             async with self._cluster_pubsub() as ps:
                 yield ps
         else:
+            if self._connection_pool is None:
+                raise RuntimeError(
+                    "RedisConnection not connected. Use 'async with' or call "
+                    "__aenter__() before accessing pubsub."
+                )
             async with Redis(connection_pool=self._connection_pool) as r:
                 async with r.pubsub() as pubsub:
                     yield pubsub
@@ -292,6 +308,11 @@ class RedisConnection:
             async with Redis(connection_pool=self._node_pool) as r:
                 return await r.publish(channel, message)
         else:
+            if self._connection_pool is None:
+                raise RuntimeError(
+                    "RedisConnection not connected. Use 'async with' or call "
+                    "__aenter__() before publishing."
+                )
             async with Redis(connection_pool=self._connection_pool) as r:
                 return await r.publish(channel, message)
 
@@ -317,11 +338,15 @@ class RedisConnection:
             # raises CancelledError if the outer task is cancelled.
             try:
                 await asyncio.shield(pubsub.aclose())
-            except (Exception, asyncio.CancelledError):
+            except asyncio.CancelledError:
+                logger.debug("Cluster pubsub close interrupted by cancellation")
+            except Exception:
                 logger.warning("Failed to close cluster pubsub", exc_info=True)
             try:
                 await asyncio.shield(client.aclose())
-            except (Exception, asyncio.CancelledError):
+            except asyncio.CancelledError:
+                logger.debug("Cluster client close interrupted by cancellation")
+            except Exception:
                 logger.warning("Failed to close cluster client", exc_info=True)
 
 

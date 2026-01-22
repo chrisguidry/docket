@@ -212,7 +212,9 @@ class Docket(DocketSnapshotMixin):
                 await asyncio.shield(
                     self._result_storage.__aexit__(exc_type, exc_value, traceback)
                 )
-            except (Exception, asyncio.CancelledError):
+            except asyncio.CancelledError:
+                logger.debug("Result storage close interrupted by cancellation")
+            except Exception:
                 logger.warning("Failed to close result storage", exc_info=True)
             finally:
                 self._result_storage = None
@@ -223,7 +225,9 @@ class Docket(DocketSnapshotMixin):
 
         try:
             await asyncio.shield(self._redis.__aexit__(exc_type, exc_value, traceback))
-        except (Exception, asyncio.CancelledError):
+        except asyncio.CancelledError:
+            logger.debug("Docket Redis connection close interrupted by cancellation")
+        except Exception:
             logger.warning("Failed to close docket Redis connection", exc_info=True)
 
     @asynccontextmanager

@@ -262,7 +262,11 @@ class StrikeList:
         if self._redis is not None and self._redis.is_connected:
             try:
                 await asyncio.shield(self._redis.__aexit__(None, None, None))
-            except (Exception, asyncio.CancelledError):
+            except asyncio.CancelledError:
+                logger.debug(
+                    "StrikeList Redis connection close interrupted by cancellation"
+                )
+            except Exception:
                 logger.warning(
                     "Failed to close strikelist Redis connection", exc_info=True
                 )

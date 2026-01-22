@@ -193,9 +193,6 @@ class Worker:
             yield
 
     async def __aenter__(self) -> Self:
-        self._heartbeat_task = asyncio.create_task(
-            self._heartbeat(), name="docket.worker.heartbeat"
-        )
         self._execution_counts: dict[str, int] = {}
         # Track running tasks for cancellation lookup
         self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
@@ -210,6 +207,12 @@ class Worker:
         self._shared_context = SharedContext(self.docket, self)
         await self._shared_context.__aenter__()
 
+        # Start heartbeat AFTER all other initialization succeeds, so if anything
+        # above fails, we don't leave an orphaned heartbeat task running
+        self._heartbeat_task = asyncio.create_task(
+            self._heartbeat(), name="docket.worker.heartbeat"
+        )
+
         return self
 
     async def __aexit__(
@@ -222,9 +225,15 @@ class Worker:
         self._worker_stopping.set()
         await self._worker_done.wait()
 
+        # Cancel heartbeat and wait for it to fully stop. Shield ensures we
+        # complete cleanup even if the outer task is cancelled (e.g., by anyio
+        # cancel scopes). Without this, a cancelled cleanup could leave the
+        # heartbeat running while Docket closes its connection pool.
         self._heartbeat_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await self._heartbeat_task
+        try:
+            await asyncio.shield(self._heartbeat_task)
+        except (asyncio.CancelledError, Exception):
+            pass  # Task was cancelled or raised - either way it's done
         del self._heartbeat_task
 
         del self._execution_counts
