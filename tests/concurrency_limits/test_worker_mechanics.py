@@ -1,21 +1,20 @@
-"""Tests for worker's internal handling of concurrency limits.
+"""Tests for worker behavior with concurrency limits.
 
-This module tests the worker's internal mechanisms for managing concurrency:
-- Missing argument handling and bypass paths
+This module tests how workers behave with concurrency-limited tasks:
+- Missing argument error handling
 - Cleanup operations on success and failure
-- Internal methods (_release_concurrency_slot, _can_start_task)
-- Finally block behavior
+- Stale slot scavenging
+- Graceful shutdown
 """
 
 import asyncio
 from datetime import datetime, timezone
 
 from docket import ConcurrencyLimit, Docket, Worker
-from docket.execution import Execution
 
 
-async def test_worker_concurrency_missing_argument_bypass(docket: Docket):
-    """Test that tasks with missing concurrency arguments bypass concurrency control"""
+async def test_worker_concurrency_missing_argument_fails_task(docket: Docket):
+    """Test that tasks with missing concurrency arguments fail with clear error"""
     task_executed = False
 
     async def task_missing_concurrency_arg(
@@ -26,14 +25,15 @@ async def test_worker_concurrency_missing_argument_bypass(docket: Docket):
         ),
     ):
         nonlocal task_executed
-        task_executed = True
+        task_executed = True  # pragma: no cover
 
     await docket.add(task_missing_concurrency_arg)(customer_id=1)
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
 
-    assert task_executed
+    # Task should NOT execute - it should fail due to missing argument
+    assert not task_executed
 
 
 async def test_worker_concurrency_no_limit_early_return(docket: Docket):
@@ -52,24 +52,26 @@ async def test_worker_concurrency_no_limit_early_return(docket: Docket):
     assert task_executed
 
 
-async def test_worker_concurrency_missing_argument_early_return(docket: Docket):
-    """Test early return when concurrency argument is missing."""
+async def test_worker_concurrency_missing_argument_shows_available_args(docket: Docket):
+    """Test that missing argument error shows available arguments for debugging."""
     task_executed = False
 
     async def task_missing_concurrency_arg(
+        actual_param: int,
         concurrency: ConcurrencyLimit = ConcurrencyLimit(
             "missing_param", max_concurrent=1
         ),
     ):
         nonlocal task_executed
-        task_executed = True
+        task_executed = True  # pragma: no cover
 
-    await docket.add(task_missing_concurrency_arg)()
+    await docket.add(task_missing_concurrency_arg)(actual_param=42)
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
 
-    assert task_executed
+    # Task should NOT execute - it should fail due to missing argument
+    assert not task_executed
 
 
 async def test_worker_concurrency_cleanup_on_success(docket: Docket):
@@ -206,86 +208,6 @@ async def test_finally_block_releases_concurrency_on_success(docket: Docket):
         await worker.run_until_finished()
 
     assert task_completed
-
-
-async def test_worker_no_concurrency_dependency_in_release(docket: Docket):
-    """Test _release_concurrency_slot with function that has no concurrency dependency."""
-
-    async def task_without_concurrency_dependency():
-        await asyncio.sleep(0.001)
-
-    await task_without_concurrency_dependency()
-
-    async with Worker(docket) as worker:
-        execution = Execution(
-            docket=docket,
-            function=task_without_concurrency_dependency,
-            args=(),
-            kwargs={},
-            when=datetime.now(timezone.utc),
-            key="test_key",
-            attempt=1,
-        )
-
-        async with docket.redis() as redis:
-            await worker._release_concurrency_slot(redis, execution)  # type: ignore[reportPrivateUsage]
-
-
-async def test_worker_missing_concurrency_argument_in_release(docket: Docket):
-    """Test _release_concurrency_slot when concurrency argument is missing."""
-
-    async def task_with_missing_arg(
-        concurrency: ConcurrencyLimit = ConcurrencyLimit(
-            "nonexistent_param", max_concurrent=1
-        ),
-    ):
-        await asyncio.sleep(0.001)
-
-    await task_with_missing_arg()
-
-    async with Worker(docket) as worker:
-        execution = Execution(
-            docket=docket,
-            function=task_with_missing_arg,
-            args=(),
-            kwargs={},
-            when=datetime.now(timezone.utc),
-            key="test_key",
-            attempt=1,
-        )
-
-        async with docket.redis() as redis:
-            await worker._release_concurrency_slot(redis, execution)  # type: ignore[reportPrivateUsage]
-
-
-async def test_worker_concurrency_missing_argument_in_can_start(docket: Docket):
-    """Test _can_start_task with missing concurrency argument during execution."""
-
-    async def task_with_missing_concurrency_arg(
-        concurrency: ConcurrencyLimit = ConcurrencyLimit(
-            "missing_param", max_concurrent=1
-        ),
-    ):
-        await asyncio.sleep(0.001)
-
-    await task_with_missing_concurrency_arg()
-
-    docket.register(task_with_missing_concurrency_arg)
-
-    async with Worker(docket) as worker:
-        execution = Execution(
-            docket=docket,
-            function=task_with_missing_concurrency_arg,
-            args=(),
-            kwargs={},
-            when=datetime.now(timezone.utc),
-            key="test_key",
-            attempt=1,
-        )
-
-        async with docket.redis() as redis:
-            result = await worker._can_start_task(redis, execution)  # type: ignore[reportPrivateUsage]
-            assert result is True
 
 
 async def test_stale_concurrency_slots_are_scavenged_when_full(docket: Docket):

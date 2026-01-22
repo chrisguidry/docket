@@ -41,6 +41,40 @@ async def test_basic_concurrency_limit(docket: Docket, worker: Worker):
     assert results[3] == "end_1"
 
 
+async def test_per_task_concurrency_limit(docket: Docket, worker: Worker):
+    """Test concurrency limit without argument_name limits the task itself."""
+    execution_intervals: list[tuple[float, float]] = []
+
+    async def limited_task(
+        task_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(max_concurrent=2),
+    ):
+        start = time.monotonic()
+        await asyncio.sleep(0.05)
+        end = time.monotonic()
+        execution_intervals.append((start, end))
+
+    # Schedule 4 tasks
+    for i in range(4):
+        await docket.add(limited_task)(task_id=i)
+
+    await worker.run_until_finished()
+
+    assert len(execution_intervals) == 4
+
+    # With max_concurrent=2, we should see overlapping pairs but not all 4 at once
+    # Sort by start time
+    intervals = sorted(execution_intervals)
+
+    # First two should overlap (started together)
+    assert_some_overlap([intervals[0], intervals[1]], "first batch tasks")
+
+    # Third task should start after one of the first two finishes
+    # (it can't start until a slot is free)
+    first_batch_end = min(intervals[0][1], intervals[1][1])
+    assert intervals[2][0] >= first_batch_end - 0.01  # small tolerance
+
+
 async def test_concurrency_limit_single_argument(docket: Docket, worker: Worker):
     """Test that ConcurrencyLimit enforces single concurrent execution per argument value."""
     execution_order: list[str] = []
@@ -352,3 +386,29 @@ async def test_concurrency_limit_edge_cases():
             assert end_time <= next_start_time
         else:
             pass
+
+
+async def test_concurrency_keys_are_handled(
+    docket: Docket,
+    worker: Worker,
+) -> None:
+    """Verify that concurrency limit keys are properly handled.
+
+    Concurrency keys have explicit TTLs and are self-cleaning via Lua script,
+    so they should not leak after task completion.
+    """
+
+    async def task_with_concurrency(
+        resource_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit("resource_id", 1),
+    ) -> None:
+        pass
+
+    await docket.add(task_with_concurrency)(resource_id=42)
+    await worker.run_until_finished()
+
+    # Verify the concurrency key is cleaned up after task completes
+    async with docket.redis() as redis:
+        concurrency_key = f"{docket.name}:concurrency:resource_id:42"
+        exists = await redis.exists(concurrency_key)
+        assert exists == 0, f"Concurrency key {concurrency_key} should be cleaned up"
