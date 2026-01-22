@@ -31,9 +31,7 @@ MINIMUM_TTL_SECONDS = 1
 class ConcurrencyBlocked(AdmissionBlocked):
     """Raised when a task cannot start due to concurrency limits."""
 
-    def __init__(
-        self, execution: Execution, concurrency_key: str, max_concurrent: int
-    ):
+    def __init__(self, execution: Execution, concurrency_key: str, max_concurrent: int):
         self.concurrency_key = concurrency_key
         self.max_concurrent = max_concurrent
         reason = f"concurrency limit ({max_concurrent} max) on {concurrency_key}"
@@ -131,7 +129,7 @@ class ConcurrencyLimit(Dependency):
             acquired = await limit._acquire_slot(
                 redis, execution.redelivered, worker.redelivery_timeout
             )
-            if not acquired:
+            if not acquired:  # pragma: no branch
                 raise ConcurrencyBlocked(
                     execution, concurrency_key, self.max_concurrent
                 )
