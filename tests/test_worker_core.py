@@ -13,7 +13,6 @@ from redis.asyncio.cluster import RedisCluster
 from redis.exceptions import ConnectionError
 
 from docket import CurrentWorker, Docket, Worker
-from docket.execution import Execution
 from docket.tasks import standard_tasks
 
 
@@ -411,32 +410,6 @@ async def test_worker_concurrency_no_limit_with_custom_docket(docket: Docket):
         await worker.run_until_finished()
 
     assert task_executed
-
-
-async def test_worker_no_concurrency_dependency_in_function(docket: Docket):
-    """Test _can_start_task with function that has no concurrency dependency."""
-
-    async def task_without_concurrency_dependency():
-        await asyncio.sleep(0.001)
-
-    await task_without_concurrency_dependency()
-
-    async with Worker(docket) as worker:
-        # Create execution for task without concurrency dependency
-        execution = Execution(
-            docket=docket,
-            function=task_without_concurrency_dependency,
-            args=(),
-            kwargs={},
-            when=datetime.now(timezone.utc),
-            key="test_key",
-            attempt=1,
-        )
-
-        async with docket.redis() as redis:
-            # This should return True immediately
-            result = await worker._can_start_task(redis, execution)  # type: ignore[reportPrivateUsage]
-            assert result is True
 
 
 async def test_worker_exception_before_dependencies(docket: Docket):

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from docket import ConcurrencyLimit, Docket, Worker
+from docket import Docket, Worker
 from tests._key_leak_checker import KeyCountChecker
 
 
@@ -144,31 +144,6 @@ async def test_worker_task_sets_are_exempt(
     await worker.run_until_finished()
 
     # Should not raise - worker sets are exempt
-    async with docket.redis() as redis:
-        key_leak_checker.redis = redis
-        await key_leak_checker.verify_remaining_keys_have_ttl()
-
-
-async def test_concurrency_keys_are_handled(
-    docket: Docket,
-    worker: Worker,
-    key_leak_checker: KeyCountChecker,
-) -> None:
-    """Verify that concurrency limit keys are properly handled.
-
-    Concurrency keys don't have explicit TTLs but are self-cleaning via Lua script,
-    so they should be exempt from leak detection.
-    """
-
-    async def task_with_concurrency(limit: ConcurrencyLimit) -> None:
-        async with limit:
-            pass
-
-    docket.register(task_with_concurrency)
-    await docket.add(task_with_concurrency)(limit=ConcurrencyLimit("test-resource", 1))
-    await worker.run_until_finished()
-
-    # Should not raise - concurrency keys are exempt
     async with docket.redis() as redis:
         key_leak_checker.redis = redis
         await key_leak_checker.verify_remaining_keys_have_ttl()

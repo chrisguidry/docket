@@ -13,6 +13,19 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..worker import Worker
 
 
+class AdmissionBlocked(Exception):
+    """Raised when a task cannot start due to admission control.
+
+    This is the base exception for admission control mechanisms like
+    concurrency limits, rate limits, or health gates.
+    """
+
+    def __init__(self, execution: Execution, reason: str = "admission control"):
+        self.execution = execution
+        self.reason = reason
+        super().__init__(f"Task {execution.key} blocked by {reason}")
+
+
 class Dependency(abc.ABC):
     """Base class for all dependencies."""
 

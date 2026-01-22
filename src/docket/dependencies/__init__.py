@@ -6,8 +6,8 @@ resources, context, and behavior into task functions.
 
 from __future__ import annotations
 
-from ._base import Dependency
-from ._concurrency import ConcurrencyLimit
+from ._base import AdmissionBlocked, Dependency
+from ._concurrency import ConcurrencyBlocked, ConcurrencyLimit
 from ._contextual import (
     CurrentDocket,
     CurrentExecution,
@@ -56,6 +56,8 @@ __all__ = [
     "Retry",
     "ExponentialRetry",
     # Other dependencies
+    "AdmissionBlocked",
+    "ConcurrencyBlocked",
     "ConcurrencyLimit",
     "Perpetual",
     "Progress",
