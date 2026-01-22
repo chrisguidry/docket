@@ -1124,13 +1124,29 @@ class Worker:
             except asyncio.CancelledError:  # pragma: no cover
                 return
             except ConnectionError:
+                if self._worker_stopping.is_set():
+                    return  # Normal shutdown
+                if not self.docket._redis.is_connected:
+                    # Docket closed before worker shutdown - abnormal but handle gracefully
+                    logger.debug(
+                        "Heartbeat exiting: Docket closed before worker shutdown"
+                    )
+                    return
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.exception(
                     "Error sending worker heartbeat",
                     exc_info=True,
                     extra=self._log_context(),
                 )
-            except Exception:  # pragma: no cover
+            except Exception:
+                if self._worker_stopping.is_set():
+                    return  # Normal shutdown
+                if not self.docket._redis.is_connected:
+                    # Docket closed before worker shutdown - abnormal but handle gracefully
+                    logger.debug(
+                        "Heartbeat exiting: Docket closed before worker shutdown"
+                    )
+                    return
                 logger.exception(
                     "Error sending worker heartbeat",
                     exc_info=True,
@@ -1155,6 +1171,14 @@ class Worker:
             except asyncio.CancelledError:
                 return
             except ConnectionError:
+                if self._worker_stopping.is_set():
+                    return  # Normal shutdown
+                if not self.docket._redis.is_connected:
+                    # Docket closed before worker shutdown - abnormal but handle gracefully
+                    logger.debug(
+                        "Cancellation listener exiting: Docket closed before worker shutdown"
+                    )
+                    return
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.warning(
                     "Redis connection error in cancellation listener, reconnecting...",
@@ -1162,6 +1186,14 @@ class Worker:
                 )
                 await asyncio.sleep(1)
             except Exception:
+                if self._worker_stopping.is_set():
+                    return  # Normal shutdown
+                if not self.docket._redis.is_connected:
+                    # Docket closed before worker shutdown - abnormal but handle gracefully
+                    logger.debug(
+                        "Cancellation listener exiting: Docket closed before worker shutdown"
+                    )
+                    return
                 logger.exception(
                     "Error in cancellation listener",
                     exc_info=True,
