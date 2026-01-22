@@ -21,6 +21,8 @@ from ._functional import (
     DependencyFunction,
     Shared,
     SharedContext,
+    _Depends,
+    _parameter_cache,
     get_dependency_parameters,
 )
 from ._perpetual import Perpetual
@@ -50,6 +52,8 @@ __all__ = [
     "DependencyFunction",
     "Shared",
     "SharedContext",
+    "_Depends",
+    "_parameter_cache",
     "get_dependency_parameters",
     # Retry
     "ForcedRetry",
