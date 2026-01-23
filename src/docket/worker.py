@@ -660,7 +660,7 @@ class Worker:
 
         log_context = self._log_context()
 
-        while not self._worker_stopping.is_set():
+        while not self._worker_stopping.is_set():  # pragma: no branch
             try:
                 logger.debug("Scheduling due tasks", extra=log_context)
                 with self._maybe_suppress_instrumentation():
