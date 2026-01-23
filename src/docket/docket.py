@@ -104,7 +104,7 @@ class Docket(DocketSnapshotMixin):
     _redis: RedisConnection
     _result_storage: ResultStorage | None
     _cancel_task_script: _cancel_task | None
-    _stack: AsyncExitStack | None
+    _stack: AsyncExitStack
 
     def __init__(
         self,
@@ -144,7 +144,6 @@ class Docket(DocketSnapshotMixin):
         self._cancel_task_script = None
         self._user_result_storage = result_storage
         self._redis = RedisConnection(url)
-        self._stack = None
 
         from .tasks import standard_tasks
 
@@ -202,6 +201,7 @@ class Docket(DocketSnapshotMixin):
         else:
             self._result_storage = ResultStorage(self._redis, self.results_collection)
             await self._stack.enter_async_context(self._result_storage)
+            self._stack.callback(lambda: setattr(self, "_result_storage", None))
             self.result_storage = self._result_storage
         return self
 
@@ -211,10 +211,8 @@ class Docket(DocketSnapshotMixin):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        assert self._stack is not None, "Docket was not entered"
         await self._stack.__aexit__(exc_type, exc_value, traceback)
-        self._stack = None
-        self._result_storage = None
+        del self._stack
 
     @asynccontextmanager
     async def redis(self) -> AsyncGenerator[Redis | RedisCluster, None]:

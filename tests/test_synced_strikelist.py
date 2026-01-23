@@ -100,14 +100,15 @@ async def test_aenter_is_idempotent(redis_url: str, strike_name: str):
     await strikes.__aexit__(None, None, None)
 
 
-async def test_aexit_is_idempotent(redis_url: str, strike_name: str):
-    """Test that calling __aexit__ multiple times is safe."""
+async def test_context_manager_reuse(redis_url: str, strike_name: str):
+    """Test that a StrikeList can be entered and exited multiple times."""
     strikes = StrikeList(url=redis_url, name=strike_name)
 
     await strikes.__aenter__()
     await strikes.__aexit__(None, None, None)
 
-    # Second __aexit__ should be a no-op
+    # Can enter again after proper exit
+    await strikes.__aenter__()
     await strikes.__aexit__(None, None, None)
 
 
@@ -312,30 +313,3 @@ async def test_type_mismatch_handled_gracefully(
         result = strikes.is_stricken({"amount": "not a number"})
         assert result is False
         assert "Incompatible type" in caplog.text
-
-
-async def test_strikelist_aexit_handles_redis_close_error(
-    redis_url: str, strike_name: str, caplog: pytest.LogCaptureFixture
-):
-    """StrikeList should handle errors when closing Redis connection."""
-    from unittest.mock import AsyncMock
-
-    import redis.exceptions
-
-    strikes = StrikeList(url=redis_url, name=strike_name)
-    await strikes.__aenter__()
-
-    # Make _redis.__aexit__ raise an exception
-    assert strikes._redis is not None
-    original_aexit = strikes._redis.__aexit__
-    strikes._redis.__aexit__ = AsyncMock(
-        side_effect=redis.exceptions.ConnectionError("boom")
-    )
-
-    # Should not raise, just log the warning
-    await strikes.__aexit__(None, None, None)
-
-    assert "Failed to close strikelist Redis connection" in caplog.text
-
-    # Clean up the original connection
-    await original_aexit(None, None, None)

@@ -9,7 +9,7 @@ import signal
 import socket
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import AsyncExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
@@ -25,16 +25,16 @@ from typing import (
 
 import cloudpickle
 
-if sys.version_info < (3, 11):  # pragma: no cover
-    from exceptiongroup import ExceptionGroup
-    from taskgroup import TaskGroup
+if sys.version_info < (3, 11):
+    from exceptiongroup import ExceptionGroup  # pragma: no cover
+    from taskgroup import TaskGroup  # pragma: no cover
 else:
-    from asyncio import TaskGroup
+    from asyncio import TaskGroup  # pragma: no cover
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
-from ._cancellation import CANCEL_MSG_CLEANUP, CANCEL_MSG_TIMEOUT, is_our_cancellation
+from ._cancellation import CANCEL_MSG_CLEANUP, CANCEL_MSG_TIMEOUT, cancel_task
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -197,24 +197,39 @@ class Worker:
             yield
 
     async def __aenter__(self) -> Self:
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
+
+        # Events for coordinating worker loop shutdown (cleaned up last)
+        self._worker_stopping = asyncio.Event()
+        self._stack.callback(lambda: delattr(self, "_worker_stopping"))
+        self._worker_done = asyncio.Event()
+        self._stack.callback(lambda: delattr(self, "_worker_done"))
+        self._worker_done.set()  # Initially done (not running)
+        self._cancellation_ready = asyncio.Event()
+        self._stack.callback(lambda: delattr(self, "_cancellation_ready"))
+
+        self._execution_counts: dict[str, int] = {}
+        self._stack.callback(lambda: delattr(self, "_execution_counts"))
+        self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
+        self._stack.callback(lambda: delattr(self, "_tasks_by_key"))
+
         self._heartbeat_task = asyncio.create_task(
             self._heartbeat(), name="docket.worker.heartbeat"
         )
-        self._execution_counts: dict[str, int] = {}
-        # Track running tasks for cancellation lookup
-        self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
-        # Events for coordinating worker loop shutdown
-        self._worker_stopping = asyncio.Event()
-        self._worker_done = asyncio.Event()
-        self._worker_done.set()  # Initially done (not running)
-        # Signaled when cancellation listener is subscribed and ready
-        self._cancellation_ready = asyncio.Event()
+        self._stack.callback(lambda: delattr(self, "_heartbeat_task"))
+        self._stack.push_async_callback(self._cleanup_heartbeat)
 
-        # Set up Shared dependency infrastructure
+        # Shared context is set up last, so it's cleaned up first (LIFO)
         self._shared_context = SharedContext(self.docket, self)
-        await self._shared_context.__aenter__()
+        self._stack.callback(lambda: delattr(self, "_shared_context"))
+        await self._stack.enter_async_context(self._shared_context)
 
         return self
+
+    async def _cleanup_heartbeat(self) -> None:
+        """Clean up heartbeat task - registered as stack callback."""
+        await cancel_task(self._heartbeat_task, CANCEL_MSG_CLEANUP)
 
     async def __aexit__(
         self,
@@ -226,23 +241,8 @@ class Worker:
         self._worker_stopping.set()
         await self._worker_done.wait()
 
-        self._heartbeat_task.cancel(CANCEL_MSG_CLEANUP)
-        try:
-            await self._heartbeat_task
-        except asyncio.CancelledError as e:
-            if not is_our_cancellation(e, CANCEL_MSG_CLEANUP):
-                raise  # pragma: no cover
-        del self._heartbeat_task
-
-        del self._execution_counts
-        del self._tasks_by_key
-        del self._worker_stopping
-        del self._worker_done
-        del self._cancellation_ready
-
-        # Clean up Shared dependencies (closes context managers in reverse order)
-        await self._shared_context.__aexit__(exc_type, exc_value, traceback)
-        del self._shared_context
+        # Stack handles LIFO cleanup: shared_context first, then heartbeat
+        await self._stack.__aexit__(exc_type, exc_value, traceback)
 
     def labels(self) -> Mapping[str, str]:
         return {
@@ -974,10 +974,15 @@ class Worker:
         task = asyncio.create_task(
             task_coro, name=f"docket.worker.task:{execution.key}"
         )
+        # Track whether WE cancelled for timeout (vs external cancellation)
+        # We use a flag because Python 3.10 doesn't propagate cancel messages
+        # to the awaiter, only Python 3.11+ does
+        cancelled_for_timeout = False
         try:
             while not task.done():  # pragma: no branch
                 remaining = timeout.remaining().total_seconds()
                 if timeout.expired():
+                    cancelled_for_timeout = True
                     task.cancel(CANCEL_MSG_TIMEOUT)
                     break
 
@@ -990,12 +995,13 @@ class Worker:
                     continue
         finally:
             if not task.done():  # pragma: no branch
+                cancelled_for_timeout = True
                 task.cancel(CANCEL_MSG_TIMEOUT)
 
         try:
             return await task
-        except asyncio.CancelledError as e:
-            if is_our_cancellation(e, CANCEL_MSG_TIMEOUT):
+        except asyncio.CancelledError:
+            if cancelled_for_timeout:
                 raise asyncio.TimeoutError
             raise  # pragma: no cover - External cancellation propagation
 

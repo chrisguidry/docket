@@ -181,10 +181,10 @@ class ResultStorage:
     (with decode_responses=True) using the RedisConnection's URL.
     """
 
-    _store: RedisStore | ClusterKeyValueStore | None
-    _pool: ConnectionPool | None
-    _client: Redis | None
-    _stack: AsyncExitStack | None
+    _store: RedisStore | ClusterKeyValueStore
+    _pool: ConnectionPool
+    _client: Redis
+    _stack: AsyncExitStack
 
     def __init__(
         self,
@@ -193,10 +193,6 @@ class ResultStorage:
     ) -> None:
         self._redis = redis
         self._default_collection = default_collection
-        self._store = None
-        self._pool = None
-        self._client = None
-        self._stack = None
 
     async def __aenter__(self) -> Self:
         self._stack = AsyncExitStack()
@@ -214,9 +210,11 @@ class ResultStorage:
             self._pool = await self._redis._connection_pool_from_url(
                 decode_responses=True
             )
+            self._stack.callback(lambda: delattr(self, "_pool"))
             self._stack.push_async_callback(close_resource, self._pool, "pool")
 
             self._client = Redis(connection_pool=self._pool)
+            self._stack.callback(lambda: delattr(self, "_client"))
             self._stack.push_async_callback(close_resource, self._client, "client")
 
             self._store = RedisStore(
@@ -232,11 +230,8 @@ class ResultStorage:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        assert self._stack is not None, "ResultStorage was not entered"
         await self._stack.__aexit__(exc_type, exc_val, exc_tb)
-        self._stack = None
-        self._client = None
-        self._pool = None
+        del self._stack
 
     # AsyncKeyValue protocol - delegate to self._store
 
@@ -250,7 +245,6 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> dict[str, Any] | None:
-        assert self._store is not None
         return await self._store.get(key, collection=collection)
 
     async def ttl(
@@ -259,7 +253,6 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> tuple[dict[str, Any] | None, float | None]:
-        assert self._store is not None
         return await self._store.ttl(key, collection=collection)
 
     async def put(
@@ -270,7 +263,6 @@ class ResultStorage:
         collection: str | None = None,
         ttl: SupportsFloat | None = None,
     ) -> None:
-        assert self._store is not None
         await self._store.put(key, value, collection=collection, ttl=ttl)
 
     async def delete(
@@ -279,7 +271,6 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> bool:
-        assert self._store is not None
         return await self._store.delete(key, collection=collection)
 
     async def get_many(
@@ -288,7 +279,6 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> list[dict[str, Any] | None]:
-        assert self._store is not None
         return await self._store.get_many(keys, collection=collection)
 
     async def ttl_many(
@@ -297,7 +287,6 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> list[tuple[dict[str, Any] | None, float | None]]:
-        assert self._store is not None
         return await self._store.ttl_many(keys, collection=collection)
 
     async def put_many(
@@ -308,7 +297,6 @@ class ResultStorage:
         collection: str | None = None,
         ttl: SupportsFloat | None = None,
     ) -> None:
-        assert self._store is not None
         await self._store.put_many(keys, values, collection=collection, ttl=ttl)
 
     async def delete_many(
@@ -317,5 +305,4 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> int:
-        assert self._store is not None
         return await self._store.delete_many(keys, collection=collection)

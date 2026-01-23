@@ -89,7 +89,7 @@ class RedisConnection:
     # support pub/sub natively, so we connect directly to one primary node)
     _node_pool: ConnectionPool | None
     _parsed: ParseResult
-    _stack: AsyncExitStack | None
+    _stack: AsyncExitStack
 
     def __init__(self, url: str) -> None:
         """Initialize a Redis connection manager.
@@ -102,7 +102,6 @@ class RedisConnection:
         self._connection_pool = None
         self._cluster_client = None
         self._node_pool = None
-        self._stack = None
 
     async def __aenter__(self) -> "RedisConnection":
         """Connect to Redis when entering the context."""
@@ -114,16 +113,19 @@ class RedisConnection:
 
         if self.is_cluster:  # pragma: no cover
             self._cluster_client = await self._create_cluster_client()
+            self._stack.callback(lambda: setattr(self, "_cluster_client", None))
             self._stack.push_async_callback(
                 close_resource, self._cluster_client, "cluster client"
             )
 
             self._node_pool = self._create_node_pool()
+            self._stack.callback(lambda: setattr(self, "_node_pool", None))
             self._stack.push_async_callback(
                 close_resource, self._node_pool, "node pool"
             )
         else:
             self._connection_pool = await self._connection_pool_from_url()
+            self._stack.callback(lambda: setattr(self, "_connection_pool", None))
             self._stack.push_async_callback(
                 close_resource, self._connection_pool, "connection pool"
             )
@@ -137,12 +139,8 @@ class RedisConnection:
         exc_tb: TracebackType | None,
     ) -> None:
         """Close the Redis connection when exiting the context."""
-        assert self._stack is not None, "RedisConnection was not entered"
         await self._stack.__aexit__(exc_type, exc_val, exc_tb)
-        self._stack = None
-        self._connection_pool = None
-        self._cluster_client = None
-        self._node_pool = None
+        del self._stack
 
     @property
     def is_connected(self) -> bool:

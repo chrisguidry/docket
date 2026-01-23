@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from .._cancellation import CANCEL_MSG_CLEANUP, is_our_cancellation
+from .._cancellation import CANCEL_MSG_CLEANUP, cancel_task
 from ._base import AdmissionBlocked, Dependency
 
 logger = logging.getLogger(__name__)
@@ -161,12 +161,10 @@ class ConcurrencyLimit(Dependency):
     async def _cleanup(self) -> None:
         """Cleanup for per-task instance, called by AsyncExitStack."""
         # Stop lease renewal (always set before _cleanup is registered)
-        self._renewal_task.cancel(CANCEL_MSG_CLEANUP)  # type: ignore[union-attr]
-        try:
-            await self._renewal_task  # type: ignore[misc]
-        except asyncio.CancelledError as e:
-            if not is_our_cancellation(e, CANCEL_MSG_CLEANUP):
-                raise  # pragma: no cover
+        await cancel_task(
+            self._renewal_task,  # type: ignore[arg-type]
+            CANCEL_MSG_CLEANUP,
+        )
 
         # Release slot
         docket = self.docket.get()
