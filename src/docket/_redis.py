@@ -104,22 +104,22 @@ class RedisConnection:
             # Close node pool first (used for pub/sub)
             if self._node_pool is not None:
                 try:
-                    await asyncio.shield(self._node_pool.aclose())
-                except (Exception, asyncio.CancelledError):
+                    await self._node_pool.aclose()
+                except Exception:
                     logger.warning("Failed to close node pool", exc_info=True)
                 finally:
                     self._node_pool = None
             # Then close cluster client
             try:
-                await asyncio.shield(self._cluster_client.aclose())
-            except (Exception, asyncio.CancelledError):
+                await self._cluster_client.aclose()
+            except Exception:
                 logger.warning("Failed to close cluster client", exc_info=True)
             finally:
                 self._cluster_client = None
         elif self._connection_pool is not None:
             try:
-                await asyncio.shield(self._connection_pool.aclose())
-            except (Exception, asyncio.CancelledError):  # pragma: no cover
+                await self._connection_pool.aclose()
+            except Exception:  # pragma: no cover
                 logger.warning("Failed to close connection pool", exc_info=True)
             finally:
                 self._connection_pool = None
@@ -311,17 +311,13 @@ class RedisConnection:
         try:
             yield pubsub
         finally:
-            # Explicit cleanup with failure isolation for cancellation safety.
-            # Must catch CancelledError too - it inherits from BaseException, not
-            # Exception. The shield ensures aclose() completes, but the await still
-            # raises CancelledError if the outer task is cancelled.
             try:
-                await asyncio.shield(pubsub.aclose())
-            except (Exception, asyncio.CancelledError):
+                await pubsub.aclose()
+            except Exception:
                 logger.warning("Failed to close cluster pubsub", exc_info=True)
             try:
-                await asyncio.shield(client.aclose())
-            except (Exception, asyncio.CancelledError):
+                await client.aclose()
+            except Exception:
                 logger.warning("Failed to close cluster client", exc_info=True)
 
 

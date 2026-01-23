@@ -6,7 +6,6 @@ This module provides:
   or py-key-value's RedisStore, managing connection pool lifecycle internally
 """
 
-import asyncio
 import json
 import logging
 from collections.abc import Mapping, Sequence
@@ -224,15 +223,15 @@ class ResultStorage:
         # Each step is isolated so failures don't prevent subsequent cleanup
         if self._client is not None:
             try:
-                await asyncio.shield(self._client.aclose())
-            except (Exception, asyncio.CancelledError):
+                await self._client.aclose()
+            except Exception:
                 logger.warning("Failed to close result storage client", exc_info=True)
             finally:
                 self._client = None
         if self._pool is not None:
             try:
-                await asyncio.shield(self._pool.aclose())
-            except (Exception, asyncio.CancelledError):
+                await self._pool.aclose()
+            except Exception:
                 logger.warning("Failed to close result storage pool", exc_info=True)
             finally:
                 self._pool = None
