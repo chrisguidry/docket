@@ -27,6 +27,9 @@ import cloudpickle
 
 if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
+    from taskgroup import TaskGroup
+else:
+    from asyncio import TaskGroup
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
@@ -530,58 +533,54 @@ class Worker:
                 )
                 await pipeline.execute()
 
-        # Start internal infrastructure tasks
-        infra_tasks: list[asyncio.Task[None]] = []
         try:
-            # Start cancellation listener and wait for it to be ready
-            infra_tasks.append(
-                asyncio.create_task(
+            async with TaskGroup() as infra:
+                # Start cancellation listener and wait for it to be ready
+                infra.create_task(
                     self._cancellation_listener(),
                     name="docket.worker.cancellation_listener",
                 )
-            )
-            await self._cancellation_ready.wait()
+                await self._cancellation_ready.wait()
 
-            if self.schedule_automatic_tasks:
-                await self._schedule_all_automatic_perpetual_tasks()
+                if self.schedule_automatic_tasks:
+                    await self._schedule_all_automatic_perpetual_tasks()
 
-            infra_tasks.append(
-                asyncio.create_task(
+                infra.create_task(
                     self._scheduler_loop(redis), name="docket.worker.scheduler"
                 )
-            )
-            infra_tasks.append(
-                asyncio.create_task(
+                infra.create_task(
                     self._renew_leases(redis, active_tasks),
                     name="docket.worker.lease_renewal",
                 )
-            )
 
-            has_work: bool = True
-            stopping = self._worker_stopping.is_set
-            while (forever or has_work or active_tasks) and not stopping():
-                await process_completed_tasks()
+                has_work: bool = True
+                stopping = self._worker_stopping.is_set
+                while (forever or has_work or active_tasks) and not stopping():
+                    await process_completed_tasks()
 
-                available_slots = self.concurrency - len(active_tasks)
-
-                if available_slots <= 0:
-                    await asyncio.sleep(self.minimum_check_interval.total_seconds())
-                    continue
-
-                for source in [get_redeliveries, get_new_deliveries]:
-                    for stream_key, messages in await source(redis):
-                        is_redelivery = stream_key == b"__redelivery__"
-                        for message_id, message in messages:
-                            if not message:  # pragma: no cover
-                                continue
-
-                            await start_task(message_id, message, is_redelivery)
+                    available_slots = self.concurrency - len(active_tasks)
 
                     if available_slots <= 0:
-                        break
+                        await asyncio.sleep(self.minimum_check_interval.total_seconds())
+                        continue
 
-                if not forever and not active_tasks:
-                    has_work = await check_for_work()
+                    for source in [get_redeliveries, get_new_deliveries]:
+                        for stream_key, messages in await source(redis):
+                            is_redelivery = stream_key == b"__redelivery__"
+                            for message_id, message in messages:
+                                if not message:  # pragma: no cover
+                                    continue
+
+                                await start_task(message_id, message, is_redelivery)
+
+                        if available_slots <= 0:
+                            break
+
+                    if not forever and not active_tasks:
+                        has_work = await check_for_work()
+
+                # Signal internal tasks to stop before exiting TaskGroup
+                self._worker_stopping.set()
 
         except asyncio.CancelledError:
             if active_tasks:  # pragma: no cover
@@ -591,16 +590,6 @@ class Worker:
                     extra=log_context,
                 )
         finally:
-            # Signal internal tasks to stop
-            self._worker_stopping.set()
-            # Cancel any infra tasks that haven't responded to the stopping event
-            # and wait for them all to complete
-            for task in infra_tasks:
-                if not task.done():
-                    task.cancel()
-            if infra_tasks:
-                await asyncio.gather(*infra_tasks, return_exceptions=True)
-
             # Drain any remaining active tasks
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)

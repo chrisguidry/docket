@@ -1,10 +1,14 @@
 """Tests for OpenTelemetry metric counters: task lifecycle and execution counters."""
 
 import asyncio
+import sys
 from datetime import timedelta
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+
+if sys.version_info < (3, 11):  # pragma: no cover
+    from exceptiongroup import ExceptionGroup
 from opentelemetry.metrics import Counter
 
 from docket import Docket, Worker
@@ -344,8 +348,11 @@ async def test_redelivered_tasks_increment_redelivered_counter(
     async with worker:
         worker._execute = AsyncMock(side_effect=Exception("Simulated worker failure"))  # type: ignore[assignment]
 
-        with pytest.raises(Exception, match="Simulated worker failure"):
+        with pytest.raises(ExceptionGroup) as exc_info:
             await worker.run_until_finished()
+        assert any(
+            "Simulated worker failure" in str(e) for e in exc_info.value.exceptions
+        )
 
     await asyncio.sleep(0.075)
 
