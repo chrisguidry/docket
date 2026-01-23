@@ -228,7 +228,7 @@ class Worker:
             await self._heartbeat_task
         except asyncio.CancelledError as e:
             if not is_our_cancellation(e, CANCEL_MSG_CLEANUP):
-                raise
+                raise  # pragma: no cover
         del self._heartbeat_task
 
         del self._execution_counts
@@ -609,7 +609,7 @@ class Worker:
                     await cancellation_listener_task
                 except asyncio.CancelledError as e:
                     if not is_our_cancellation(e, CANCEL_MSG_CLEANUP):
-                        raise
+                        raise  # pragma: no cover
 
             self._worker_done.set()
 
@@ -1012,7 +1012,7 @@ class Worker:
         except asyncio.CancelledError as e:
             if is_our_cancellation(e, CANCEL_MSG_TIMEOUT):
                 raise asyncio.TimeoutError
-            raise  # External cancellation - propagate it
+            raise  # pragma: no cover - External cancellation propagation
 
     async def _retry_if_requested(
         self,

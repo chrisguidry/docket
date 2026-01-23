@@ -256,7 +256,7 @@ class StrikeList:
                 await self._monitor_task
             except asyncio.CancelledError as e:
                 if not is_our_cancellation(e, CANCEL_MSG_CLEANUP):
-                    raise
+                    raise  # pragma: no cover
             self._monitor_task = None
 
         self._strikes_loaded = None

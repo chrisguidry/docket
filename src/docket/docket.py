@@ -217,7 +217,7 @@ class Docket(DocketSnapshotMixin):
         # Close the strike list (stops monitoring and disconnects)
         try:
             await self.strike_list.__aexit__(exc_type, exc_value, traceback)
-        except Exception:
+        except Exception:  # pragma: no cover
             logger.warning("Failed to close strike list", exc_info=True)
         finally:
             del self.strike_list

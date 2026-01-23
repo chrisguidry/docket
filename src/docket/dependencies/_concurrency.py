@@ -166,7 +166,7 @@ class ConcurrencyLimit(Dependency):
             await self._renewal_task  # type: ignore[misc]
         except asyncio.CancelledError as e:
             if not is_our_cancellation(e, CANCEL_MSG_CLEANUP):
-                raise
+                raise  # pragma: no cover
 
         # Release slot
         docket = self.docket.get()
