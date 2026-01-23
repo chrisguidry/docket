@@ -9,7 +9,7 @@ import signal
 import socket
 import sys
 import time
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
@@ -31,6 +31,7 @@ if sys.version_info < (3, 11):  # pragma: no cover
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
+from ._cancellation import CANCEL_MSG_CLEANUP, CANCEL_MSG_TIMEOUT, is_our_cancellation
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -222,9 +223,12 @@ class Worker:
         self._worker_stopping.set()
         await self._worker_done.wait()
 
-        self._heartbeat_task.cancel()
-        with suppress(asyncio.CancelledError):
+        self._heartbeat_task.cancel(CANCEL_MSG_CLEANUP)
+        try:
             await self._heartbeat_task
+        except asyncio.CancelledError as e:
+            if not is_our_cancellation(e, CANCEL_MSG_CLEANUP):
+                raise
         del self._heartbeat_task
 
         del self._execution_counts
@@ -600,9 +604,12 @@ class Worker:
 
             # Cancellation listener has while True loop, needs explicit cancellation
             if cancellation_listener_task is not None:  # pragma: no branch
-                cancellation_listener_task.cancel()
-                with suppress(asyncio.CancelledError):
+                cancellation_listener_task.cancel(CANCEL_MSG_CLEANUP)
+                try:
                     await cancellation_listener_task
+                except asyncio.CancelledError as e:
+                    if not is_our_cancellation(e, CANCEL_MSG_CLEANUP):
+                        raise
 
             self._worker_done.set()
 
@@ -986,7 +993,7 @@ class Worker:
             while not task.done():  # pragma: no branch
                 remaining = timeout.remaining().total_seconds()
                 if timeout.expired():
-                    task.cancel()
+                    task.cancel(CANCEL_MSG_TIMEOUT)
                     break
 
                 try:
@@ -998,12 +1005,14 @@ class Worker:
                     continue
         finally:
             if not task.done():  # pragma: no branch
-                task.cancel()
+                task.cancel(CANCEL_MSG_TIMEOUT)
 
         try:
             return await task
-        except asyncio.CancelledError:
-            raise asyncio.TimeoutError
+        except asyncio.CancelledError as e:
+            if is_our_cancellation(e, CANCEL_MSG_TIMEOUT):
+                raise asyncio.TimeoutError
+            raise  # External cancellation - propagate it
 
     async def _retry_if_requested(
         self,

@@ -29,6 +29,7 @@ from redis.asyncio import Redis
 from redis.asyncio.cluster import RedisCluster
 from typing_extensions import Self
 
+from ._cancellation import CANCEL_MSG_CLEANUP, is_our_cancellation
 from ._telemetry import suppress_instrumentation
 
 if TYPE_CHECKING:
@@ -250,19 +251,20 @@ class StrikeList:
     ) -> None:
         """Async context manager exit - closes Redis connection."""
         if self._monitor_task is not None:
-            self._monitor_task.cancel()
+            self._monitor_task.cancel(CANCEL_MSG_CLEANUP)
             try:
                 await self._monitor_task
-            except asyncio.CancelledError:
-                pass
+            except asyncio.CancelledError as e:
+                if not is_our_cancellation(e, CANCEL_MSG_CLEANUP):
+                    raise
             self._monitor_task = None
 
         self._strikes_loaded = None
 
         if self._redis is not None and self._redis.is_connected:
             try:
-                await asyncio.shield(self._redis.__aexit__(None, None, None))
-            except (Exception, asyncio.CancelledError):
+                await self._redis.__aexit__(None, None, None)
+            except Exception:
                 logger.warning(
                     "Failed to close strikelist Redis connection", exc_info=True
                 )
