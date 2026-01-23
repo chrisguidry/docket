@@ -414,11 +414,6 @@ class Worker:
         self._worker_done.clear()
         self._cancellation_ready.clear()  # Reset for reconnection scenarios
 
-        # Initialize task variables before try block so finally can check them.
-        # This ensures _worker_done.set() is always called if _worker_done.clear() was.
-        cancellation_listener_task: asyncio.Task[None] | None = None
-        scheduler_task: asyncio.Task[None] | None = None
-        lease_renewal_task: asyncio.Task[None] | None = None
         active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
         task_executions: dict[asyncio.Task[None], Execution] = {}
         available_slots = self.concurrency
@@ -535,23 +530,31 @@ class Worker:
                 )
                 await pipeline.execute()
 
+        # Start internal infrastructure tasks
+        infra_tasks: list[asyncio.Task[None]] = []
         try:
             # Start cancellation listener and wait for it to be ready
-            cancellation_listener_task = asyncio.create_task(
-                self._cancellation_listener(),
-                name="docket.worker.cancellation_listener",
+            infra_tasks.append(
+                asyncio.create_task(
+                    self._cancellation_listener(),
+                    name="docket.worker.cancellation_listener",
+                )
             )
             await self._cancellation_ready.wait()
 
             if self.schedule_automatic_tasks:
                 await self._schedule_all_automatic_perpetual_tasks()
 
-            scheduler_task = asyncio.create_task(
-                self._scheduler_loop(redis), name="docket.worker.scheduler"
+            infra_tasks.append(
+                asyncio.create_task(
+                    self._scheduler_loop(redis), name="docket.worker.scheduler"
+                )
             )
-            lease_renewal_task = asyncio.create_task(
-                self._renew_leases(redis, active_tasks),
-                name="docket.worker.lease_renewal",
+            infra_tasks.append(
+                asyncio.create_task(
+                    self._renew_leases(redis, active_tasks),
+                    name="docket.worker.lease_renewal",
+                )
             )
 
             has_work: bool = True
@@ -588,28 +591,20 @@ class Worker:
                     extra=log_context,
                 )
         finally:
+            # Signal internal tasks to stop
+            self._worker_stopping.set()
+            # Cancel any infra tasks that haven't responded to the stopping event
+            # and wait for them all to complete
+            for task in infra_tasks:
+                if not task.done():
+                    task.cancel()
+            if infra_tasks:
+                await asyncio.gather(*infra_tasks, return_exceptions=True)
+
             # Drain any remaining active tasks
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
                 await process_completed_tasks()
-
-            # Signal internal tasks to stop
-            self._worker_stopping.set()
-
-            # These check _worker_stopping and exit cleanly
-            if scheduler_task is not None:
-                await scheduler_task
-            if lease_renewal_task is not None:
-                await lease_renewal_task
-
-            # Cancellation listener has while True loop, needs explicit cancellation
-            if cancellation_listener_task is not None:  # pragma: no branch
-                cancellation_listener_task.cancel(CANCEL_MSG_CLEANUP)
-                try:
-                    await cancellation_listener_task
-                except asyncio.CancelledError as e:
-                    if not is_our_cancellation(e, CANCEL_MSG_CLEANUP):
-                        raise  # pragma: no cover
 
             self._worker_done.set()
 
@@ -704,16 +699,15 @@ class Worker:
                     extra=log_context,
                 )
 
-            # Wait for worker to stop or scheduling interval to pass
+            # Use interruptible wait so we respond to stopping quickly
             try:
                 await asyncio.wait_for(
                     self._worker_stopping.wait(),
                     timeout=self.scheduling_resolution.total_seconds(),
                 )
+                return  # Event was set, exit the loop
             except asyncio.TimeoutError:
-                pass  # Time to check for due tasks again
-
-        logger.debug("Scheduler loop finished", extra=log_context)
+                pass  # Normal timeout, continue scheduling
 
     async def _renew_leases(
         self,
@@ -728,15 +722,17 @@ class Worker:
         # Renew leases 4 times per redelivery_timeout period
         renewal_interval = self.redelivery_timeout.total_seconds() / 4
 
-        while not self._worker_stopping.is_set():  # pragma: no branch
+        while not self._worker_stopping.is_set():
+            # Use interruptible wait so we respond to stopping quickly
             try:
                 await asyncio.wait_for(
-                    self._worker_stopping.wait(),
-                    timeout=renewal_interval,
+                    self._worker_stopping.wait(), timeout=renewal_interval
                 )
-                break  # Worker is stopping
+                # Event was set, exit the loop
+                return
             except asyncio.TimeoutError:
-                pass  # Time to renew leases
+                # Normal timeout, continue with lease renewal
+                pass
 
             message_ids = list(active_messages.values())
             if not message_ids:
@@ -1144,17 +1140,21 @@ class Worker:
         cancel_pattern = self.docket.key("cancel:*")
         log_context = self._log_context()
 
-        while True:
+        while not self._worker_stopping.is_set():
             try:
                 async with self.docket._pubsub() as pubsub:
                     await pubsub.psubscribe(cancel_pattern)
                     self._cancellation_ready.set()
-                    async for message in pubsub.listen():
-                        if message["type"] == "pmessage":
+                    # Poll for messages, checking _worker_stopping periodically
+                    while not self._worker_stopping.is_set():
+                        message = await pubsub.get_message(
+                            ignore_subscribe_messages=True, timeout=0.1
+                        )
+                        if message is not None and message["type"] == "pmessage":
                             await self._handle_cancellation(message)
-            except asyncio.CancelledError:
-                return
             except ConnectionError:
+                if self._worker_stopping.is_set():
+                    return
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.warning(
                     "Redis connection error in cancellation listener, reconnecting...",
@@ -1162,6 +1162,8 @@ class Worker:
                 )
                 await asyncio.sleep(1)
             except Exception:
+                if self._worker_stopping.is_set():
+                    return
                 logger.exception(
                     "Error in cancellation listener",
                     exc_info=True,
