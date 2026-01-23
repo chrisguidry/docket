@@ -9,6 +9,8 @@ This module provides:
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from contextlib import AsyncExitStack
+from types import TracebackType
 from typing import TYPE_CHECKING, Any, SupportsFloat
 
 from typing_extensions import Self
@@ -19,6 +21,8 @@ from redis.asyncio.cluster import RedisCluster
 
 if TYPE_CHECKING:
     from docket._redis import RedisConnection
+
+from docket._redis import close_resource
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -180,6 +184,7 @@ class ResultStorage:
     _store: RedisStore | ClusterKeyValueStore | None
     _pool: ConnectionPool | None
     _client: Redis | None
+    _stack: AsyncExitStack | None
 
     def __init__(
         self,
@@ -191,8 +196,12 @@ class ResultStorage:
         self._store = None
         self._pool = None
         self._client = None
+        self._stack = None
 
     async def __aenter__(self) -> Self:
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
+
         if self._redis.is_cluster:  # pragma: no cover
             if self._redis.cluster_client is None:
                 raise ValueError("RedisConnection not connected in cluster mode")
@@ -205,7 +214,11 @@ class ResultStorage:
             self._pool = await self._redis._connection_pool_from_url(
                 decode_responses=True
             )
+            self._stack.push_async_callback(close_resource, self._pool, "pool")
+
             self._client = Redis(connection_pool=self._pool)
+            self._stack.push_async_callback(close_resource, self._client, "client")
+
             self._store = RedisStore(
                 client=self._client, default_collection=self._default_collection
             )
@@ -217,24 +230,13 @@ class ResultStorage:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: object,
+        exc_tb: TracebackType | None,
     ) -> None:
-        # Close client first to release connections, then close pool
-        # Each step is isolated so failures don't prevent subsequent cleanup
-        if self._client is not None:
-            try:
-                await self._client.aclose()
-            except Exception:
-                logger.warning("Failed to close result storage client", exc_info=True)
-            finally:
-                self._client = None
-        if self._pool is not None:
-            try:
-                await self._pool.aclose()
-            except Exception:
-                logger.warning("Failed to close result storage pool", exc_info=True)
-            finally:
-                self._pool = None
+        assert self._stack is not None, "ResultStorage was not entered"
+        await self._stack.__aexit__(exc_type, exc_val, exc_tb)
+        self._stack = None
+        self._client = None
+        self._pool = None
 
     # AsyncKeyValue protocol - delegate to self._store
 

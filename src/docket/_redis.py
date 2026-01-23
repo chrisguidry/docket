@@ -11,8 +11,9 @@ this module will need to change.
 import asyncio
 import logging
 import typing
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from contextlib import AsyncExitStack, asynccontextmanager
+from types import TracebackType
+from typing import AsyncGenerator, Protocol
 from urllib.parse import ParseResult, urlparse, urlunparse
 
 from redis.asyncio import ConnectionPool, Redis
@@ -23,7 +24,26 @@ from redis.asyncio.connection import Connection, SSLConnection
 if typing.TYPE_CHECKING:
     from fakeredis.aioredis import FakeServer
 
+
+class AsyncCloseable(Protocol):
+    """Protocol for objects with an async aclose() method."""
+
+    async def aclose(self) -> None: ...
+
+
 logger: logging.Logger = logging.getLogger(__name__)
+
+
+async def close_resource(resource: AsyncCloseable, name: str) -> None:
+    """Close a resource with error handling.
+
+    Designed to be used with AsyncExitStack.push_async_callback().
+    """
+    try:
+        await resource.aclose()
+    except Exception:  # pragma: no cover
+        logger.warning("Failed to close %s", name, exc_info=True)
+
 
 # Cache of FakeServer instances keyed by URL
 _memory_servers: dict[str, "FakeServer"] = {}
@@ -69,6 +89,7 @@ class RedisConnection:
     # support pub/sub natively, so we connect directly to one primary node)
     _node_pool: ConnectionPool | None
     _parsed: ParseResult
+    _stack: AsyncExitStack | None
 
     def __init__(self, url: str) -> None:
         """Initialize a Redis connection manager.
@@ -81,48 +102,47 @@ class RedisConnection:
         self._connection_pool = None
         self._cluster_client = None
         self._node_pool = None
+        self._stack = None
 
     async def __aenter__(self) -> "RedisConnection":
         """Connect to Redis when entering the context."""
         if self.is_connected:
             return self
+
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
+
         if self.is_cluster:  # pragma: no cover
             self._cluster_client = await self._create_cluster_client()
+            self._stack.push_async_callback(
+                close_resource, self._cluster_client, "cluster client"
+            )
+
             self._node_pool = self._create_node_pool()
+            self._stack.push_async_callback(
+                close_resource, self._node_pool, "node pool"
+            )
         else:
             self._connection_pool = await self._connection_pool_from_url()
+            self._stack.push_async_callback(
+                close_resource, self._connection_pool, "connection pool"
+            )
+
         return self
 
     async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: object,
+        exc_tb: TracebackType | None,
     ) -> None:
         """Close the Redis connection when exiting the context."""
-        if self._cluster_client is not None:  # pragma: no cover
-            # Close node pool first (used for pub/sub)
-            if self._node_pool is not None:
-                try:
-                    await self._node_pool.aclose()
-                except Exception:
-                    logger.warning("Failed to close node pool", exc_info=True)
-                finally:
-                    self._node_pool = None
-            # Then close cluster client
-            try:
-                await self._cluster_client.aclose()
-            except Exception:
-                logger.warning("Failed to close cluster client", exc_info=True)
-            finally:
-                self._cluster_client = None
-        elif self._connection_pool is not None:
-            try:
-                await self._connection_pool.aclose()
-            except Exception:  # pragma: no cover
-                logger.warning("Failed to close connection pool", exc_info=True)
-            finally:
-                self._connection_pool = None
+        assert self._stack is not None, "RedisConnection was not entered"
+        await self._stack.__aexit__(exc_type, exc_val, exc_tb)
+        self._stack = None
+        self._connection_pool = None
+        self._cluster_client = None
+        self._node_pool = None
 
     @property
     def is_connected(self) -> bool:
