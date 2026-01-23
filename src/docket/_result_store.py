@@ -230,8 +230,10 @@ class ResultStorage:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        await self._stack.__aexit__(exc_type, exc_val, exc_tb)
-        del self._stack
+        try:
+            await self._stack.__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            del self._stack
 
     # AsyncKeyValue protocol - delegate to self._store
 

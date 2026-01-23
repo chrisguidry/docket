@@ -13,6 +13,7 @@ The cancel_task() helper handles this by tracking that we initiated the cancel.
 """
 
 import asyncio
+import sys
 from typing import Any
 
 # Sentinel messages for internal cancellation
@@ -58,11 +59,11 @@ async def cancel_task(task: "asyncio.Task[Any]", reason: str) -> None:
     try:
         await task
     except asyncio.CancelledError as e:
-        # In Python 3.11+, verify this is our cancellation via message
-        # In Python 3.10, message doesn't propagate, but we just called cancel
-        # so any CancelledError here is from our cancel() call
         if is_our_cancellation(e, reason):
-            return  # pragma: no cover - only reached in Python 3.11+
-        # Python 3.10: message doesn't propagate, but since we just called
-        # cancel() on this specific task, this CancelledError is expected
-        return  # pragma: no cover - only reached in Python 3.10
+            return
+        # Python 3.10: message doesn't propagate, but we just called cancel()
+        # so this CancelledError is probably from our cancel() call
+        if sys.version_info < (3, 11):  # pragma: no cover
+            return
+        # External cancellation - propagate it
+        raise  # pragma: no cover - race condition between cancel() and await

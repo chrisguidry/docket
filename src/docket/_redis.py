@@ -25,13 +25,13 @@ if typing.TYPE_CHECKING:
     from fakeredis.aioredis import FakeServer
 
 
+logger: logging.Logger = logging.getLogger(__name__)
+
+
 class AsyncCloseable(Protocol):
     """Protocol for objects with an async aclose() method."""
 
     async def aclose(self) -> None: ...
-
-
-logger: logging.Logger = logging.getLogger(__name__)
 
 
 async def close_resource(resource: AsyncCloseable, name: str) -> None:
@@ -139,8 +139,10 @@ class RedisConnection:
         exc_tb: TracebackType | None,
     ) -> None:
         """Close the Redis connection when exiting the context."""
-        await self._stack.__aexit__(exc_type, exc_val, exc_tb)
-        del self._stack
+        try:
+            await self._stack.__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            del self._stack
 
     @property
     def is_connected(self) -> bool:

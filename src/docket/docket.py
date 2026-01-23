@@ -211,8 +211,10 @@ class Docket(DocketSnapshotMixin):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        await self._stack.__aexit__(exc_type, exc_value, traceback)
-        del self._stack
+        try:
+            await self._stack.__aexit__(exc_type, exc_value, traceback)
+        finally:
+            del self._stack
 
     @asynccontextmanager
     async def redis(self) -> AsyncGenerator[Redis | RedisCluster, None]:

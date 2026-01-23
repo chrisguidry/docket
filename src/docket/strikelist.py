@@ -242,21 +242,17 @@ class StrikeList:
         await self._stack.enter_async_context(self._redis)
 
         self._strikes_loaded = asyncio.Event()
+        self._stack.callback(lambda: setattr(self, "_strikes_loaded", None))
+
         self._monitor_task = asyncio.create_task(
-            self._monitor_strikes(), name="docket.strikelist.monitor"
+            self._monitor_strikes(), name=f"{self.name} - strike monitor"
         )
-        self._stack.push_async_callback(self._cleanup_monitor)
+        self._stack.callback(lambda: setattr(self, "_monitor_task", None))
+        self._stack.push_async_callback(
+            cancel_task, self._monitor_task, CANCEL_MSG_CLEANUP
+        )
 
         return self
-
-    async def _cleanup_monitor(self) -> None:
-        """Clean up monitor task - registered as stack callback."""
-        assert self._monitor_task is not None
-        try:
-            await cancel_task(self._monitor_task, CANCEL_MSG_CLEANUP)
-        finally:
-            self._monitor_task = None
-            self._strikes_loaded = None
 
     async def __aexit__(
         self,
@@ -265,8 +261,10 @@ class StrikeList:
         traceback: TracebackType | None,
     ) -> None:
         """Async context manager exit - closes Redis connection."""
-        await self._stack.__aexit__(exc_type, exc_value, traceback)
-        del self._stack
+        try:
+            await self._stack.__aexit__(exc_type, exc_value, traceback)
+        finally:
+            del self._stack
 
     def add_condition(self, condition: Callable[["Execution"], bool]) -> None:
         """Adds a temporary condition that indicates an execution is stricken."""

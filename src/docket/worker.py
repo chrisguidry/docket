@@ -215,10 +215,12 @@ class Worker:
         self._stack.callback(lambda: delattr(self, "_tasks_by_key"))
 
         self._heartbeat_task = asyncio.create_task(
-            self._heartbeat(), name="docket.worker.heartbeat"
+            self._heartbeat(), name=f"{self.docket.name} - heartbeat"
         )
         self._stack.callback(lambda: delattr(self, "_heartbeat_task"))
-        self._stack.push_async_callback(self._cleanup_heartbeat)
+        self._stack.push_async_callback(
+            cancel_task, self._heartbeat_task, CANCEL_MSG_CLEANUP
+        )
 
         # Shared context is set up last, so it's cleaned up first (LIFO)
         self._shared_context = SharedContext(self.docket, self)
@@ -226,10 +228,6 @@ class Worker:
         await self._stack.enter_async_context(self._shared_context)
 
         return self
-
-    async def _cleanup_heartbeat(self) -> None:
-        """Clean up heartbeat task - registered as stack callback."""
-        await cancel_task(self._heartbeat_task, CANCEL_MSG_CLEANUP)
 
     async def __aexit__(
         self,
@@ -242,7 +240,10 @@ class Worker:
         await self._worker_done.wait()
 
         # Stack handles LIFO cleanup: shared_context first, then heartbeat
-        await self._stack.__aexit__(exc_type, exc_value, traceback)
+        try:
+            await self._stack.__aexit__(exc_type, exc_value, traceback)
+        finally:
+            del self._stack
 
     def labels(self) -> Mapping[str, str]:
         return {
@@ -341,11 +342,13 @@ class Worker:
                     try:
                         if until_finished:
                             run_task = asyncio.create_task(
-                                worker.run_until_finished(), name="docket.worker.run"
+                                worker.run_until_finished(),
+                                name=f"{docket_name} - worker",
                             )
                         else:
                             run_task = asyncio.create_task(
-                                worker.run_forever(), name="docket.worker.run"
+                                worker.run_forever(),
+                                name=f"{docket_name} - worker",
                             )  # pragma: no cover
                         await run_task
                     except asyncio.CancelledError:  # pragma: no cover
@@ -491,7 +494,10 @@ class Worker:
                 fallback_task=self.fallback_task,
             )
 
-            task = asyncio.create_task(self._execute(execution), name=execution.key)
+            task = asyncio.create_task(
+                self._execute(execution),
+                name=f"{self.docket.name} - task:{execution.key}",
+            )
             active_tasks[task] = message_id
             task_executions[task] = execution
             self._tasks_by_key[execution.key] = task
@@ -538,7 +544,7 @@ class Worker:
                 # Start cancellation listener and wait for it to be ready
                 infra.create_task(
                     self._cancellation_listener(),
-                    name="docket.worker.cancellation_listener",
+                    name=f"{self.docket.name} - cancellation listener",
                 )
                 await self._cancellation_ready.wait()
 
@@ -546,11 +552,12 @@ class Worker:
                     await self._schedule_all_automatic_perpetual_tasks()
 
                 infra.create_task(
-                    self._scheduler_loop(redis), name="docket.worker.scheduler"
+                    self._scheduler_loop(redis),
+                    name=f"{self.docket.name} - scheduler",
                 )
                 infra.create_task(
                     self._renew_leases(redis, active_tasks),
-                    name="docket.worker.lease_renewal",
+                    name=f"{self.docket.name} - lease renewal",
                 )
 
                 has_work: bool = True
@@ -972,7 +979,7 @@ class Worker:
             ),
         )
         task = asyncio.create_task(
-            task_coro, name=f"docket.worker.task:{execution.key}"
+            task_coro, name=f"{self.docket.name} - task:{execution.key}"
         )
         # Track whether WE cancelled for timeout (vs external cancellation)
         # We use a flag because Python 3.10 doesn't propagate cancel messages
