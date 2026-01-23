@@ -60,7 +60,7 @@ async def cancel_task(task: "asyncio.Task[Any]", reason: str) -> None:
         await task
     except asyncio.CancelledError as e:
         if is_our_cancellation(e, reason):
-            return
+            return  # pragma: no cover - only on 3.11+ when message propagates
         # Python 3.10: message doesn't propagate, but we just called cancel()
         # so this CancelledError is probably from our cancel() call
         if sys.version_info < (3, 11):  # pragma: no cover

@@ -1178,7 +1178,7 @@ class Worker:
         data = message["data"]
         key: TaskKey = data.decode() if isinstance(data, bytes) else data
 
-        if task := self._tasks_by_key.get(key):
+        if task := self._tasks_by_key.get(key):  # pragma: no branch
             logger.info(
                 "Cancelling running task %r",
                 key,
