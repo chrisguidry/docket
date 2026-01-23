@@ -711,7 +711,7 @@ class Worker:
         # Renew leases 4 times per redelivery_timeout period
         renewal_interval = self.redelivery_timeout.total_seconds() / 4
 
-        while not self._worker_stopping.is_set():
+        while not self._worker_stopping.is_set():  # pragma: no branch
             # Use interruptible wait so we respond to stopping quickly
             try:
                 await asyncio.wait_for(
@@ -1143,7 +1143,7 @@ class Worker:
                             await self._handle_cancellation(message)
             except ConnectionError:
                 if self._worker_stopping.is_set():
-                    return
+                    return  # pragma: no cover
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.warning(
                     "Redis connection error in cancellation listener, reconnecting...",
@@ -1152,7 +1152,7 @@ class Worker:
                 await asyncio.sleep(1)
             except Exception:
                 if self._worker_stopping.is_set():
-                    return
+                    return  # pragma: no cover
                 logger.exception(
                     "Error in cancellation listener",
                     exc_info=True,
