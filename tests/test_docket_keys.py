@@ -202,23 +202,15 @@ def test_strikelist_prefix_without_redis():
 # Tests for RedisConnection edge cases
 
 
-async def test_redis_connection_aenter_is_idempotent():
-    """RedisConnection.__aenter__ should be idempotent."""
+async def test_redis_connection_aenter_is_not_reentrant():
+    """RedisConnection.__aenter__ raises on re-entry."""
     connection = RedisConnection("memory://")
     await connection.__aenter__()
-    pool1 = connection._connection_pool
 
-    # Second enter should return same connection
-    await connection.__aenter__()
-    assert connection._connection_pool is pool1
+    # Second enter should raise
+    with pytest.raises(AssertionError, match="not reentrant"):
+        await connection.__aenter__()
 
-    await connection.__aexit__(None, None, None)
-
-
-async def test_redis_connection_aexit_when_not_connected():
-    """RedisConnection.__aexit__ should be safe when not connected."""
-    connection = RedisConnection("memory://")
-    # Should not raise when exiting without entering
     await connection.__aexit__(None, None, None)
 
 
@@ -235,50 +227,3 @@ def test_redis_connection_normalized_url_returns_original_for_non_cluster():
 
     connection2 = RedisConnection("memory://")
     assert connection2._normalized_url() == "memory://"
-
-
-async def test_docket_aexit_handles_redis_close_error(
-    caplog: pytest.LogCaptureFixture,
-):
-    """Docket should handle errors when closing Redis connection."""
-    from unittest.mock import AsyncMock
-
-    docket = Docket(name="test", url="memory://")
-    await docket.__aenter__()
-
-    # Make _redis.__aexit__ raise an exception
-    original_aexit = docket._redis.__aexit__
-    docket._redis.__aexit__ = AsyncMock(
-        side_effect=redis.exceptions.ConnectionError("boom")
-    )
-
-    # Should not raise, just log the warning
-    await docket.__aexit__(None, None, None)
-
-    assert "Failed to close docket Redis connection" in caplog.text
-
-    # Clean up the original connection
-    await original_aexit(None, None, None)
-
-
-async def test_docket_aexit_handles_result_storage_close_error(
-    caplog: pytest.LogCaptureFixture,
-):
-    """Docket should handle errors when closing result storage."""
-    from unittest.mock import AsyncMock
-
-    docket = Docket(name="test", url="memory://")
-    await docket.__aenter__()
-
-    # Make _result_storage.__aexit__ raise an exception
-    assert docket._result_storage is not None
-    original_aexit = docket._result_storage.__aexit__
-    docket._result_storage.__aexit__ = AsyncMock(side_effect=Exception("storage error"))
-
-    # Should not raise, just log the warning
-    await docket.__aexit__(None, None, None)
-
-    assert "Failed to close result storage" in caplog.text
-
-    # Clean up - call original to close resources
-    await original_aexit(None, None, None)

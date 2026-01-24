@@ -346,3 +346,30 @@ async def test_cancelled_perpetual_task_does_not_perpetuate(
         stream_len = await redis.xlen(docket.stream_key)
     assert queue_count == 0, "no tasks should be scheduled"
     assert stream_len == 0, "no tasks should be in the stream"
+
+
+async def test_cancel_running_task_with_timeout(docket: Docket, worker: Worker):
+    """A running task with Timeout can be cancelled via docket.cancel().
+
+    Regression test for bug where _run_function_with_timeout converted
+    ALL CancelledError to TimeoutError, breaking external cancellation.
+    """
+    from docket.dependencies import Timeout
+
+    started = asyncio.Event()
+
+    async def slow_task_with_timeout(timeout: Timeout = Timeout(timedelta(seconds=60))):
+        started.set()
+        await asyncio.sleep(60)
+
+    docket.register(slow_task_with_timeout)
+    execution = await docket.add(slow_task_with_timeout)()
+
+    worker_task = asyncio.create_task(worker.run_until_finished())
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+
+    await docket.cancel(execution.key)
+    await asyncio.wait_for(worker_task, timeout=5.0)
+
+    await execution.sync()
+    assert execution.state == ExecutionState.CANCELLED  # NOT FAILED

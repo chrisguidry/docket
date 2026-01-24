@@ -2,12 +2,16 @@
 
 import asyncio
 import logging
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+if sys.version_info < (3, 11):  # pragma: no cover
+    from exceptiongroup import ExceptionGroup
 from redis.asyncio import Redis
 from redis.asyncio.cluster import RedisCluster
 from redis.exceptions import ConnectionError
@@ -177,8 +181,9 @@ async def test_worker_handles_unregistered_task_execution_on_redelivery(
         docket, redelivery_timeout=timedelta(milliseconds=100)
     ) as worker_a:
         worker_a._execute = AsyncMock(side_effect=Exception("Simulated failure"))  # type: ignore[protected-access]
-        with pytest.raises(Exception, match="Simulated failure"):
+        with pytest.raises(ExceptionGroup) as exc_info:
             await worker_a.run_until_finished()
+        assert any("Simulated failure" in str(e) for e in exc_info.value.exceptions)
 
     # Verify task is pending redelivery
     async with docket.redis() as redis:

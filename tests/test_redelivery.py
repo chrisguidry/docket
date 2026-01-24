@@ -7,10 +7,14 @@ These tests verify that:
 
 import asyncio
 import inspect
+import sys
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+if sys.version_info < (3, 11):  # pragma: no cover
+    from exceptiongroup import ExceptionGroup
 from redis.asyncio import Redis
 from redis.asyncio.cluster import RedisCluster
 from redis.exceptions import ConnectionError
@@ -35,8 +39,9 @@ async def test_redelivery_from_abandoned_worker(docket: Docket, the_task: AsyncM
         docket, redelivery_timeout=timedelta(milliseconds=100)
     ) as worker_a:
         worker_a._execute = AsyncMock(side_effect=Exception("Nope"))  # pyright: ignore[reportPrivateUsage]
-        with pytest.raises(Exception, match="Nope"):
+        with pytest.raises(ExceptionGroup) as exc_info:
             await worker_a.run_until_finished()
+        assert any("Nope" in str(e) for e in exc_info.value.exceptions)
 
     the_task.assert_not_called()
 

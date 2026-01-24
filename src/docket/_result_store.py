@@ -6,10 +6,11 @@ This module provides:
   or py-key-value's RedisStore, managing connection pool lifecycle internally
 """
 
-import asyncio
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from contextlib import AsyncExitStack
+from types import TracebackType
 from typing import TYPE_CHECKING, Any, SupportsFloat
 
 from typing_extensions import Self
@@ -20,6 +21,8 @@ from redis.asyncio.cluster import RedisCluster
 
 if TYPE_CHECKING:
     from docket._redis import RedisConnection
+
+from docket._redis import close_resource
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -178,9 +181,10 @@ class ResultStorage:
     (with decode_responses=True) using the RedisConnection's URL.
     """
 
-    _store: RedisStore | ClusterKeyValueStore | None
-    _pool: ConnectionPool | None
-    _client: Redis | None
+    _store: RedisStore | ClusterKeyValueStore
+    _pool: ConnectionPool
+    _client: Redis
+    _stack: AsyncExitStack
 
     def __init__(
         self,
@@ -189,11 +193,11 @@ class ResultStorage:
     ) -> None:
         self._redis = redis
         self._default_collection = default_collection
-        self._store = None
-        self._pool = None
-        self._client = None
 
     async def __aenter__(self) -> Self:
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
+
         if self._redis.is_cluster:  # pragma: no cover
             if self._redis.cluster_client is None:
                 raise ValueError("RedisConnection not connected in cluster mode")
@@ -206,7 +210,13 @@ class ResultStorage:
             self._pool = await self._redis._connection_pool_from_url(
                 decode_responses=True
             )
+            self._stack.callback(lambda: delattr(self, "_pool"))
+            self._stack.push_async_callback(close_resource, self._pool, "pool")
+
             self._client = Redis(connection_pool=self._pool)
+            self._stack.callback(lambda: delattr(self, "_client"))
+            self._stack.push_async_callback(close_resource, self._client, "client")
+
             self._store = RedisStore(
                 client=self._client, default_collection=self._default_collection
             )
@@ -218,24 +228,12 @@ class ResultStorage:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: object,
+        exc_tb: TracebackType | None,
     ) -> None:
-        # Close client first to release connections, then close pool
-        # Each step is isolated so failures don't prevent subsequent cleanup
-        if self._client is not None:
-            try:
-                await asyncio.shield(self._client.aclose())
-            except (Exception, asyncio.CancelledError):
-                logger.warning("Failed to close result storage client", exc_info=True)
-            finally:
-                self._client = None
-        if self._pool is not None:
-            try:
-                await asyncio.shield(self._pool.aclose())
-            except (Exception, asyncio.CancelledError):
-                logger.warning("Failed to close result storage pool", exc_info=True)
-            finally:
-                self._pool = None
+        try:
+            await self._stack.__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            del self._stack
 
     # AsyncKeyValue protocol - delegate to self._store
 
@@ -249,7 +247,6 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> dict[str, Any] | None:
-        assert self._store is not None
         return await self._store.get(key, collection=collection)
 
     async def ttl(
@@ -258,7 +255,6 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> tuple[dict[str, Any] | None, float | None]:
-        assert self._store is not None
         return await self._store.ttl(key, collection=collection)
 
     async def put(
@@ -269,7 +265,6 @@ class ResultStorage:
         collection: str | None = None,
         ttl: SupportsFloat | None = None,
     ) -> None:
-        assert self._store is not None
         await self._store.put(key, value, collection=collection, ttl=ttl)
 
     async def delete(
@@ -278,7 +273,6 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> bool:
-        assert self._store is not None
         return await self._store.delete(key, collection=collection)
 
     async def get_many(
@@ -287,7 +281,6 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> list[dict[str, Any] | None]:
-        assert self._store is not None
         return await self._store.get_many(keys, collection=collection)
 
     async def ttl_many(
@@ -296,7 +289,6 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> list[tuple[dict[str, Any] | None, float | None]]:
-        assert self._store is not None
         return await self._store.ttl_many(keys, collection=collection)
 
     async def put_many(
@@ -307,7 +299,6 @@ class ResultStorage:
         collection: str | None = None,
         ttl: SupportsFloat | None = None,
     ) -> None:
-        assert self._store is not None
         await self._store.put_many(keys, values, collection=collection, ttl=ttl)
 
     async def delete_many(
@@ -316,5 +307,4 @@ class ResultStorage:
         *,
         collection: str | None = None,
     ) -> int:
-        assert self._store is not None
         return await self._store.delete_many(keys, collection=collection)

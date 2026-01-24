@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from .._cancellation import CANCEL_MSG_CLEANUP, cancel_task
 from ._base import AdmissionBlocked, Dependency
 
 logger = logging.getLogger(__name__)
@@ -137,13 +137,15 @@ class ConcurrencyLimit(Dependency):
         # Spawn background task for lease renewal
         limit._renewal_task = asyncio.create_task(
             limit._renew_lease_loop(worker.redelivery_timeout),
-            name=f"docket.concurrency.lease:{execution.key}",
+            name=f"{docket.name} - concurrency lease:{execution.key}",
         )
 
         # Register cleanup for this new instance with the AsyncExitStack
         # (The original instance's __aexit__ will also be called but does nothing)
+        # Order matters (LIFO): release slot first, then cancel renewal task
         stack = _Depends.stack.get()
-        stack.push_async_callback(limit._cleanup)
+        stack.push_async_callback(limit._release_slot)
+        stack.push_async_callback(cancel_task, limit._renewal_task, CANCEL_MSG_CLEANUP)
 
         return limit
 
@@ -157,18 +159,6 @@ class ConcurrencyLimit(Dependency):
         # Actual cleanup is handled by _cleanup() on the per-task instance,
         # which is registered with the AsyncExitStack via push_async_callback.
         pass
-
-    async def _cleanup(self) -> None:
-        """Cleanup for per-task instance, called by AsyncExitStack."""
-        # Stop lease renewal (always set before _cleanup is registered)
-        self._renewal_task.cancel()  # type: ignore[union-attr]
-        with suppress(asyncio.CancelledError):
-            await self._renewal_task  # type: ignore[misc]
-
-        # Release slot
-        docket = self.docket.get()
-        async with docket.redis() as redis:
-            await self._release_slot(redis)
 
     async def _acquire_slot(
         self, redis: Redis, is_redelivery: bool, redelivery_timeout: timedelta
@@ -261,22 +251,24 @@ class ConcurrencyLimit(Dependency):
 
         return bool(result)
 
-    async def _release_slot(self, redis: Redis) -> None:
+    async def _release_slot(self) -> None:
         """Release a concurrency slot when task completes."""
-        # Note: _cleanup is only registered for instances with valid keys
+        # Note: only registered as callback for instances with valid keys
         assert self._concurrency_key and self._task_key
 
-        # Remove this task from the sorted set and delete the key if empty
-        # KEYS[1]: concurrency_key, ARGV[1]: task_key
-        release_script = redis.register_script(
-            """
-            redis.call('ZREM', KEYS[1], ARGV[1])
-            if redis.call('ZCARD', KEYS[1]) == 0 then
-                redis.call('DEL', KEYS[1])
-            end
-            """
-        )
-        await release_script(keys=[self._concurrency_key], args=[self._task_key])
+        docket = self.docket.get()
+        async with docket.redis() as redis:
+            # Remove this task from the sorted set and delete the key if empty
+            # KEYS[1]: concurrency_key, ARGV[1]: task_key
+            release_script = redis.register_script(
+                """
+                redis.call('ZREM', KEYS[1], ARGV[1])
+                if redis.call('ZCARD', KEYS[1]) == 0 then
+                    redis.call('DEL', KEYS[1])
+                end
+                """
+            )
+            await release_script(keys=[self._concurrency_key], args=[self._task_key])
 
     async def _renew_lease_loop(self, redelivery_timeout: timedelta) -> None:
         """Periodically refresh slot timestamp to prevent expiration."""

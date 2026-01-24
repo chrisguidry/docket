@@ -200,19 +200,20 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
     async def failing_pubsub() -> AsyncGenerator[Any, None]:
         nonlocal error_count
         async with original_pubsub() as pubsub:
-            original_listen = pubsub.listen  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+            original_get_message = pubsub.get_message
 
-            async def failing_listen() -> AsyncGenerator[Any, None]:
+            async def failing_get_message(
+                **kwargs: Any,
+            ) -> dict[str, Any] | None:
                 nonlocal error_count
                 error_count += 1
                 if error_count == 1:
                     raise ConnectionError("Test connection error")
                 # Signal that we got past the error handler
                 error_handled.set()
-                async for message in original_listen():  # pyright: ignore[reportUnknownVariableType]
-                    yield message  # pragma: no cover
+                return await original_get_message(**kwargs)  # pyright: ignore[reportUnknownVariableType]
 
-            pubsub.listen = failing_listen
+            pubsub.get_message = failing_get_message  # type: ignore[method-assign]
             yield pubsub
 
     async with Worker(
@@ -242,19 +243,20 @@ async def test_cancellation_listener_handles_generic_exception(docket: Docket):
     async def failing_pubsub() -> AsyncGenerator[Any, None]:
         nonlocal error_count
         async with original_pubsub() as pubsub:
-            original_listen = pubsub.listen  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+            original_get_message = pubsub.get_message
 
-            async def failing_listen() -> AsyncGenerator[Any, None]:
+            async def failing_get_message(
+                **kwargs: Any,
+            ) -> dict[str, Any] | None:
                 nonlocal error_count
                 error_count += 1
                 if error_count == 1:
                     raise RuntimeError("Test generic error")
                 # Signal that we got past the error handler
                 error_handled.set()
-                async for message in original_listen():  # pyright: ignore[reportUnknownVariableType]
-                    yield message  # pragma: no cover
+                return await original_get_message(**kwargs)  # pyright: ignore[reportUnknownVariableType]
 
-            pubsub.listen = failing_listen
+            pubsub.get_message = failing_get_message  # type: ignore[method-assign]
             yield pubsub
 
     async with Worker(

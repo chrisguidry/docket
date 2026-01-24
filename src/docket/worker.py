@@ -9,7 +9,7 @@ import signal
 import socket
 import sys
 import time
-from contextlib import contextmanager, suppress
+from contextlib import AsyncExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
@@ -25,12 +25,16 @@ from typing import (
 
 import cloudpickle
 
-if sys.version_info < (3, 11):  # pragma: no cover
-    from exceptiongroup import ExceptionGroup
+if sys.version_info < (3, 11):
+    from exceptiongroup import ExceptionGroup  # pragma: no cover
+    from taskgroup import TaskGroup  # pragma: no cover
+else:
+    from asyncio import TaskGroup  # pragma: no cover
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
+from ._cancellation import CANCEL_MSG_CLEANUP, CANCEL_MSG_TIMEOUT, cancel_task
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -193,22 +197,35 @@ class Worker:
             yield
 
     async def __aenter__(self) -> Self:
-        self._heartbeat_task = asyncio.create_task(
-            self._heartbeat(), name="docket.worker.heartbeat"
-        )
-        self._execution_counts: dict[str, int] = {}
-        # Track running tasks for cancellation lookup
-        self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
-        # Events for coordinating worker loop shutdown
-        self._worker_stopping = asyncio.Event()
-        self._worker_done = asyncio.Event()
-        self._worker_done.set()  # Initially done (not running)
-        # Signaled when cancellation listener is subscribed and ready
-        self._cancellation_ready = asyncio.Event()
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
 
-        # Set up Shared dependency infrastructure
+        # Events for coordinating worker loop shutdown (cleaned up last)
+        self._worker_stopping = asyncio.Event()
+        self._stack.callback(lambda: delattr(self, "_worker_stopping"))
+        self._worker_done = asyncio.Event()
+        self._stack.callback(lambda: delattr(self, "_worker_done"))
+        self._worker_done.set()  # Initially done (not running)
+        self._cancellation_ready = asyncio.Event()
+        self._stack.callback(lambda: delattr(self, "_cancellation_ready"))
+
+        self._execution_counts: dict[str, int] = {}
+        self._stack.callback(lambda: delattr(self, "_execution_counts"))
+        self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
+        self._stack.callback(lambda: delattr(self, "_tasks_by_key"))
+
+        self._heartbeat_task = asyncio.create_task(
+            self._heartbeat(), name=f"{self.docket.name} - heartbeat"
+        )
+        self._stack.callback(lambda: delattr(self, "_heartbeat_task"))
+        self._stack.push_async_callback(
+            cancel_task, self._heartbeat_task, CANCEL_MSG_CLEANUP
+        )
+
+        # Shared context is set up last, so it's cleaned up first (LIFO)
         self._shared_context = SharedContext(self.docket, self)
-        await self._shared_context.__aenter__()
+        self._stack.callback(lambda: delattr(self, "_shared_context"))
+        await self._stack.enter_async_context(self._shared_context)
 
         return self
 
@@ -222,20 +239,11 @@ class Worker:
         self._worker_stopping.set()
         await self._worker_done.wait()
 
-        self._heartbeat_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await self._heartbeat_task
-        del self._heartbeat_task
-
-        del self._execution_counts
-        del self._tasks_by_key
-        del self._worker_stopping
-        del self._worker_done
-        del self._cancellation_ready
-
-        # Clean up Shared dependencies (closes context managers in reverse order)
-        await self._shared_context.__aexit__(exc_type, exc_value, traceback)
-        del self._shared_context
+        # Stack handles LIFO cleanup: shared_context first, then heartbeat
+        try:
+            await self._stack.__aexit__(exc_type, exc_value, traceback)
+        finally:
+            del self._stack
 
     def labels(self) -> Mapping[str, str]:
         return {
@@ -334,11 +342,13 @@ class Worker:
                     try:
                         if until_finished:
                             run_task = asyncio.create_task(
-                                worker.run_until_finished(), name="docket.worker.run"
+                                worker.run_until_finished(),
+                                name=f"{docket_name} - worker",
                             )
                         else:
                             run_task = asyncio.create_task(
-                                worker.run_forever(), name="docket.worker.run"
+                                worker.run_forever(),
+                                name=f"{docket_name} - worker",
                             )  # pragma: no cover
                         await run_task
                     except asyncio.CancelledError:  # pragma: no cover
@@ -410,11 +420,6 @@ class Worker:
         self._worker_done.clear()
         self._cancellation_ready.clear()  # Reset for reconnection scenarios
 
-        # Initialize task variables before try block so finally can check them.
-        # This ensures _worker_done.set() is always called if _worker_done.clear() was.
-        cancellation_listener_task: asyncio.Task[None] | None = None
-        scheduler_task: asyncio.Task[None] | None = None
-        lease_renewal_task: asyncio.Task[None] | None = None
         active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
         task_executions: dict[asyncio.Task[None], Execution] = {}
         available_slots = self.concurrency
@@ -489,7 +494,10 @@ class Worker:
                 fallback_task=self.fallback_task,
             )
 
-            task = asyncio.create_task(self._execute(execution), name=execution.key)
+            task = asyncio.create_task(
+                self._execute(execution),
+                name=f"{self.docket.name} - task:{execution.key}",
+            )
             active_tasks[task] = message_id
             task_executions[task] = execution
             self._tasks_by_key[execution.key] = task
@@ -532,49 +540,54 @@ class Worker:
                 await pipeline.execute()
 
         try:
-            # Start cancellation listener and wait for it to be ready
-            cancellation_listener_task = asyncio.create_task(
-                self._cancellation_listener(),
-                name="docket.worker.cancellation_listener",
-            )
-            await self._cancellation_ready.wait()
+            async with TaskGroup() as infra:
+                # Start cancellation listener and wait for it to be ready
+                infra.create_task(
+                    self._cancellation_listener(),
+                    name=f"{self.docket.name} - cancellation listener",
+                )
+                await self._cancellation_ready.wait()
 
-            if self.schedule_automatic_tasks:
-                await self._schedule_all_automatic_perpetual_tasks()
+                if self.schedule_automatic_tasks:
+                    await self._schedule_all_automatic_perpetual_tasks()
 
-            scheduler_task = asyncio.create_task(
-                self._scheduler_loop(redis), name="docket.worker.scheduler"
-            )
-            lease_renewal_task = asyncio.create_task(
-                self._renew_leases(redis, active_tasks),
-                name="docket.worker.lease_renewal",
-            )
+                infra.create_task(
+                    self._scheduler_loop(redis),
+                    name=f"{self.docket.name} - scheduler",
+                )
+                infra.create_task(
+                    self._renew_leases(redis, active_tasks),
+                    name=f"{self.docket.name} - lease renewal",
+                )
 
-            has_work: bool = True
-            stopping = self._worker_stopping.is_set
-            while (forever or has_work or active_tasks) and not stopping():
-                await process_completed_tasks()
+                has_work: bool = True
+                stopping = self._worker_stopping.is_set
+                while (forever or has_work or active_tasks) and not stopping():
+                    await process_completed_tasks()
 
-                available_slots = self.concurrency - len(active_tasks)
-
-                if available_slots <= 0:
-                    await asyncio.sleep(self.minimum_check_interval.total_seconds())
-                    continue
-
-                for source in [get_redeliveries, get_new_deliveries]:
-                    for stream_key, messages in await source(redis):
-                        is_redelivery = stream_key == b"__redelivery__"
-                        for message_id, message in messages:
-                            if not message:  # pragma: no cover
-                                continue
-
-                            await start_task(message_id, message, is_redelivery)
+                    available_slots = self.concurrency - len(active_tasks)
 
                     if available_slots <= 0:
-                        break
+                        await asyncio.sleep(self.minimum_check_interval.total_seconds())
+                        continue
 
-                if not forever and not active_tasks:
-                    has_work = await check_for_work()
+                    for source in [get_redeliveries, get_new_deliveries]:
+                        for stream_key, messages in await source(redis):
+                            is_redelivery = stream_key == b"__redelivery__"
+                            for message_id, message in messages:
+                                if not message:  # pragma: no cover
+                                    continue
+
+                                await start_task(message_id, message, is_redelivery)
+
+                        if available_slots <= 0:
+                            break
+
+                    if not forever and not active_tasks:
+                        has_work = await check_for_work()
+
+                # Signal internal tasks to stop before exiting TaskGroup
+                self._worker_stopping.set()
 
         except asyncio.CancelledError:
             if active_tasks:  # pragma: no cover
@@ -588,21 +601,6 @@ class Worker:
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
                 await process_completed_tasks()
-
-            # Signal internal tasks to stop
-            self._worker_stopping.set()
-
-            # These check _worker_stopping and exit cleanly
-            if scheduler_task is not None:
-                await scheduler_task
-            if lease_renewal_task is not None:
-                await lease_renewal_task
-
-            # Cancellation listener has while True loop, needs explicit cancellation
-            if cancellation_listener_task is not None:  # pragma: no branch
-                cancellation_listener_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await cancellation_listener_task
 
             self._worker_done.set()
 
@@ -669,7 +667,7 @@ class Worker:
 
         log_context = self._log_context()
 
-        while not self._worker_stopping.is_set():
+        while not self._worker_stopping.is_set():  # pragma: no branch
             try:
                 logger.debug("Scheduling due tasks", extra=log_context)
                 with self._maybe_suppress_instrumentation():
@@ -697,16 +695,15 @@ class Worker:
                     extra=log_context,
                 )
 
-            # Wait for worker to stop or scheduling interval to pass
+            # Use interruptible wait so we respond to stopping quickly
             try:
                 await asyncio.wait_for(
                     self._worker_stopping.wait(),
                     timeout=self.scheduling_resolution.total_seconds(),
                 )
+                return  # Event was set, exit the loop
             except asyncio.TimeoutError:
-                pass  # Time to check for due tasks again
-
-        logger.debug("Scheduler loop finished", extra=log_context)
+                pass  # Normal timeout, continue scheduling
 
     async def _renew_leases(
         self,
@@ -722,14 +719,16 @@ class Worker:
         renewal_interval = self.redelivery_timeout.total_seconds() / 4
 
         while not self._worker_stopping.is_set():  # pragma: no branch
+            # Use interruptible wait so we respond to stopping quickly
             try:
                 await asyncio.wait_for(
-                    self._worker_stopping.wait(),
-                    timeout=renewal_interval,
+                    self._worker_stopping.wait(), timeout=renewal_interval
                 )
-                break  # Worker is stopping
+                # Event was set, exit the loop
+                return
             except asyncio.TimeoutError:
-                pass  # Time to renew leases
+                # Normal timeout, continue with lease renewal
+                pass
 
             message_ids = list(active_messages.values())
             if not message_ids:
@@ -980,13 +979,18 @@ class Worker:
             ),
         )
         task = asyncio.create_task(
-            task_coro, name=f"docket.worker.task:{execution.key}"
+            task_coro, name=f"{self.docket.name} - task:{execution.key}"
         )
+        # Track whether WE cancelled for timeout (vs external cancellation)
+        # We use a flag because Python 3.10 doesn't propagate cancel messages
+        # to the awaiter, only Python 3.11+ does
+        cancelled_for_timeout = False
         try:
             while not task.done():  # pragma: no branch
                 remaining = timeout.remaining().total_seconds()
                 if timeout.expired():
-                    task.cancel()
+                    cancelled_for_timeout = True
+                    task.cancel(CANCEL_MSG_TIMEOUT)
                     break
 
                 try:
@@ -998,12 +1002,15 @@ class Worker:
                     continue
         finally:
             if not task.done():  # pragma: no branch
-                task.cancel()
+                cancelled_for_timeout = True
+                task.cancel(CANCEL_MSG_TIMEOUT)
 
         try:
             return await task
         except asyncio.CancelledError:
-            raise asyncio.TimeoutError
+            if cancelled_for_timeout:
+                raise asyncio.TimeoutError
+            raise  # pragma: no cover - External cancellation propagation
 
     async def _retry_if_requested(
         self,
@@ -1036,7 +1043,11 @@ class Worker:
             return False
 
         if perpetual.cancelled:
-            await self.docket.cancel(execution.key)
+            # Clean up Redis state without sending a pub/sub cancellation signal.
+            # We're completing normally, not cancelling - the pub/sub signal would
+            # cause the cancellation listener to cancel us mid-execution.
+            async with self.docket.redis() as redis:
+                await self.docket._cancel(redis, execution.key)
             return False
 
         now = datetime.now(timezone.utc)
@@ -1135,17 +1146,21 @@ class Worker:
         cancel_pattern = self.docket.key("cancel:*")
         log_context = self._log_context()
 
-        while True:
+        while not self._worker_stopping.is_set():
             try:
                 async with self.docket._pubsub() as pubsub:
                     await pubsub.psubscribe(cancel_pattern)
                     self._cancellation_ready.set()
-                    async for message in pubsub.listen():
-                        if message["type"] == "pmessage":
+                    # Poll for messages, checking _worker_stopping periodically
+                    while not self._worker_stopping.is_set():
+                        message = await pubsub.get_message(
+                            ignore_subscribe_messages=True, timeout=0.1
+                        )
+                        if message is not None and message["type"] == "pmessage":
                             await self._handle_cancellation(message)
-            except asyncio.CancelledError:
-                return
             except ConnectionError:
+                if self._worker_stopping.is_set():
+                    return  # pragma: no cover
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.warning(
                     "Redis connection error in cancellation listener, reconnecting...",
@@ -1153,6 +1168,8 @@ class Worker:
                 )
                 await asyncio.sleep(1)
             except Exception:
+                if self._worker_stopping.is_set():
+                    return  # pragma: no cover
                 logger.exception(
                     "Error in cancellation listener",
                     exc_info=True,
@@ -1165,7 +1182,7 @@ class Worker:
         data = message["data"]
         key: TaskKey = data.decode() if isinstance(data, bytes) else data
 
-        if task := self._tasks_by_key.get(key):
+        if task := self._tasks_by_key.get(key):  # pragma: no branch
             logger.info(
                 "Cancelling running task %r",
                 key,

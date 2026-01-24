@@ -9,7 +9,7 @@ import abc
 import asyncio
 import enum
 import logging
-from contextlib import contextmanager
+from contextlib import AsyncExitStack, contextmanager
 from types import TracebackType
 from typing import (
     TYPE_CHECKING,
@@ -29,6 +29,7 @@ from redis.asyncio import Redis
 from redis.asyncio.cluster import RedisCluster
 from typing_extensions import Self
 
+from ._cancellation import CANCEL_MSG_CLEANUP, cancel_task
 from ._telemetry import suppress_instrumentation
 
 if TYPE_CHECKING:
@@ -172,6 +173,7 @@ class StrikeList:
     _redis: RedisConnection | None
     _monitor_task: asyncio.Task[NoReturn] | None
     _strikes_loaded: asyncio.Event | None
+    _stack: AsyncExitStack
 
     def __init__(
         self,
@@ -228,18 +230,26 @@ class StrikeList:
 
     async def __aenter__(self) -> Self:
         """Async context manager entry - connects to Redis if URL provided."""
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
+
         if self._redis is None:
             return self  # No Redis connection needed (local-only mode)
 
-        if self._redis.is_connected:
-            return self
-
-        await self._redis.__aenter__()
+        assert not self._redis.is_connected, "StrikeList is not reentrant"
+        await self._stack.enter_async_context(self._redis)
 
         self._strikes_loaded = asyncio.Event()
+        self._stack.callback(lambda: setattr(self, "_strikes_loaded", None))
+
         self._monitor_task = asyncio.create_task(
-            self._monitor_strikes(), name="docket.strikelist.monitor"
+            self._monitor_strikes(), name=f"{self.name} - strike monitor"
         )
+        self._stack.callback(lambda: setattr(self, "_monitor_task", None))
+        self._stack.push_async_callback(
+            cancel_task, self._monitor_task, CANCEL_MSG_CLEANUP
+        )
+
         return self
 
     async def __aexit__(
@@ -249,23 +259,10 @@ class StrikeList:
         traceback: TracebackType | None,
     ) -> None:
         """Async context manager exit - closes Redis connection."""
-        if self._monitor_task is not None:
-            self._monitor_task.cancel()
-            try:
-                await self._monitor_task
-            except asyncio.CancelledError:
-                pass
-            self._monitor_task = None
-
-        self._strikes_loaded = None
-
-        if self._redis is not None and self._redis.is_connected:
-            try:
-                await asyncio.shield(self._redis.__aexit__(None, None, None))
-            except (Exception, asyncio.CancelledError):
-                logger.warning(
-                    "Failed to close strikelist Redis connection", exc_info=True
-                )
+        try:
+            await self._stack.__aexit__(exc_type, exc_value, traceback)
+        finally:
+            del self._stack
 
     def add_condition(self, condition: Callable[["Execution"], bool]) -> None:
         """Adds a temporary condition that indicates an execution is stricken."""
