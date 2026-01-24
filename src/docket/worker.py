@@ -1043,7 +1043,11 @@ class Worker:
             return False
 
         if perpetual.cancelled:
-            await self.docket.cancel(execution.key)
+            # Clean up Redis state without sending a pub/sub cancellation signal.
+            # We're completing normally, not cancelling - the pub/sub signal would
+            # cause the cancellation listener to cancel us mid-execution.
+            async with self.docket.redis() as redis:
+                await self.docket._cancel(redis, execution.key)
             return False
 
         now = datetime.now(timezone.utc)
