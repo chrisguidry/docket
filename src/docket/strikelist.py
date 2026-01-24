@@ -236,9 +236,7 @@ class StrikeList:
         if self._redis is None:
             return self  # No Redis connection needed (local-only mode)
 
-        if self._redis.is_connected:
-            return self
-
+        assert not self._redis.is_connected, "StrikeList is not reentrant"
         await self._stack.enter_async_context(self._redis)
 
         self._strikes_loaded = asyncio.Event()

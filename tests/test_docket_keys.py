@@ -202,15 +202,14 @@ def test_strikelist_prefix_without_redis():
 # Tests for RedisConnection edge cases
 
 
-async def test_redis_connection_aenter_is_idempotent():
-    """RedisConnection.__aenter__ should be idempotent."""
+async def test_redis_connection_aenter_is_not_reentrant():
+    """RedisConnection.__aenter__ raises on re-entry."""
     connection = RedisConnection("memory://")
     await connection.__aenter__()
-    pool1 = connection._connection_pool
 
-    # Second enter should return same connection
-    await connection.__aenter__()
-    assert connection._connection_pool is pool1
+    # Second enter should raise
+    with pytest.raises(AssertionError, match="not reentrant"):
+        await connection.__aenter__()
 
     await connection.__aexit__(None, None, None)
 

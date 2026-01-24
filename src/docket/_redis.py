@@ -105,8 +105,7 @@ class RedisConnection:
 
     async def __aenter__(self) -> "RedisConnection":
         """Connect to Redis when entering the context."""
-        if self.is_connected:
-            return self
+        assert not self.is_connected, "RedisConnection is not reentrant"
 
         self._stack = AsyncExitStack()
         await self._stack.__aenter__()

@@ -86,16 +86,15 @@ async def test_explicit_aenter_aexit(redis_url: str, strike_name: str):
     assert strikes._monitor_task is None
 
 
-async def test_aenter_is_idempotent(redis_url: str, strike_name: str):
-    """Test that calling __aenter__ multiple times is safe."""
+async def test_aenter_is_not_reentrant(redis_url: str, strike_name: str):
+    """Test that calling __aenter__ twice raises an assertion error."""
     strikes = StrikeList(url=redis_url, name=strike_name)
 
     await strikes.__aenter__()
-    redis1 = strikes._redis
 
-    # Second __aenter__ should be a no-op
-    await strikes.__aenter__()
-    assert strikes._redis is redis1
+    # Second __aenter__ should raise
+    with pytest.raises(AssertionError, match="not reentrant"):
+        await strikes.__aenter__()
 
     await strikes.__aexit__(None, None, None)
 
