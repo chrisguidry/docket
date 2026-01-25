@@ -100,6 +100,6 @@ class Timeout(Runtime):
                     f"timeout of {self.base.total_seconds()}s"
                 )
                 await cancel_task(task, timeout_reason)
-                if timed_out:
+                if timed_out:  # pragma: no branch
                     raise asyncio.TimeoutError(timeout_reason)
                 # Otherwise let the original exception (e.g. CancelledError) propagate
