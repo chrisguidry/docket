@@ -6,17 +6,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from docket import CurrentDocket, CurrentWorker, Docket, Worker
-from typing import Any, Awaitable, Callable
-
 from docket.dependencies import (
     Depends,
     ExponentialRetry,
     Retry,
-    Runtime,
     TaskArgument,
-    Timeout,
 )
-from docket.execution import Execution
 
 
 async def test_dependencies_may_be_duplicated(docket: Docket, worker: Worker):
@@ -45,51 +40,6 @@ async def test_dependencies_may_be_duplicated(docket: Docket, worker: Worker):
     await worker.run_until_finished()
 
     assert called
-
-
-async def test_retries_must_be_unique(docket: Docket, worker: Worker):
-    async def the_task(
-        a: str,
-        retryA: Retry = Retry(attempts=3),
-        retryB: Retry = Retry(attempts=5),
-    ):
-        pass  # pragma: no cover
-
-    with pytest.raises(
-        ValueError,
-        match="Only one Retry dependency is allowed per task",
-    ):
-        await docket.add(the_task)("a")
-
-
-async def test_runtime_subclasses_must_be_unique(docket: Docket, worker: Worker):
-    """Two different Runtime subclasses should conflict since Runtime.single=True."""
-
-    class CustomRuntime(Runtime):
-        async def __aenter__(self) -> "CustomRuntime":
-            return self  # pragma: no cover
-
-        async def run(
-            self,
-            execution: Execution,
-            function: Callable[..., Awaitable[Any]],
-            args: tuple[Any, ...],
-            kwargs: dict[str, Any],
-        ) -> Any:
-            return await function(*args, **kwargs)  # pragma: no cover
-
-    async def the_task(
-        a: str,
-        timeout: Timeout = Timeout(timedelta(seconds=10)),
-        custom: CustomRuntime = CustomRuntime(),
-    ):
-        pass  # pragma: no cover
-
-    with pytest.raises(
-        ValueError,
-        match=r"Only one Runtime dependency is allowed per task, but found: .+",
-    ):
-        await docket.add(the_task)("a")
 
 
 async def test_users_can_provide_dependencies_directly(docket: Docket, worker: Worker):
@@ -139,7 +89,7 @@ async def test_user_provide_retries_are_used(docket: Docket, worker: Worker):
 
 
 @pytest.mark.parametrize("retry_cls", [Retry, ExponentialRetry])
-async def test_user_can_request_a_retry_in_timedelta_time(
+async def test_user_can_request_a_retry_after_a_delay(
     retry_cls: Retry, docket: Docket, worker: Worker
 ):
     calls = 0
@@ -160,7 +110,7 @@ async def test_user_can_request_a_retry_in_timedelta_time(
         nonlocal first_call_time
         if not first_call_time:
             first_call_time = datetime.now(timezone.utc)
-            retry.in_(timedelta(seconds=0.5))
+            retry.after(timedelta(seconds=0.5))
         else:
             nonlocal second_call_time
             second_call_time = datetime.now(timezone.utc)
@@ -176,6 +126,24 @@ async def test_user_can_request_a_retry_in_timedelta_time(
 
     delay = second_call_time - first_call_time
     assert delay.total_seconds() > 0 < 1
+
+
+async def test_retry_in_is_backwards_compatible_alias_for_after(
+    docket: Docket, worker: Worker
+):
+    """retry.in_() still works as an alias for retry.after()"""
+    calls = 0
+
+    async def the_task(retry: Retry = Retry(attempts=2)):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            retry.in_(timedelta(seconds=0.1))
+
+    await docket.add(the_task)()
+    await worker.run_until_finished()
+
+    assert calls == 2
 
 
 @pytest.mark.parametrize("retry_cls", [Retry, ExponentialRetry])

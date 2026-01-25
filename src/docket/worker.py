@@ -41,14 +41,17 @@ from typing_extensions import Self
 
 from .dependencies import (
     AdmissionBlocked,
+    CompletionHandler,
     CurrentExecution,
     Dependency,
     FailedDependency,
+    FailureHandler,
     Perpetual,
-    Retry,
     Runtime,
     SharedContext,
     TaskLogger,
+    TaskOutcome,
+    format_duration,
     get_single_dependency_of_type,
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
@@ -69,9 +72,7 @@ from .instrumentation import (
     TASK_PUNCTUALITY,
     TASKS_COMPLETED,
     TASKS_FAILED,
-    TASKS_PERPETUATED,
     TASKS_REDELIVERED,
-    TASKS_RETRIED,
     TASKS_RUNNING,
     TASKS_STARTED,
     TASKS_STRICKEN,
@@ -795,6 +796,7 @@ class Worker:
             async with self.docket.redis() as redis:
                 await self._delete_known_task(redis, execution)
 
+            await execution.mark_as_cancelled()
             logger.warning("🗙 %s", call, extra=log_context)
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
             return
@@ -814,7 +816,9 @@ class Worker:
         TASK_PUNCTUALITY.record(punctuality, counter_labels)
 
         arrow = "↬" if execution.attempt > 1 else "↪"
-        logger.info("%s [%s] %s", arrow, ms(punctuality), call, extra=log_context)
+        logger.info(
+            "%s [%s] %s", arrow, format_duration(punctuality), call, extra=log_context
+        )
 
         # Atomically claim task and transition to running state
         # This also initializes progress and cleans up known/stream_id to allow rescheduling
@@ -880,16 +884,21 @@ class Worker:
 
                     span.set_status(Status(StatusCode.OK))
 
-                    rescheduled = await self._perpetuate_if_requested(
-                        execution, dependencies, timedelta(seconds=duration)
+                    # Check for completion handler (e.g., Perpetual)
+                    completion_handler = get_single_dependency_of_type(
+                        dependencies, CompletionHandler
                     )
-
-                    if rescheduled:
-                        # Task was rescheduled - still mark this execution as completed
-                        # to set TTL on the runs hash (the new execution has its own entry)
+                    outcome = TaskOutcome(
+                        duration=timedelta(seconds=duration),
+                        result=result,
+                    )
+                    if completion_handler and await completion_handler.on_complete(
+                        execution, outcome
+                    ):
+                        # Handler took responsibility (rescheduled, logged, recorded metrics)
                         await execution.mark_as_completed(result_key=None)
                     else:
-                        # Store result if appropriate
+                        # No handler or handler didn't handle - normal completion
                         result_key = None
                         if result is not None and self.docket.execution_ttl:
                             # Serialize and store result
@@ -903,13 +912,13 @@ class Worker:
                             await self.docket.result_storage.put(
                                 result_key, {"data": encoded_result}, ttl=ttl_seconds
                             )
-                        # Mark execution as completed
                         await execution.mark_as_completed(result_key=result_key)
-
-                    arrow = "↫" if rescheduled else "↩"
-                    logger.info(
-                        "%s [%s] %s", arrow, ms(duration), call, extra=log_context
-                    )
+                        logger.info(
+                            "↩ [%s] %s",
+                            format_duration(duration),
+                            call,
+                            extra=log_context,
+                        )
             except AdmissionBlocked:
                 # Re-raise to be handled by process_completed_tasks
                 raise
@@ -919,7 +928,10 @@ class Worker:
                 span.set_status(Status(StatusCode.OK))
                 await execution.mark_as_cancelled()
                 logger.info(
-                    "✗ [%s] %s (cancelled)", ms(duration), call, extra=log_context
+                    "✗ [%s] %s (cancelled)",
+                    format_duration(duration),
+                    call,
+                    extra=log_context,
                 )
             except Exception as e:
                 duration = log_context["duration"] = time.time() - start
@@ -928,88 +940,61 @@ class Worker:
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
 
-                retried = await self._retry_if_requested(execution, dependencies)
-                if not retried:
-                    retried = await self._perpetuate_if_requested(
-                        execution, dependencies, timedelta(seconds=duration)
-                    )
-
-                # Store exception in result_storage
-                result_key = None
-                if self.docket.execution_ttl:
-                    pickled_exception = cloudpickle.dumps(e)  # type: ignore[arg-type]
-                    # Base64-encode for JSON serialization
-                    encoded_exception = base64.b64encode(pickled_exception).decode(
-                        "ascii"
-                    )
-                    result_key = execution.key
-                    ttl_seconds = int(self.docket.execution_ttl.total_seconds())
-                    await self.docket.result_storage.put(
-                        result_key, {"data": encoded_exception}, ttl=ttl_seconds
-                    )
-
-                # Mark execution as failed with error message
-                error_msg = f"{type(e).__name__}: {str(e)}"
-                await execution.mark_as_failed(error_msg, result_key=result_key)
-
-                arrow = "↫" if retried else "↩"
-                logger.exception(
-                    "%s [%s] %s", arrow, ms(duration), call, extra=log_context
+                outcome = TaskOutcome(
+                    duration=timedelta(seconds=duration),
+                    exception=e,
                 )
+
+                # Check for failure handler (e.g., Retry)
+                failure_handler = get_single_dependency_of_type(
+                    dependencies, FailureHandler
+                )
+                if failure_handler and await failure_handler.handle_failure(
+                    execution, outcome
+                ):
+                    # Handler took responsibility (scheduled retry, logged, recorded metrics)
+                    # Don't mark as failed - task is being retried
+                    pass
+                else:
+                    # Not retried - check for completion handler (e.g., Perpetual)
+                    completion_handler = get_single_dependency_of_type(
+                        dependencies, CompletionHandler
+                    )
+                    if completion_handler and await completion_handler.on_complete(
+                        execution, outcome
+                    ):
+                        # Handler took responsibility (rescheduled, logged, recorded metrics)
+                        pass
+                    else:
+                        # No handler took responsibility - log normally
+                        logger.exception(
+                            "↩ [%s] %s",
+                            format_duration(duration),
+                            call,
+                            extra=log_context,
+                        )
+
+                    # Store exception in result_storage (only when not retrying)
+                    result_key = None
+                    if self.docket.execution_ttl:
+                        pickled_exception = cloudpickle.dumps(e)  # type: ignore[arg-type]
+                        # Base64-encode for JSON serialization
+                        encoded_exception = base64.b64encode(pickled_exception).decode(
+                            "ascii"
+                        )
+                        result_key = execution.key
+                        ttl_seconds = int(self.docket.execution_ttl.total_seconds())
+                        await self.docket.result_storage.put(
+                            result_key, {"data": encoded_exception}, ttl=ttl_seconds
+                        )
+
+                    # Mark execution as failed with error message
+                    error_msg = f"{type(e).__name__}: {str(e)}"
+                    await execution.mark_as_failed(error_msg, result_key=result_key)
             finally:
                 TASKS_RUNNING.add(-1, counter_labels)
                 TASKS_COMPLETED.add(1, counter_labels)
                 TASK_DURATION.record(duration, counter_labels)
-
-    async def _retry_if_requested(
-        self,
-        execution: Execution,
-        dependencies: dict[str, Dependency],
-    ) -> bool:
-        retry = get_single_dependency_of_type(dependencies, Retry)
-        if not retry:
-            return False
-
-        if retry.attempts is not None and execution.attempt >= retry.attempts:
-            return False
-
-        execution.when = datetime.now(timezone.utc) + retry.delay
-        execution.attempt += 1
-        # Use replace=True since the task is being rescheduled after failure
-        await execution.schedule(replace=True)
-
-        TASKS_RETRIED.add(1, {**self.labels(), **execution.general_labels()})
-        return True
-
-    async def _perpetuate_if_requested(
-        self,
-        execution: Execution,
-        dependencies: dict[str, Dependency],
-        duration: timedelta,
-    ) -> bool:
-        perpetual = get_single_dependency_of_type(dependencies, Perpetual)
-        if not perpetual:
-            return False
-
-        if perpetual.cancelled:
-            # Clean up Redis state without sending a pub/sub cancellation signal.
-            # We're completing normally, not cancelling - the pub/sub signal would
-            # cause the cancellation listener to cancel us mid-execution.
-            async with self.docket.redis() as redis:
-                await self.docket._cancel(redis, execution.key)
-            return False
-
-        now = datetime.now(timezone.utc)
-        when = max(now, now + perpetual.every - duration)
-
-        await self.docket.replace(execution.function, when, execution.key)(
-            *perpetual.args,
-            **perpetual.kwargs,
-        )
-
-        TASKS_PERPETUATED.add(1, {**self.labels(), **execution.general_labels()})
-
-        return True
 
     def _startup_log(self) -> None:
         logger.info("Starting worker %r with the following tasks:", self.name)
@@ -1138,10 +1123,3 @@ class Worker:
                 extra=self._log_context(),
             )
             task.cancel()
-
-
-def ms(seconds: float) -> str:
-    if seconds < 100:
-        return f"{seconds * 1000:6.0f}ms"
-    else:
-        return f"{seconds:6.0f}s "

@@ -27,7 +27,7 @@ from .dependencies import (
     Timeout,
 )
 from .docket import Docket
-from .execution import Execution, ExecutionState
+from .execution import Execution, ExecutionCancelled, ExecutionState
 from .strikelist import StrikeList
 from .worker import Worker
 from . import testing
@@ -42,6 +42,7 @@ __all__ = [
     "Depends",
     "Docket",
     "Execution",
+    "ExecutionCancelled",
     "ExecutionState",
     "ExponentialRetry",
     "Logged",

@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import Any
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any
 
-from ._base import Dependency
+from ._base import CompletionHandler, TaskOutcome, format_duration
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ..execution import Execution
+
+from ..instrumentation import TASKS_PERPETUATED
+
+logger = logging.getLogger(__name__)
 
 
-class Perpetual(Dependency):
+class Perpetual(CompletionHandler):
     """Declare a task that should be run perpetually.  Perpetual tasks are automatically
     rescheduled for the future after they finish (whether they succeed or fail).  A
     perpetual task can be scheduled at worker startup with the `automatic=True`.
@@ -31,6 +39,7 @@ class Perpetual(Dependency):
     kwargs: dict[str, Any]
 
     cancelled: bool
+    _next_when: datetime | None
 
     def __init__(
         self,
@@ -48,6 +57,7 @@ class Perpetual(Dependency):
         self.every = every
         self.automatic = automatic
         self.cancelled = False
+        self._next_when = None
 
     async def __aenter__(self) -> Perpetual:
         execution = self.execution.get()
@@ -62,3 +72,42 @@ class Perpetual(Dependency):
     def perpetuate(self, *args: Any, **kwargs: Any) -> None:
         self.args = args
         self.kwargs = kwargs
+
+    def after(self, delay: timedelta) -> None:
+        """Schedule the next execution after the given delay."""
+        self._next_when = datetime.now(timezone.utc) + delay
+
+    def at(self, when: datetime) -> None:
+        """Schedule the next execution at the given time."""
+        self._next_when = when
+
+    async def on_complete(self, execution: Execution, outcome: TaskOutcome) -> bool:
+        """Handle completion by scheduling the next execution."""
+        if self.cancelled:
+            docket = self.docket.get()
+            async with docket.redis() as redis:
+                await docket._cancel(redis, execution.key)
+            return False
+
+        docket = self.docket.get()
+        worker = self.worker.get()
+
+        if self._next_when:
+            when = self._next_when
+        else:
+            now = datetime.now(timezone.utc)
+            when = max(now, now + self.every - outcome.duration)
+
+        await docket.replace(execution.function, when, execution.key)(
+            *self.args,
+            **self.kwargs,
+        )
+
+        TASKS_PERPETUATED.add(1, {**worker.labels(), **execution.general_labels()})
+        logger.info(
+            "↫ [%s] %s",
+            format_duration(outcome.duration.total_seconds()),
+            execution.call_repr(),
+        )
+
+        return True

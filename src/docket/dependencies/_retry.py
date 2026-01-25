@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
-from ._base import Dependency
+from ._base import FailureHandler, TaskOutcome, format_duration
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ..execution import Execution
+
+from ..instrumentation import TASKS_RETRIED
+
+logger = logging.getLogger(__name__)
 
 
 class ForcedRetry(Exception):
-    """Raised when a task requests a retry via `in_` or `at`"""
+    """Raised when a task requests a retry via `after` or `at`"""
 
 
-class Retry(Dependency):
+class Retry(FailureHandler):
     """Configures linear retries for a task.  You can specify the total number of
     attempts (or `None` to retry indefinitely), and the delay between attempts.
 
@@ -50,16 +58,40 @@ class Retry(Dependency):
         retry.attempt = execution.attempt
         return retry
 
+    def after(self, delay: timedelta) -> NoReturn:
+        """Request a retry after the given delay."""
+        self.delay = delay
+        raise ForcedRetry()
+
     def at(self, when: datetime) -> NoReturn:
+        """Request a retry at the given time."""
         now = datetime.now(timezone.utc)
         diff = when - now
         diff = diff if diff.total_seconds() >= 0 else timedelta(0)
+        self.after(diff)
 
-        self.in_(diff)
+    def in_(self, delay: timedelta) -> NoReturn:
+        """Deprecated: use after() instead."""
+        self.after(delay)
 
-    def in_(self, when: timedelta) -> NoReturn:
-        self.delay = when
-        raise ForcedRetry()
+    async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
+        """Handle failure by scheduling a retry if attempts remain."""
+        if self.attempts is not None and execution.attempt >= self.attempts:
+            return False
+
+        execution.when = datetime.now(timezone.utc) + self.delay
+        execution.attempt += 1
+        await execution.schedule(replace=True)
+
+        worker = self.worker.get()
+        TASKS_RETRIED.add(1, {**worker.labels(), **execution.general_labels()})
+        logger.info(
+            "↫ [%s] %s",
+            format_duration(outcome.duration.total_seconds()),
+            execution.call_repr(),
+        )
+
+        return True
 
 
 class ExponentialRetry(Retry):
