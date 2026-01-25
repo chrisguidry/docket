@@ -489,3 +489,22 @@ async def test_retry_and_perpetual_work_together(docket: Docket, worker: Worker)
         (1, 2, False),  # perpetual run 1, retry 2, failed (exhausted)
         (2, 1, True),  # perpetual run 2, retry 1, succeeded
     ]
+
+
+async def test_perpetual_after_is_respected_on_failure(docket: Docket, worker: Worker):
+    """Perpetual.after() delay is used even when the task fails."""
+    run_times: list[datetime] = []
+
+    async def failing_task(perpetual: Perpetual = Perpetual()):
+        run_times.append(datetime.now(timezone.utc))
+        perpetual.after(timedelta(milliseconds=100))
+        raise ValueError("intentional failure")
+
+    execution = await docket.add(failing_task)()
+
+    await worker.run_at_most({execution.key: 2})
+
+    assert len(run_times) == 2
+    delay = run_times[1] - run_times[0]
+    # Should have waited ~100ms between runs
+    assert delay >= timedelta(milliseconds=50)
