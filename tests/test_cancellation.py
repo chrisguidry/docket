@@ -7,7 +7,7 @@ import pytest
 
 from typing import AsyncGenerator
 
-from docket import Docket, ExecutionState, Worker
+from docket import Docket, ExecutionCancelled, ExecutionState, Worker
 from docket.execution import ProgressEvent, StateEvent
 
 
@@ -375,10 +375,10 @@ async def test_cancel_running_task_with_timeout(docket: Docket, worker: Worker):
     assert execution.state == ExecutionState.CANCELLED  # NOT FAILED
 
 
-async def test_get_result_raises_cancelled_error_for_cancelled_task(
+async def test_get_result_raises_execution_cancelled_for_cancelled_task(
     docket: Docket, worker: Worker
 ):
-    """get_result() should raise CancelledError for cancelled tasks."""
+    """get_result() should raise ExecutionCancelled for cancelled tasks."""
     started = asyncio.Event()
 
     async def cancellable_task():
@@ -394,5 +394,5 @@ async def test_get_result_raises_cancelled_error_for_cancelled_task(
     await docket.cancel(execution.key)
     await asyncio.wait_for(worker_task, timeout=5.0)
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(ExecutionCancelled):
         await execution.get_result()

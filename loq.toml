@@ -18,7 +18,7 @@ max_lines = 945
 
 [[rules]]
 path = "src/docket/execution.py"
-max_lines = 896
+max_lines = 903
 
 [[rules]]
 path = "src/docket/docket.py"
@@ -27,7 +27,3 @@ max_lines = 866
 [[rules]]
 path = "src/docket/strikelist.py"
 max_lines = 616
-
-[[rules]]
-path = "tests/test_dependencies_core.py"
-max_lines = 510

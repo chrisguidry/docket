@@ -33,6 +33,13 @@ if TYPE_CHECKING:
 
 logger: logging.Logger = logging.getLogger(__name__)
 
+
+class ExecutionCancelled(Exception):
+    """Raised when get_result() is called on a cancelled execution."""
+
+    pass
+
+
 TaskFunction = Callable[..., Awaitable[Any]]
 Message = dict[bytes, bytes]
 
@@ -719,9 +726,9 @@ class Execution:
                     f"Timeout waiting for execution {self.key} to complete"
                 )
 
-        # If cancelled, raise CancelledError
+        # If cancelled, raise ExecutionCancelled
         if self.state == ExecutionState.CANCELLED:
-            raise asyncio.CancelledError(f"Task {self.key} was cancelled")
+            raise ExecutionCancelled(f"Execution {self.key} was cancelled")
 
         # If failed, retrieve and raise the exception
         if self.state == ExecutionState.FAILED:
