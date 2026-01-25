@@ -421,3 +421,30 @@ async def test_exhausted_retries_marks_task_as_failed(docket: Docket, worker: Wo
     await execution.sync()
     assert execution.state == ExecutionState.FAILED
     assert attempts == 2
+
+
+async def test_failed_perpetual_task_is_rescheduled(docket: Docket, worker: Worker):
+    """A Perpetual task that fails should still be rescheduled for next execution."""
+    from docket.execution import ExecutionState
+
+    attempts = 0
+
+    async def the_task(
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
+    ):
+        nonlocal attempts
+        attempts += 1
+        raise ValueError("fail")
+
+    execution = await docket.add(the_task)()
+
+    # Run 3 executions (all failures, but rescheduled each time)
+    await worker.run_at_most({execution.key: 3})
+
+    # Task ran 3 times despite failing each time - proves rescheduling worked
+    assert attempts == 3
+
+    # State is FAILED from the 3rd execution (run_at_most stops worker before
+    # claiming the 4th execution that Perpetual scheduled)
+    await execution.sync()
+    assert execution.state == ExecutionState.FAILED
