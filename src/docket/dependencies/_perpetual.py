@@ -6,12 +6,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from ._base import CompletionHandler, format_duration
+from ._base import CompletionHandler, TaskOutcome, format_duration
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
 
 from ..instrumentation import TASKS_PERPETUATED
+
+logger = logging.getLogger(__name__)
 
 
 class Perpetual(CompletionHandler):
@@ -69,15 +71,7 @@ class Perpetual(CompletionHandler):
         self.args = args
         self.kwargs = kwargs
 
-    async def on_complete(
-        self,
-        execution: Execution,
-        call: str,
-        result: Any,
-        exception: BaseException | None,
-        duration: timedelta,
-        logger: logging.LoggerAdapter[logging.Logger],
-    ) -> bool:
+    async def on_complete(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle completion by scheduling the next execution."""
         if self.cancelled:
             docket = self.docket.get()
@@ -89,7 +83,7 @@ class Perpetual(CompletionHandler):
         worker = self.worker.get()
 
         now = datetime.now(timezone.utc)
-        when = max(now, now + self.every - duration)
+        when = max(now, now + self.every - outcome.duration)
 
         await docket.replace(execution.function, when, execution.key)(
             *self.args,
@@ -97,6 +91,10 @@ class Perpetual(CompletionHandler):
         )
 
         TASKS_PERPETUATED.add(1, {**worker.labels(), **execution.general_labels()})
-        logger.info("↫ [%s] %s", format_duration(duration.total_seconds()), call)
+        logger.info(
+            "↫ [%s] %s",
+            format_duration(outcome.duration.total_seconds()),
+            execution.call_repr(),
+        )
 
         return True

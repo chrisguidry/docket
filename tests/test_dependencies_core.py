@@ -17,6 +17,7 @@ from docket.dependencies import (
     Retry,
     Runtime,
     TaskArgument,
+    TaskOutcome,
     Timeout,
 )
 from docket.execution import Execution
@@ -317,12 +318,7 @@ async def test_failure_handler_subclasses_must_be_unique(
             return self  # pragma: no cover
 
         async def handle_failure(
-            self,
-            execution: Execution,
-            call: str,
-            exception: BaseException,
-            duration: timedelta,
-            logger: logging.LoggerAdapter[logging.Logger],
+            self, execution: Execution, outcome: TaskOutcome
         ) -> bool:
             return False  # pragma: no cover
 
@@ -349,15 +345,7 @@ async def test_completion_handler_subclasses_must_be_unique(
         async def __aenter__(self) -> "CustomCompletionHandler":
             return self  # pragma: no cover
 
-        async def on_complete(
-            self,
-            execution: Execution,
-            call: str,
-            result: Any,
-            exception: BaseException | None,
-            duration: timedelta,
-            logger: logging.LoggerAdapter[logging.Logger],
-        ) -> bool:
+        async def on_complete(self, execution: Execution, outcome: TaskOutcome) -> bool:
             return False  # pragma: no cover
 
     async def the_task(

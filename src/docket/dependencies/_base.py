@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import abc
-import logging
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import timedelta
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -21,6 +21,15 @@ def format_duration(seconds: float) -> str:
         return f"{seconds * 1000:6.0f}ms"
     else:
         return f"{seconds:6.0f}s "
+
+
+@dataclass
+class TaskOutcome:
+    """Captures the outcome of a task execution for handlers."""
+
+    duration: timedelta
+    result: Any = field(default=None)
+    exception: BaseException | None = field(default=None)
 
 
 class AdmissionBlocked(Exception):
@@ -97,27 +106,12 @@ class FailureHandler(Dependency):
     single = True
 
     @abc.abstractmethod
-    async def handle_failure(
-        self,
-        execution: Execution,
-        call: str,
-        exception: BaseException,
-        duration: timedelta,
-        logger: logging.LoggerAdapter[logging.Logger],
-    ) -> bool:
+    async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle a task failure.
 
-        If handling (e.g., retrying), the implementation should:
-        - Schedule the retry
-        - Log the outcome (using provided logger)
-        - Record any metrics
-
         Args:
-            execution: The execution context
-            call: Formatted task call string for logging
-            exception: The exception that was raised
-            duration: How long the task ran before failing
-            logger: LoggerAdapter with context already attached
+            execution: The task execution context
+            outcome: The task outcome containing duration and exception
 
         Returns:
             True if handled (Worker won't mark as failed)
@@ -139,29 +133,12 @@ class CompletionHandler(Dependency):
     single = True
 
     @abc.abstractmethod
-    async def on_complete(
-        self,
-        execution: Execution,
-        call: str,
-        result: Any,
-        exception: BaseException | None,
-        duration: timedelta,
-        logger: logging.LoggerAdapter[logging.Logger],
-    ) -> bool:
+    async def on_complete(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle task completion.
 
-        If handling (e.g., scheduling follow-up), the implementation should:
-        - Schedule the follow-up work
-        - Log the outcome (using provided logger)
-        - Record any metrics
-
         Args:
-            execution: The execution context
-            call: Formatted task call string for logging
-            result: The return value (None if exception)
-            exception: The exception if failed (None if success)
-            duration: How long the task ran
-            logger: LoggerAdapter with context already attached
+            execution: The task execution context
+            outcome: The task outcome containing duration, result, and exception
 
         Returns:
             True if handled (did own logging/metrics)

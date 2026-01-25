@@ -50,6 +50,7 @@ from .dependencies import (
     Runtime,
     SharedContext,
     TaskLogger,
+    TaskOutcome,
     format_duration,
     get_single_dependency_of_type,
     get_single_dependency_parameter_of_type,
@@ -882,19 +883,16 @@ class Worker:
 
                     span.set_status(Status(StatusCode.OK))
 
-                    task_logger = logging.LoggerAdapter(logger, log_context)
-
                     # Check for completion handler (e.g., Perpetual)
                     completion_handler = get_single_dependency_of_type(
                         dependencies, CompletionHandler
                     )
+                    outcome = TaskOutcome(
+                        duration=timedelta(seconds=duration),
+                        result=result,
+                    )
                     if completion_handler and await completion_handler.on_complete(
-                        execution,
-                        call,
-                        result,
-                        None,
-                        timedelta(seconds=duration),
-                        task_logger,
+                        execution, outcome
                     ):
                         # Handler took responsibility (rescheduled, logged, recorded metrics)
                         await execution.mark_as_completed(result_key=None)
@@ -941,18 +939,17 @@ class Worker:
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
 
-                task_logger = logging.LoggerAdapter(logger, log_context)
+                outcome = TaskOutcome(
+                    duration=timedelta(seconds=duration),
+                    exception=e,
+                )
 
                 # Check for failure handler (e.g., Retry)
                 failure_handler = get_single_dependency_of_type(
                     dependencies, FailureHandler
                 )
                 if failure_handler and await failure_handler.handle_failure(
-                    execution,
-                    call,
-                    e,
-                    timedelta(seconds=duration),
-                    task_logger,
+                    execution, outcome
                 ):
                     # Handler took responsibility (scheduled retry, logged, recorded metrics)
                     pass
@@ -962,12 +959,7 @@ class Worker:
                         dependencies, CompletionHandler
                     )
                     if completion_handler and await completion_handler.on_complete(
-                        execution,
-                        call,
-                        None,
-                        e,
-                        timedelta(seconds=duration),
-                        task_logger,
+                        execution, outcome
                     ):
                         # Handler took responsibility (rescheduled, logged, recorded metrics)
                         pass

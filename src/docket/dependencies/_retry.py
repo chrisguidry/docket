@@ -6,12 +6,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, NoReturn
 
-from ._base import FailureHandler, format_duration
+from ._base import FailureHandler, TaskOutcome, format_duration
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
 
 from ..instrumentation import TASKS_RETRIED
+
+logger = logging.getLogger(__name__)
 
 
 class ForcedRetry(Exception):
@@ -67,14 +69,7 @@ class Retry(FailureHandler):
         self.delay = when
         raise ForcedRetry()
 
-    async def handle_failure(
-        self,
-        execution: Execution,
-        call: str,
-        exception: BaseException,
-        duration: timedelta,
-        logger: logging.LoggerAdapter[logging.Logger],
-    ) -> bool:
+    async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle failure by scheduling a retry if attempts remain."""
         if self.attempts is not None and execution.attempt >= self.attempts:
             return False
@@ -85,7 +80,11 @@ class Retry(FailureHandler):
 
         worker = self.worker.get()
         TASKS_RETRIED.add(1, {**worker.labels(), **execution.general_labels()})
-        logger.info("↫ [%s] %s", format_duration(duration.total_seconds()), call)
+        logger.info(
+            "↫ [%s] %s",
+            format_duration(outcome.duration.total_seconds()),
+            execution.call_repr(),
+        )
 
         return True
 
