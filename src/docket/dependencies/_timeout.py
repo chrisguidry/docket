@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
 
-from .._cancellation import CANCEL_MSG_TIMEOUT
+from .._cancellation import cancel_task
 from ._base import Runtime
 
 
@@ -75,41 +75,31 @@ class Timeout(Runtime):
         self.start()
 
         docket = self.docket.get()
-        task_coro = cast(
-            Coroutine[None, None, Any],
-            function(*args, **kwargs),
-        )
         task = asyncio.create_task(
-            task_coro,
+            function(*args, **kwargs),  # type: ignore[arg-type]
             name=f"{docket.name} - task:{execution.key}",
         )
 
-        # Track whether WE cancelled for timeout (vs external cancellation)
-        # We use a flag because Python 3.10 doesn't propagate cancel messages
-        # to the awaiter, only Python 3.11+ does
-        cancelled_for_timeout = False
+        timed_out = False
         try:
             while not task.done():  # pragma: no branch
-                remaining = self.remaining().total_seconds()
                 if self.expired():
-                    cancelled_for_timeout = True
-                    task.cancel(CANCEL_MSG_TIMEOUT)
+                    timed_out = True
                     break
 
                 try:
                     return await asyncio.wait_for(
-                        asyncio.shield(task), timeout=remaining
+                        asyncio.shield(task), timeout=self.remaining().total_seconds()
                     )
                 except asyncio.TimeoutError:
                     continue
         finally:
-            if not task.done():  # pragma: no branch
-                cancelled_for_timeout = True
-                task.cancel(CANCEL_MSG_TIMEOUT)
-
-        try:
-            return await task
-        except asyncio.CancelledError:
-            if cancelled_for_timeout:
-                raise asyncio.TimeoutError
-            raise  # pragma: no cover - External cancellation propagation
+            if not task.done():
+                timeout_reason = (
+                    f"Docket task {execution.key} exceeded "
+                    f"timeout of {self.base.total_seconds()}s"
+                )
+                await cancel_task(task, timeout_reason)
+                if timed_out:
+                    raise asyncio.TimeoutError(timeout_reason)
+                # Otherwise let the original exception (e.g. CancelledError) propagate
