@@ -448,3 +448,44 @@ async def test_failed_perpetual_task_is_rescheduled(docket: Docket, worker: Work
     # claiming the 4th execution that Perpetual scheduled)
     await execution.sync()
     assert execution.state == ExecutionState.FAILED
+
+
+async def test_retry_and_perpetual_work_together(docket: Docket, worker: Worker):
+    """A task can have both Retry and Perpetual - Retry handles failures first."""
+    from docket.dependencies import Perpetual, Retry
+
+    # Track: (perpetual_run, retry_attempt, succeeded)
+    runs: list[tuple[int, int, bool]] = []
+    perpetual_run = 0
+
+    async def task_with_both(
+        retry: Retry = Retry(attempts=2),
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
+    ):
+        nonlocal perpetual_run
+
+        # First perpetual run: fail twice (exhaust retries), then perpetual reschedules
+        # Second perpetual run: succeed on first attempt
+        if perpetual_run == 0:
+            perpetual_run = 1
+        elif retry.attempt == 1 and len([r for r in runs if r[0] == 2]) == 0:
+            perpetual_run = 2
+
+        should_fail = perpetual_run == 1
+        runs.append((perpetual_run, retry.attempt, not should_fail))
+
+        if should_fail:
+            raise ValueError("failing first perpetual run")
+
+    execution = await docket.add(task_with_both)()
+
+    # Run: 2 retries for first perpetual + 1 success for second perpetual = 3 runs
+    await worker.run_at_most({execution.key: 3})
+
+    # First perpetual run: 2 attempts, both failed
+    # Second perpetual run: 1 attempt, succeeded
+    assert runs == [
+        (1, 1, False),  # perpetual run 1, retry 1, failed
+        (1, 2, False),  # perpetual run 1, retry 2, failed (exhausted)
+        (2, 1, True),  # perpetual run 2, retry 1, succeeded
+    ]
