@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import timedelta
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from ._base import Dependency
+if TYPE_CHECKING:  # pragma: no cover
+    from ..execution import Execution
+
+from .._cancellation import cancel_task
+from ._base import Runtime
 
 
-class Timeout(Dependency):
+class Timeout(Runtime):
     """Configures a timeout for a task.  You can specify the base timeout, and the
     task will be cancelled if it exceeds this duration.  The timeout may be extended
     within the context of a single running task.
@@ -35,9 +41,7 @@ class Timeout(Dependency):
         self.base = base
 
     async def __aenter__(self) -> Timeout:
-        timeout = Timeout(base=self.base)
-        timeout.start()
-        return timeout
+        return Timeout(base=self.base)
 
     def start(self) -> None:
         self._deadline = time.monotonic() + self.base.total_seconds()
@@ -59,3 +63,43 @@ class Timeout(Dependency):
         if by is None:
             by = self.base
         self._deadline += by.total_seconds()
+
+    async def run(
+        self,
+        execution: Execution,
+        function: Callable[..., Awaitable[Any]],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        """Execute the function with timeout enforcement."""
+        self.start()
+
+        docket = self.docket.get()
+        task = asyncio.create_task(
+            function(*args, **kwargs),  # type: ignore[arg-type]
+            name=f"{docket.name} - task:{execution.key}",
+        )
+
+        timed_out = False
+        try:
+            while not task.done():  # pragma: no branch
+                if self.expired():
+                    timed_out = True
+                    break
+
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.shield(task), timeout=self.remaining().total_seconds()
+                    )
+                except asyncio.TimeoutError:
+                    continue
+        finally:
+            if not task.done():
+                timeout_reason = (
+                    f"Docket task {execution.key} exceeded "
+                    f"timeout of {self.base.total_seconds()}s"
+                )
+                await cancel_task(task, timeout_reason)
+                if timed_out:  # pragma: no branch
+                    raise asyncio.TimeoutError(timeout_reason)
+                # Otherwise let the original exception (e.g. CancelledError) propagate

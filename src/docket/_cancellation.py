@@ -16,8 +16,7 @@ import asyncio
 import sys
 from typing import Any
 
-# Sentinel messages for internal cancellation
-CANCEL_MSG_TIMEOUT = "docket:timeout"
+# Sentinel message for internal cancellation during cleanup
 CANCEL_MSG_CLEANUP = "docket:cleanup"
 
 

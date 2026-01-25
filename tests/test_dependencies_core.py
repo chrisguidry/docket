@@ -6,12 +6,17 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from docket import CurrentDocket, CurrentWorker, Docket, Worker
+from typing import Any, Awaitable, Callable
+
 from docket.dependencies import (
     Depends,
     ExponentialRetry,
     Retry,
+    Runtime,
     TaskArgument,
+    Timeout,
 )
+from docket.execution import Execution
 
 
 async def test_dependencies_may_be_duplicated(docket: Docket, worker: Worker):
@@ -53,6 +58,36 @@ async def test_retries_must_be_unique(docket: Docket, worker: Worker):
     with pytest.raises(
         ValueError,
         match="Only one Retry dependency is allowed per task",
+    ):
+        await docket.add(the_task)("a")
+
+
+async def test_runtime_subclasses_must_be_unique(docket: Docket, worker: Worker):
+    """Two different Runtime subclasses should conflict since Runtime.single=True."""
+
+    class CustomRuntime(Runtime):
+        async def __aenter__(self) -> "CustomRuntime":
+            return self  # pragma: no cover
+
+        async def run(
+            self,
+            execution: Execution,
+            function: Callable[..., Awaitable[Any]],
+            args: tuple[Any, ...],
+            kwargs: dict[str, Any],
+        ) -> Any:
+            return await function(*args, **kwargs)  # pragma: no cover
+
+    async def the_task(
+        a: str,
+        timeout: Timeout = Timeout(timedelta(seconds=10)),
+        custom: CustomRuntime = CustomRuntime(),
+    ):
+        pass  # pragma: no cover
+
+    with pytest.raises(
+        ValueError,
+        match=r"Only one Runtime dependency is allowed per task, but found: .+",
     ):
         await docket.add(the_task)("a")
 
