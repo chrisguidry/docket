@@ -1,6 +1,6 @@
 """Tests for Perpetual dependency (automatically rescheduling tasks)."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from docket import Docket, Perpetual, Worker
 
@@ -132,3 +132,45 @@ async def test_perpetual_tasks_can_be_automatically_scheduled(
     await worker.run_at_most({"my_automatic_task": 3})
 
     assert calls == 3
+
+
+async def test_perpetual_tasks_can_schedule_next_run_after_delay(
+    docket: Docket, worker: Worker
+):
+    """Perpetual.after() lets tasks control when the next run happens."""
+    run_times: list[datetime] = []
+
+    async def perpetual_task(
+        perpetual: Perpetual = Perpetual(),
+    ):
+        run_times.append(datetime.now(timezone.utc))
+        perpetual.after(timedelta(milliseconds=100))
+
+    execution = await docket.add(perpetual_task)()
+
+    await worker.run_at_most({execution.key: 2})
+
+    assert len(run_times) == 2
+    delay = run_times[1] - run_times[0]
+    assert delay >= timedelta(milliseconds=50)
+
+
+async def test_perpetual_tasks_can_schedule_next_run_at_specific_time(
+    docket: Docket, worker: Worker
+):
+    """Perpetual.at() lets tasks schedule the next run at an absolute time."""
+    run_times: list[datetime] = []
+
+    async def perpetual_task(
+        perpetual: Perpetual = Perpetual(),
+    ):
+        run_times.append(datetime.now(timezone.utc))
+        perpetual.at(datetime.now(timezone.utc) + timedelta(milliseconds=100))
+
+    execution = await docket.add(perpetual_task)()
+
+    await worker.run_at_most({execution.key: 2})
+
+    assert len(run_times) == 2
+    delay = run_times[1] - run_times[0]
+    assert delay >= timedelta(milliseconds=50)

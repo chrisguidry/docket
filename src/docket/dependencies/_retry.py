@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class ForcedRetry(Exception):
-    """Raised when a task requests a retry via `in_` or `at`"""
+    """Raised when a task requests a retry via `after` or `at`"""
 
 
 class Retry(FailureHandler):
@@ -58,16 +58,21 @@ class Retry(FailureHandler):
         retry.attempt = execution.attempt
         return retry
 
+    def after(self, delay: timedelta) -> NoReturn:
+        """Request a retry after the given delay."""
+        self.delay = delay
+        raise ForcedRetry()
+
     def at(self, when: datetime) -> NoReturn:
+        """Request a retry at the given time."""
         now = datetime.now(timezone.utc)
         diff = when - now
         diff = diff if diff.total_seconds() >= 0 else timedelta(0)
+        self.after(diff)
 
-        self.in_(diff)
-
-    def in_(self, when: timedelta) -> NoReturn:
-        self.delay = when
-        raise ForcedRetry()
+    def in_(self, delay: timedelta) -> NoReturn:
+        """Deprecated: use after() instead."""
+        self.after(delay)
 
     async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle failure by scheduling a retry if attempts remain."""

@@ -39,6 +39,7 @@ class Perpetual(CompletionHandler):
     kwargs: dict[str, Any]
 
     cancelled: bool
+    _next_when: datetime | None
 
     def __init__(
         self,
@@ -56,6 +57,7 @@ class Perpetual(CompletionHandler):
         self.every = every
         self.automatic = automatic
         self.cancelled = False
+        self._next_when = None
 
     async def __aenter__(self) -> Perpetual:
         execution = self.execution.get()
@@ -71,6 +73,14 @@ class Perpetual(CompletionHandler):
         self.args = args
         self.kwargs = kwargs
 
+    def after(self, delay: timedelta) -> None:
+        """Schedule the next execution after the given delay."""
+        self._next_when = datetime.now(timezone.utc) + delay
+
+    def at(self, when: datetime) -> None:
+        """Schedule the next execution at the given time."""
+        self._next_when = when
+
     async def on_complete(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle completion by scheduling the next execution."""
         if self.cancelled:
@@ -82,8 +92,11 @@ class Perpetual(CompletionHandler):
         docket = self.docket.get()
         worker = self.worker.get()
 
-        now = datetime.now(timezone.utc)
-        when = max(now, now + self.every - outcome.duration)
+        if self._next_when:
+            when = self._next_when
+        else:
+            now = datetime.now(timezone.utc)
+            when = max(now, now + self.every - outcome.duration)
 
         await docket.replace(execution.function, when, execution.key)(
             *self.args,
