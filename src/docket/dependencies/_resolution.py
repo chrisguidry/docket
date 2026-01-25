@@ -36,15 +36,42 @@ def get_single_dependency_of_type(
     return None
 
 
+def _single_base_classes(dependency: Dependency) -> list[type[Dependency]]:
+    """Return all base classes (including the concrete type) that have single=True."""
+    return [
+        cls
+        for cls in type(dependency).__mro__
+        if issubclass(cls, Dependency)
+        and cls is not Dependency
+        and getattr(cls, "single", False)
+    ]
+
+
 def validate_dependencies(function: TaskFunction) -> None:
     parameters = get_dependency_parameters(function)
+    dependencies = list(parameters.values())
 
-    counts = Counter(type(dependency) for dependency in parameters.values())
-
+    # Check concrete types (original behavior)
+    counts = Counter(type(dependency) for dependency in dependencies)
     for dependency_type, count in counts.items():
         if dependency_type.single and count > 1:
             raise ValueError(
                 f"Only one {dependency_type.__name__} dependency is allowed per task"
+            )
+
+    # Check base classes with single=True (e.g., Runtime)
+    # Two different subclasses of Runtime should conflict
+    single_bases: set[type[Dependency]] = set()
+    for dependency in dependencies:
+        single_bases.update(_single_base_classes(dependency))
+
+    for base_class in single_bases:
+        instances = [d for d in dependencies if isinstance(d, base_class)]
+        if len(instances) > 1:
+            types = ", ".join(type(d).__name__ for d in instances)
+            raise ValueError(
+                f"Only one {base_class.__name__} dependency is allowed per task, "
+                f"but found: {types}"
             )
 
 
