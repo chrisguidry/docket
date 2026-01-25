@@ -373,3 +373,26 @@ async def test_cancel_running_task_with_timeout(docket: Docket, worker: Worker):
 
     await execution.sync()
     assert execution.state == ExecutionState.CANCELLED  # NOT FAILED
+
+
+async def test_get_result_raises_cancelled_error_for_cancelled_task(
+    docket: Docket, worker: Worker
+):
+    """get_result() should raise CancelledError for cancelled tasks."""
+    started = asyncio.Event()
+
+    async def cancellable_task():
+        started.set()
+        await asyncio.sleep(60)
+
+    docket.register(cancellable_task)
+    execution = await docket.add(cancellable_task)()
+
+    worker_task = asyncio.create_task(worker.run_until_finished())
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+
+    await docket.cancel(execution.key)
+    await asyncio.wait_for(worker_task, timeout=5.0)
+
+    with pytest.raises(asyncio.CancelledError):
+        await execution.get_result()

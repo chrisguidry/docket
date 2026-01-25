@@ -682,8 +682,14 @@ class Execution:
         if timeout is not None:
             deadline = datetime.now(timezone.utc) + timeout
 
+        terminal_states = (
+            ExecutionState.COMPLETED,
+            ExecutionState.FAILED,
+            ExecutionState.CANCELLED,
+        )
+
         # Wait for execution to complete if not already done
-        if self.state not in (ExecutionState.COMPLETED, ExecutionState.FAILED):
+        if self.state not in terminal_states:
             # Calculate timeout duration if absolute deadline provided
             timeout_seconds = None
             if deadline is not None:
@@ -701,10 +707,7 @@ class Execution:
                     async for event in self.subscribe():  # pragma: no branch
                         if event["type"] == "state":
                             state = ExecutionState(event["state"])
-                            if state in (
-                                ExecutionState.COMPLETED,
-                                ExecutionState.FAILED,
-                            ):
+                            if state in terminal_states:
                                 # Sync to get latest data including result key
                                 await self.sync()
                                 break
@@ -715,6 +718,10 @@ class Execution:
                 raise TimeoutError(
                     f"Timeout waiting for execution {self.key} to complete"
                 )
+
+        # If cancelled, raise CancelledError
+        if self.state == ExecutionState.CANCELLED:
+            raise asyncio.CancelledError(f"Task {self.key} was cancelled")
 
         # If failed, retrieve and raise the exception
         if self.state == ExecutionState.FAILED:
