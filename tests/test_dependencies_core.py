@@ -67,7 +67,7 @@ async def test_runtime_subclasses_must_be_unique(docket: Docket, worker: Worker)
 
     class CustomRuntime(Runtime):
         async def __aenter__(self) -> "CustomRuntime":
-            return self
+            return self  # pragma: no cover
 
         async def run(
             self,
