@@ -9,21 +9,23 @@ from docket import Docket, Retry, Timeout, Worker
 async def test_simple_timeout(docket: Docket, worker: Worker):
     """A task with a timeout completes normally when it finishes before the limit."""
 
-    called = False
+    remaining_at_end: timedelta | None = None
 
     async def task_with_timeout(
         timeout: Timeout = Timeout(timedelta(milliseconds=500)),
     ):
         await asyncio.sleep(0.01)
 
-        nonlocal called
-        called = True
+        nonlocal remaining_at_end
+        remaining_at_end = timeout.remaining()
 
     await docket.add(task_with_timeout)()
 
     await worker.run_until_finished()
 
-    assert called
+    # Task completed with time to spare
+    assert remaining_at_end is not None
+    assert remaining_at_end > timedelta(0)
 
 
 async def test_simple_timeout_cancels_tasks(docket: Docket, worker: Worker):
