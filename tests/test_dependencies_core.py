@@ -378,3 +378,46 @@ async def test_completion_handler_subclasses_must_be_unique(
         match=r"Only one CompletionHandler dependency is allowed per task, but found: .+",
     ):
         await docket.add(the_task)("a")
+
+
+async def test_retrying_task_is_not_marked_as_failed(docket: Docket, worker: Worker):
+    """When FailureHandler schedules a retry, the task state should not be FAILED."""
+    from docket.execution import ExecutionState
+
+    attempts = 0
+
+    async def the_task(retry: Retry = Retry(attempts=3)):
+        nonlocal attempts
+        attempts += 1
+        raise ValueError("fail")
+
+    execution = await docket.add(the_task)()
+
+    # Run just the first attempt
+    await worker.run_at_most({execution.key: 1})
+
+    # Task should be cancelled (by run_at_most), not failed
+    # The key point is that during retry, state was SCHEDULED, not FAILED
+    await execution.sync()
+    assert execution.state == ExecutionState.CANCELLED
+    assert attempts == 1
+
+
+async def test_exhausted_retries_marks_task_as_failed(docket: Docket, worker: Worker):
+    """When all retries are exhausted, the task state should be FAILED."""
+    from docket.execution import ExecutionState
+
+    attempts = 0
+
+    async def the_task(retry: Retry = Retry(attempts=2)):
+        nonlocal attempts
+        attempts += 1
+        raise ValueError("fail")
+
+    execution = await docket.add(the_task)()
+
+    await worker.run_until_finished()
+
+    await execution.sync()
+    assert execution.state == ExecutionState.FAILED
+    assert attempts == 2

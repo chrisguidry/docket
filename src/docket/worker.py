@@ -796,6 +796,7 @@ class Worker:
             async with self.docket.redis() as redis:
                 await self._delete_known_task(redis, execution)
 
+            await execution.mark_as_cancelled()
             logger.warning("🗙 %s", call, extra=log_context)
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
             return
@@ -952,6 +953,7 @@ class Worker:
                     execution, outcome
                 ):
                     # Handler took responsibility (scheduled retry, logged, recorded metrics)
+                    # Don't mark as failed - task is being retried
                     pass
                 else:
                     # Not retried - check for completion handler (e.g., Perpetual)
@@ -972,23 +974,23 @@ class Worker:
                             extra=log_context,
                         )
 
-                # Store exception in result_storage
-                result_key = None
-                if self.docket.execution_ttl:
-                    pickled_exception = cloudpickle.dumps(e)  # type: ignore[arg-type]
-                    # Base64-encode for JSON serialization
-                    encoded_exception = base64.b64encode(pickled_exception).decode(
-                        "ascii"
-                    )
-                    result_key = execution.key
-                    ttl_seconds = int(self.docket.execution_ttl.total_seconds())
-                    await self.docket.result_storage.put(
-                        result_key, {"data": encoded_exception}, ttl=ttl_seconds
-                    )
+                    # Store exception in result_storage (only when not retrying)
+                    result_key = None
+                    if self.docket.execution_ttl:
+                        pickled_exception = cloudpickle.dumps(e)  # type: ignore[arg-type]
+                        # Base64-encode for JSON serialization
+                        encoded_exception = base64.b64encode(pickled_exception).decode(
+                            "ascii"
+                        )
+                        result_key = execution.key
+                        ttl_seconds = int(self.docket.execution_ttl.total_seconds())
+                        await self.docket.result_storage.put(
+                            result_key, {"data": encoded_exception}, ttl=ttl_seconds
+                        )
 
-                # Mark execution as failed with error message
-                error_msg = f"{type(e).__name__}: {str(e)}"
-                await execution.mark_as_failed(error_msg, result_key=result_key)
+                    # Mark execution as failed with error message
+                    error_msg = f"{type(e).__name__}: {str(e)}"
+                    await execution.mark_as_failed(error_msg, result_key=result_key)
             finally:
                 TASKS_RUNNING.add(-1, counter_labels)
                 TASKS_COMPLETED.add(1, counter_labels)
