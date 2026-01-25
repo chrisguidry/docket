@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import timedelta
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, cast
 
-from ._base import Dependency
+if TYPE_CHECKING:  # pragma: no cover
+    from ..execution import Execution
+
+from .._cancellation import CANCEL_MSG_TIMEOUT
+from ._base import Runtime
 
 
-class Timeout(Dependency):
+class Timeout(Runtime):
     """Configures a timeout for a task.  You can specify the base timeout, and the
     task will be cancelled if it exceeds this duration.  The timeout may be extended
     within the context of a single running task.
@@ -35,9 +41,7 @@ class Timeout(Dependency):
         self.base = base
 
     async def __aenter__(self) -> Timeout:
-        timeout = Timeout(base=self.base)
-        timeout.start()
-        return timeout
+        return Timeout(base=self.base)
 
     def start(self) -> None:
         self._deadline = time.monotonic() + self.base.total_seconds()
@@ -59,3 +63,53 @@ class Timeout(Dependency):
         if by is None:
             by = self.base
         self._deadline += by.total_seconds()
+
+    async def run(
+        self,
+        execution: Execution,
+        function: Callable[..., Awaitable[Any]],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        """Execute the function with timeout enforcement."""
+        self.start()
+
+        docket = self.docket.get()
+        task_coro = cast(
+            Coroutine[None, None, Any],
+            function(*args, **kwargs),
+        )
+        task = asyncio.create_task(
+            task_coro,
+            name=f"{docket.name} - task:{execution.key}",
+        )
+
+        # Track whether WE cancelled for timeout (vs external cancellation)
+        # We use a flag because Python 3.10 doesn't propagate cancel messages
+        # to the awaiter, only Python 3.11+ does
+        cancelled_for_timeout = False
+        try:
+            while not task.done():  # pragma: no branch
+                remaining = self.remaining().total_seconds()
+                if self.expired():
+                    cancelled_for_timeout = True
+                    task.cancel(CANCEL_MSG_TIMEOUT)
+                    break
+
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.shield(task), timeout=remaining
+                    )
+                except asyncio.TimeoutError:
+                    continue
+        finally:
+            if not task.done():  # pragma: no branch
+                cancelled_for_timeout = True
+                task.cancel(CANCEL_MSG_TIMEOUT)
+
+        try:
+            return await task
+        except asyncio.CancelledError:
+            if cancelled_for_timeout:
+                raise asyncio.TimeoutError
+            raise  # pragma: no cover - External cancellation propagation

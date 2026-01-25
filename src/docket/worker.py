@@ -14,7 +14,6 @@ from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
     Any,
-    Coroutine,
     Generator,
     Mapping,
     Protocol,
@@ -34,7 +33,7 @@ else:
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
-from ._cancellation import CANCEL_MSG_CLEANUP, CANCEL_MSG_TIMEOUT, cancel_task
+from ._cancellation import CANCEL_MSG_CLEANUP, cancel_task
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -47,9 +46,9 @@ from .dependencies import (
     FailedDependency,
     Perpetual,
     Retry,
+    Runtime,
     SharedContext,
     TaskLogger,
-    Timeout,
     get_single_dependency_of_type,
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
@@ -859,21 +858,21 @@ class Worker:
                             ],
                         )
 
-                    # Run task with user-specified timeout, or no timeout
-                    # Lease renewal keeps messages alive so we don't need implicit timeouts
-                    user_timeout = get_single_dependency_of_type(dependencies, Timeout)
-                    if user_timeout:
-                        user_timeout.start()
-                        result = await self._run_function_with_timeout(
-                            execution, dependencies, user_timeout
+                    # Merge resolved dependencies into execution kwargs
+                    final_kwargs = {**execution.kwargs, **dependencies}
+
+                    # Check for a Runtime dependency (e.g., Timeout) that controls execution
+                    runtime = get_single_dependency_of_type(dependencies, Runtime)
+                    if runtime:
+                        result = await runtime.run(
+                            execution,
+                            execution.function,
+                            execution.args,
+                            final_kwargs,
                         )
                     else:
                         result = await execution.function(
-                            *execution.args,
-                            **{
-                                **execution.kwargs,
-                                **dependencies,
-                            },
+                            *execution.args, **final_kwargs
                         )
 
                     duration = log_context["duration"] = time.time() - start
@@ -961,56 +960,6 @@ class Worker:
                 TASKS_RUNNING.add(-1, counter_labels)
                 TASKS_COMPLETED.add(1, counter_labels)
                 TASK_DURATION.record(duration, counter_labels)
-
-    async def _run_function_with_timeout(
-        self,
-        execution: Execution,
-        dependencies: dict[str, Dependency],
-        timeout: Timeout,
-    ) -> Any:
-        task_coro = cast(
-            Coroutine[None, None, Any],
-            execution.function(
-                *execution.args,
-                **{
-                    **execution.kwargs,
-                    **dependencies,
-                },
-            ),
-        )
-        task = asyncio.create_task(
-            task_coro, name=f"{self.docket.name} - task:{execution.key}"
-        )
-        # Track whether WE cancelled for timeout (vs external cancellation)
-        # We use a flag because Python 3.10 doesn't propagate cancel messages
-        # to the awaiter, only Python 3.11+ does
-        cancelled_for_timeout = False
-        try:
-            while not task.done():  # pragma: no branch
-                remaining = timeout.remaining().total_seconds()
-                if timeout.expired():
-                    cancelled_for_timeout = True
-                    task.cancel(CANCEL_MSG_TIMEOUT)
-                    break
-
-                try:
-                    result = await asyncio.wait_for(
-                        asyncio.shield(task), timeout=remaining
-                    )
-                    return result
-                except asyncio.TimeoutError:
-                    continue
-        finally:
-            if not task.done():  # pragma: no branch
-                cancelled_for_timeout = True
-                task.cancel(CANCEL_MSG_TIMEOUT)
-
-        try:
-            return await task
-        except asyncio.CancelledError:
-            if cancelled_for_timeout:
-                raise asyncio.TimeoutError
-            raise  # pragma: no cover - External cancellation propagation
 
     async def _retry_if_requested(
         self,
