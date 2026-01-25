@@ -10,8 +10,7 @@ import cloudpickle  # type: ignore[import]
 import pytest
 
 from docket import CurrentDocket, Docket, Perpetual, Worker
-from docket.dependencies import Timeout
-from docket.worker import ms
+from docket.dependencies import Timeout, format_duration
 
 
 async def test_perpetual_tasks_are_scheduled_close_to_target_time(
@@ -94,18 +93,18 @@ async def test_worker_can_exit_from_long_horizon_perpetual_tasks(
 
 
 def test_formatting_durations():
-    assert ms(0.000001) == "     0ms"
-    assert ms(0.000010) == "     0ms"
-    assert ms(0.000100) == "     0ms"
-    assert ms(0.001000) == "     1ms"
-    assert ms(0.010000) == "    10ms"
-    assert ms(0.100000) == "   100ms"
-    assert ms(1.000000) == "  1000ms"
-    assert ms(10.00000) == " 10000ms"
-    assert ms(100.0000) == "   100s "
-    assert ms(1000.000) == "  1000s "
-    assert ms(10000.00) == " 10000s "
-    assert ms(100000.0) == "100000s "
+    assert format_duration(0.000001) == "     0ms"
+    assert format_duration(0.000010) == "     0ms"
+    assert format_duration(0.000100) == "     0ms"
+    assert format_duration(0.001000) == "     1ms"
+    assert format_duration(0.010000) == "    10ms"
+    assert format_duration(0.100000) == "   100ms"
+    assert format_duration(1.000000) == "  1000ms"
+    assert format_duration(10.00000) == " 10000ms"
+    assert format_duration(100.0000) == "   100s "
+    assert format_duration(1000.000) == "  1000s "
+    assert format_duration(10000.00) == " 10000s "
+    assert format_duration(100000.0) == "100000s "
 
 
 async def test_worker_timeout_exceeds_redelivery_timeout(docket: Docket):

@@ -6,7 +6,14 @@ resources, context, and behavior into task functions.
 
 from __future__ import annotations
 
-from ._base import AdmissionBlocked, Dependency, Runtime
+from ._base import (
+    AdmissionBlocked,
+    CompletionHandler,
+    Dependency,
+    FailureHandler,
+    Runtime,
+    format_duration,
+)
 from ._concurrency import ConcurrencyBlocked, ConcurrencyLimit
 from ._contextual import (
     CurrentDocket,
@@ -41,6 +48,9 @@ __all__ = [
     # Base
     "Dependency",
     "Runtime",
+    "FailureHandler",
+    "CompletionHandler",
+    "format_duration",
     # Contextual dependencies
     "CurrentDocket",
     "CurrentExecution",

@@ -9,8 +9,11 @@ from docket import CurrentDocket, CurrentWorker, Docket, Worker
 from typing import Any, Awaitable, Callable
 
 from docket.dependencies import (
+    CompletionHandler,
     Depends,
     ExponentialRetry,
+    FailureHandler,
+    Perpetual,
     Retry,
     Runtime,
     TaskArgument,
@@ -302,3 +305,70 @@ async def test_a_task_argument_cannot_ask_for_itself(
 
     assert "Failed to resolve dependencies for parameter(s): a" in caplog.text
     assert "ValueError: No parameter name specified" in caplog.text
+
+
+async def test_failure_handler_subclasses_must_be_unique(
+    docket: Docket, worker: Worker
+):
+    """Two different FailureHandler subclasses should conflict since FailureHandler.single=True."""
+
+    class CustomFailureHandler(FailureHandler):
+        async def __aenter__(self) -> "CustomFailureHandler":
+            return self  # pragma: no cover
+
+        async def handle_failure(
+            self,
+            execution: Execution,
+            call: str,
+            exception: BaseException,
+            duration: timedelta,
+            logger: logging.LoggerAdapter[logging.Logger],
+        ) -> bool:
+            return False  # pragma: no cover
+
+    async def the_task(
+        a: str,
+        retry: Retry = Retry(attempts=3),
+        custom: CustomFailureHandler = CustomFailureHandler(),
+    ):
+        pass  # pragma: no cover
+
+    with pytest.raises(
+        ValueError,
+        match=r"Only one FailureHandler dependency is allowed per task, but found: .+",
+    ):
+        await docket.add(the_task)("a")
+
+
+async def test_completion_handler_subclasses_must_be_unique(
+    docket: Docket, worker: Worker
+):
+    """Two different CompletionHandler subclasses should conflict since CompletionHandler.single=True."""
+
+    class CustomCompletionHandler(CompletionHandler):
+        async def __aenter__(self) -> "CustomCompletionHandler":
+            return self  # pragma: no cover
+
+        async def on_complete(
+            self,
+            execution: Execution,
+            call: str,
+            result: Any,
+            exception: BaseException | None,
+            duration: timedelta,
+            logger: logging.LoggerAdapter[logging.Logger],
+        ) -> bool:
+            return False  # pragma: no cover
+
+    async def the_task(
+        a: str,
+        perpetual: Perpetual = Perpetual(),
+        custom: CustomCompletionHandler = CustomCompletionHandler(),
+    ):
+        pass  # pragma: no cover
+
+    with pytest.raises(
+        ValueError,
+        match=r"Only one CompletionHandler dependency is allowed per task, but found: .+",
+    ):
+        await docket.add(the_task)("a")

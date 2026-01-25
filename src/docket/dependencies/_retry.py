@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
-from ._base import Dependency
+from ._base import FailureHandler, format_duration
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ..execution import Execution
+
+from ..instrumentation import TASKS_RETRIED
 
 
 class ForcedRetry(Exception):
     """Raised when a task requests a retry via `in_` or `at`"""
 
 
-class Retry(Dependency):
+class Retry(FailureHandler):
     """Configures linear retries for a task.  You can specify the total number of
     attempts (or `None` to retry indefinitely), and the delay between attempts.
 
@@ -60,6 +66,28 @@ class Retry(Dependency):
     def in_(self, when: timedelta) -> NoReturn:
         self.delay = when
         raise ForcedRetry()
+
+    async def handle_failure(
+        self,
+        execution: Execution,
+        call: str,
+        exception: BaseException,
+        duration: timedelta,
+        logger: logging.LoggerAdapter[logging.Logger],
+    ) -> bool:
+        """Handle failure by scheduling a retry if attempts remain."""
+        if self.attempts is not None and execution.attempt >= self.attempts:
+            return False
+
+        execution.when = datetime.now(timezone.utc) + self.delay
+        execution.attempt += 1
+        await execution.schedule(replace=True)
+
+        worker = self.worker.get()
+        TASKS_RETRIED.add(1, {**worker.labels(), **execution.general_labels()})
+        logger.info("↫ [%s] %s", format_duration(duration.total_seconds()), call)
+
+        return True
 
 
 class ExponentialRetry(Retry):

@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import Any
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any
 
-from ._base import Dependency
+from ._base import CompletionHandler, format_duration
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ..execution import Execution
+
+from ..instrumentation import TASKS_PERPETUATED
 
 
-class Perpetual(Dependency):
+class Perpetual(CompletionHandler):
     """Declare a task that should be run perpetually.  Perpetual tasks are automatically
     rescheduled for the future after they finish (whether they succeed or fail).  A
     perpetual task can be scheduled at worker startup with the `automatic=True`.
@@ -62,3 +68,35 @@ class Perpetual(Dependency):
     def perpetuate(self, *args: Any, **kwargs: Any) -> None:
         self.args = args
         self.kwargs = kwargs
+
+    async def on_complete(
+        self,
+        execution: Execution,
+        call: str,
+        result: Any,
+        exception: BaseException | None,
+        duration: timedelta,
+        logger: logging.LoggerAdapter[logging.Logger],
+    ) -> bool:
+        """Handle completion by scheduling the next execution."""
+        if self.cancelled:
+            docket = self.docket.get()
+            async with docket.redis() as redis:
+                await docket._cancel(redis, execution.key)
+            return False
+
+        docket = self.docket.get()
+        worker = self.worker.get()
+
+        now = datetime.now(timezone.utc)
+        when = max(now, now + self.every - duration)
+
+        await docket.replace(execution.function, when, execution.key)(
+            *self.args,
+            **self.kwargs,
+        )
+
+        TASKS_PERPETUATED.add(1, {**worker.labels(), **execution.general_labels()})
+        logger.info("↫ [%s] %s", format_duration(duration.total_seconds()), call)
+
+        return True
