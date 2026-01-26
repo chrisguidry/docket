@@ -152,7 +152,15 @@ def with_image_retry(fn: Callable[P, T], max_retries: int = 3) -> Callable[P, T]
             except docker.errors.ImageNotFound as e:
                 last_error = e
                 if attempt < max_retries - 1:
-                    time.sleep(2**attempt)  # Exponential backoff: 1s, 2s, 4s
+                    wait = 2**attempt
+                    print(
+                        f"[with_image_retry] ImageNotFound on attempt {attempt + 1}/{max_retries}, retrying in {wait}s: {e}"
+                    )
+                    time.sleep(wait)
+                else:
+                    print(
+                        f"[with_image_retry] ImageNotFound on final attempt {attempt + 1}/{max_retries}, giving up: {e}"
+                    )
         raise last_error or docker.errors.ImageNotFound("Image pull failed")
 
     return wrapper
