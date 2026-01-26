@@ -69,7 +69,6 @@ dev = [
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.6.1",
     "ruff>=0.9.7",
-    "objgraph>=3.6.2",
 ]
 
 docs = [
