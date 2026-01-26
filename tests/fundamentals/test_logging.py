@@ -28,9 +28,13 @@ async def test_tasks_can_opt_into_argument_logging(
     with caplog.at_level(logging.INFO):
         await worker.run_until_finished()
 
-        assert "the_task('value-a', b=..., c='value-c', d=...)" in caplog.text
-        assert "value-b" not in caplog.text
-        assert "value-d" not in caplog.text
+        # Filter to only docket logs (exclude fakeredis DEBUG logs which contain raw pickle data)
+        docket_logs = "\n".join(
+            r.message for r in caplog.records if r.name.startswith("docket")
+        )
+        assert "the_task('value-a', b=..., c='value-c', d=...)" in docket_logs
+        assert "value-b" not in docket_logs
+        assert "value-d" not in docket_logs
 
 
 async def test_tasks_can_opt_into_logging_collection_lengths(
