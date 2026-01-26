@@ -20,12 +20,12 @@ from tests._container import (
     allocate_cluster_ports,
     build_cluster_image,
     cleanup_stale_containers,
-    run_container_with_retry,
     setup_acl,
     setup_cluster_acl,
     sync_redis,
     wait_for_cluster,
     wait_for_redis,
+    with_image_retry,
 )
 from tests._key_leak_checker import KeyCountChecker
 
@@ -84,8 +84,7 @@ def redis_server(
         port0, port1, port2 = cluster_ports
         bus0, bus1, bus2 = port0 + 10000, port1 + 10000, port2 + 10000
 
-        container = run_container_with_retry(
-            docker_client,
+        container = with_image_retry(docker_client.containers.run)(
             cluster_image,
             detach=True,
             ports={
@@ -117,8 +116,7 @@ def redis_server(
             s.bind(("127.0.0.1", 0))
             redis_port = s.getsockname()[1]
 
-        container = run_container_with_retry(
-            docker_client,
+        container = with_image_retry(docker_client.containers.run)(
             base_image,
             detach=True,
             ports={"6379/tcp": redis_port},

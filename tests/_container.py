@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Generator, Iterable, cast
+from typing import Callable, Generator, Iterable, ParamSpec, TypeVar, cast
 
 import docker.errors
 import redis.exceptions
@@ -137,19 +137,25 @@ def setup_cluster_acl(ports: tuple[int, int, int], creds: ACLCredentials) -> Non
             )
 
 
-def run_container_with_retry(
-    client: DockerClient, image: str, max_retries: int = 3, **kwargs: Any
-) -> Container:
-    """Run a container with retries for transient image pull failures."""
-    last_error: Exception | None = None
-    for attempt in range(max_retries):
-        try:
-            return cast(Container, client.containers.run(image, **kwargs))
-        except docker.errors.ImageNotFound as e:
-            last_error = e
-            if attempt < max_retries - 1:
-                time.sleep(2**attempt)  # Exponential backoff: 1s, 2s, 4s
-    raise last_error or docker.errors.ImageNotFound(f"Failed to run {image}")
+P = ParamSpec("P")
+T = TypeVar("T")
+
+
+def with_image_retry(fn: Callable[P, T], max_retries: int = 3) -> Callable[P, T]:
+    """Wrap a function to retry on ImageNotFound with exponential backoff."""
+
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        last_error: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                return fn(*args, **kwargs)
+            except docker.errors.ImageNotFound as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    time.sleep(2**attempt)  # Exponential backoff: 1s, 2s, 4s
+        raise last_error or docker.errors.ImageNotFound("Image pull failed")
+
+    return wrapper
 
 
 def build_cluster_image(client: DockerClient, base_image: str) -> str:
