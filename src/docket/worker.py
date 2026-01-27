@@ -509,8 +509,8 @@ class Worker:
             completed_tasks = {task for task in active_tasks if task.done()}
             for task in completed_tasks:
                 message_id = active_tasks.pop(task)
-                task_executions.pop(task)
-                self._tasks_by_key.pop(task.get_name(), None)
+                execution = task_executions.pop(task)
+                self._tasks_by_key.pop(execution.key, None)
                 try:
                     await task
                     await ack_message(redis, message_id)
