@@ -4,6 +4,8 @@ These tests verify that internal data structures are properly cleaned up after
 task completion and context exit, catching memory leaks early in CI.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from datetime import timedelta
