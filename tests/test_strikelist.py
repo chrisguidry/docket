@@ -312,3 +312,155 @@ async def test_type_mismatch_handled_gracefully(
         result = strikes.is_stricken({"amount": "not a number"})
         assert result is False
         assert "Incompatible type" in caplog.text
+
+
+# Internal state invariant tests
+
+
+async def test_invariant_conditions_only_default_after_remove(
+    redis_url: str, strike_name: str
+):
+    """After removing a temporary condition, only the default condition should remain."""
+    from docket.execution import Execution
+
+    async with StrikeList(url=redis_url, name=strike_name) as strikes:
+        # Initially only default condition
+        assert len(strikes._conditions) == 1
+        default_condition = strikes._conditions[0]
+
+        # Add a temporary condition
+        def temp_condition(execution: Execution) -> bool:
+            return execution.function_name == "blocked_task"
+
+        strikes.add_condition(temp_condition)
+        assert len(strikes._conditions) == 2
+
+        # Remove the temporary condition
+        strikes.remove_condition(temp_condition)
+
+        # Should be back to only the default
+        assert len(strikes._conditions) == 1
+        assert strikes._conditions[0] is default_condition
+
+
+async def test_invariant_no_empty_dicts_in_task_strikes_after_restore(
+    redis_url: str, strike_name: str
+):
+    """After restoring all strikes for a task, no empty dicts should remain."""
+    async with StrikeList(url=redis_url, name=strike_name) as strikes:
+        # Strike a specific task+parameter combination
+        await strikes.strike(
+            function="my_task", parameter="user_id", operator="==", value=123
+        )
+        await asyncio.sleep(0.1)
+
+        # Verify structure exists
+        assert "my_task" in strikes.task_strikes
+        assert "user_id" in strikes.task_strikes["my_task"]
+
+        # Restore the strike
+        await strikes.restore(
+            function="my_task", parameter="user_id", operator="==", value=123
+        )
+        await asyncio.sleep(0.1)
+
+        # After restore, no empty dict entries should remain
+        assert "my_task" not in strikes.task_strikes, (
+            "task_strikes should not contain empty task entries"
+        )
+
+
+async def test_invariant_no_empty_dicts_in_parameter_strikes_after_restore(
+    redis_url: str, strike_name: str
+):
+    """After restoring all parameter strikes, no empty sets should remain."""
+    async with StrikeList(url=redis_url, name=strike_name) as strikes:
+        # Strike a parameter (applies to all tasks)
+        await strikes.strike(parameter="region", operator="==", value="us-west")
+        await asyncio.sleep(0.1)
+
+        # Verify structure exists
+        assert "region" in strikes.parameter_strikes
+        assert len(strikes.parameter_strikes["region"]) == 1
+
+        # Restore the strike
+        await strikes.restore(parameter="region", operator="==", value="us-west")
+        await asyncio.sleep(0.1)
+
+        # After restore, no empty set entries should remain
+        assert "region" not in strikes.parameter_strikes, (
+            "parameter_strikes should not contain empty parameter entries"
+        )
+
+
+async def test_invariant_multiple_strike_restore_cycles(
+    redis_url: str, strike_name: str
+):
+    """Multiple strike/restore cycles should not accumulate orphan entries."""
+    async with StrikeList(url=redis_url, name=strike_name) as strikes:
+        for cycle in range(5):
+            # Strike
+            await strikes.strike(
+                function="task_a",
+                parameter="customer_id",
+                operator="==",
+                value=f"id-{cycle}",
+            )
+            await strikes.strike(
+                parameter="global_param", operator=">=", value=100 + cycle
+            )
+            await asyncio.sleep(0.05)
+
+            # Verify strikes are in effect
+            assert "task_a" in strikes.task_strikes
+            assert "global_param" in strikes.parameter_strikes
+
+            # Restore
+            await strikes.restore(
+                function="task_a",
+                parameter="customer_id",
+                operator="==",
+                value=f"id-{cycle}",
+            )
+            await strikes.restore(
+                parameter="global_param", operator=">=", value=100 + cycle
+            )
+            await asyncio.sleep(0.05)
+
+            # After each cycle, both dicts should be clean
+            assert "task_a" not in strikes.task_strikes, (
+                f"Orphan in task_strikes after cycle {cycle}"
+            )
+            assert "global_param" not in strikes.parameter_strikes, (
+                f"Orphan in parameter_strikes after cycle {cycle}"
+            )
+
+
+async def test_invariant_strikelist_state_persists_through_context(
+    redis_url: str, strike_name: str
+):
+    """StrikeList data structures should persist (not be deleted) after context exit."""
+    strikes = StrikeList(url=redis_url, name=strike_name)
+
+    # Data structures exist before entering context
+    assert hasattr(strikes, "task_strikes")
+    assert hasattr(strikes, "parameter_strikes")
+    assert hasattr(strikes, "_conditions")
+
+    await strikes.__aenter__()
+
+    # Add some data
+    await strikes.strike(parameter="test_param", operator="==", value="test_value")
+    await asyncio.sleep(0.1)
+
+    await strikes.__aexit__(None, None, None)
+
+    # Data structures should still exist (not deleted like Worker)
+    # This is intentional - StrikeList maintains state
+    assert hasattr(strikes, "task_strikes")
+    assert hasattr(strikes, "parameter_strikes")
+    assert hasattr(strikes, "_conditions")
+
+    # But connection-related state should be cleaned up
+    assert strikes._monitor_task is None
+    assert strikes._strikes_loaded is None
