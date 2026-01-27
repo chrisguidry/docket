@@ -187,14 +187,6 @@ async def test_invariant_cleanup_with_varied_tasks(docket: Docket):
 
 async def test_invariant_shared_context_reset_after_worker_exit(docket: Docket):
     """SharedContext ContextVars should be reset after worker exits."""
-    # Capture initial state (ContextVars should have no value set)
-    initial_resolved_set = False
-    try:
-        SharedContext.resolved.get()
-        initial_resolved_set = True
-    except LookupError:
-        pass
-
     worker = Worker(docket)
     await worker.__aenter__()
 
@@ -204,7 +196,6 @@ async def test_invariant_shared_context_reset_after_worker_exit(docket: Docket):
 
     await worker.__aexit__(None, None, None)
 
-    # After exit, resolved should be reset (LookupError if no initial value)
-    if not initial_resolved_set:
-        with pytest.raises(LookupError):
-            SharedContext.resolved.get()
+    # After exit, resolved should be reset (LookupError since no value was set before)
+    with pytest.raises(LookupError):
+        SharedContext.resolved.get()

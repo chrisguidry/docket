@@ -1,14 +1,19 @@
 """Tests for StrikeList."""
 
+from __future__ import annotations
+
 # pyright: reportPrivateUsage=false
 
 import asyncio
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import pytest
 
 from docket import StrikeList
 from docket.strikelist import Operator, Restore, Strike
+
+if TYPE_CHECKING:
+    from docket.execution import Execution
 
 
 @pytest.fixture
@@ -321,16 +326,13 @@ async def test_invariant_conditions_only_default_after_remove(
     redis_url: str, strike_name: str
 ):
     """After removing a temporary condition, only the default condition should remain."""
-    from docket.execution import Execution
-
     async with StrikeList(url=redis_url, name=strike_name) as strikes:
         # Initially only default condition
         assert len(strikes._conditions) == 1
         default_condition = strikes._conditions[0]
 
-        # Add a temporary condition
-        def temp_condition(execution: Execution) -> bool:
-            return execution.function_name == "blocked_task"
+        # Add a temporary condition (lambda to avoid coverage gap on unused function)
+        temp_condition: Callable[[Execution], bool] = lambda _: False  # noqa: E731
 
         strikes.add_condition(temp_condition)
         assert len(strikes._conditions) == 2
