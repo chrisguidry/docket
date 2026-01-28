@@ -16,6 +16,7 @@ from ._base import (
     format_duration,
 )
 from ._concurrency import ConcurrencyBlocked, ConcurrencyLimit
+from ._cron import Cron
 from ._contextual import (
     CurrentDocket,
     CurrentExecution,
@@ -74,6 +75,7 @@ __all__ = [
     "AdmissionBlocked",
     "ConcurrencyBlocked",
     "ConcurrencyLimit",
+    "Cron",
     "Perpetual",
     "Progress",
     "Timeout",

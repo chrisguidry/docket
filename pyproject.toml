@@ -24,6 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "cloudpickle>=3.1.1",
+    "croniter>=6",
     "exceptiongroup>=1.2.0; python_version < '3.11'",
     "taskgroup>=0.2.2; python_version < '3.11'",
     "fakeredis[lua]>=2.32.1",
@@ -69,6 +70,7 @@ dev = [
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.6.1",
     "ruff>=0.14.14",
+    "types-croniter>=6",
 ]
 
 docs = [
