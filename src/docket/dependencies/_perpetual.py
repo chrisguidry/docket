@@ -61,7 +61,7 @@ class Perpetual(CompletionHandler):
 
     async def __aenter__(self) -> Perpetual:
         execution = self.execution.get()
-        perpetual = Perpetual(every=self.every)
+        perpetual = Perpetual(every=self.every, automatic=self.automatic)
         perpetual.args = execution.args
         perpetual.kwargs = execution.kwargs
         return perpetual
