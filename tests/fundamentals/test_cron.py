@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from croniter import croniter
 
@@ -134,3 +135,24 @@ async def test_automatic_cron_waits_for_scheduled_time(docket: Docket, worker: W
     assert len(calls) == 1
     # The task ran at or after the scheduled time, not immediately
     assert calls[0] >= future_time - timedelta(milliseconds=50)
+
+
+async def test_cron_with_timezone(docket: Docket, worker: Worker):
+    """Cron tasks can be scheduled in a specific timezone."""
+    runs = 0
+
+    pacific = ZoneInfo("America/Los_Angeles")
+
+    async def pacific_task(cron: Cron = Cron("0 9 * * *", tz=pacific, automatic=False)):
+        nonlocal runs
+        runs += 1
+
+    with patch.object(
+        croniter,
+        "get_next",
+        return_value=datetime.now(pacific) + timedelta(milliseconds=10),
+    ):
+        execution = await docket.add(pacific_task)()
+        await worker.run_at_most({execution.key: 2})
+
+    assert runs == 2
