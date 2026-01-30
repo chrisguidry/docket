@@ -763,15 +763,12 @@ class Worker:
                         perpetual = get_single_dependency_parameter_of_type(
                             task_function, Perpetual
                         )
-                        if perpetual is None:
-                            continue
 
-                        if not perpetual.automatic:
-                            continue
-
-                        key = task_function.__name__
-
-                        await self.docket.add(task_function, key=key)()
+                        if perpetual is not None and perpetual.automatic:
+                            key = task_function.__name__
+                            await self.docket.add(
+                                task_function, when=perpetual.initial_when, key=key
+                            )()
             except LockError:  # pragma: no cover
                 return
 
