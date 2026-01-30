@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from typing import TYPE_CHECKING
 
 from croniter import croniter
@@ -29,6 +29,8 @@ class Cron(Perpetual):
     Example:
 
     ```python
+    from zoneinfo import ZoneInfo
+
     @task
     async def weekly_report(cron: Cron = Cron("0 9 * * 1")) -> None:
         # Runs every Monday at 9:00 AM UTC
@@ -38,10 +40,18 @@ class Cron(Perpetual):
     async def daily_cleanup(cron: Cron = Cron("@daily")) -> None:
         # Runs every day at midnight UTC
         ...
+
+    @task
+    async def morning_standup(
+        cron: Cron = Cron("0 9 * * 1-5", tz=ZoneInfo("America/Los_Angeles"))
+    ) -> None:
+        # Runs weekdays at 9:00 AM Pacific (handles DST automatically)
+        ...
     ```
     """
 
     expression: str
+    tz: tzinfo
 
     _croniter: croniter[datetime]
 
@@ -49,6 +59,7 @@ class Cron(Perpetual):
         self,
         expression: str,
         automatic: bool = True,
+        tz: tzinfo = timezone.utc,
     ) -> None:
         """
         Args:
@@ -61,14 +72,18 @@ class Cron(Perpetual):
                 startup and continually through the worker's lifespan. This ensures
                 that the task will always be scheduled despite crashes and other
                 adverse conditions. Automatic tasks must not require any arguments.
+            tz: Timezone for interpreting the cron expression. Defaults to UTC.
+                Use `ZoneInfo("America/Los_Angeles")` for Pacific time, etc.
+                This correctly handles daylight saving time transitions.
         """
         super().__init__(automatic=automatic)
         self.expression = expression
-        self._croniter = croniter(expression, datetime.now(timezone.utc), datetime)
+        self.tz = tz
+        self._croniter = croniter(self.expression, datetime.now(self.tz), datetime)
 
     async def __aenter__(self) -> Cron:
         execution = self.execution.get()
-        cron = Cron(expression=self.expression, automatic=self.automatic)
+        cron = Cron(expression=self.expression, automatic=self.automatic, tz=self.tz)
         cron.args = execution.args
         cron.kwargs = execution.kwargs
         return cron
