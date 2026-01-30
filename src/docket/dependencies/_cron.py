@@ -73,7 +73,9 @@ class Cron(Perpetual):
         cron.kwargs = execution.kwargs
         return cron
 
-    def get_next(self) -> datetime:
+    @property
+    def initial_when(self) -> datetime:
+        """Return the next cron time for initial scheduling."""
         return self._croniter.get_next()
 
     async def on_complete(self, execution: Execution, outcome: TaskOutcome) -> bool:
@@ -82,5 +84,5 @@ class Cron(Perpetual):
         This overrides Perpetual's on_complete to ensure we hit the exact wall-clock
         time rather than adjusting for task duration.
         """
-        self.at(self.get_next())
+        self.at(self._croniter.get_next())
         return await super().on_complete(execution, outcome)

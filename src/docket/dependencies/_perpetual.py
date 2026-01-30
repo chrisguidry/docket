@@ -66,6 +66,11 @@ class Perpetual(CompletionHandler):
         perpetual.kwargs = execution.kwargs
         return perpetual
 
+    @property
+    def initial_when(self) -> datetime | None:
+        """Return None to schedule for immediate execution at worker startup."""
+        return None
+
     def cancel(self) -> None:
         self.cancelled = True
 

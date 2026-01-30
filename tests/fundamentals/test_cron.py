@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+from croniter import croniter
+
 from docket import Docket, Worker
 from docket.dependencies import Cron
 
@@ -15,9 +17,9 @@ async def test_cron_task_reschedules_itself(docket: Docket, worker: Worker):
         nonlocal runs
         runs += 1
 
-    # Patch get_next to return a time 10ms in the future (instead of waiting for 9 AM)
+    # Patch croniter.get_next to return a time 10ms in the future
     with patch.object(
-        Cron,
+        croniter,
         "get_next",
         return_value=datetime.now(timezone.utc) + timedelta(milliseconds=10),
     ):
@@ -40,7 +42,7 @@ async def test_cron_tasks_are_automatically_scheduled(docket: Docket, worker: Wo
     docket.register(my_automatic_cron)
 
     with patch.object(
-        Cron,
+        croniter,
         "get_next",
         return_value=datetime.now(timezone.utc) + timedelta(milliseconds=10),
     ):
@@ -59,7 +61,7 @@ async def test_cron_tasks_continue_after_errors(docket: Docket, worker: Worker):
         raise ValueError("Task failed!")
 
     with patch.object(
-        Cron,
+        croniter,
         "get_next",
         return_value=datetime.now(timezone.utc) + timedelta(milliseconds=10),
     ):
@@ -80,7 +82,7 @@ async def test_cron_tasks_can_cancel_themselves(docket: Docket, worker: Worker):
             cron.cancel()
 
     with patch.object(
-        Cron,
+        croniter,
         "get_next",
         return_value=datetime.now(timezone.utc) + timedelta(milliseconds=10),
     ):
@@ -100,7 +102,7 @@ async def test_cron_supports_vixie_keywords(docket: Docket, worker: Worker):
         runs += 1
 
     with patch.object(
-        Cron,
+        croniter,
         "get_next",
         return_value=datetime.now(timezone.utc) + timedelta(milliseconds=10),
     ):
@@ -110,10 +112,25 @@ async def test_cron_supports_vixie_keywords(docket: Docket, worker: Worker):
     assert runs == 1
 
 
-def test_cron_get_next_returns_future_time():
-    """Cron.get_next() returns a datetime in the future via croniter."""
-    cron = Cron("* * * * *", automatic=False)  # Every minute
-    next_time = cron.get_next()
+async def test_automatic_cron_waits_for_scheduled_time(docket: Docket, worker: Worker):
+    """Automatic cron tasks wait for their next scheduled time instead of running immediately.
 
-    assert isinstance(next_time, datetime)
-    assert next_time > datetime.now(timezone.utc)
+    Unlike Perpetual tasks which run immediately at worker startup, Cron tasks
+    schedule themselves for the next matching cron time. This ensures a Monday 9 AM
+    cron doesn't accidentally run on a Wednesday startup.
+    """
+    calls: list[datetime] = []
+
+    async def scheduled_task(cron: Cron = Cron("0 9 * * 1")):  # Mondays at 9 AM
+        calls.append(datetime.now(timezone.utc))
+
+    docket.register(scheduled_task)
+
+    # Schedule for 100ms in the future (simulating next Monday 9 AM)
+    future_time = datetime.now(timezone.utc) + timedelta(milliseconds=100)
+    with patch.object(croniter, "get_next", return_value=future_time):
+        await worker.run_at_most({"scheduled_task": 1})
+
+    assert len(calls) == 1
+    # The task ran at or after the scheduled time, not immediately
+    assert calls[0] >= future_time - timedelta(milliseconds=50)
