@@ -1,12 +1,10 @@
 from contextlib import contextmanager
 from threading import Thread
-from typing import Generator, cast
+from typing import Any, Generator, cast
 
-from opentelemetry import metrics
-from opentelemetry.metrics import set_meter_provider
-from opentelemetry.propagators.textmap import Getter, Setter
+from ._otel import Getter, Setter, get_meter, set_meter_provider
 
-meter: metrics.Meter = metrics.get_meter("docket")
+meter = get_meter("docket")
 
 TASKS_ADDED = meter.create_counter(
     "docket_tasks_added",
@@ -130,7 +128,7 @@ CACHE_SIZE = meter.create_gauge(
 Message = dict[bytes, bytes]
 
 
-class MessageGetter(Getter[Message]):
+class MessageGetter(Getter):  # type: ignore[type-arg]
     def get(self, carrier: Message, key: str) -> list[str] | None:
         val = carrier.get(key.encode(), None)
         if val is None:
@@ -141,7 +139,7 @@ class MessageGetter(Getter[Message]):
         return [key.decode() for key in carrier.keys()]
 
 
-class MessageSetter(Setter[Message]):
+class MessageSetter(Setter):  # type: ignore[type-arg]
     def set(
         self,
         carrier: Message,
@@ -166,7 +164,7 @@ def healthcheck_server(
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     class HealthcheckHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
+        def do_GET(self) -> None:
             self.send_response(200)
             self.send_header("Content-type", "text/plain")
             self.end_headers()
@@ -192,7 +190,6 @@ def metrics_server(
         return
 
     import sys
-    from typing import Any
 
     try:
         from opentelemetry.sdk.metrics import MeterProvider

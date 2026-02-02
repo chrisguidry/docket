@@ -14,7 +14,7 @@ tracer = trace.get_tracer(__name__)
 
 @pytest.fixture(scope="module", autouse=True)
 def tracer_provider() -> TracerProvider:
-    """Sets up a "real" TracerProvider so that spans are recorded for the tests"""
+    """Sets up a "real" TracerProvider so that spans are recorded for the tests."""
     provider = TracerProvider()
     trace.set_tracer_provider(provider)
     return provider

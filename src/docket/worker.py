@@ -30,10 +30,8 @@ if sys.version_info < (3, 11):
 else:
     from asyncio import TaskGroup  # pragma: no cover
 
-from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode, Tracer
-
 from ._cancellation import CANCEL_MSG_CLEANUP, cancel_task
+from ._otel import SpanKind, Status, StatusCode, get_tracer
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -121,7 +119,7 @@ async def default_fallback_task(
 
 
 logger: logging.Logger = logging.getLogger(__name__)
-tracer: Tracer = trace.get_tracer(__name__)
+tracer = get_tracer(__name__)
 
 
 class _stream_due_tasks(Protocol):
@@ -825,7 +823,7 @@ class Worker:
 
         with tracer.start_as_current_span(
             execution.function_name,
-            kind=trace.SpanKind.CONSUMER,
+            kind=SpanKind.CONSUMER,
             attributes={
                 **self.labels(),
                 **execution.specific_labels(),

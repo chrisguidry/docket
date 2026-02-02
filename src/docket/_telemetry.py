@@ -11,8 +11,13 @@ https://github.com/open-telemetry/opentelemetry-python-contrib
 from contextlib import contextmanager
 from typing import Generator
 
-from opentelemetry import context
-from opentelemetry.context import _SUPPRESS_INSTRUMENTATION_KEY
+from ._otel import (
+    _SUPPRESS_INSTRUMENTATION_KEY,
+    context_attach,
+    context_detach,
+    context_get_current,
+    context_set_value,
+)
 
 _SUPPRESS_INSTRUMENTATION_KEY_PLAIN = "suppress_instrumentation"
 
@@ -25,11 +30,11 @@ def suppress_instrumentation() -> Generator[None, None, None]:
     creating spans. This is useful for internal operations (like Redis polling)
     that would generate excessive noise in traces.
     """
-    ctx = context.get_current()
-    ctx = context.set_value(_SUPPRESS_INSTRUMENTATION_KEY, True, ctx)
-    ctx = context.set_value(_SUPPRESS_INSTRUMENTATION_KEY_PLAIN, True, ctx)
-    token = context.attach(ctx)
+    ctx = context_get_current()
+    ctx = context_set_value(_SUPPRESS_INSTRUMENTATION_KEY, True, ctx)
+    ctx = context_set_value(_SUPPRESS_INSTRUMENTATION_KEY_PLAIN, True, ctx)
+    token = context_attach(ctx)
     try:
         yield
     finally:
-        context.detach(token)
+        context_detach(token)

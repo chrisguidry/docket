@@ -8,8 +8,6 @@ from unittest import mock
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from opentelemetry.metrics import Histogram, UpDownCounter
-from opentelemetry.metrics import _Gauge as Gauge
 
 from docket import Docket, Worker
 from docket.instrumentation import healthcheck_server, metrics_server
@@ -30,7 +28,7 @@ def worker_labels(
 @pytest.fixture
 def TASK_DURATION(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASK_DURATION histogram."""
-    mock_obj = Mock(spec=Histogram.record)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASK_DURATION.record", mock_obj)
     return mock_obj
 
@@ -56,7 +54,7 @@ async def test_task_duration_is_measured(
 @pytest.fixture
 def TASK_PUNCTUALITY(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASK_PUNCTUALITY histogram."""
-    mock_obj = Mock(spec=Histogram.record)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASK_PUNCTUALITY.record", mock_obj)
     return mock_obj
 
@@ -84,7 +82,7 @@ async def test_task_punctuality_is_measured(
 @pytest.fixture
 def TASKS_RUNNING(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_RUNNING up-down counter."""
-    mock_obj = Mock(spec=UpDownCounter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_RUNNING.add", mock_obj)
     return mock_obj
 
@@ -167,7 +165,7 @@ async def test_exports_metrics_as_prometheus_metrics(
 @pytest.fixture
 def QUEUE_DEPTH(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the QUEUE_DEPTH counter."""
-    mock_obj = Mock(spec=Gauge.set)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.QUEUE_DEPTH.set", mock_obj)
     return mock_obj
 
@@ -175,7 +173,7 @@ def QUEUE_DEPTH(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def SCHEDULE_DEPTH(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the SCHEDULE_DEPTH counter."""
-    mock_obj = Mock(spec=Gauge.set)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.SCHEDULE_DEPTH.set", mock_obj)
     return mock_obj
 

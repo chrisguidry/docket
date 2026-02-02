@@ -19,10 +19,16 @@ from typing import (
 )
 
 import cloudpickle
-import opentelemetry.context
-from opentelemetry import propagate, trace
-from ._telemetry import suppress_instrumentation
 from typing_extensions import Self
+
+from ._otel import (
+    Context,
+    Link,
+    get_current_span,
+    propagate_extract,
+    propagate_inject,
+)
+from ._telemetry import suppress_instrumentation
 
 from ._execution_progress import ExecutionProgress, ProgressEvent, StateEvent
 from .annotations import Logged
@@ -108,7 +114,7 @@ class Execution:
         key: str,
         when: datetime,
         attempt: int,
-        trace_context: opentelemetry.context.Context | None = None,
+        trace_context: Context | None = None,
         redelivered: bool = False,
         function_name: str | None = None,
     ) -> None:
@@ -173,7 +179,7 @@ class Execution:
 
     # Scheduling metadata properties
     @property
-    def trace_context(self) -> opentelemetry.context.Context | None:
+    def trace_context(self) -> Context | None:
         """OpenTelemetry trace context."""
         return self._trace_context
 
@@ -225,7 +231,7 @@ class Execution:
             key=message[b"key"].decode(),
             when=datetime.fromisoformat(message[b"when"].decode()),
             attempt=int(message[b"attempt"].decode()),
-            trace_context=propagate.extract(message, getter=message_getter),
+            trace_context=propagate_extract(message, getter=message_getter),
             redelivered=redelivered,
             function_name=function_name,
         )
@@ -271,10 +277,10 @@ class Execution:
 
         return f"{function_name}({', '.join(arguments)}){{{self.key}}}"
 
-    def incoming_span_links(self) -> list[trace.Link]:
-        initiating_span = trace.get_current_span(self.trace_context)
+    def incoming_span_links(self) -> list[Link]:
+        initiating_span = get_current_span(self.trace_context)
         initiating_context = initiating_span.get_span_context()
-        return [trace.Link(initiating_context)] if initiating_context.is_valid else []
+        return [Link(initiating_context)] if initiating_context.is_valid else []
 
     async def schedule(
         self, replace: bool = False, reschedule_message: "RedisMessageID | None" = None
@@ -302,7 +308,7 @@ class Execution:
                     Used when a task needs to be rescheduled from an active stream message.
         """
         message: dict[bytes, bytes] = self.as_message()
-        propagate.inject(message, setter=message_setter)
+        propagate_inject(message, setter=message_setter)
 
         key = self.key
         when = self.when

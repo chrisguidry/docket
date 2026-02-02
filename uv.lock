@@ -1576,7 +1576,6 @@ dependencies = [
     { name = "croniter" },
     { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
     { name = "fakeredis", extra = ["lua"] },
-    { name = "opentelemetry-api" },
     { name = "prometheus-client" },
     { name = "py-key-value-aio", extra = ["memory", "redis"] },
     { name = "python-json-logger" },
@@ -1589,7 +1588,11 @@ dependencies = [
 
 [package.optional-dependencies]
 metrics = [
+    { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
+]
+telemetry = [
+    { name = "opentelemetry-api" },
 ]
 
 [package.dev-dependencies]
@@ -1640,7 +1643,8 @@ requires-dist = [
     { name = "croniter", specifier = ">=6" },
     { name = "exceptiongroup", marker = "python_full_version < '3.11'", specifier = ">=1.2.0" },
     { name = "fakeredis", extras = ["lua"], specifier = ">=2.32.1" },
-    { name = "opentelemetry-api", specifier = ">=1.33.0" },
+    { name = "opentelemetry-api", marker = "extra == 'metrics'", specifier = ">=1.33.0" },
+    { name = "opentelemetry-api", marker = "extra == 'telemetry'", specifier = ">=1.33.0" },
     { name = "opentelemetry-sdk", marker = "extra == 'metrics'", specifier = ">=1.33.0" },
     { name = "prometheus-client", specifier = ">=0.21.1" },
     { name = "py-key-value-aio", extras = ["memory", "redis"], specifier = ">=0.3.0" },
@@ -1651,7 +1655,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.15.1" },
     { name = "typing-extensions", specifier = ">=4.12.0" },
 ]
-provides-extras = ["metrics"]
+provides-extras = ["metrics", "telemetry"]
 
 [package.metadata.requires-dev]
 dev = [
