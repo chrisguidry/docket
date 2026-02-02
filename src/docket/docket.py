@@ -21,7 +21,6 @@ from typing import (
 
 import redis.exceptions
 from key_value.aio.protocols.key_value import AsyncKeyValue
-from opentelemetry import trace
 from redis.asyncio import Redis
 from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
@@ -31,6 +30,7 @@ from ._docket_snapshot import DocketSnapshot as DocketSnapshot
 from ._docket_snapshot import DocketSnapshotMixin
 from ._docket_snapshot import RunningExecution as RunningExecution
 from ._docket_snapshot import WorkerInfo as WorkerInfo
+from ._otel import get_tracer
 from ._redis import RedisConnection
 from ._result_store import ResultStorage
 from ._uuid7 import uuid7
@@ -54,7 +54,7 @@ from .strikelist import (
 )
 
 logger: logging.Logger = logging.getLogger(__name__)
-tracer: trace.Tracer = trace.get_tracer(__name__)
+tracer = get_tracer(__name__)
 
 
 class _cancel_task(Protocol):

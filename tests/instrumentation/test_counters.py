@@ -9,7 +9,6 @@ import pytest
 
 if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
-from opentelemetry.metrics import Counter
 
 from docket import Docket, Worker
 from docket.dependencies import Perpetual, Retry
@@ -24,7 +23,7 @@ def task_labels(docket: Docket, the_task: AsyncMock) -> dict[str, str]:
 @pytest.fixture
 def TASKS_ADDED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_ADDED counter."""
-    mock_obj = Mock(spec=Counter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_ADDED.add", mock_obj)
     return mock_obj
 
@@ -32,7 +31,7 @@ def TASKS_ADDED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_REPLACED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_REPLACED counter."""
-    mock_obj = Mock(spec=Counter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_REPLACED.add", mock_obj)
     return mock_obj
 
@@ -40,7 +39,7 @@ def TASKS_REPLACED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_SCHEDULED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_SCHEDULED counter."""
-    mock_obj = Mock(spec=Counter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_SCHEDULED.add", mock_obj)
     return mock_obj
 
@@ -85,7 +84,7 @@ async def test_replacing_a_task_increments_counter(
 @pytest.fixture
 def TASKS_CANCELLED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_CANCELLED counter."""
-    mock_obj = Mock(spec=Counter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_CANCELLED.add", mock_obj)
     return mock_obj
 
@@ -122,7 +121,7 @@ def worker_labels(
 @pytest.fixture
 def TASKS_STARTED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_STARTED counter."""
-    mock_obj = Mock(spec=Counter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_STARTED.add", mock_obj)
     return mock_obj
 
@@ -130,7 +129,7 @@ def TASKS_STARTED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_COMPLETED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_COMPLETED counter."""
-    mock_obj = Mock(spec=Counter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_COMPLETED.add", mock_obj)
     return mock_obj
 
@@ -138,7 +137,7 @@ def TASKS_COMPLETED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_SUCCEEDED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_SUCCEEDED counter."""
-    mock_obj = Mock(spec=Counter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_SUCCEEDED.add", mock_obj)
     return mock_obj
 
@@ -146,7 +145,7 @@ def TASKS_SUCCEEDED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_FAILED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_FAILED counter."""
-    mock_obj = Mock(spec=Counter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_FAILED.add", mock_obj)
     return mock_obj
 
@@ -154,7 +153,7 @@ def TASKS_FAILED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_RETRIED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_RETRIED counter."""
-    mock_obj = Mock(spec=Counter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_RETRIED.add", mock_obj)
     return mock_obj
 
@@ -162,7 +161,7 @@ def TASKS_RETRIED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_PERPETUATED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_PERPETUATED counter."""
-    mock_obj = Mock(spec=Counter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_PERPETUATED.add", mock_obj)
     return mock_obj
 
@@ -170,7 +169,7 @@ def TASKS_PERPETUATED(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.fixture
 def TASKS_REDELIVERED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Mock for the TASKS_REDELIVERED counter."""
-    mock_obj = Mock(spec=Counter.add)
+    mock_obj = Mock()
     monkeypatch.setattr("docket.instrumentation.TASKS_REDELIVERED.add", mock_obj)
     return mock_obj
 
