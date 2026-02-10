@@ -1,13 +1,15 @@
-"""Tests for the Perpetual rescheduling race condition documented in RACE.md.
+"""Tests for the generation counter that prevents stale executions.
 
-When a Perpetual task is running and an external caller uses docket.replace() to
-force immediate re-execution of the same key, two executions run concurrently.
-Both call Perpetual.on_complete() → docket.replace() on completion, and the last
-one to finish wins — potentially with stale timing data.
+The generation counter closes two gaps:
 
-The fix uses a generation counter: each schedule() atomically increments the
-generation in the runs hash. Perpetual.on_complete() checks whether the execution
-has been superseded before rescheduling.
+1. **Perpetual rescheduling race**: When a running Perpetual task is externally
+   replaced and both the old and new executions call on_complete(), the stale
+   one's reschedule is suppressed (tail check).
+
+2. **Replace-vs-XREADGROUP race**: When replace() runs XDEL on a stream message
+   that a worker has already read via XREADGROUP, the stale message is skipped
+   before claim() (head check).  This applies to ALL keyed tasks, not just
+   Perpetual ones.
 """
 
 import asyncio
@@ -253,4 +255,48 @@ async def test_new_task_moved_by_old_scheduler_runs_normally(
     assert calls == ["ran"], (
         "task with generation=0 in message but generation=1 in runs hash "
         "should still execute (generation=0 means pre-tracking)"
+    )
+
+
+async def test_replace_skips_stale_stream_message(docket: Docket, worker: Worker):
+    """When replace() can't XDEL a message the worker already read, the
+    generation check prevents the stale message from executing.
+
+    This simulates the tight race where XREADGROUP delivers a message to
+    the worker before replace()'s XDEL can remove it, so the stream has
+    both the old (gen=1) and new (gen=2) messages. Only gen=2 should run.
+    """
+    calls: list[int] = []
+
+    async def tracked_task(
+        execution: Execution = CurrentExecution(),
+    ):
+        calls.append(execution.generation)
+
+    # Schedule the task (gen=1 in stream and runs hash)
+    await docket.add(tracked_task, key="replace-race")()
+
+    # Grab the gen=1 message before replace() deletes it
+    async with docket.redis() as redis:
+        messages = await redis.xrange(docket.stream_key, count=10)
+    stale_message = None
+    for _, msg in messages:
+        if msg[b"key"] == b"replace-race":
+            stale_message = msg
+            break
+    assert stale_message is not None
+
+    # replace() deletes gen=1 from the stream and adds gen=2
+    await docket.replace(tracked_task, datetime.now(timezone.utc), "replace-race")()
+
+    # Re-inject the stale gen=1 message as if the worker had already read it
+    # via XREADGROUP before the XDEL could remove it
+    async with docket.redis() as redis:
+        await redis.xadd(docket.stream_key, stale_message)  # type: ignore[arg-type]
+
+    await worker.run_until_finished()
+
+    # Only the gen=2 message should have executed
+    assert calls == [2], (
+        f"Expected only generation 2 to execute, got generations {calls}"
     )
