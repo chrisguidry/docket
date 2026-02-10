@@ -2,14 +2,14 @@
 
 import asyncio
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
-from opentelemetry.metrics import Counter
+from opentelemetry.metrics import Counter, UpDownCounter
 
 from docket import Docket, Worker
 from docket.dependencies import Perpetual, Retry
@@ -361,3 +361,97 @@ async def test_redelivered_tasks_increment_redelivered_counter(
         await worker2.run_until_finished()
 
     assert TASKS_REDELIVERED.call_count >= 1
+
+
+@pytest.fixture
+def TASKS_RUNNING(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Mock for the TASKS_RUNNING up-down counter."""
+    mock_obj = Mock(spec=UpDownCounter.add)
+    monkeypatch.setattr("docket.instrumentation.TASKS_RUNNING.add", mock_obj)
+    return mock_obj
+
+
+@pytest.fixture
+def TASKS_SUPERSEDED(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Mock for the TASKS_SUPERSEDED counter."""
+    mock_obj = Mock(spec=Counter.add)
+    monkeypatch.setattr("docket.instrumentation.TASKS_SUPERSEDED.add", mock_obj)
+    return mock_obj
+
+
+async def test_superseded_task_increments_superseded_counter(
+    docket: Docket,
+    worker: Worker,
+    TASKS_STARTED: Mock,
+    TASKS_COMPLETED: Mock,
+    TASKS_RUNNING: Mock,
+    TASKS_SUPERSEDED: Mock,
+):
+    """Superseded tasks increment TASKS_SUPERSEDED but not lifecycle metrics.
+
+    When claim() detects that a task has been superseded by a newer generation,
+    the worker records TASKS_SUPERSEDED with docket.where=worker, but doesn't
+    touch TASKS_STARTED, TASKS_RUNNING, or TASKS_COMPLETED.
+    """
+
+    async def superseded_task():
+        pass  # pragma: no cover
+
+    await docket.add(superseded_task, key="metrics-superseded")()
+
+    # Bump the generation so the worker sees the message as superseded
+    async with docket.redis() as redis:
+        await redis.hincrby(  # type: ignore[misc]
+            docket.key("runs:metrics-superseded"), "generation", 1
+        )
+
+    await worker.run_until_finished()
+
+    TASKS_SUPERSEDED.assert_called_once_with(
+        1,
+        {
+            "docket.name": docket.name,
+            "docket.worker": worker.name,
+            "docket.task": "superseded_task",
+            "docket.where": "worker",
+        },
+    )
+    TASKS_STARTED.assert_not_called()
+    TASKS_COMPLETED.assert_not_called()
+    TASKS_RUNNING.assert_not_called()
+
+
+async def test_replaced_task_only_counts_replacement(
+    docket: Docket,
+    worker: Worker,
+    TASKS_STARTED: Mock,
+    TASKS_COMPLETED: Mock,
+    TASKS_RUNNING: Mock,
+    TASKS_SUCCEEDED: Mock,
+    TASKS_SUPERSEDED: Mock,
+):
+    """When a task is replaced before execution, only the replacement runs.
+
+    In the normal case, replace() successfully deletes the old stream message
+    via XDEL, so the worker only sees the replacement. No supersession occurs
+    because the stale message is already gone.
+    """
+
+    async def replaceable_task():
+        pass
+
+    await docket.add(replaceable_task, key="metrics-replace")()
+    await docket.replace(
+        replaceable_task, datetime.now(timezone.utc), "metrics-replace"
+    )()
+
+    await worker.run_until_finished()
+
+    TASKS_SUPERSEDED.assert_not_called()
+    TASKS_STARTED.assert_called_once()
+    TASKS_COMPLETED.assert_called_once()
+    TASKS_SUCCEEDED.assert_called_once()
+    # TASKS_RUNNING: +1 then -1
+    assert TASKS_RUNNING.call_count == 2
+    increments = [c.args[0] for c in TASKS_RUNNING.call_args_list]
+    assert sum(increments) == 0, "running gauge should be balanced"

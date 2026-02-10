@@ -50,6 +50,12 @@ TASKS_STRICKEN = meter.create_counter(
     unit="1",
 )
 
+TASKS_SUPERSEDED = meter.create_counter(
+    "docket_tasks_superseded",
+    description="How many tasks were superseded by a newer schedule before execution",
+    unit="1",
+)
+
 TASKS_COMPLETED = meter.create_counter(
     "docket_tasks_completed",
     description="How many tasks that have completed in any state",
