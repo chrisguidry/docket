@@ -77,6 +77,7 @@ from .instrumentation import (
     TASKS_STARTED,
     TASKS_STRICKEN,
     TASKS_SUCCEEDED,
+    TASKS_SUPERSEDED,
     healthcheck_server,
     metrics_server,
 )
@@ -638,7 +639,8 @@ class Worker:
                             'function', task['function'],
                             'args', task['args'],
                             'kwargs', task['kwargs'],
-                            'attempt', task['attempt']
+                            'attempt', task['attempt'],
+                            'generation', task['generation'] or '0'
                         )
                         redis.call('DEL', hash_key)
 
@@ -798,6 +800,12 @@ class Worker:
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
             return
 
+        # Atomically check supersession and claim task in a single round-trip
+        if not await execution.claim(self.name):
+            logger.info("↬ %s (superseded)", call, extra=log_context)
+            TASKS_SUPERSEDED.add(1, counter_labels | {"docket.where": "worker"})
+            return
+
         if execution.key in self._execution_counts:
             self._execution_counts[execution.key] += 1
 
@@ -816,10 +824,6 @@ class Worker:
         logger.info(
             "%s [%s] %s", arrow, format_duration(punctuality), call, extra=log_context
         )
-
-        # Atomically claim task and transition to running state
-        # This also initializes progress and cleans up known/stream_id to allow rescheduling
-        await execution.claim(self.name)
 
         dependencies: dict[str, Dependency] = {}
 

@@ -111,6 +111,7 @@ class Execution:
         trace_context: opentelemetry.context.Context | None = None,
         redelivered: bool = False,
         function_name: str | None = None,
+        generation: int = 0,
     ) -> None:
         # Task definition (immutable)
         self._docket = docket
@@ -125,6 +126,7 @@ class Execution:
         self.attempt = attempt
         self._trace_context = trace_context
         self._redelivered = redelivered
+        self._generation = generation
 
         # Lifecycle state (mutable)
         self.state: ExecutionState = ExecutionState.SCHEDULED
@@ -182,6 +184,11 @@ class Execution:
         """Whether this message was redelivered."""
         return self._redelivered
 
+    @property
+    def generation(self) -> int:
+        """Scheduling generation counter for supersession detection."""
+        return self._generation
+
     @contextmanager
     def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
         """Suppress OTel auto-instrumentation for internal Redis operations."""
@@ -199,6 +206,7 @@ class Execution:
             b"args": cloudpickle.dumps(self.args),
             b"kwargs": cloudpickle.dumps(self.kwargs),
             b"attempt": str(self.attempt).encode(),
+            b"generation": str(self.generation).encode(),
         }
 
     @classmethod
@@ -228,6 +236,7 @@ class Execution:
             trace_context=propagate.extract(message, getter=message_getter),
             redelivered=redelivered,
             function_name=function_name,
+            generation=int(message.get(b"generation", b"0")),
         )
         await instance.sync()
         return instance
@@ -339,6 +348,7 @@ class Execution:
                             local function_name = nil
                             local args_data = nil
                             local kwargs_data = nil
+                            local generation_index = nil
 
                             for i = 7, #ARGV, 2 do
                                 local field_name = ARGV[i]
@@ -353,6 +363,8 @@ class Execution:
                                     args_data = field_value
                                 elseif field_name == 'kwargs' then
                                     kwargs_data = field_value
+                                elseif field_name == 'generation' then
+                                    generation_index = #message
                                 end
                             end
 
@@ -363,6 +375,12 @@ class Execution:
                                 -- Acknowledge and delete the message from the stream
                                 redis.call('XACK', stream_key, worker_group_name, reschedule_message_id)
                                 redis.call('XDEL', stream_key, reschedule_message_id)
+
+                                -- Increment generation counter
+                                local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
+                                if generation_index then
+                                    message[generation_index] = tostring(new_gen)
+                                end
 
                                 -- Park task data for future execution
                                 redis.call('HSET', parked_key, unpack(message))
@@ -419,6 +437,12 @@ class Execution:
                                 if known_exists then
                                     return 'EXISTS'
                                 end
+                            end
+
+                            -- Increment generation counter
+                            local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
+                            if generation_index then
+                                message[generation_index] = tostring(new_gen)
                             end
 
                             if is_immediate then
@@ -500,11 +524,12 @@ class Execution:
                 {"state": ExecutionState.SCHEDULED.value, "when": when.isoformat()}
             )
 
-    async def claim(self, worker: str) -> None:
-        """Atomically claim task and transition to RUNNING state.
+    async def claim(self, worker: str) -> bool:
+        """Atomically check supersession and claim task in a single round-trip.
 
         This consolidates worker operations when claiming a task into a single
         atomic Lua script that:
+        - Checks if the task has been superseded by a newer generation
         - Sets state to RUNNING with worker name and timestamp
         - Initializes progress tracking (current=0, total=100)
         - Deletes known/stream_id fields to allow task rescheduling
@@ -512,6 +537,9 @@ class Execution:
 
         Args:
             worker: Name of the worker claiming the task
+
+        Returns:
+            True if the task was claimed, False if it was superseded.
         """
         started_at = datetime.now(timezone.utc)
         started_at_iso = started_at.isoformat()
@@ -520,7 +548,7 @@ class Execution:
             async with self.docket.redis() as redis:
                 claim_script = redis.register_script(
                     # KEYS: runs_key, progress_key, known_key, stream_id_key
-                    # ARGV: worker, started_at_iso
+                    # ARGV: worker, started_at_iso, generation
                     """
                     local runs_key = KEYS[1]
                     local progress_key = KEYS[2]
@@ -530,6 +558,15 @@ class Execution:
 
                     local worker = ARGV[1]
                     local started_at = ARGV[2]
+                    local generation = tonumber(ARGV[3])
+
+                    -- Check supersession: generation > 0 means tracking is active
+                    if generation > 0 then
+                        local current = redis.call('HGET', runs_key, 'generation')
+                        if current and tonumber(current) > generation then
+                            return 'SUPERSEDED'
+                        end
+                    end
 
                     -- Update execution state to running
                     redis.call('HSET', runs_key,
@@ -554,15 +591,18 @@ class Execution:
                     """
                 )
 
-                await claim_script(
+                result = await claim_script(
                     keys=[
                         self._redis_key,  # runs_key
                         self.progress._redis_key,  # progress_key
                         self.docket.known_task_key(self.key),  # legacy known_key
                         self.docket.stream_id_key(self.key),  # legacy stream_id_key
                     ],
-                    args=[worker, started_at_iso],
+                    args=[worker, started_at_iso, str(self._generation)],
                 )
+
+        if result == b"SUPERSEDED":
+            return False
 
         # Update local state
         self.state = ExecutionState.RUNNING
@@ -579,6 +619,8 @@ class Execution:
                 "started_at": started_at_iso,
             }
         )
+
+        return True
 
     async def _mark_as_terminal(
         self,
@@ -801,6 +843,26 @@ class Execution:
 
         # Sync progress data
         await self.progress.sync()
+
+    async def is_superseded(self) -> bool:
+        """Check whether a newer schedule has superseded this execution.
+
+        Compares this execution's generation against the current generation
+        stored in the runs hash. If the stored generation is strictly greater,
+        this execution has been superseded by a newer schedule() call.
+
+        Generation 0 means the message predates generation tracking (e.g. it
+        was moved from queue to stream by an older worker's scheduler that
+        doesn't pass through the generation field). These are never considered
+        superseded since we can't tell.
+        """
+        if self._generation == 0:
+            return False
+        with self._maybe_suppress_instrumentation():
+            async with self.docket.redis() as redis:
+                current = await redis.hget(self._redis_key, "generation")
+        current_gen = int(current) if current is not None else 0
+        return current_gen > self._generation
 
     async def _publish_state(self, data: dict) -> None:
         """Publish state change to Redis pub/sub channel.

@@ -10,7 +10,7 @@ max_lines = 750
 # Source files that still need exceptions above 750
 [[rules]]
 path = "src/docket/worker.py"
-max_lines = 1125
+max_lines = 1130
 
 [[rules]]
 path = "src/docket/cli.py"
@@ -18,7 +18,7 @@ max_lines = 945
 
 [[rules]]
 path = "src/docket/execution.py"
-max_lines = 903
+max_lines = 965
 
 [[rules]]
 path = "src/docket/docket.py"

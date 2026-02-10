@@ -11,7 +11,7 @@ from ._base import CompletionHandler, TaskOutcome, format_duration
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
 
-from ..instrumentation import TASKS_PERPETUATED
+from ..instrumentation import TASKS_PERPETUATED, TASKS_SUPERSEDED
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,23 @@ class Perpetual(CompletionHandler):
             async with docket.redis() as redis:
                 await docket._cancel(redis, execution.key)
             return False
+
+        if await execution.is_superseded():
+            worker = self.worker.get()
+            TASKS_SUPERSEDED.add(
+                1,
+                {
+                    **worker.labels(),
+                    **execution.general_labels(),
+                    "docket.where": "on_complete",
+                },
+            )
+            logger.info(
+                "↬ [%s] %s (superseded)",
+                format_duration(outcome.duration.total_seconds()),
+                execution.call_repr(),
+            )
+            return True
 
         docket = self.docket.get()
         worker = self.worker.get()
