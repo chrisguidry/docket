@@ -524,11 +524,12 @@ class Execution:
                 {"state": ExecutionState.SCHEDULED.value, "when": when.isoformat()}
             )
 
-    async def claim(self, worker: str) -> None:
-        """Atomically claim task and transition to RUNNING state.
+    async def claim(self, worker: str) -> bool:
+        """Atomically check supersession and claim task in a single round-trip.
 
         This consolidates worker operations when claiming a task into a single
         atomic Lua script that:
+        - Checks if the task has been superseded by a newer generation
         - Sets state to RUNNING with worker name and timestamp
         - Initializes progress tracking (current=0, total=100)
         - Deletes known/stream_id fields to allow task rescheduling
@@ -536,6 +537,9 @@ class Execution:
 
         Args:
             worker: Name of the worker claiming the task
+
+        Returns:
+            True if the task was claimed, False if it was superseded.
         """
         started_at = datetime.now(timezone.utc)
         started_at_iso = started_at.isoformat()
@@ -544,7 +548,7 @@ class Execution:
             async with self.docket.redis() as redis:
                 claim_script = redis.register_script(
                     # KEYS: runs_key, progress_key, known_key, stream_id_key
-                    # ARGV: worker, started_at_iso
+                    # ARGV: worker, started_at_iso, generation
                     """
                     local runs_key = KEYS[1]
                     local progress_key = KEYS[2]
@@ -554,6 +558,15 @@ class Execution:
 
                     local worker = ARGV[1]
                     local started_at = ARGV[2]
+                    local generation = tonumber(ARGV[3])
+
+                    -- Check supersession: generation > 0 means tracking is active
+                    if generation > 0 then
+                        local current = redis.call('HGET', runs_key, 'generation')
+                        if current and tonumber(current) > generation then
+                            return 'SUPERSEDED'
+                        end
+                    end
 
                     -- Update execution state to running
                     redis.call('HSET', runs_key,
@@ -578,15 +591,18 @@ class Execution:
                     """
                 )
 
-                await claim_script(
+                result = await claim_script(
                     keys=[
                         self._redis_key,  # runs_key
                         self.progress._redis_key,  # progress_key
                         self.docket.known_task_key(self.key),  # legacy known_key
                         self.docket.stream_id_key(self.key),  # legacy stream_id_key
                     ],
-                    args=[worker, started_at_iso],
+                    args=[worker, started_at_iso, str(self._generation)],
                 )
+
+        if result == b"SUPERSEDED":
+            return False
 
         # Update local state
         self.state = ExecutionState.RUNNING
@@ -603,6 +619,8 @@ class Execution:
                 "started_at": started_at_iso,
             }
         )
+
+        return True
 
     async def _mark_as_terminal(
         self,

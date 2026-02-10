@@ -799,10 +799,6 @@ class Worker:
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
             return
 
-        if await execution.is_superseded():
-            logger.info("↬ %s (superseded)", call, extra=log_context)
-            return
-
         if execution.key in self._execution_counts:
             self._execution_counts[execution.key] += 1
 
@@ -822,9 +818,10 @@ class Worker:
             "%s [%s] %s", arrow, format_duration(punctuality), call, extra=log_context
         )
 
-        # Atomically claim task and transition to running state
-        # This also initializes progress and cleans up known/stream_id to allow rescheduling
-        await execution.claim(self.name)
+        # Atomically check supersession and claim task in a single round-trip
+        if not await execution.claim(self.name):
+            logger.info("↬ %s (superseded)", call, extra=log_context)
+            return
 
         dependencies: dict[str, Dependency] = {}
 
