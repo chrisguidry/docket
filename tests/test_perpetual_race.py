@@ -108,7 +108,7 @@ async def test_is_superseded_after_replace(docket: Docket):
     """An execution becomes superseded when the same key is rescheduled."""
 
     async def noop():
-        pass
+        pass  # pragma: no cover
 
     await docket.add(noop, key="gen-test")()
 
@@ -139,7 +139,7 @@ async def test_superseded_message_skipped_before_execution(
     calls: list[str] = []
 
     async def tracked_task():
-        calls.append("ran")
+        calls.append("ran")  # pragma: no cover
 
     await docket.add(tracked_task, key="head-check")()
 
