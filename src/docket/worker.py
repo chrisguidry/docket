@@ -638,7 +638,8 @@ class Worker:
                             'function', task['function'],
                             'args', task['args'],
                             'kwargs', task['kwargs'],
-                            'attempt', task['attempt']
+                            'attempt', task['attempt'],
+                            'generation', task['generation'] or '0'
                         )
                         redis.call('DEL', hash_key)
 
@@ -796,6 +797,10 @@ class Worker:
             await execution.mark_as_cancelled()
             logger.warning("🗙 %s", call, extra=log_context)
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
+            return
+
+        if await execution.is_superseded():
+            logger.info("↬ %s (superseded)", call, extra=log_context)
             return
 
         if execution.key in self._execution_counts:

@@ -111,6 +111,7 @@ class Execution:
         trace_context: opentelemetry.context.Context | None = None,
         redelivered: bool = False,
         function_name: str | None = None,
+        generation: int = 0,
     ) -> None:
         # Task definition (immutable)
         self._docket = docket
@@ -125,6 +126,7 @@ class Execution:
         self.attempt = attempt
         self._trace_context = trace_context
         self._redelivered = redelivered
+        self._generation = generation
 
         # Lifecycle state (mutable)
         self.state: ExecutionState = ExecutionState.SCHEDULED
@@ -182,6 +184,11 @@ class Execution:
         """Whether this message was redelivered."""
         return self._redelivered
 
+    @property
+    def generation(self) -> int:
+        """Scheduling generation counter for supersession detection."""
+        return self._generation
+
     @contextmanager
     def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
         """Suppress OTel auto-instrumentation for internal Redis operations."""
@@ -199,6 +206,7 @@ class Execution:
             b"args": cloudpickle.dumps(self.args),
             b"kwargs": cloudpickle.dumps(self.kwargs),
             b"attempt": str(self.attempt).encode(),
+            b"generation": str(self.generation).encode(),
         }
 
     @classmethod
@@ -228,6 +236,7 @@ class Execution:
             trace_context=propagate.extract(message, getter=message_getter),
             redelivered=redelivered,
             function_name=function_name,
+            generation=int(message.get(b"generation", b"0")),
         )
         await instance.sync()
         return instance
@@ -339,6 +348,7 @@ class Execution:
                             local function_name = nil
                             local args_data = nil
                             local kwargs_data = nil
+                            local generation_index = nil
 
                             for i = 7, #ARGV, 2 do
                                 local field_name = ARGV[i]
@@ -353,6 +363,8 @@ class Execution:
                                     args_data = field_value
                                 elseif field_name == 'kwargs' then
                                     kwargs_data = field_value
+                                elseif field_name == 'generation' then
+                                    generation_index = #message
                                 end
                             end
 
@@ -363,6 +375,12 @@ class Execution:
                                 -- Acknowledge and delete the message from the stream
                                 redis.call('XACK', stream_key, worker_group_name, reschedule_message_id)
                                 redis.call('XDEL', stream_key, reschedule_message_id)
+
+                                -- Increment generation counter
+                                local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
+                                if generation_index then
+                                    message[generation_index] = tostring(new_gen)
+                                end
 
                                 -- Park task data for future execution
                                 redis.call('HSET', parked_key, unpack(message))
@@ -419,6 +437,12 @@ class Execution:
                                 if known_exists then
                                     return 'EXISTS'
                                 end
+                            end
+
+                            -- Increment generation counter
+                            local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
+                            if generation_index then
+                                message[generation_index] = tostring(new_gen)
                             end
 
                             if is_immediate then
@@ -801,6 +825,19 @@ class Execution:
 
         # Sync progress data
         await self.progress.sync()
+
+    async def is_superseded(self) -> bool:
+        """Check whether a newer schedule has superseded this execution.
+
+        Compares this execution's generation against the current generation
+        stored in the runs hash. If the stored generation is strictly greater,
+        this execution has been superseded by a newer schedule() call.
+        """
+        with self._maybe_suppress_instrumentation():
+            async with self.docket.redis() as redis:
+                current = await redis.hget(self._redis_key, "generation")
+        current_gen = int(current) if current is not None else 0
+        return current_gen > self._generation
 
     async def _publish_state(self, data: dict) -> None:
         """Publish state change to Redis pub/sub channel.

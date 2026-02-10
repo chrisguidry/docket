@@ -94,6 +94,14 @@ class Perpetual(CompletionHandler):
                 await docket._cancel(redis, execution.key)
             return False
 
+        if await execution.is_superseded():
+            logger.info(
+                "↬ [%s] %s (superseded)",
+                format_duration(outcome.duration.total_seconds()),
+                execution.call_repr(),
+            )
+            return True
+
         docket = self.docket.get()
         worker = self.worker.get()
 

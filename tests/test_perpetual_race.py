@@ -4,12 +4,14 @@ When a Perpetual task is running and an external caller uses docket.replace() to
 force immediate re-execution of the same key, two executions run concurrently.
 Both call Perpetual.on_complete() → docket.replace() on completion, and the last
 one to finish wins — potentially with stale timing data.
+
+The fix uses a generation counter: each schedule() atomically increments the
+generation in the runs hash. Perpetual.on_complete() checks whether the execution
+has been superseded before rescheduling.
 """
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-
-import pytest
 
 from docket import CurrentExecution, Docket, Perpetual, Worker
 from docket.execution import Execution
@@ -20,11 +22,6 @@ STALE_INTERVAL = timedelta(seconds=2)
 CORRECT_INTERVAL = timedelta(milliseconds=500)
 
 
-@pytest.mark.xfail(
-    reason="Perpetual.on_complete has no supersession check; "
-    "stale execution overwrites correct successor (see RACE.md)",
-    strict=True,
-)
 async def test_stale_perpetual_on_complete_overwrites_correct_successor(
     docket: Docket, worker: Worker
 ):
@@ -105,3 +102,56 @@ async def test_stale_perpetual_on_complete_overwrites_correct_successor(
         f"{gap.total_seconds():.2f}s after the correct replacement, "
         f"expected < 1s (correct interval is {CORRECT_INTERVAL})"
     )
+
+
+call_count: int = 0
+
+
+async def counting_task():
+    global call_count
+    call_count += 1
+
+
+async def test_is_superseded_after_replace(docket: Docket):
+    """An execution becomes superseded when the same key is rescheduled."""
+    await docket.add(counting_task, key="gen-test")()
+
+    # Build an Execution from the stream message to capture its generation
+    async with docket.redis() as redis:
+        messages = await redis.xrange(docket.stream_key, count=1)
+    _, message = messages[0]
+    original = await Execution.from_message(docket, message)
+
+    assert original.generation == 1
+    assert not await original.is_superseded()
+
+    # Replacing bumps the generation in the runs hash
+    await docket.replace(counting_task, datetime.now(timezone.utc), "gen-test")()
+
+    assert await original.is_superseded()
+
+
+async def test_superseded_message_skipped_before_execution(
+    docket: Docket, worker: Worker
+):
+    """A stale message in the stream is skipped without running the function.
+
+    This covers the case where a message was already pending (e.g. after a
+    worker crash and redelivery) when the task was replaced. The runs hash
+    has a newer generation so the worker bails before claim().
+    """
+    global call_count
+    call_count = 0
+
+    await docket.add(counting_task, key="head-check")()
+
+    # Bump the generation in the runs hash without touching the stream message.
+    # This simulates the state after a replace where the old message is still
+    # pending in the consumer group (e.g. redelivery after crash).
+    runs_key = docket.key("runs:head-check")
+    async with docket.redis() as redis:
+        await redis.hincrby(runs_key, "generation", 1)  # type: ignore[misc]
+
+    await worker.run_until_finished()
+
+    assert call_count == 0, "superseded task should not have executed"
