@@ -832,7 +832,14 @@ class Execution:
         Compares this execution's generation against the current generation
         stored in the runs hash. If the stored generation is strictly greater,
         this execution has been superseded by a newer schedule() call.
+
+        Generation 0 means the message predates generation tracking (e.g. it
+        was moved from queue to stream by an older worker's scheduler that
+        doesn't pass through the generation field). These are never considered
+        superseded since we can't tell.
         """
+        if self._generation == 0:
+            return False
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
                 current = await redis.hget(self._redis_key, "generation")

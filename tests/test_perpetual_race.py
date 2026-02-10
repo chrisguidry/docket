@@ -13,6 +13,7 @@ has been superseded before rescheduling.
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import cloudpickle  # type: ignore[import-untyped]
 from docket import CurrentExecution, Docket, Perpetual, Worker
 from docket.execution import Execution
 
@@ -153,3 +154,103 @@ async def test_superseded_message_skipped_before_execution(
     await worker.run_until_finished()
 
     assert calls == [], "superseded task should not have executed"
+
+
+async def test_old_message_without_generation_runs_normally(
+    docket: Docket, worker: Worker
+):
+    """A message from pre-generation code (no generation field) still executes.
+
+    Simulates the old→new upgrade: old code scheduled a task without the
+    generation field in either the stream message or the runs hash. The new
+    worker should treat generation=0 as "unknown" and run it normally.
+    """
+    calls: list[str] = []
+
+    async def legacy_task():
+        calls.append("ran")
+
+    docket.register(legacy_task)
+
+    # Manually construct a stream message the way old code would — no generation field
+    message = {
+        b"key": b"old-to-new",
+        b"when": datetime.now(timezone.utc).isoformat().encode(),
+        b"function": b"legacy_task",
+        b"args": cloudpickle.dumps(()),  # type: ignore[no-untyped-call]
+        b"kwargs": cloudpickle.dumps({}),  # type: ignore[no-untyped-call]
+        b"attempt": b"1",
+    }
+
+    async with docket.redis() as redis:
+        message_id = await redis.xadd(docket.stream_key, message)  # type: ignore[arg-type]
+
+        # Set up runs hash without generation, as old code would
+        await redis.hset(  # type: ignore[misc]
+            docket.key("runs:old-to-new"),
+            mapping={
+                "state": "queued",
+                "when": str(datetime.now(timezone.utc).timestamp()),
+                "known": str(datetime.now(timezone.utc).timestamp()),
+                "stream_id": message_id,
+                "function": "legacy_task",
+            },
+        )
+
+    await worker.run_until_finished()
+
+    assert calls == ["ran"], "old message without generation should execute normally"
+
+
+async def test_new_task_moved_by_old_scheduler_runs_normally(
+    docket: Docket, worker: Worker
+):
+    """A task scheduled by new code but moved to stream by old scheduler runs.
+
+    Simulates the new→old scheduler→new worker upgrade path: new code schedules
+    a task (generation=1 in runs hash), but an older worker's scheduler Lua
+    moves it from queue to stream WITHOUT the generation field. The new worker
+    receives generation=0 from the message, sees generation=1 in the runs hash,
+    but still runs the task because generation=0 is treated as "pre-tracking".
+    """
+    calls: list[str] = []
+
+    async def upgraded_task():
+        calls.append("ran")
+
+    docket.register(upgraded_task)
+
+    # Schedule with new code to get generation=1 in the runs hash
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    await docket.add(upgraded_task, when=future, key="new-old-new")()
+
+    async with docket.redis() as redis:
+        # Verify new code set generation=1 in the runs hash
+        gen = await redis.hget(docket.key("runs:new-old-new"), "generation")  # type: ignore[misc]
+        assert gen == b"1"
+
+        # Simulate old scheduler moving from queue to stream WITHOUT generation
+        parked_data: dict[bytes, bytes] = await redis.hgetall(  # type: ignore[misc]
+            docket.parked_task_key("new-old-new")
+        )
+        stream_message: dict[bytes, bytes] = {
+            k: v
+            for k, v in parked_data.items()  # type: ignore[misc]
+            if k != b"generation"  # old scheduler doesn't know about this field
+        }
+        message_id = await redis.xadd(docket.stream_key, stream_message)  # type: ignore[arg-type]
+
+        # Clean up queue/parked state as the old scheduler would
+        await redis.zrem(docket.queue_key, "new-old-new")
+        await redis.delete(docket.parked_task_key("new-old-new"))
+        await redis.hset(  # type: ignore[misc]
+            docket.key("runs:new-old-new"),
+            mapping={"state": "queued", "stream_id": message_id},
+        )
+
+    await worker.run_until_finished()
+
+    assert calls == ["ran"], (
+        "task with generation=0 in message but generation=1 in runs hash "
+        "should still execute (generation=0 means pre-tracking)"
+    )
