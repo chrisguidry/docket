@@ -104,17 +104,13 @@ async def test_stale_perpetual_on_complete_overwrites_correct_successor(
     )
 
 
-call_count: int = 0
-
-
-async def counting_task():
-    global call_count
-    call_count += 1
-
-
 async def test_is_superseded_after_replace(docket: Docket):
     """An execution becomes superseded when the same key is rescheduled."""
-    await docket.add(counting_task, key="gen-test")()
+
+    async def noop():
+        pass
+
+    await docket.add(noop, key="gen-test")()
 
     # Build an Execution from the stream message to capture its generation
     async with docket.redis() as redis:
@@ -126,7 +122,7 @@ async def test_is_superseded_after_replace(docket: Docket):
     assert not await original.is_superseded()
 
     # Replacing bumps the generation in the runs hash
-    await docket.replace(counting_task, datetime.now(timezone.utc), "gen-test")()
+    await docket.replace(noop, datetime.now(timezone.utc), "gen-test")()
 
     assert await original.is_superseded()
 
@@ -140,10 +136,12 @@ async def test_superseded_message_skipped_before_execution(
     worker crash and redelivery) when the task was replaced. The runs hash
     has a newer generation so the worker bails before claim().
     """
-    global call_count
-    call_count = 0
+    calls: list[str] = []
 
-    await docket.add(counting_task, key="head-check")()
+    async def tracked_task():
+        calls.append("ran")
+
+    await docket.add(tracked_task, key="head-check")()
 
     # Bump the generation in the runs hash without touching the stream message.
     # This simulates the state after a replace where the old message is still
@@ -154,4 +152,4 @@ async def test_superseded_message_skipped_before_execution(
 
     await worker.run_until_finished()
 
-    assert call_count == 0, "superseded task should not have executed"
+    assert calls == [], "superseded task should not have executed"
