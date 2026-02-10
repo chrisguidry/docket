@@ -129,6 +129,20 @@ async def test_is_superseded_after_replace(docket: Docket):
 
     assert await original.is_superseded()
 
+    # Generation 0 (pre-tracking) is never considered superseded, even when
+    # the runs hash has a higher generation — this is the mixed-version case
+    pre_tracking = Execution(
+        docket=docket,
+        function=noop,
+        args=(),
+        kwargs={},
+        key="gen-test",
+        when=datetime.now(timezone.utc),
+        attempt=1,
+        generation=0,
+    )
+    assert not await pre_tracking.is_superseded()
+
 
 async def test_superseded_message_skipped_before_execution(
     docket: Docket, worker: Worker
