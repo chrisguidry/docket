@@ -293,12 +293,7 @@ async def test_replace_skips_stale_stream_message(docket: Docket, worker: Worker
     # Grab the gen=1 message before replace() deletes it
     async with docket.redis() as redis:
         messages = await redis.xrange(docket.stream_key, count=10)
-    stale_message = None
-    for _, msg in messages:
-        if msg[b"key"] == b"replace-race":
-            stale_message = msg
-            break
-    assert stale_message is not None
+    stale_message = next(msg for _, msg in messages if msg[b"key"] == b"replace-race")
 
     # replace() deletes gen=1 from the stream and adds gen=2
     await docket.replace(tracked_task, datetime.now(timezone.utc), "replace-race")()
