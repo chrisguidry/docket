@@ -563,7 +563,12 @@ class Execution:
                     -- Check supersession: generation > 0 means tracking is active
                     if generation > 0 then
                         local current = redis.call('HGET', runs_key, 'generation')
-                        if current and tonumber(current) > generation then
+                        if not current then
+                            -- Runs hash was cleaned up (execution_ttl=0 after
+                            -- a newer generation completed).  This message is stale.
+                            return 'SUPERSEDED'
+                        end
+                        if tonumber(current) > generation then
                             return 'SUPERSEDED'
                         end
                     end
