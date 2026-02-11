@@ -1,9 +1,13 @@
 """Tests for perpetual task state behavior with same-key cycles."""
 
 import asyncio
+import contextlib
 from datetime import timedelta
+from typing import AsyncGenerator, Callable
 
-from docket import Docket, Worker
+import pytest
+from docket import Docket, ExecutionState, Worker
+from docket._execution_progress import StateEvent
 from docket.dependencies import CurrentExecution, Perpetual
 from docket.execution import Execution
 
@@ -170,3 +174,64 @@ async def test_perpetual_task_state_transitions_with_same_key(
 
     # All should share the same key
     assert len(set(executions)) == 1, "All iterations should share the same key"
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(timedelta(0), id="ttl_zero"),
+        pytest.param(timedelta(seconds=60), id="default_ttl"),
+    ],
+)
+async def pubsub_docket(
+    request: pytest.FixtureRequest,
+    redis_url: str,
+    make_docket_name: Callable[[], str],
+) -> AsyncGenerator[Docket, None]:
+    async with Docket(
+        name=make_docket_name(),
+        url=redis_url,
+        execution_ttl=request.param,
+    ) as docket:
+        yield docket
+
+
+async def test_perpetual_publishes_completed_event(pubsub_docket: Docket):
+    """Perpetual tasks must still publish a completed state event on pub/sub.
+
+    _mark_as_terminal skips the runs hash write when the successor has already
+    been scheduled, but the pub/sub notification must still fire so that
+    callers waiting via execution.subscribe() or get_result() see completion.
+    """
+
+    async def simple_perpetual(perpetual: Perpetual = Perpetual()):
+        perpetual.after(timedelta(hours=1))
+
+    execution = await pubsub_docket.add(simple_perpetual, key="pubsub-completion")()
+
+    state_events: list[StateEvent] = []
+
+    async def collect_events():
+        async for event in execution.subscribe():  # pragma: no cover
+            if event["type"] == "state":
+                state_events.append(event)  # type: ignore[arg-type]
+                if event["state"] == ExecutionState.COMPLETED:
+                    return
+
+    async with Worker(
+        pubsub_docket,
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as worker:
+        collector = asyncio.create_task(collect_events())
+        worker_task = asyncio.create_task(worker.run_until_finished())
+
+        await asyncio.wait_for(collector, timeout=10)
+
+        worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker_task
+
+    states = [e["state"] for e in state_events]
+    assert ExecutionState.COMPLETED in states, (
+        f"Expected COMPLETED in pub/sub state events, got {states}"
+    )
