@@ -13,9 +13,12 @@ The generation counter closes two gaps:
 """
 
 import asyncio
+import contextlib
 from datetime import datetime, timedelta, timezone
+from typing import AsyncGenerator, Callable
 
 import cloudpickle  # type: ignore[import-untyped]
+import pytest
 from docket import CurrentExecution, Docket, Perpetual, Worker
 from docket.execution import Execution
 
@@ -23,6 +26,26 @@ TASK_KEY = "perpetual-race-test"
 
 STALE_INTERVAL = timedelta(seconds=2)
 CORRECT_INTERVAL = timedelta(milliseconds=500)
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(timedelta(0), id="execution_ttl=0"),
+        pytest.param(timedelta(seconds=60), id="execution_ttl=60s"),
+    ],
+)
+async def docket(
+    request: pytest.FixtureRequest,
+    redis_url: str,
+    make_docket_name: Callable[[], str],
+) -> AsyncGenerator[Docket, None]:
+    """Override the default docket fixture to parametrize over execution_ttl."""
+    async with Docket(
+        name=make_docket_name(),
+        url=redis_url,
+        execution_ttl=request.param,
+    ) as docket:
+        yield docket
 
 
 async def test_stale_perpetual_on_complete_overwrites_correct_successor(
@@ -308,4 +331,59 @@ async def test_replace_skips_stale_stream_message(docket: Docket, worker: Worker
     # Only the gen=2 message should have executed
     assert calls == [2], (
         f"Expected only generation 2 to execute, got generations {calls}"
+    )
+
+
+async def test_perpetual_successor_survives_mark_as_terminal(
+    docket: Docket, worker: Worker
+):
+    """After a Perpetual task completes, the successor's runs hash must survive.
+
+    on_complete calls docket.replace() which writes the successor's state
+    (generation, state=queued/scheduled) to the runs hash.  Then the worker
+    calls mark_as_completed → _mark_as_terminal which either overwrites
+    state=queued with state=completed or (with execution_ttl=0) deletes the
+    entire hash.  Either way the successor becomes invisible.
+    """
+    before = datetime.now(timezone.utc)
+    executed = asyncio.Event()
+
+    async def simple_perpetual(perpetual: Perpetual = Perpetual()):
+        perpetual.after(timedelta(hours=1))
+        executed.set()
+
+    key = "successor-survives"
+    await docket.add(simple_perpetual, key=key)()
+
+    # Can't use run_at_most here: with {key: 1} the strike blocks
+    # on_complete's docket.replace(); with {key: 2} the successor in the
+    # queue keeps run_until_finished looping forever.  So we run the worker
+    # in the background, wait for the execution to complete, then cancel.
+    worker_task = asyncio.create_task(worker.run_until_finished())
+    await asyncio.wait_for(executed.wait(), timeout=10)
+    await asyncio.sleep(0.1)
+    worker_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await worker_task
+
+    # Check the runs hash directly — it should have the successor's state,
+    # not "completed" and not deleted.
+    runs_key = docket.key(f"runs:{key}")
+    async with docket.redis() as redis:
+        runs_data: dict[bytes, bytes] = await redis.hgetall(runs_key)  # type: ignore[misc]
+
+    assert runs_data, (
+        f"runs hash for {key!r} was deleted (execution_ttl={docket.execution_ttl})"
+    )
+    state: str = runs_data[b"state"].decode()  # type: ignore[union-attr]
+    assert state == "scheduled", (
+        f"runs hash state is {state!r}, expected 'scheduled' "
+        f"(execution_ttl={docket.execution_ttl})"
+    )
+    when = float(runs_data[b"when"])  # type: ignore[arg-type]
+    expected_earliest = (before + timedelta(hours=1) - timedelta(seconds=5)).timestamp()
+    expected_latest = (before + timedelta(hours=1) + timedelta(seconds=5)).timestamp()
+    assert expected_earliest <= when <= expected_latest, (
+        f"Successor when={when}, expected ~1h after {before.timestamp()} "
+        f"(execution_ttl={docket.execution_ttl})"
     )

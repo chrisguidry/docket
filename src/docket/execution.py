@@ -563,7 +563,12 @@ class Execution:
                     -- Check supersession: generation > 0 means tracking is active
                     if generation > 0 then
                         local current = redis.call('HGET', runs_key, 'generation')
-                        if current and tonumber(current) > generation then
+                        if not current then
+                            -- Runs hash was cleaned up (execution_ttl=0 after
+                            -- a newer generation completed).  This message is stale.
+                            return 'SUPERSEDED'
+                        end
+                        if tonumber(current) > generation then
                             return 'SUPERSEDED'
                         end
                     end
@@ -636,28 +641,78 @@ class Execution:
             error: Optional error message (for FAILED state)
             result_key: Optional key where the result/exception is stored
 
-        Sets TTL on state data (from docket.execution_ttl), or deletes state
-        immediately if execution_ttl is 0. Also deletes progress data.
+        Uses a Lua script to atomically check supersession and write the
+        terminal state in a single round-trip.  If the runs hash has been
+        claimed by a successor (e.g. a Perpetual on_complete already called
+        docket.replace()), the hash is left untouched.
+
+        Progress data and the pub/sub completion event are always handled
+        regardless of supersession.
         """
         completed_at = datetime.now(timezone.utc).isoformat()
 
-        mapping: dict[str, str] = {
-            "state": state.value,
-            "completed_at": completed_at,
-        }
+        # Build the optional HSET fields
+        extra_fields: list[str] = []
         if error:
-            mapping["error"] = error
+            extra_fields.extend(["error", error])
         if result_key is not None:
-            mapping["result_key"] = result_key
+            extra_fields.extend(["result_key", result_key])
+
+        ttl_seconds = (
+            int(self.docket.execution_ttl.total_seconds())
+            if self.docket.execution_ttl
+            else 0
+        )
 
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
-                await redis.hset(self._redis_key, mapping=mapping)
-                if self.docket.execution_ttl:
-                    ttl_seconds = int(self.docket.execution_ttl.total_seconds())
-                    await redis.expire(self._redis_key, ttl_seconds)
-                else:
-                    await redis.delete(self._redis_key)
+                terminal_script = redis.register_script(
+                    # KEYS[1]: runs_key
+                    # ARGV[1]: generation, ARGV[2]: state, ARGV[3]: completed_at
+                    # ARGV[4]: ttl_seconds, ARGV[5..]: extra field pairs
+                    """
+                    local runs_key = KEYS[1]
+                    local generation = tonumber(ARGV[1])
+                    local state = ARGV[2]
+                    local completed_at = ARGV[3]
+                    local ttl_seconds = tonumber(ARGV[4])
+
+                    -- Check supersession (generation 0 = pre-tracking, always write)
+                    if generation > 0 then
+                        local current = redis.call('HGET', runs_key, 'generation')
+                        if current and tonumber(current) > generation then
+                            return 'SUPERSEDED'
+                        end
+                    end
+
+                    -- Build HSET args: state + completed_at + any extras
+                    local hset_args = {'state', state, 'completed_at', completed_at}
+                    for i = 5, #ARGV, 2 do
+                        hset_args[#hset_args + 1] = ARGV[i]
+                        hset_args[#hset_args + 1] = ARGV[i + 1]
+                    end
+                    redis.call('HSET', runs_key, unpack(hset_args))
+
+                    if ttl_seconds > 0 then
+                        redis.call('EXPIRE', runs_key, ttl_seconds)
+                    else
+                        redis.call('DEL', runs_key)
+                    end
+
+                    return 'OK'
+                    """
+                )
+
+                await terminal_script(
+                    keys=[self._redis_key],
+                    args=[
+                        str(self._generation),
+                        state.value,
+                        completed_at,
+                        str(ttl_seconds),
+                        *extra_fields,
+                    ],
+                )
 
         self.state = state
         if result_key is not None:
