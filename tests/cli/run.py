@@ -30,12 +30,7 @@ async def run_cli(
         argv = [same_python, "-m", "docket", *args]  # pragma: no cover
     else:
         # Try sitecustomize auto-start first
-        merged_env.setdefault(
-            "COVERAGE_PROCESS_START",
-            "pyproject.toml"
-            if os.environ.get("REDIS_VERSION") != "memory"
-            else ".coveragerc-memory",
-        )
+        merged_env.setdefault("COVERAGE_PROCESS_START", "pyproject.toml")
         # Ensure *this repo* (where sitecustomize.py lives) is on PYTHONPATH
         repo_root = os.path.abspath(os.getcwd())
         merged_env["PYTHONPATH"] = os.pathsep.join(

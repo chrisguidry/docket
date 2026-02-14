@@ -76,6 +76,21 @@ async def test_docket_reentry_preserves_tasks():
         assert "trace" in docket.tasks
 
 
+def test_register_collection():
+    """register_collection imports and registers all tasks from a module path."""
+    docket = Docket(name="test-collection", url="memory://")
+
+    # Clear standard tasks so we can verify register_collection adds them back
+    docket.tasks.clear()
+    assert "trace" not in docket.tasks
+
+    docket.register_collection("docket.tasks:standard_tasks")
+
+    assert "trace" in docket.tasks
+    assert "fail" in docket.tasks
+    assert "sleep" in docket.tasks
+
+
 def test_register_task_with_custom_name():
     """Tasks can be registered under a custom name instead of __name__."""
     docket = Docket(name="test-custom-name", url="memory://")

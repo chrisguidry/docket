@@ -160,7 +160,14 @@ jobs:
       - name: Run CLI tests
         env:
           REDIS_VERSION: "8.0"
-        run: uv run pytest tests/cli/ --cov-branch --cov-config=.coveragerc-cli --cov-report=xml --cov-report=term-missing:skip-covered --timeout=30
+        run: >
+          uv run pytest tests/cli/
+          -o 'addopts=--import-mode=importlib'
+          --numprocesses=logical --maxprocesses=4
+          --cov=src/docket/cli.py --cov=src/docket/_cli_support.py --cov=tests/cli
+          --cov-branch --cov-config=.coveragerc-cli --cov-fail-under=100
+          --cov-report=xml --cov-report=term-missing:skip-covered
+          --timeout=30
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
