@@ -164,8 +164,8 @@ jobs:
           uv run pytest tests/cli/
           -o 'addopts=--import-mode=importlib'
           --numprocesses=logical --maxprocesses=4
-          --cov=src/docket --cov=tests/cli
-          --cov-branch --cov-config=.coveragerc-cli --cov-fail-under=100
+          --cov=docket.cli --cov=docket._cli_support
+          --cov-branch --cov-fail-under=100
           --cov-report=xml --cov-report=term-missing:skip-covered
           --timeout=30
 
