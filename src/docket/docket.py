@@ -698,6 +698,9 @@ class Docket(DocketSnapshotMixin):
                     redis.call('DEL', known_key, parked_key, stream_id_key)
                     redis.call('ZREM', queue_key, task_key)
 
+                    -- Clear scheduling markers so add() can reschedule this key
+                    redis.call('HDEL', runs_key, 'known', 'stream_id')
+
                     -- Only set CANCELLED if not already in a terminal state
                     local current_state = redis.call('HGET', runs_key, 'state')
                     if current_state ~= 'completed' and current_state ~= 'failed' and current_state ~= 'cancelled' then

@@ -18,8 +18,8 @@ max_lines = 945
 
 [[rules]]
 path = "src/docket/execution.py"
-max_lines = 1021
+max_lines = 1020
 
 [[rules]]
 path = "src/docket/docket.py"
-max_lines = 866
+max_lines = 869

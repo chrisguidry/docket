@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from docket import Docket, Perpetual, Worker
+from docket import Docket, ExecutionState, Perpetual, Worker
 
 
 async def test_perpetual_tasks(docket: Docket, worker: Worker):
@@ -153,6 +153,36 @@ async def test_perpetual_tasks_can_schedule_next_run_after_delay(
     assert len(run_times) == 2
     delay = run_times[1] - run_times[0]
     assert delay >= timedelta(milliseconds=50)
+
+
+async def test_cancelled_automatic_perpetual_can_be_rescheduled(
+    docket: Docket, worker: Worker
+):
+    """After cancelling a scheduled Perpetual task, add() can reschedule it."""
+    calls = 0
+
+    async def my_auto_task(
+        perpetual: Perpetual = Perpetual(
+            every=timedelta(milliseconds=50), automatic=True
+        ),
+    ):
+        nonlocal calls
+        calls += 1
+
+    # Schedule the task but don't run a worker yet — leave it sitting in the queue
+    await docket.add(my_auto_task, key="my_auto_task")()
+
+    # Cancel before any worker picks it up
+    await docket.cancel("my_auto_task")
+
+    # Re-add with the same key; this should succeed, not silently fail
+    execution = await docket.add(my_auto_task, key="my_auto_task")()
+    await execution.sync()
+    assert execution.state in (ExecutionState.QUEUED, ExecutionState.SCHEDULED)
+
+    # Verify the task actually runs
+    await worker.run_at_most({"my_auto_task": 1})
+    assert calls == 1
 
 
 async def test_perpetual_tasks_can_schedule_next_run_at_specific_time(
