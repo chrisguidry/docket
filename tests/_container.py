@@ -177,11 +177,17 @@ def build_cluster_image(client: DockerClient, base_image: str) -> str:
         pass
 
     cluster_dir = Path(__file__).parent / "cluster"
-    client.images.build(
-        path=str(cluster_dir),
-        tag=tag,
-        buildargs={"BASE_IMAGE": base_image},
-    )
+    try:
+        client.images.build(
+            path=str(cluster_dir),
+            tag=tag,
+            buildargs={"BASE_IMAGE": base_image},
+        )
+    except docker.errors.BuildError as e:
+        if "AlreadyExists" in str(e):
+            pass
+        else:
+            raise
     return tag
 
 
