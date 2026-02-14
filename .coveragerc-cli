@@ -2,13 +2,33 @@
 branch = true
 parallel = true
 omit =
-    src/docket/__main__.py
-    src/docket/_uuid7.py
+    src/docket/__*.py
+    src/docket/_cancellation.py
+    src/docket/_docket_snapshot.py
+    src/docket/_execution_progress.py
     src/docket/_prometheus_exporter.py
+    src/docket/_redis.py
     src/docket/_result_store.py
+    src/docket/_telemetry.py
+    src/docket/_uuid7.py
+    src/docket/agenda.py
+    src/docket/annotations.py
+    src/docket/dependencies/*
+    src/docket/docket.py
+    src/docket/execution.py
+    src/docket/instrumentation.py
+    src/docket/strikelist.py
+    src/docket/tasks.py
+    src/docket/testing.py
+    src/docket/worker.py
     **/conftest.py
-    tests/_key_leak_checker.py
-    tests/_container.py
+    tests/_*.py
+    tests/test_*.py
+    tests/cluster/*
+    tests/concurrency_limits/*
+    tests/fundamentals/*
+    tests/instrumentation/*
+    tests/worker/*
 
 [report]
 exclude_also = ["\\.\\.\\.$"]
