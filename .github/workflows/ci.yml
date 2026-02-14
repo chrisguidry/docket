@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: Test Python ${{ matrix.python-version }}, ${{ matrix.backend.name }}
+    name: Core Tests, Python ${{ matrix.python-version }}, ${{ matrix.backend.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 4
     strategy:
