@@ -19,8 +19,8 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from . import __version__, tasks
-from ._cli_support import (
+from docket import __version__, tasks
+from docket.cli._support import (
     LogLevel,
     LogFormat,
     default_worker_name,
@@ -36,10 +36,10 @@ from ._cli_support import (
     set_logging_level,
     validate_url,
 )
-from .docket import Docket, DocketSnapshot, WorkerInfo
-from .execution import ExecutionState
-from .strikelist import Operator
-from .worker import Worker
+from docket.docket import Docket, DocketSnapshot, WorkerInfo
+from docket.execution import ExecutionState
+from docket.strikelist import Operator
+from docket.worker import Worker
 
 
 app: typer.Typer = typer.Typer(

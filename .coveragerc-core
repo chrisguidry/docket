@@ -6,8 +6,7 @@ omit =
     src/docket/_uuid7.py
     src/docket/_prometheus_exporter.py
     src/docket/_result_store.py
-    src/docket/_cli_support.py
-    src/docket/cli.py
+    src/docket/cli/*.py
     **/conftest.py
     tests/_key_leak_checker.py
     tests/_container.py

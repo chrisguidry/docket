@@ -1,0 +1,9 @@
+[run]
+branch = true
+parallel = true
+
+[report]
+include =
+    src/docket/cli/*
+    tests/cli/*
+exclude_also = ["\\.\\.\\.$"]
