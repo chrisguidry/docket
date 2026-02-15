@@ -15,7 +15,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .docket import DocketSnapshot, WorkerInfo
+from docket.docket import DocketSnapshot, WorkerInfo
 
 
 async def iterate_with_timeout(

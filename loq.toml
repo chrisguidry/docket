@@ -13,7 +13,7 @@ path = "src/docket/worker.py"
 max_lines = 1126
 
 [[rules]]
-path = "src/docket/cli.py"
+path = "src/docket/cli/__init__.py"
 max_lines = 945
 
 [[rules]]

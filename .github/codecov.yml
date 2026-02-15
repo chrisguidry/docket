@@ -1,3 +1,12 @@
+ignore:
+  - "src/docket/__main__.py"
+  - "src/docket/_uuid7.py"
+  - "src/docket/_prometheus_exporter.py"
+  - "src/docket/_result_store.py"
+  - "**/conftest.py"
+  - "tests/_key_leak_checker.py"
+  - "tests/_container.py"
+
 coverage:
   status:
     project:

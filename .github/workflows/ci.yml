@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: Test Python ${{ matrix.python-version }}, ${{ matrix.backend.name }}
+    name: Core Tests, Python ${{ matrix.python-version }}, ${{ matrix.backend.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 4
     strategy:
@@ -54,15 +54,14 @@ jobs:
           - python-version: "3.14"
             cov-threshold: 100
             pytest-args: ""
-          # Memory backend: CLI tests are skipped via pytest skip markers because
-          # CLI rejects memory:// URLs. Use separate coverage config to exclude CLI.
-          # Coverage threshold is lower due to pytest-xdist coverage data combination issues.
+          # Memory backend: coverage threshold is lower due to pytest-xdist
+          # coverage data combination issues.
           - backend:
               name: "Memory (in-memory backend)"
               redis-version: "memory"
               redis-py-version: ">=5"
             cov-threshold: 95
-            pytest-args: "--cov-config=.coveragerc-memory"
+            pytest-args: ""
           # Debug hanging tests in 3.12 cluster mode
           - python-version: "3.12"
             backend:
@@ -129,13 +128,53 @@ jobs:
       - name: Run tests
         env:
           REDIS_VERSION: ${{ matrix.backend.redis-version }}
-        run: uv run pytest --cov-branch --cov-fail-under=${{ matrix.cov-threshold }} --cov-report=xml --cov-report=term-missing:skip-covered ${{ matrix.pytest-args }}
+        run: uv run pytest --ignore=tests/cli --cov-branch --cov-config=.coveragerc-core --cov-fail-under=${{ matrix.cov-threshold }} --cov-report=xml --cov-report=term-missing:skip-covered ${{ matrix.pytest-args }}
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: python-${{ matrix.python-version }}
+
+  test-cli:
+    name: CLI Tests, Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv and set Python version
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync --upgrade-package 'redis>=5'
+
+      - name: Run CLI tests
+        env:
+          REDIS_VERSION: "8.0"
+        run: >
+          uv run pytest tests/cli/
+          -o 'addopts=--import-mode=importlib'
+          --numprocesses=logical --maxprocesses=4
+          --cov=src/docket/cli --cov=tests/cli
+          --cov-config=.coveragerc-cli
+          --cov-branch --cov-fail-under=100
+          --cov-report=xml --cov-report=term-missing:skip-covered
+          --timeout=30
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: cli-python-${{ matrix.python-version }}
 
   prek:
     name: Prek checks

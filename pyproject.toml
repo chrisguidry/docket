@@ -115,6 +115,7 @@ addopts = [
     "--cov=tests",
     "--cov-report=term-missing:skip-covered",
     "--cov-branch",
+    "--cov-fail-under=100",
     "--timeout=30",
     "--import-mode=importlib",
 ]
