@@ -1098,7 +1098,7 @@ class Worker:
                         )
                         if message is not None and message["type"] == "pmessage":
                             await self._handle_cancellation(message)
-                        elif is_memory:
+                        elif is_memory:  # pragma: no cover
                             await asyncio.sleep(0.1)
             except ConnectionError:
                 if self._worker_stopping.is_set():

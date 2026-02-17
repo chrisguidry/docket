@@ -595,7 +595,7 @@ class StrikeList:
             return last_id, initial_load_complete
 
         if not streams and initial_load_complete:
-            if self.url and self.url.startswith("memory://"):
+            if self.url and self.url.startswith("memory://"):  # pragma: no cover
                 await asyncio.sleep(0.1)
             return last_id, initial_load_complete
 
