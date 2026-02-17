@@ -84,8 +84,8 @@ pip install pydocket
 Docket requires a [Redis](http://redis.io/) server with Streams support (which was
 introduced in Redis 5.0.0). Docket is tested with:
 
-- Redis 6.2, 7.4, and 8.0 (standalone and cluster modes)
-- [Valkey](https://valkey.io/) 8.0
+- Redis 6.2, 7.4, and 8.6 (standalone and cluster modes)
+- [Valkey](https://valkey.io/) 8.1
 - In-memory backend via [fakeredis](https://github.com/cunla/fakeredis-py) for testing
 
 For testing without Redis, use the in-memory backend:
@@ -120,3 +120,13 @@ believe that `docket` should stay small, simple, understandable, and reliable, a
 begins with testing all the dusty branches and corners. This will give us the
 confidence to upgrade dependencies quickly and to adapt to new versions of Redis over
 time.
+
+To work on the documentation locally:
+
+```bash
+uv sync --group docs
+uv run zensical serve
+```
+
+This will start a local preview server. The docs are built with
+[Zensical](https://zensical.dev/) and configured in `mkdocs.yml`.

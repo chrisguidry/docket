@@ -39,7 +39,7 @@ jobs:
         run: uv sync --group docs
 
       - name: Build documentation
-        run: uv run mkdocs build
+        run: uv run zensical build
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
