@@ -1,15 +1,14 @@
 import logging
 import os
 import socket
+import sys
 from datetime import datetime, timedelta, timezone
 from functools import partial
-from typing import AsyncGenerator, Callable, Generator
+from typing import TYPE_CHECKING, AsyncGenerator, Callable, Generator
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from docker import DockerClient
-from docker.models.containers import Container
 
 from docket import Docket, Worker
 from tests._container import (
@@ -17,17 +16,24 @@ from tests._container import (
     ACLCredentials,
     BASE_VERSION,
     CLUSTER_ENABLED,
-    allocate_cluster_ports,
-    build_cluster_image,
-    cleanup_stale_containers,
-    setup_acl,
-    setup_cluster_acl,
     sync_redis,
-    wait_for_cluster,
-    wait_for_redis,
-    with_image_retry,
 )
 from tests._key_leak_checker import KeyCountChecker
+
+if sys.platform != "win32" or TYPE_CHECKING:
+    from docker import DockerClient
+    from docker.models.containers import Container
+
+    from tests._container import (
+        allocate_cluster_ports,
+        build_cluster_image,
+        cleanup_stale_containers,
+        setup_acl,
+        setup_cluster_acl,
+        wait_for_cluster,
+        wait_for_redis,
+        with_image_retry,
+    )
 
 
 @pytest.fixture(scope="session")

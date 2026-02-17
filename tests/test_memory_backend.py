@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 import pytest
 
 from docket import Docket, Worker
@@ -179,3 +182,22 @@ async def test_memory_url_with_path_isolation():
     assert db1_server is not None
     assert db2_server is not None
     assert db1_server is not db2_server
+
+
+async def test_memory_backend_idle_cpu_usage():
+    """Worker idling on memory:// should not spin the CPU."""
+    async with Docket(name="test-cpu", url="memory://") as docket:
+
+        async def dummy_task() -> None: ...
+
+        docket.register(dummy_task)
+
+        async with Worker(docket, concurrency=1):
+            cpu_start = time.process_time()
+            await asyncio.sleep(2.0)
+            cpu_used = time.process_time() - cpu_start
+
+            # A spinning worker would use ~2s of CPU; a sleeping one uses <0.2s
+            assert cpu_used < 0.5, (
+                f"Worker used {cpu_used:.2f}s of CPU while idle for 2s"
+            )

@@ -176,6 +176,42 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: cli-python-${{ matrix.python-version }}
 
+  test-windows:
+    name: Windows Tests, Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv and set Python version
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync --upgrade-package 'redis>=5'
+
+      - name: Run tests
+        env:
+          REDIS_VERSION: memory
+        run: >
+          uv run pytest --ignore=tests/cli
+          --cov-branch --cov-config=.coveragerc-core
+          --cov-fail-under=100
+          --cov-report=xml --cov-report=term-missing:skip-covered
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: windows-python-${{ matrix.python-version }}
+
   prek:
     name: Prek checks
     runs-on: ubuntu-latest
