@@ -123,7 +123,12 @@ addopts = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # redis-py 7.2.0 deprecated lib_name/lib_version on Connection.__init__,
+    # but RedisCluster still passes lib_name="redis-py" internally (#341)
+    "ignore:Call to.*lib_name.*:DeprecationWarning",
+]
 
 [tool.coverage.run]
 omit = [

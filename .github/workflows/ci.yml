@@ -28,14 +28,12 @@ jobs:
           - name: "Redis 7.4, redis-py >=5"
             redis-version: "7.4"
             redis-py-version: ">=5"
-          - name: "Redis 8.0, redis-py >=5"
-            redis-version: "8.0"
+          - name: "Redis 8.6, redis-py >=5"
+            redis-version: "8.6"
             redis-py-version: ">=5"
-          # TODO: unpin when redis-py fixes async cluster init with DriverInfo
-          # https://github.com/chrisguidry/docket/issues/341
-          - name: "Redis 8.0 Cluster"
-            redis-version: "8.0-cluster"
-            redis-py-version: ">=5,<7.2"
+          - name: "Redis 8.6 Cluster"
+            redis-version: "8.6-cluster"
+            redis-py-version: ">=5"
           - name: "Valkey 8.0, redis-py >=5"
             redis-version: "valkey-8.0"
             redis-py-version: ">=5"
@@ -67,42 +65,42 @@ jobs:
           # Debug hanging tests in 3.12 cluster mode
           - python-version: "3.12"
             backend:
-              name: "Redis 8.0 Cluster"
-              redis-version: "8.0-cluster"
-              redis-py-version: ">=5,<7.2"
+              name: "Redis 8.6 Cluster"
+              redis-version: "8.6-cluster"
+              redis-py-version: ">=5"
             pytest-args: "-v -s -W ignore::ResourceWarning"
           # Cluster mode emits ResourceWarning about unclosed sockets during
           # test teardown. The warnings appear related to redis-py's cluster
           # pub/sub connection management. Ignoring until upstream fixes land.
           - python-version: "3.10"
             backend:
-              name: "Redis 8.0 Cluster"
-              redis-version: "8.0-cluster"
-              redis-py-version: ">=5,<7.2"
+              name: "Redis 8.6 Cluster"
+              redis-version: "8.6-cluster"
+              redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.11"
             backend:
-              name: "Redis 8.0 Cluster"
-              redis-version: "8.0-cluster"
-              redis-py-version: ">=5,<7.2"
+              name: "Redis 8.6 Cluster"
+              redis-version: "8.6-cluster"
+              redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.13"
             backend:
-              name: "Redis 8.0 Cluster"
-              redis-version: "8.0-cluster"
-              redis-py-version: ">=5,<7.2"
+              name: "Redis 8.6 Cluster"
+              redis-version: "8.6-cluster"
+              redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.14"
             backend:
-              name: "Redis 8.0 Cluster"
-              redis-version: "8.0-cluster"
-              redis-py-version: ">=5,<7.2"
+              name: "Redis 8.6 Cluster"
+              redis-version: "8.6-cluster"
+              redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           # ACL variants only run on latest Python to save CI time
           - python-version: "3.14"
             backend:
-              name: "Redis 8.0 with ACL"
-              redis-version: "8.0-acl"
+              name: "Redis 8.6 with ACL"
+              redis-version: "8.6-acl"
               redis-py-version: ">=5"
             cov-threshold: 100
             pytest-args: ""
@@ -161,7 +159,7 @@ jobs:
 
       - name: Run CLI tests
         env:
-          REDIS_VERSION: "8.0"
+          REDIS_VERSION: "8.6"
         run: >
           uv run pytest tests/cli/
           -o 'addopts=--import-mode=importlib'
