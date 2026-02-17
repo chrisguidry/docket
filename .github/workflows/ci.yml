@@ -184,6 +184,18 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          - python-version: "3.10"
+            cov-threshold: 100
+          # Python 3.11 coverage reporting is unstable, so use 98% threshold
+          - python-version: "3.11"
+            cov-threshold: 98
+          - python-version: "3.12"
+            cov-threshold: 100
+          - python-version: "3.13"
+            cov-threshold: 100
+          - python-version: "3.14"
+            cov-threshold: 100
     steps:
       - uses: actions/checkout@v6
 
@@ -203,7 +215,7 @@ jobs:
         run: >
           uv run pytest --ignore=tests/cli
           --cov-branch --cov-config=.coveragerc-core
-          --cov-fail-under=${{ matrix.python-version == '3.11' && 98 || 100 }}
+          --cov-fail-under=${{ matrix.cov-threshold }}
           --cov-report=xml --cov-report=term-missing:skip-covered
 
       - name: Upload coverage reports to Codecov
