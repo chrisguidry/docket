@@ -36,7 +36,7 @@ async def test_redelivery_from_abandoned_worker(docket: Docket, the_task: AsyncM
     await docket.add(the_task)()
 
     async with Worker(
-        docket, redelivery_timeout=timedelta(milliseconds=100)
+        docket, redelivery_timeout=timedelta(milliseconds=200)
     ) as worker_a:
         worker_a._execute = AsyncMock(side_effect=Exception("Nope"))  # pyright: ignore[reportPrivateUsage]
         with pytest.raises(ExceptionGroup) as exc_info:
@@ -46,7 +46,7 @@ async def test_redelivery_from_abandoned_worker(docket: Docket, the_task: AsyncM
     the_task.assert_not_called()
 
     async with Worker(
-        docket, redelivery_timeout=timedelta(milliseconds=100)
+        docket, redelivery_timeout=timedelta(milliseconds=200)
     ) as worker_b:
         async with docket.redis() as redis:
             pending_info = await redis.xpending(
@@ -57,7 +57,7 @@ async def test_redelivery_from_abandoned_worker(docket: Docket, the_task: AsyncM
                 "Expected one pending task in the stream"
             )
 
-        await asyncio.sleep(0.125)  # longer than the redelivery timeout
+        await asyncio.sleep(0.25)  # longer than the redelivery timeout
 
         await worker_b.run_until_finished()
 

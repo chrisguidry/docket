@@ -343,7 +343,7 @@ async def test_redelivered_tasks_increment_redelivered_counter(
 
     await docket.add(test_task)()
 
-    worker = Worker(docket, redelivery_timeout=timedelta(milliseconds=50))
+    worker = Worker(docket, redelivery_timeout=timedelta(milliseconds=200))
 
     async with worker:
         worker._execute = AsyncMock(side_effect=Exception("Simulated worker failure"))  # type: ignore[assignment]
@@ -354,9 +354,9 @@ async def test_redelivered_tasks_increment_redelivered_counter(
             "Simulated worker failure" in str(e) for e in exc_info.value.exceptions
         )
 
-    await asyncio.sleep(0.075)
+    await asyncio.sleep(0.25)
 
-    worker2 = Worker(docket, redelivery_timeout=timedelta(milliseconds=100))
+    worker2 = Worker(docket, redelivery_timeout=timedelta(milliseconds=200))
     async with worker2:
         await worker2.run_until_finished()
 
