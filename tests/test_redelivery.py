@@ -250,18 +250,21 @@ async def test_workers_with_same_redelivery_timeout(docket: Docket):
     for i in range(4):
         await docket.add(tracked_task, key=f"task-{i}")(task_id=i)
 
-    # Both workers use the same redelivery_timeout
+    # Both workers use the same redelivery_timeout. Use 1s to give lease
+    # renewal plenty of margin on platforms with coarse timer resolution
+    # (Windows ~15ms). Tasks sleep 0.5s, so they still exceed the renewal
+    # interval (250ms) which is the point of this test.
     worker_a = Worker(
         docket,
         name="worker-a",
-        redelivery_timeout=timedelta(milliseconds=200),
+        redelivery_timeout=timedelta(seconds=1),
         minimum_check_interval=timedelta(milliseconds=10),
         scheduling_resolution=timedelta(milliseconds=10),
     )
     worker_b = Worker(
         docket,
         name="worker-b",
-        redelivery_timeout=timedelta(milliseconds=200),
+        redelivery_timeout=timedelta(seconds=1),
         minimum_check_interval=timedelta(milliseconds=10),
         scheduling_resolution=timedelta(milliseconds=10),
     )

@@ -230,7 +230,7 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
             with suppress(asyncio.CancelledError):  # pragma: no branch
                 await worker_task
 
-    assert error_count >= 2  # First call raised error, second succeeded
+    assert error_count >= 2
 
 
 async def test_cancellation_listener_handles_generic_exception(docket: Docket):
@@ -273,4 +273,48 @@ async def test_cancellation_listener_handles_generic_exception(docket: Docket):
             with suppress(asyncio.CancelledError):  # pragma: no branch
                 await worker_task
 
-    assert error_count >= 2  # First call raised error, second succeeded
+    assert error_count >= 2
+
+
+async def test_worker_drains_active_tasks_on_shutdown(docket: Docket):
+    """Active tasks are gathered and processed in the finally block at shutdown.
+
+    Uses an event handshake so the task is guaranteed to still be running
+    when the worker is cancelled. The finally block's asyncio.gather waits
+    for the task, and we release it from a separate coroutine.
+    """
+    task_started = asyncio.Event()
+    task_can_finish = asyncio.Event()
+    task_drained = False
+
+    async def blocking_task():
+        nonlocal task_drained
+        task_started.set()
+        await task_can_finish.wait()
+        task_drained = True
+
+    await docket.add(blocking_task)()
+
+    async with Worker(
+        docket,
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as worker:
+        worker_task = asyncio.create_task(worker.run_forever())
+        await task_started.wait()
+
+        worker_task.cancel()
+
+        # Release the task after the cancel propagates — the finally
+        # block's gather is waiting for this task to complete
+        async def release_task():
+            await asyncio.sleep(0.05)
+            task_can_finish.set()
+
+        release = asyncio.create_task(release_task())
+        with suppress(asyncio.CancelledError):  # pragma: no branch
+            async with async_timeout(5.0):  # pragma: no branch
+                await worker_task
+        await release
+
+    assert task_drained

@@ -4,6 +4,7 @@ import asyncio
 import http.client
 import socket
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 from unittest.mock import AsyncMock, Mock
@@ -41,17 +42,22 @@ async def test_task_duration_is_measured(
 ):
     """Should record the duration of task execution in the TASK_DURATION histogram."""
 
+    # Calibrate: measure actual sleep duration on this platform, since
+    # asyncio.sleep(0.1) can return early on Windows (~93ms observed)
+    cal_start = time.monotonic()
+    await asyncio.sleep(0.1)
+    calibrated_sleep = time.monotonic() - cal_start
+
     async def the_task():
         await asyncio.sleep(0.1)
 
     await docket.add(the_task)()
     await worker.run_until_finished()
 
-    # We can't check the exact value since it depends on actual execution time
     TASK_DURATION.assert_called_once_with(mock.ANY, worker_labels)
     duration: float = TASK_DURATION.call_args.args[0]
     assert isinstance(duration, float)
-    assert 0.1 <= duration <= 0.2
+    assert calibrated_sleep * 0.8 <= duration <= calibrated_sleep * 3
 
 
 @pytest.fixture

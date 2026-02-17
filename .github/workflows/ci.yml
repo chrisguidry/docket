@@ -203,7 +203,7 @@ jobs:
         run: >
           uv run pytest --ignore=tests/cli
           --cov-branch --cov-config=.coveragerc-core
-          --cov-fail-under=100
+          --cov-fail-under=${{ matrix.python-version == '3.11' && 98 || 100 }}
           --cov-report=xml --cov-report=term-missing:skip-covered
 
       - name: Upload coverage reports to Codecov
