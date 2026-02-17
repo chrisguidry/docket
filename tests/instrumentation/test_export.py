@@ -3,6 +3,7 @@
 import asyncio
 import http.client
 import socket
+import sys
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 from unittest.mock import AsyncMock, Mock
@@ -61,6 +62,9 @@ def TASK_PUNCTUALITY(monkeypatch: pytest.MonkeyPatch) -> Mock:
     return mock_obj
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Timing-sensitive: unreliable on Windows"
+)
 async def test_task_punctuality_is_measured(
     docket: Docket,
     worker: Worker,

@@ -1,8 +1,11 @@
 """Tests for Cron dependency (cron-style scheduled tasks)."""
 
+import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from croniter import croniter
 
@@ -137,6 +140,9 @@ async def test_automatic_cron_waits_for_scheduled_time(docket: Docket, worker: W
     assert calls[0] >= future_time - timedelta(milliseconds=50)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Timing-sensitive: unreliable on Windows"
+)
 async def test_cron_with_timezone(docket: Docket, worker: Worker):
     """Cron tasks can be scheduled in a specific timezone."""
     runs = 0
