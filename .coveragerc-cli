@@ -6,4 +6,5 @@ parallel = true
 include =
     src/docket/cli/*
     tests/cli/*
+    tests/sitecustomize.py
 exclude_also = ["\\.\\.\\.$"]

@@ -29,12 +29,10 @@ async def run_cli(
     if has_pytest_cov:
         argv = [same_python, "-m", "docket", *args]  # pragma: no cover
     else:
-        # Try sitecustomize auto-start first
         merged_env.setdefault("COVERAGE_PROCESS_START", "pyproject.toml")
-        # Ensure *this repo* (where sitecustomize.py lives) is on PYTHONPATH
-        repo_root = os.path.abspath(os.getcwd())
+        tests_dir = os.path.join(os.path.abspath(os.getcwd()), "tests")
         merged_env["PYTHONPATH"] = os.pathsep.join(
-            [repo_root, merged_env.get("PYTHONPATH", "")]
+            [tests_dir, merged_env.get("PYTHONPATH", "")]
         )
         argv = [same_python, "-m", "docket", *args]
 

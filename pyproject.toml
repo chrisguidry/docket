@@ -75,9 +75,8 @@ dev = [
 ]
 
 docs = [
-    "mkdocs>=1.5.3",
-    "mkdocs-material>=9.7.1",
-    "mkdocstrings>=0.24.1",
+    "zensical",
+    "mkdocstrings>=1.0.2",
     "mkdocstrings-python>=2.0.1",
 ]
 examples = [
@@ -145,6 +144,8 @@ omit = [
     # Test infrastructure with conditional branches for cluster/standalone
     "tests/_key_leak_checker.py",
     "tests/_container.py",
+    # Subprocess coverage hook, exercised by CLI tests only
+    "tests/sitecustomize.py",
 ]
 branch = true
 parallel = true
