@@ -69,7 +69,7 @@ jobs:
             backend:
               name: "Redis 8.0 Cluster"
               redis-version: "8.0-cluster"
-              redis-py-version: ">=5"
+              redis-py-version: ">=5,<7.2"
             pytest-args: "-v -s -W ignore::ResourceWarning"
           # Cluster mode emits ResourceWarning about unclosed sockets during
           # test teardown. The warnings appear related to redis-py's cluster
@@ -78,25 +78,25 @@ jobs:
             backend:
               name: "Redis 8.0 Cluster"
               redis-version: "8.0-cluster"
-              redis-py-version: ">=5"
+              redis-py-version: ">=5,<7.2"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.11"
             backend:
               name: "Redis 8.0 Cluster"
               redis-version: "8.0-cluster"
-              redis-py-version: ">=5"
+              redis-py-version: ">=5,<7.2"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.13"
             backend:
               name: "Redis 8.0 Cluster"
               redis-version: "8.0-cluster"
-              redis-py-version: ">=5"
+              redis-py-version: ">=5,<7.2"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.14"
             backend:
               name: "Redis 8.0 Cluster"
               redis-version: "8.0-cluster"
-              redis-py-version: ">=5"
+              redis-py-version: ">=5,<7.2"
             pytest-args: "-W ignore::ResourceWarning"
           # ACL variants only run on latest Python to save CI time
           - python-version: "3.14"
