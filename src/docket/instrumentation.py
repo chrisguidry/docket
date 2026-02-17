@@ -188,6 +188,8 @@ def healthcheck_server(
 
         yield
 
+        server.shutdown()
+
 
 @contextmanager
 def metrics_server(
@@ -237,3 +239,5 @@ def metrics_server(
         Thread(target=server.serve_forever, daemon=True).start()
 
         yield
+
+        server.shutdown()

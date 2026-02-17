@@ -36,6 +36,7 @@ dependencies = [
     "rich>=13.9.4",
     "typer>=0.15.1",
     "typing_extensions>=4.12.0",
+    "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

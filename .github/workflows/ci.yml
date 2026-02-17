@@ -31,9 +31,11 @@ jobs:
           - name: "Redis 8.0, redis-py >=5"
             redis-version: "8.0"
             redis-py-version: ">=5"
+          # TODO: unpin when redis-py fixes async cluster init with DriverInfo
+          # https://github.com/chrisguidry/docket/issues/341
           - name: "Redis 8.0 Cluster"
             redis-version: "8.0-cluster"
-            redis-py-version: ">=5"
+            redis-py-version: ">=5,<7.2"
           - name: "Valkey 8.0, redis-py >=5"
             redis-version: "valkey-8.0"
             redis-py-version: ">=5"
@@ -67,7 +69,7 @@ jobs:
             backend:
               name: "Redis 8.0 Cluster"
               redis-version: "8.0-cluster"
-              redis-py-version: ">=5"
+              redis-py-version: ">=5,<7.2"
             pytest-args: "-v -s -W ignore::ResourceWarning"
           # Cluster mode emits ResourceWarning about unclosed sockets during
           # test teardown. The warnings appear related to redis-py's cluster
@@ -76,25 +78,25 @@ jobs:
             backend:
               name: "Redis 8.0 Cluster"
               redis-version: "8.0-cluster"
-              redis-py-version: ">=5"
+              redis-py-version: ">=5,<7.2"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.11"
             backend:
               name: "Redis 8.0 Cluster"
               redis-version: "8.0-cluster"
-              redis-py-version: ">=5"
+              redis-py-version: ">=5,<7.2"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.13"
             backend:
               name: "Redis 8.0 Cluster"
               redis-version: "8.0-cluster"
-              redis-py-version: ">=5"
+              redis-py-version: ">=5,<7.2"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.14"
             backend:
               name: "Redis 8.0 Cluster"
               redis-version: "8.0-cluster"
-              redis-py-version: ">=5"
+              redis-py-version: ">=5,<7.2"
             pytest-args: "-W ignore::ResourceWarning"
           # ACL variants only run on latest Python to save CI time
           - python-version: "3.14"
@@ -175,6 +177,54 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: cli-python-${{ matrix.python-version }}
+
+  test-windows:
+    name: Windows Tests, Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          - python-version: "3.10"
+            cov-threshold: 100
+          # Python 3.11 coverage reporting is unstable, so use 98% threshold
+          - python-version: "3.11"
+            cov-threshold: 98
+          - python-version: "3.12"
+            cov-threshold: 100
+          - python-version: "3.13"
+            cov-threshold: 100
+          - python-version: "3.14"
+            cov-threshold: 100
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv and set Python version
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync --upgrade-package 'redis>=5'
+
+      - name: Run tests
+        env:
+          REDIS_VERSION: memory
+        run: >
+          uv run pytest --ignore=tests/cli
+          --cov-branch --cov-config=.coveragerc-core
+          --cov-fail-under=${{ matrix.cov-threshold }}
+          --cov-report=xml --cov-report=term-missing:skip-covered
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: windows-python-${{ matrix.python-version }}
 
   prek:
     name: Prek checks

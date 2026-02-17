@@ -594,6 +594,11 @@ class StrikeList:
             self._strikes_loaded.set()
             return last_id, initial_load_complete
 
+        if not streams and initial_load_complete:  # pragma: no cover
+            if self.url and self.url.startswith("memory://"):
+                await asyncio.sleep(0.1)
+            return last_id, initial_load_complete
+
         for _, messages in streams:
             for message_id, message in messages:
                 last_id = message_id  # type: ignore[assignment]

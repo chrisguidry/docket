@@ -4,9 +4,9 @@ This module handles the lifecycle of Redis containers used in testing,
 including single-node Redis, Redis Cluster, and Valkey variants.
 """
 
-import fcntl
 import os
 import socket
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -185,8 +185,15 @@ def build_cluster_image(client: DockerClient, base_image: str) -> str:
         pass
 
     lock_path = Path(tempfile.gettempdir()) / f"docket-{tag.replace(':', '-')}.lock"
-    with open(lock_path, "w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+    with open(lock_path, "wb") as lock_file:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
 
         # Re-check after acquiring lock; another worker may have built it
         try:

@@ -332,13 +332,15 @@ class Worker:
                         if run_task and not run_task.done():
                             run_task.cancel()
 
-                    if hasattr(signal, "SIGTERM"):  # pragma: no cover
+                    try:  # pragma: no cover
                         loop.add_signal_handler(
                             signal.SIGTERM, lambda: handle_shutdown("SIGTERM")
                         )
                         loop.add_signal_handler(
                             signal.SIGINT, lambda: handle_shutdown("SIGINT")
                         )
+                    except NotImplementedError:  # pragma: no cover
+                        pass  # Windows doesn't support loop signal handlers
 
                     try:
                         if until_finished:
@@ -355,9 +357,11 @@ class Worker:
                     except asyncio.CancelledError:  # pragma: no cover
                         pass
                     finally:
-                        if hasattr(signal, "SIGTERM"):  # pragma: no cover
+                        try:  # pragma: no cover
                             loop.remove_signal_handler(signal.SIGTERM)
                             loop.remove_signal_handler(signal.SIGINT)
+                        except NotImplementedError:  # pragma: no cover
+                            pass
 
     async def run_until_finished(self) -> None:
         """Run the worker until there are no more tasks to process."""
@@ -1087,12 +1091,15 @@ class Worker:
                     await pubsub.psubscribe(cancel_pattern)
                     self._cancellation_ready.set()
                     # Poll for messages, checking _worker_stopping periodically
+                    is_memory = self.docket.url.startswith("memory://")
                     while not self._worker_stopping.is_set():
                         message = await pubsub.get_message(
                             ignore_subscribe_messages=True, timeout=0.1
                         )
                         if message is not None and message["type"] == "pmessage":
                             await self._handle_cancellation(message)
+                        elif is_memory:  # pragma: no cover
+                            await asyncio.sleep(0.1)
             except ConnectionError:
                 if self._worker_stopping.is_set():
                     return  # pragma: no cover
