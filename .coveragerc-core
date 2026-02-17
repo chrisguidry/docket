@@ -10,6 +10,7 @@ omit =
     **/conftest.py
     tests/_key_leak_checker.py
     tests/_container.py
+    tests/sitecustomize.py
     tests/cli/*.py
 
 [report]
