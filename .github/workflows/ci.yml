@@ -1,4 +1,4 @@
-name: Docket CI
+name: CI
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: Core Tests, Python ${{ matrix.python-version }}, ${{ matrix.backend.name }}
+    name: Core, Python ${{ matrix.python-version }}, ${{ matrix.backend.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 4
     strategy:
@@ -137,7 +137,7 @@ jobs:
           flags: python-${{ matrix.python-version }}
 
   test-cli:
-    name: CLI Tests, Python ${{ matrix.python-version }}
+    name: CLI, Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 4
     strategy:
@@ -177,7 +177,7 @@ jobs:
           flags: cli-python-${{ matrix.python-version }}
 
   test-windows:
-    name: Windows Tests, Python ${{ matrix.python-version }}
+    name: Windows, Python ${{ matrix.python-version }}
     runs-on: windows-latest
     timeout-minutes: 6
     strategy:
