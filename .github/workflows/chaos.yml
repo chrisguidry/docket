@@ -1,4 +1,4 @@
-name: Docket Chaos Tests
+name: Chaos Tests
 
 on:
   push:
