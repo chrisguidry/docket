@@ -31,9 +31,11 @@ jobs:
           - name: "Redis 8.0, redis-py >=5"
             redis-version: "8.0"
             redis-py-version: ">=5"
+          # TODO: unpin when redis-py fixes async cluster init with DriverInfo
+          # https://github.com/redis/redis-py/issues/XXXX
           - name: "Redis 8.0 Cluster"
             redis-version: "8.0-cluster"
-            redis-py-version: ">=5"
+            redis-py-version: ">=5,<7.2"
           - name: "Valkey 8.0, redis-py >=5"
             redis-version: "valkey-8.0"
             redis-py-version: ">=5"
