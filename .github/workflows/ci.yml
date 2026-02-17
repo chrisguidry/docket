@@ -19,23 +19,23 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         backend:
-          - name: "Memory (in-memory backend)"
+          - name: "Memory"
             redis-version: "memory"
             redis-py-version: ">=5"
-          - name: "Redis 6.2, redis-py <5"
+          - name: "Redis 6"
             redis-version: "6.2"
             redis-py-version: ">=5,<6"
-          - name: "Redis 7.4, redis-py >=5"
+          - name: "Redis 7"
             redis-version: "7.4"
             redis-py-version: ">=5"
-          - name: "Redis 8.6, redis-py >=5"
+          - name: "Redis 8"
             redis-version: "8.6"
             redis-py-version: ">=5"
-          - name: "Redis 8.6 Cluster"
+          - name: "Redis 8 Cluster"
             redis-version: "8.6-cluster"
             redis-py-version: ">=5"
-          - name: "Valkey 8.0, redis-py >=5"
-            redis-version: "valkey-8.0"
+          - name: "Valkey 8"
+            redis-version: "valkey-8.1"
             redis-py-version: ">=5"
         include:
           - python-version: "3.10"
@@ -57,7 +57,7 @@ jobs:
           # Memory backend: coverage threshold is lower due to pytest-xdist
           # coverage data combination issues.
           - backend:
-              name: "Memory (in-memory backend)"
+              name: "Memory"
               redis-version: "memory"
               redis-py-version: ">=5"
             cov-threshold: 95
@@ -65,7 +65,7 @@ jobs:
           # Debug hanging tests in 3.12 cluster mode
           - python-version: "3.12"
             backend:
-              name: "Redis 8.6 Cluster"
+              name: "Redis 8 Cluster"
               redis-version: "8.6-cluster"
               redis-py-version: ">=5"
             pytest-args: "-v -s -W ignore::ResourceWarning"
@@ -74,40 +74,40 @@ jobs:
           # pub/sub connection management. Ignoring until upstream fixes land.
           - python-version: "3.10"
             backend:
-              name: "Redis 8.6 Cluster"
+              name: "Redis 8 Cluster"
               redis-version: "8.6-cluster"
               redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.11"
             backend:
-              name: "Redis 8.6 Cluster"
+              name: "Redis 8 Cluster"
               redis-version: "8.6-cluster"
               redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.13"
             backend:
-              name: "Redis 8.6 Cluster"
+              name: "Redis 8 Cluster"
               redis-version: "8.6-cluster"
               redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.14"
             backend:
-              name: "Redis 8.6 Cluster"
+              name: "Redis 8 Cluster"
               redis-version: "8.6-cluster"
               redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           # ACL variants only run on latest Python to save CI time
           - python-version: "3.14"
             backend:
-              name: "Redis 8.6 with ACL"
+              name: "Redis 8 with ACL"
               redis-version: "8.6-acl"
               redis-py-version: ">=5"
             cov-threshold: 100
             pytest-args: ""
           - python-version: "3.14"
             backend:
-              name: "Valkey 8.0 with ACL"
-              redis-version: "valkey-8.0-acl"
+              name: "Valkey 8 with ACL"
+              redis-version: "valkey-8.1-acl"
               redis-py-version: ">=5"
             cov-threshold: 100
             pytest-args: ""
