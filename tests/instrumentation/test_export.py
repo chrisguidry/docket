@@ -41,15 +41,13 @@ async def test_task_duration_is_measured(
     docket: Docket, worker: Worker, worker_labels: dict[str, str], TASK_DURATION: Mock
 ):
     """Should record the duration of task execution in the TASK_DURATION histogram."""
-
-    # Calibrate: measure actual sleep duration on this platform, since
-    # asyncio.sleep(0.1) can return early on Windows (~93ms observed)
-    cal_start = time.monotonic()
-    await asyncio.sleep(0.1)
-    calibrated_sleep = time.monotonic() - cal_start
+    inner_elapsed = 0.0
 
     async def the_task():
+        nonlocal inner_elapsed
+        start = time.time()
         await asyncio.sleep(0.1)
+        inner_elapsed = time.time() - start
 
     await docket.add(the_task)()
     await worker.run_until_finished()
@@ -57,7 +55,7 @@ async def test_task_duration_is_measured(
     TASK_DURATION.assert_called_once_with(mock.ANY, worker_labels)
     duration: float = TASK_DURATION.call_args.args[0]
     assert isinstance(duration, float)
-    assert calibrated_sleep * 0.8 <= duration <= calibrated_sleep * 3
+    assert inner_elapsed <= duration <= inner_elapsed * 2
 
 
 @pytest.fixture
