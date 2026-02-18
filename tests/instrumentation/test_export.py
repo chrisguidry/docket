@@ -45,9 +45,9 @@ async def test_task_duration_is_measured(
 
     async def the_task():
         nonlocal inner_elapsed
-        start = time.monotonic()
+        start = time.time()
         await asyncio.sleep(0.1)
-        inner_elapsed = time.monotonic() - start
+        inner_elapsed = time.time() - start
 
     await docket.add(the_task)()
     await worker.run_until_finished()
