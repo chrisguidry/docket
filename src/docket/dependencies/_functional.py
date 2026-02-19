@@ -71,6 +71,12 @@ class _FunctionalDependency(Dependency, Generic[R]):
             return cast(R, raw_value)
 
 
+def annotated_dependency(param: inspect.Parameter) -> Dependency | None:
+    """Return the first Dependency found in an Annotated parameter's metadata, or None."""
+    metadata = getattr(param.annotation, "__metadata__", ())
+    return next((item for item in metadata if isinstance(item, Dependency)), None)
+
+
 _parameter_cache: dict[
     TaskFunction | DependencyFunction[Any],
     dict[str, Dependency],
@@ -89,10 +95,10 @@ def get_dependency_parameters(
     signature = get_signature(function)
 
     for parameter, param in signature.parameters.items():
-        if not isinstance(param.default, Dependency):
-            continue
-
-        dependencies[parameter] = param.default
+        if isinstance(param.default, Dependency):
+            dependencies[parameter] = param.default
+        elif (dep := annotated_dependency(param)) is not None:
+            dependencies[parameter] = dep
 
     _parameter_cache[function] = dependencies
     CACHE_SIZE.set(len(_parameter_cache), {"cache": "parameter"})
