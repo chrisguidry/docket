@@ -1,46 +1,6 @@
 # Docket in Production
 
-Running Docket at scale requires understanding its Redis-based architecture, configuring workers appropriately, and monitoring system health. This guide covers everything you need for reliable production deployments.
-
-## Redis Streams Architecture
-
-Docket uses Redis streams and sorted sets to provide reliable task delivery with at-least-once semantics.
-
-### Task Lifecycle
-
-Understanding how tasks flow through the system helps with monitoring and troubleshooting:
-
-1. **Immediate tasks** go directly to the Redis stream and are available to any worker in the consumer group
-2. **Future tasks** are stored in the sorted set with their execution time as the score
-3. **Workers continuously move** due tasks from the sorted set to the stream
-4. **Consumer groups** ensure each task is delivered to exactly one worker
-5. **Acknowledgment** removes completed tasks; unacknowledged tasks are redelivered
-
-### Redelivery Behavior
-
-When a worker crashes or fails to acknowledge a task within `redelivery_timeout`, Redis automatically makes the task available to other workers. This ensures reliability but means tasks may execute more than once.
-
-```python
-# Configure redelivery timeout based on your longest-running tasks
-async with Worker(
-    docket,
-    redelivery_timeout=timedelta(minutes=10)  # Adjust for your workload
-) as worker:
-    await worker.run_forever()
-```
-
-Set redelivery timeout to be longer than your 99th percentile task duration to minimize duplicate executions.
-
-### Redis Data Structures
-
-Docket creates several Redis data structures for each docket:
-
-- **Stream (`{docket}:stream`)**: Ready-to-execute tasks using Redis consumer groups
-- **Sorted Set (`{docket}:queue`)**: Future tasks ordered by scheduled execution time
-- **Hashes (`{docket}:{key}`)**: Serialized task data for scheduled tasks
-- **Set (`{docket}:workers`)**: Active worker heartbeats with timestamps
-- **Set (`{docket}:worker-tasks:{worker}`)**: Tasks each worker can execute
-- **Stream (`{docket}:strikes`)**: Strike/restore commands for operational control
+This page covers configuring workers, connecting to Redis, managing state and results, monitoring, and operational tools for running Docket in production.
 
 ## Worker Configuration
 
@@ -64,7 +24,7 @@ async with Worker(
 
 ### Environment Variable Configuration
 
-All settings can be configured via environment variables for production deployments:
+All settings can be configured via environment variables:
 
 ```bash
 # Core docket settings
@@ -112,48 +72,19 @@ docket worker \
   --tasks myapp.tasks:production_tasks
 ```
 
-### Tuning for Different Workloads
+### Signal Handling
 
-**High-throughput, fast tasks:**
-
-```bash
-docket worker \
-  --concurrency 100 \
-  --redelivery-timeout 30s \
-  --minimum-check-interval 50ms \
-  --scheduling-resolution 100ms
-```
-
-**Long-running, resource-intensive tasks:**
-
-```bash
-docket worker \
-  --concurrency 5 \
-  --redelivery-timeout 1h \
-  --minimum-check-interval 1s \
-  --scheduling-resolution 5s
-```
-
-**Mixed workload with perpetual tasks:**
-
-```bash
-docket worker \
-  --concurrency 25 \
-  --redelivery-timeout 5m \
-  --schedule-automatic-tasks \
-  --tasks myapp.tasks:all_tasks,myapp.monitoring:health_checks
-```
+Workers catch `SIGTERM` and `SIGINT` and shut down gracefully — they stop accepting new tasks and wait for in-flight tasks to finish before exiting. On container orchestrators like Kubernetes, set `terminationGracePeriodSeconds` to be longer than your slowest expected task so the worker has time to drain. Tasks that don't finish before the grace period expires will be redelivered to other workers based on `redelivery_timeout`.
 
 ## Connection Management
 
 ### Redis Connection Pools
 
-Docket automatically manages Redis connection pools, but you can tune them for your environment:
+Docket automatically manages Redis connection pools. To use a custom pool:
 
 ```python
 from redis.asyncio import ConnectionPool
 
-# Custom connection pool for high-concurrency workers
 pool = ConnectionPool.from_url(
     "redis://redis.prod.com:6379/0",
     max_connections=50,  # Match or exceed worker concurrency
@@ -161,17 +92,8 @@ pool = ConnectionPool.from_url(
 )
 
 async with Docket(name="orders", connection_pool=pool) as docket:
-    # Use the custom pool
     pass
 ```
-
-### Redis Requirements
-
-Docket supports both standalone Redis and Redis Cluster deployments. For high availability, consider:
-
-- **Managed Redis services** like AWS ElastiCache, Google Cloud Memorystore, or Redis Cloud
-- **Redis Cluster** for horizontal scaling and automatic failover
-- **Redis replicas** with manual failover procedures for standalone deployments
 
 ### Redis Cluster Support
 
@@ -313,13 +235,6 @@ With `execution_ttl=0`:
 - **Maximum throughput**: Minimizes Redis operations per task
 - **get_result() unavailable**: Cannot retrieve task results
 
-This mode is ideal for:
-
-- High-volume event processing (logging, metrics, notifications)
-- Fire-and-forget operations where results don't matter
-- Systems where observability is handled externally
-- Maximizing task throughput at the expense of visibility
-
 ### Result Storage Configuration
 
 Task results are stored using the `py-key-value-aio` library. By default, Docket uses `RedisStore` but you can provide a custom storage backend:
@@ -347,7 +262,7 @@ async with Docket(
 
 Custom storage backends must implement the `KeyValueStore` protocol from `py-key-value-aio`.
 
-### Result Storage Best Practices
+### Result Storage Tips
 
 **Separate Redis Database**: Store results in a different Redis database than task queues:
 
@@ -491,108 +406,69 @@ Log entries include:
 - Redis connection status
 - Strike/restore operations
 
-### Example Grafana Dashboard
+## Striking and Restoring Tasks
 
-Monitor Docket health with queries like:
+Striking temporarily disables tasks without redeploying code.
 
-```promql
-# Task throughput
-rate(docket_tasks_completed[5m])
+### Striking Entire Task Types
 
-# Error rate
-rate(docket_tasks_failed[5m]) / rate(docket_tasks_started[5m])
-
-# Queue depth trending
-docket_queue_depth
-
-# P95 task duration
-histogram_quantile(0.95, rate(docket_task_duration_bucket[5m]))
-
-# Worker availability
-up{job="docket-workers"}
-```
-
-## Production Guidelines
-
-### Capacity Planning
-
-**Estimate concurrent tasks:**
-
-```
-concurrent_tasks = avg_task_duration * tasks_per_second
-worker_concurrency = concurrent_tasks * 1.2  # 20% buffer
-```
-
-**Size worker pools:**
-
-- Start with 1-2 workers per CPU core
-- Monitor CPU and memory usage
-- Scale horizontally rather than increasing concurrency indefinitely
-
-### Deployment Strategies
-
-**Blue-green deployments:**
-
-```bash
-# Deploy new workers with different name
-docket worker --name orders-worker-v2 --tasks myapp.tasks:v2_tasks
-
-# Gradually strike old task versions
-docket strike old_task_function
-
-# Scale down old workers after tasks drain
-```
-
-### Error Handling
-
-**Configure appropriate retries:**
+Disable all instances of a specific task:
 
 ```python
-# Transient failures - short delays
-async def api_call(
-    retry: Retry = Retry(attempts=3, delay=timedelta(seconds=5))
-): ...
+# Disable all order processing during maintenance
+await docket.strike(process_order)
 
-# Infrastructure issues - exponential backoff
-async def database_sync(
-    retry: ExponentialRetry = ExponentialRetry(
-        attempts=5,
-        minimum_delay=timedelta(seconds=30),
-        maximum_delay=timedelta(minutes=10)
-    )
-): ...
+# Orders added during this time won't be processed
+await docket.add(process_order)(order_id=12345)  # Won't run
+await docket.add(process_order)(order_id=67890)  # Won't run
 
-# Critical operations - unlimited retries
-async def financial_transaction(
-    retry: Retry = Retry(attempts=None, delay=timedelta(minutes=1))
-): ...
+# Re-enable when ready
+await docket.restore(process_order)
 ```
 
-**Dead letter handling:**
+### Striking by Parameter Values
+
+Disable tasks based on their arguments using comparison operators:
 
 ```python
-async def process_order(order_id: str) -> None:
-    try:
-        await handle_order(order_id)
-    except CriticalError as e:
-        # Send to dead letter queue for manual investigation
-        await send_to_dead_letter_queue(order_id, str(e))
-        raise
+# Block all tasks for a problematic customer
+await docket.strike(None, "customer_id", "==", "12345")
+
+# Block low-priority work during high load
+await docket.strike(process_order, "priority", "<=", "low")
+
+# Block all orders above a certain value during fraud investigation
+await docket.strike(process_payment, "amount", ">", 10000)
+
+# Later, restore them
+await docket.restore(None, "customer_id", "==", "12345")
+await docket.restore(process_order, "priority", "<=", "low")
 ```
 
-### Operational Procedures
+Supported operators include `==`, `!=`, `<`, `<=`, `>`, `>=`.
 
-**Graceful shutdown:**
+### Striking Specific Task-Parameter Combinations
 
-```bash
-# Workers handle SIGTERM gracefully
-kill -TERM $WORKER_PID
+Target very specific scenarios:
 
-# Or use container orchestration stop signals
-docker stop docket-worker
+```python
+# Block only high-value orders for a specific customer
+await docket.strike(process_order, "customer_id", "==", "12345")
+await docket.strike(process_order, "amount", ">", 1000)
+
+# This order won't run (blocked customer)
+await docket.add(process_order)(customer_id="12345", amount=500)
+
+# This order won't run (blocked customer AND high amount)
+await docket.add(process_order)(customer_id="12345", amount=2000)
+
+# This order WILL run (different customer)
+await docket.add(process_order)(customer_id="67890", amount=2000)
 ```
 
-**Emergency task blocking:**
+### Striking from the CLI
+
+You can also strike and restore tasks from the command line:
 
 ```bash
 # Block problematic tasks immediately
@@ -605,33 +481,17 @@ docket strike process_order customer_id == "problematic-customer"
 docket restore problematic_function
 ```
 
-**Monitoring checklist:**
+## Built-in Utility Tasks
 
-- Queue depth alerts (tasks backing up)
-- Error rate alerts (> 5% failure rate)
-- Task duration alerts (P95 > expected)
-- Worker availability alerts
-- Redis connection health
+Docket provides utility tasks for smoke-testing and debugging:
 
-### Scaling Considerations
+```python
+from docket import tasks
 
-**Horizontal scaling:**
+# Simple trace logging
+await docket.add(tasks.trace)("System startup completed")
+await docket.add(tasks.trace)("Processing batch 123")
 
-- Add workers across multiple machines
-- Use consistent worker naming for monitoring
-- Monitor Redis memory usage as task volume grows
-
-**Vertical scaling:**
-
-- Increase worker concurrency for I/O bound tasks
-- Increase memory limits for large task payloads
-- Monitor CPU usage to avoid oversubscription
-
-**Redis scaling:**
-
-- Use managed Redis services for high availability
-- Deploy Redis Cluster for horizontal scaling with the `redis+cluster://` URL scheme
-- Monitor memory usage and eviction policies
-- Scale vertically for larger workloads on standalone Redis
-
-Running Docket in production requires attention to these operational details, but the Redis-based architecture and monitoring support can help with demanding production workloads.
+# Intentional failures for testing error handling
+await docket.add(tasks.fail)("Testing error notification system")
+```
