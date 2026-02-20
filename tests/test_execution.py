@@ -47,6 +47,20 @@ async def only_dependencies(
 ) -> None: ...  # pragma: no cover
 
 
+async def annotated_dependencies(
+    a: str,
+    b: Annotated[str, Depends(a_dependency)],
+    c: Annotated[Docket, CurrentDocket()],
+) -> None: ...  # pragma: no cover
+
+
+async def only_annotated_dependencies(
+    a: Annotated[str, Depends(a_dependency)],
+    b: Annotated[Docket, CurrentDocket()],
+    c: Annotated[Worker, CurrentWorker()],
+) -> None: ...  # pragma: no cover
+
+
 @pytest.mark.parametrize(
     "function, expected",
     [
@@ -57,6 +71,8 @@ async def only_dependencies(
         (logged_args, "a: str, b: str = 'foo'"),
         (dependencies, "a: str, b: int = 42, ..."),
         (only_dependencies, "..."),
+        (annotated_dependencies, "a: str, ..."),
+        (only_annotated_dependencies, "..."),
     ],
 )
 async def test_compact_signature(

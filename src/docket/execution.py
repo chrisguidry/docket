@@ -990,13 +990,16 @@ class Execution:
 
 
 def compact_signature(signature: inspect.Signature) -> str:
-    from .dependencies import Dependency
+    from .dependencies import Dependency, annotated_dependency
 
     parameters: list[str] = []
     dependencies: int = 0
 
     for parameter in signature.parameters.values():
-        if isinstance(parameter.default, Dependency):
+        if (
+            isinstance(parameter.default, Dependency)
+            or annotated_dependency(parameter) is not None
+        ):
             dependencies += 1
             continue
 
