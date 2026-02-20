@@ -9,6 +9,14 @@ on the scheduling of future work as seamlessly and efficiently as immediate work
 [![Codecov](https://img.shields.io/codecov/c/github/chrisguidry/docket)](https://app.codecov.io/gh/chrisguidry/docket)
 [![PyPI - License](https://img.shields.io/pypi/l/pydocket)](https://github.com/chrisguidry/docket/blob/main/LICENSE)
 
+## Install
+
+```bash
+uv add pydocket
+```
+
+See [Getting Started](getting-started.md) for more installation options.
+
 ## At a glance
 
 ```python
@@ -35,6 +43,8 @@ And in another process, run a worker:
 from docket import Docket, Worker
 
 async with Docket() as docket:
+    docket.register(greet)
+
     async with Worker(docket) as worker:
         await worker.run_until_finished()
 ```
@@ -65,7 +75,8 @@ docket integrates two modes of task execution:
 1. **Immediate tasks** are pushed onto a Redis stream and are available to be picked up by any worker.
 2. **Scheduled tasks** are pushed onto a Redis sorted set with a schedule time. A loop within each worker moves scheduled tasks onto the stream when their schedule time has arrived. This move is performed as a Lua script to ensure atomicity.
 
-Docket requires a [Redis](http://redis.io/) server with Streams support (which was
-introduced in Redis 5.0.0). Docket is tested with Redis 6, 7, and 8.
+Docket requires a [Redis](https://redis.io/) server with Streams support (which was
+introduced in Redis 5.0.0). Docket is tested with Redis 6.2, 7.4, and 8.6, and also
+works with [Valkey](https://valkey.io/) 8.1.
 
 For more detailed information, check out our [Getting Started](getting-started.md) guide or dive into the [API Reference](api-reference.md).

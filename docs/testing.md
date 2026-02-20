@@ -1,6 +1,6 @@
 # Testing with Docket
 
-Docket includes the utilities you need to test all your background task systems in realistic ways. The ergonomic design supports testing complex workflows with minimal setup.
+Docket includes utilities for testing background task systems in realistic ways with minimal setup.
 
 ## Using In-Memory Backend (No Redis Required)
 
@@ -422,5 +422,3 @@ async def test_scheduled_task_timing(test_docket: Docket, test_worker: Worker) -
 
         assert reminder_was_sent(123)
 ```
-
-Docket's testing utilities make it straightforward to write comprehensive tests for even complex distributed task workflows. The key is using [`run_until_finished()`](api-reference.md#docket.Worker.run_until_finished) for deterministic execution and [`run_at_most()`](api-reference.md#docket.Worker.run_at_most) for controlling perpetual or self-scheduling tasks.

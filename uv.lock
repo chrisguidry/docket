@@ -1581,6 +1581,8 @@ dev = [
     { name = "docker" },
     { name = "ipython" },
     { name = "loq" },
+    { name = "mkdocstrings" },
+    { name = "mkdocstrings-python" },
     { name = "mypy" },
     { name = "opentelemetry-distro" },
     { name = "opentelemetry-exporter-otlp" },
@@ -1602,10 +1604,6 @@ dev = [
     { name = "ruff" },
     { name = "types-croniter" },
     { name = "urllib3" },
-]
-docs = [
-    { name = "mkdocstrings" },
-    { name = "mkdocstrings-python" },
     { name = "zensical" },
 ]
 examples = [
@@ -1641,6 +1639,8 @@ dev = [
     { name = "docker", specifier = ">=7.1.0" },
     { name = "ipython", specifier = ">=8.0.0" },
     { name = "loq", specifier = ">=0.1.0a3" },
+    { name = "mkdocstrings", specifier = ">=1.0.2" },
+    { name = "mkdocstrings-python", specifier = ">=2.0.1" },
     { name = "mypy", specifier = ">=1.14.1" },
     { name = "opentelemetry-distro", specifier = ">=0.60b0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.33.0" },
@@ -1662,10 +1662,6 @@ dev = [
     { name = "ruff", specifier = ">=0.14.14" },
     { name = "types-croniter", specifier = ">=6" },
     { name = "urllib3", specifier = ">=2.6.3" },
-]
-docs = [
-    { name = "mkdocstrings", specifier = ">=1.0.2" },
-    { name = "mkdocstrings-python", specifier = ">=2.0.1" },
     { name = "zensical" },
 ]
 examples = [

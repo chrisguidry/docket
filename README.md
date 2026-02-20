@@ -124,7 +124,7 @@ time.
 To work on the documentation locally:
 
 ```bash
-uv sync --group docs
+uv sync
 uv run zensical serve
 ```
 

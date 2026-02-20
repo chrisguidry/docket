@@ -21,7 +21,9 @@ With `pip`:
 pip install pydocket
 ```
 
-You'll also need a [Redis](http://redis.io/) server with Streams support (Redis 5.0+). Docket is tested with Redis 6, 7, and 8, and also works with [Valkey](https://valkey.io/).
+You'll also need a [Redis](https://redis.io/) server with Streams support (Redis 5.0+). Docket is tested with Redis 6.2, 7.4, and 8.6, and also works with [Valkey](https://valkey.io/) 8.1.
+
+To try docket without setting up Redis, you can use the in-memory backend — see [Testing with Docket](testing.md) for details.
 
 ## Your First Docket
 
@@ -183,7 +185,7 @@ Docket provides at-least-once delivery semantics, meaning tasks may be delivered
 
 ## Task Observability
 
-Docket automatically tracks task execution state and provides comprehensive observability features for monitoring long-running tasks.
+Docket automatically tracks task execution state and provides tools for monitoring long-running tasks.
 
 ### Execution State
 
@@ -234,7 +236,7 @@ total = await execution.get_result()  # Waits for completion if needed
 print(f"Order total: ${total:.2f}")
 ```
 
-For detailed information on state tracking, progress monitoring, result retrieval, and CLI monitoring tools, see [Task State and Progress Monitoring](advanced-patterns.md#task-state-and-progress-monitoring).
+For detailed information on state tracking, progress monitoring, result retrieval, and CLI monitoring tools, see [Task Observability](observability.md).
 
 ## What's Next?
 
@@ -242,10 +244,12 @@ You now know the core concepts: creating dockets, scheduling work with idempoten
 
 Ready for more? Check out:
 
-- **[Dependencies Guide](dependencies.md)** - Access current docket, advanced retry patterns, timeouts, and custom dependencies
+- **[Task Behaviors](task-behaviors.md)** - Retries, timeouts, progress reporting, and concurrency control
+- **[Dependency Injection](dependency-injection.md)** - Access current docket, custom dependencies, shared resources
 - **[Testing with Docket](testing.md)** - Ergonomic testing utilities for unit and integration tests
-- **[Advanced Task Patterns](advanced-patterns.md)** - Perpetual tasks, striking/restoring, logging, and task chains
-- **[Docket in Production](production.md)** - Redis architecture, monitoring, and deployment strategies
+- **[Task Design Patterns](task-patterns.md)** - Find & flood, task scattering, logging, and task chains
+- **[Task Observability](observability.md)** - State tracking, progress monitoring, results, and CLI watch
+- **[Docket in Production](production.md)** - Worker configuration, Redis connections, monitoring, and striking
 - **[API Reference](api-reference.md)** - Complete documentation of all classes and methods
 
 ## A Note on Security

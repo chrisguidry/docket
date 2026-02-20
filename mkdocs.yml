@@ -4,8 +4,12 @@ site_url: https://docket.lol/
 repo_url: https://github.com/chrisguidry/docket
 repo_name: chrisguidry/docket
 
+edit_uri: edit/main/docs/
+
 theme:
   name: material
+  icon:
+    logo: material/clipboard-check-outline
   features:
     - navigation.instant
     - navigation.tracking
@@ -14,6 +18,9 @@ theme:
     - navigation.top
     - search.suggest
     - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - content.action.view
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -55,11 +62,20 @@ markdown_extensions:
   - attr_list
   - md_in_html
 
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/chrisguidry/docket
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/pydocket/
+
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
-  - Dependencies Guide: dependencies.md
+  - Task Behaviors: task-behaviors.md
+  - Dependency Injection: dependency-injection.md
+  - Task Design Patterns: task-patterns.md
+  - Task Observability: observability.md
   - Testing with Docket: testing.md
-  - Advanced Task Patterns: advanced-patterns.md
   - Docket in Production: production.md
   - API Reference: api-reference.md
