@@ -91,7 +91,9 @@ examples = [
 docket = "docket.__main__:app"
 
 [project.urls]
-"Homepage" = "https://github.com/chrisguidry/docket"
+"Homepage" = "https://docket.lol/"
+"Documentation" = "https://docket.lol/en/latest/"
+"Repository" = "https://github.com/chrisguidry/docket"
 "Bug Tracker" = "https://github.com/chrisguidry/docket/issues"
 
 [tool.hatch.version]
