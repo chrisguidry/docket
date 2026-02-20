@@ -1,5 +1,6 @@
 site_name: docket
 site_description: A distributed background task system for Python
+site_url: https://docket.lol/
 repo_url: https://github.com/chrisguidry/docket
 repo_name: chrisguidry/docket
 

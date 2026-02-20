@@ -9,11 +9,7 @@ on:
       - main
 
 permissions:
-  actions: write
   contents: read
-  pages: write
-  id-token: write
-  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -40,56 +36,3 @@ jobs:
 
       - name: Build documentation
         run: uv run zensical build
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
-        id: docs-artifact
-        with:
-          name: documentation
-          path: site/
-
-      - name: Add or Update Comment
-        if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: preview
-          message: |
-            📚 Documentation has been built for this PR!
-
-            You can download the documentation directly here:
-            ${{ steps.docs-artifact.outputs.artifact-url }}
-
-  publish:
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v7
-        with:
-          name: documentation
-          path: site
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      # Clean up any stale github-pages artifacts from previous attempts
-      # See: https://github.com/actions/upload-pages-artifact/issues/97
-      - name: Delete stale Pages artifacts
-        uses: geekyeggo/delete-artifact@v5
-        with:
-          name: github-pages
-          failOnError: false
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: site
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
