@@ -43,8 +43,8 @@ Howdy, John at 2025-03-05 13:58:24.550773!
 ```
 
 Check out our docs for more [details](https://docket.lol/),
-[examples](https://docket.lol/getting-started/), and the [API
-reference](https://docket.lol/api-reference/).
+[examples](https://docket.lol/en/latest/getting-started/), and the [API
+reference](https://docket.lol/en/latest/api-reference/).
 
 ## Why `docket`?
 
@@ -98,7 +98,7 @@ async with Docket(name="my-docket", url="memory://my-docket") as docket:
     ...
 ```
 
-See [Testing with Docket](https://docket.lol/testing/#using-in-memory-backend-no-redis-required) for more details.
+See [Testing with Docket](https://docket.lol/en/latest/testing/#using-in-memory-backend-no-redis-required) for more details.
 
 # Hacking on `docket`
 
