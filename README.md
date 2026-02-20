@@ -6,7 +6,7 @@ on the scheduling of future work as seamlessly and efficiently as immediate work
 [![GitHub main checks](https://img.shields.io/github/check-runs/chrisguidry/docket/main)](https://github.com/chrisguidry/docket/actions/workflows/ci.yml)
 [![Codecov](https://img.shields.io/codecov/c/github/chrisguidry/docket)](https://app.codecov.io/gh/chrisguidry/docket)
 [![PyPI - License](https://img.shields.io/pypi/l/pydocket)](https://github.com/chrisguidry/docket/blob/main/LICENSE)
-[![Documentation](https://img.shields.io/badge/docs-latest-blue.svg)](https://chrisguidry.github.io/docket/)
+[![Documentation](https://img.shields.io/badge/docs-latest-blue.svg)](https://docket.lol/)
 
 ## At a glance
 
@@ -42,9 +42,9 @@ Hello, Jane at 2025-03-05 13:58:21.552644!
 Howdy, John at 2025-03-05 13:58:24.550773!
 ```
 
-Check out our docs for more [details](http://chrisguidry.github.io/docket/),
-[examples](https://chrisguidry.github.io/docket/getting-started/), and the [API
-reference](https://chrisguidry.github.io/docket/api-reference/).
+Check out our docs for more [details](https://docket.lol/),
+[examples](https://docket.lol/getting-started/), and the [API
+reference](https://docket.lol/api-reference/).
 
 ## Why `docket`?
 
@@ -98,7 +98,7 @@ async with Docket(name="my-docket", url="memory://my-docket") as docket:
     ...
 ```
 
-See [Testing with Docket](https://chrisguidry.github.io/docket/testing/#using-in-memory-backend-no-redis-required) for more details.
+See [Testing with Docket](https://docket.lol/testing/#using-in-memory-backend-no-redis-required) for more details.
 
 # Hacking on `docket`
 
