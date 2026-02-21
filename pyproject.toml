@@ -72,9 +72,6 @@ dev = [
     "pytest-xdist>=3.6.1",
     "ruff>=0.14.14",
     "types-croniter>=6",
-]
-
-docs = [
     "zensical",
     "mkdocstrings>=1.0.2",
     "mkdocstrings-python>=2.0.1",
@@ -91,7 +88,9 @@ examples = [
 docket = "docket.__main__:app"
 
 [project.urls]
-"Homepage" = "https://github.com/chrisguidry/docket"
+"Homepage" = "https://docket.lol/"
+"Documentation" = "https://docket.lol/en/latest/"
+"Repository" = "https://github.com/chrisguidry/docket"
 "Bug Tracker" = "https://github.com/chrisguidry/docket/issues"
 
 [tool.hatch.version]
