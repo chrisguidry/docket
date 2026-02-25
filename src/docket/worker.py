@@ -51,6 +51,8 @@ from .dependencies import (
     SharedContext,
     TaskLogger,
     TaskOutcome,
+    current_docket,
+    current_worker,
     format_duration,
     get_single_dependency_of_type,
     get_single_dependency_parameter_of_type,
@@ -223,8 +225,14 @@ class Worker:
             cancel_task, self._heartbeat_task, CANCEL_MSG_CLEANUP
         )
 
+        # Worker-scoped ContextVars for ambient access to docket/worker
+        self._docket_token = current_docket.set(self.docket)
+        self._stack.callback(lambda: current_docket.reset(self._docket_token))
+        self._worker_token = current_worker.set(self)
+        self._stack.callback(lambda: current_worker.reset(self._worker_token))
+
         # Shared context is set up last, so it's cleaned up first (LIFO)
-        self._shared_context = SharedContext(self.docket, self)
+        self._shared_context = SharedContext()
         self._stack.callback(lambda: delattr(self, "_shared_context"))
         await self._stack.enter_async_context(self._shared_context)
 

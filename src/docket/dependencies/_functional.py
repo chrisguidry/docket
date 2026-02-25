@@ -2,28 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
-from contextlib import AsyncExitStack
-from contextvars import ContextVar
-from types import TracebackType
-from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from uncalled_for import (
     DependencyFactory,
     Shared as Shared,
-    SharedContext as _UncalledForSharedContext,
+    SharedContext as SharedContext,
     _Depends as _UncalledForDepends,
     _parameter_cache as _parameter_cache,
     get_dependency_parameters,
 )
 
-from ._base import current_docket, current_worker
 from ._contextual import _TaskArgument
-
-if TYPE_CHECKING:  # pragma: no cover
-    from ..docket import Docket
-    from ..worker import Worker
 
 R = TypeVar("R")
 
@@ -111,40 +102,3 @@ def Depends(dependency: DependencyFactory[R]) -> R:
     ```
     """
     return cast(R, _Depends(dependency))
-
-
-class SharedContext:
-    """Manages worker-scoped Shared dependency lifecycle.
-
-    Wraps uncalled_for.SharedContext, adding docket/worker ContextVar management.
-    """
-
-    resolved: ClassVar[ContextVar[dict[DependencyFactory[Any], Any]]] = (
-        _UncalledForSharedContext.resolved
-    )
-    lock: ClassVar[ContextVar[asyncio.Lock]] = _UncalledForSharedContext.lock
-    stack: ClassVar[ContextVar[AsyncExitStack]] = _UncalledForSharedContext.stack
-
-    def __init__(self, docket: Docket, worker: Worker) -> None:
-        self._docket = docket
-        self._worker = worker
-        self._inner = _UncalledForSharedContext()
-
-    async def __aenter__(self) -> SharedContext:
-        await self._inner.__aenter__()
-
-        self._docket_token = current_docket.set(self._docket)
-        self._worker_token = current_worker.set(self._worker)
-
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self._inner.__aexit__(exc_type, exc_value, traceback)
-
-        current_worker.reset(self._worker_token)
-        current_docket.reset(self._docket_token)
