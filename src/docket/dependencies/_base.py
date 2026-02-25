@@ -21,6 +21,17 @@ current_docket: ContextVar[Docket] = ContextVar("current_docket")
 current_worker: ContextVar[Worker] = ContextVar("current_worker")
 current_execution: ContextVar[Execution] = ContextVar("current_execution")
 
+# Backwards compatibility: prior to 0.18, docket defined its own Dependency base
+# class with class-level ContextVars (Dependency.execution, Dependency.docket,
+# Dependency.worker).  Now that the base Dependency class comes from uncalled-for,
+# those ContextVars live at module scope above.  However, downstream consumers
+# (notably FastMCP) access them as Dependency.execution.get(), so we monkeypatch
+# them back onto the class to avoid breaking existing code.  This shim can be
+# removed once all known consumers have migrated to the module-level ContextVars.
+Dependency.execution = current_execution  # type: ignore[attr-defined]
+Dependency.docket = current_docket  # type: ignore[attr-defined]
+Dependency.worker = current_worker  # type: ignore[attr-defined]
+
 
 def format_duration(seconds: float) -> str:
     """Format a duration for log output."""
