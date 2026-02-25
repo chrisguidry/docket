@@ -20,6 +20,7 @@ from typing import (
 
 import cloudpickle
 import opentelemetry.context
+import uncalled_for
 from opentelemetry import propagate, trace
 from ._telemetry import suppress_instrumentation
 from typing_extensions import Self
@@ -990,13 +991,11 @@ class Execution:
 
 
 def compact_signature(signature: inspect.Signature) -> str:
-    from .dependencies import Dependency
-
     parameters: list[str] = []
     dependencies: int = 0
 
     for parameter in signature.parameters.values():
-        if isinstance(parameter.default, Dependency):
+        if isinstance(parameter.default, uncalled_for.Dependency):
             dependencies += 1
             continue
 

@@ -6,7 +6,13 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, NoReturn
 
-from ._base import FailureHandler, TaskOutcome, format_duration
+from ._base import (
+    FailureHandler,
+    TaskOutcome,
+    current_execution,
+    current_worker,
+    format_duration,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
@@ -20,7 +26,7 @@ class ForcedRetry(Exception):
     """Raised when a task requests a retry via `after` or `at`"""
 
 
-class Retry(FailureHandler):
+class Retry(FailureHandler["Retry"]):
     """Configures linear retries for a task.  You can specify the total number of
     attempts (or `None` to retry indefinitely), and the delay between attempts.
 
@@ -32,8 +38,6 @@ class Retry(FailureHandler):
         ...
     ```
     """
-
-    single: bool = True
 
     attempts: int | None
     delay: timedelta
@@ -53,7 +57,7 @@ class Retry(FailureHandler):
         self.attempt = 1
 
     async def __aenter__(self) -> Retry:
-        execution = self.execution.get()
+        execution = current_execution.get()
         retry = Retry(attempts=self.attempts, delay=self.delay)
         retry.attempt = execution.attempt
         return retry
@@ -83,7 +87,7 @@ class Retry(FailureHandler):
         execution.attempt += 1
         await execution.schedule(replace=True)
 
-        worker = self.worker.get()
+        worker = current_worker.get()
         TASKS_RETRIED.add(1, {**worker.labels(), **execution.general_labels()})
         logger.info(
             "↫ [%s] %s",
@@ -125,7 +129,7 @@ class ExponentialRetry(Retry):
         self.maximum_delay = maximum_delay
 
     async def __aenter__(self) -> ExponentialRetry:
-        execution = self.execution.get()
+        execution = current_execution.get()
 
         retry = ExponentialRetry(
             attempts=self.attempts,

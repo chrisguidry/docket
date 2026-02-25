@@ -6,7 +6,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from ._base import CompletionHandler, TaskOutcome, format_duration
+from ._base import (
+    CompletionHandler,
+    TaskOutcome,
+    current_docket,
+    current_execution,
+    current_worker,
+    format_duration,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
@@ -16,7 +23,7 @@ from ..instrumentation import TASKS_PERPETUATED, TASKS_SUPERSEDED
 logger = logging.getLogger(__name__)
 
 
-class Perpetual(CompletionHandler):
+class Perpetual(CompletionHandler["Perpetual"]):
     """Declare a task that should be run perpetually.  Perpetual tasks are automatically
     rescheduled for the future after they finish (whether they succeed or fail).  A
     perpetual task can be scheduled at worker startup with the `automatic=True`.
@@ -29,8 +36,6 @@ class Perpetual(CompletionHandler):
         ...
     ```
     """
-
-    single = True
 
     every: timedelta
     automatic: bool
@@ -60,7 +65,7 @@ class Perpetual(CompletionHandler):
         self._next_when = None
 
     async def __aenter__(self) -> Perpetual:
-        execution = self.execution.get()
+        execution = current_execution.get()
         perpetual = Perpetual(every=self.every, automatic=self.automatic)
         perpetual.args = execution.args
         perpetual.kwargs = execution.kwargs
@@ -89,13 +94,13 @@ class Perpetual(CompletionHandler):
     async def on_complete(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle completion by scheduling the next execution."""
         if self.cancelled:
-            docket = self.docket.get()
+            docket = current_docket.get()
             async with docket.redis() as redis:
                 await docket._cancel(redis, execution.key)
             return False
 
         if await execution.is_superseded():
-            worker = self.worker.get()
+            worker = current_worker.get()
             TASKS_SUPERSEDED.add(
                 1,
                 {
@@ -111,8 +116,8 @@ class Perpetual(CompletionHandler):
             )
             return True
 
-        docket = self.docket.get()
-        worker = self.worker.get()
+        docket = current_docket.get()
+        worker = current_worker.get()
 
         if self._next_when:
             when = self._next_when

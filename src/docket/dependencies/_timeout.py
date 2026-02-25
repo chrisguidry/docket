@@ -11,10 +11,10 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
 
 from .._cancellation import cancel_task
-from ._base import Runtime
+from ._base import Runtime, current_docket
 
 
-class Timeout(Runtime):
+class Timeout(Runtime["Timeout"]):
     """Configures a timeout for a task.  You can specify the base timeout, and the
     task will be cancelled if it exceeds this duration.  The timeout may be extended
     within the context of a single running task.
@@ -27,8 +27,6 @@ class Timeout(Runtime):
         ...
     ```
     """
-
-    single: bool = True
 
     base: timedelta
     _deadline: float
@@ -74,7 +72,7 @@ class Timeout(Runtime):
         """Execute the function with timeout enforcement."""
         self.start()
 
-        docket = self.docket.get()
+        docket = current_docket.get()
         task = asyncio.create_task(
             function(*args, **kwargs),  # type: ignore[arg-type]
             name=f"{docket.name} - task:{execution.key}",

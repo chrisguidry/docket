@@ -248,7 +248,7 @@ async def test_concurrency_limit_single_dependency_validation(docket: Docket):
     """Test that only one ConcurrencyLimit dependency is allowed per task."""
     with pytest.raises(
         ValueError,
-        match="Only one ConcurrencyLimit dependency is allowed per task",
+        match="Only one ConcurrencyLimit dependency is allowed",
     ):
 
         async def invalid_task(

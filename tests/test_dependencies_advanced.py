@@ -7,7 +7,13 @@ from datetime import datetime, timezone
 import pytest
 
 from docket import CurrentDocket, Docket, Worker
-from docket.dependencies import Depends, Dependency, resolved_dependencies
+from docket.dependencies import (
+    Depends,
+    current_docket,
+    current_execution,
+    current_worker,
+    resolved_dependencies,
+)
 from docket.dependencies._functional import _Depends  # pyright: ignore[reportPrivateUsage]
 from docket.execution import Execution
 
@@ -206,13 +212,13 @@ async def test_contextvar_isolation_between_tasks(docket: Docket, worker: Worker
 
     async def first_task(a: str):
         # Capture the execution context during first task
-        execution = Dependency.execution.get()
+        execution = current_execution.get()
         executions_seen.append(("first", execution))
         assert a == "first"
 
     async def second_task(b: str):
         # Capture the execution context during second task
-        execution = Dependency.execution.get()
+        execution = current_execution.get()
         executions_seen.append(("second", execution))
         assert b == "second"
 
@@ -238,7 +244,7 @@ async def test_contextvar_isolation_between_tasks(docket: Docket, worker: Worker
 async def test_contextvar_cleanup_after_task(docket: Docket, worker: Worker):
     """Task-scoped contextvars are reset after task execution completes.
 
-    Worker-scoped contextvars (Dependency.docket, Dependency.worker) remain
+    Worker-scoped contextvars (current_docket, current_worker) remain
     set for the entire worker lifetime to support Shared dependencies.
     """
     captured_stack = None
@@ -261,12 +267,12 @@ async def test_contextvar_cleanup_after_task(docket: Docket, worker: Worker):
         _Depends.cache.get()
 
     with pytest.raises(LookupError):
-        Dependency.execution.get()
+        current_execution.get()
 
     # Worker-scoped contextvars (docket, worker) remain set for the worker's
     # lifetime to support Shared dependency initialization
-    assert Dependency.docket.get() is docket
-    assert Dependency.worker.get() is worker
+    assert current_docket.get() is docket
+    assert current_worker.get() is worker
 
 
 async def test_dependency_cache_isolated_between_tasks(docket: Docket, worker: Worker):
@@ -354,17 +360,17 @@ async def test_contextvar_reset_on_reentrant_call(docket: Docket, worker: Worker
     captured_stack1 = None
 
     async with resolved_dependencies(worker, execution1):
-        captured_exec1 = Dependency.execution.get()
+        captured_exec1 = current_execution.get()
         captured_stack1 = _Depends.stack.get()
         assert captured_exec1 is execution1
 
     # After exiting, contextvars should be reset (raise LookupError)
     with pytest.raises(LookupError):
-        Dependency.execution.get()
+        current_execution.get()
 
     # Now make a second call - should not see values from first call
     async with resolved_dependencies(worker, execution2):
-        captured_exec2 = Dependency.execution.get()
+        captured_exec2 = current_execution.get()
         captured_stack2 = _Depends.stack.get()
         assert captured_exec2 is execution2
         assert captured_exec2 is not captured_exec1
@@ -376,7 +382,7 @@ async def test_contextvar_not_leaked_to_caller(docket: Docket):
     """Verify contextvars don't leak outside resolved_dependencies context"""
     # Before calling resolved_dependencies, contextvars should not be set
     with pytest.raises(LookupError):
-        Dependency.execution.get()
+        current_execution.get()
 
     async def dummy_task(): ...
 
@@ -395,11 +401,11 @@ async def test_contextvar_not_leaked_to_caller(docket: Docket):
             # Use resolved_dependencies
             async with resolved_dependencies(test_worker, execution):
                 # Inside context, we should be able to get values
-                assert Dependency.execution.get() is execution
+                assert current_execution.get() is execution
 
             # After exiting context, contextvars should be cleaned up
             with pytest.raises(LookupError):
-                Dependency.execution.get()
+                current_execution.get()
 
             with pytest.raises(LookupError):
                 _Depends.stack.get()
