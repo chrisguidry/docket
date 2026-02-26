@@ -2,6 +2,13 @@
 
 Docket includes a dependency injection system that provides access to context, configuration, and custom resources. It's similar to FastAPI's dependency injection but tailored for background task patterns.
 
+As of version 0.18.0, Docket's dependency injection is built on the
+[`uncalled-for`](https://github.com/chrisguidry/uncalled-for) package
+([PyPI](https://pypi.org/project/uncalled-for/)), which provides the core
+resolution engine, `Depends`, `Shared`, and `Dependency` base class.  Docket
+layers on task-specific context (`CurrentDocket`, `CurrentWorker`, etc.) and
+behavioral dependencies (`Retry`, `Perpetual`, `Timeout`, etc.).
+
 ## Contextual Dependencies
 
 ### Accessing the Current Docket
@@ -355,12 +362,33 @@ async def fetch_pages(
         await process_response(response)
 ```
 
-Inside `__aenter__`, you can access the current execution context through the class-level context vars `self.docket`, `self.worker`, and `self.execution`:
+Inside `__aenter__`, you can access the current execution context through the
+module-level context variables `current_docket`, `current_worker`, and
+`current_execution`:
 
 ```python
+from docket.dependencies import Dependency, current_execution, current_worker
+
 class AuditedDependency(Dependency):
     async def __aenter__(self) -> AuditLog:
-        execution = self.execution.get()
-        worker = self.worker.get()
+        execution = current_execution.get()
+        worker = current_worker.get()
         return AuditLog(task_key=execution.key, worker_name=worker.name)
+```
+
+Or use the higher-level contextual dependencies for cleaner code:
+
+```python
+from docket import CurrentExecution, CurrentWorker, Depends, Execution, Worker
+
+async def create_audit_log(
+    execution: Execution = CurrentExecution(),
+    worker: Worker = CurrentWorker(),
+) -> AuditLog:
+    return AuditLog(task_key=execution.key, worker_name=worker.name)
+
+async def audited_task(
+    audit_log: AuditLog = Depends(create_audit_log),
+) -> None:
+    ...
 ```
