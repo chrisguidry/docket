@@ -529,14 +529,13 @@ class Worker:
                     await ack_message(redis, message_id)
                 except AdmissionBlocked as e:
                     if e.reschedule:
+                        delay = e.retry_delay or ADMISSION_BLOCKED_RETRY_DELAY
                         logger.debug(
                             "⏳ Task %s blocked by admission control, rescheduling",
                             e.execution.key,
                             extra=log_context,
                         )
-                        e.execution.when = (
-                            datetime.now(timezone.utc) + ADMISSION_BLOCKED_RETRY_DELAY
-                        )
+                        e.execution.when = datetime.now(timezone.utc) + delay
                         await e.execution.schedule(reschedule_message=message_id)
                     else:
                         logger.debug(

@@ -1,7 +1,13 @@
-"""Debounce (leading-edge) admission control dependency."""
+"""Debounce (trailing-edge / settle) admission control dependency.
+
+Waits for submissions to settle, then fires once.  Uses two Redis keys
+(winner + last_seen) so only one task bounces while the rest immediately
+drop.
+"""
 
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
@@ -11,48 +17,115 @@ from ._base import AdmissionBlocked, Dependency, current_docket, current_executi
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
 
+# Lua script for atomic debounce logic.
+#
+# KEYS[1] = winner key    (holds the execution key of the chosen task)
+# KEYS[2] = last_seen key (holds ms timestamp of most recent submission)
+# ARGV[1] = my execution key
+# ARGV[2] = settle window in milliseconds
+# ARGV[3] = current time in milliseconds
+# ARGV[4] = key TTL in milliseconds (settle * 10)
+#
+# Returns: {action, remaining_ms}
+#   action: 1=PROCEED, 2=RESCHEDULE, 3=DROP
+#   remaining_ms: ms until settle window expires (only for RESCHEDULE)
+_DEBOUNCE_LUA = """
+local winner_key  = KEYS[1]
+local seen_key    = KEYS[2]
+local my_key      = ARGV[1]
+local settle_ms   = tonumber(ARGV[2])
+local now_ms      = tonumber(ARGV[3])
+local ttl_ms      = tonumber(ARGV[4])
+
+local winner = redis.call('GET', winner_key)
+
+if not winner then
+    -- No winner: I become winner, record last_seen = now
+    redis.call('SET', winner_key, my_key, 'PX', ttl_ms)
+    redis.call('SET', seen_key, tostring(now_ms), 'PX', ttl_ms)
+    return {2, settle_ms}
+end
+
+if winner == my_key then
+    -- I'm the winner, returning from reschedule
+    local last_seen_str = redis.call('GET', seen_key)
+    local last_seen = tonumber(last_seen_str) or 0
+    local elapsed = now_ms - last_seen
+
+    if elapsed >= settle_ms then
+        -- Settled: clean up and proceed
+        redis.call('DEL', winner_key, seen_key)
+        return {1, 0}
+    else
+        -- Not settled yet: refresh TTLs and reschedule for remaining time
+        local remaining = settle_ms - elapsed
+        redis.call('PEXPIRE', winner_key, ttl_ms)
+        redis.call('PEXPIRE', seen_key, ttl_ms)
+        return {2, remaining}
+    end
+end
+
+-- Someone else is the winner: update last_seen and refresh TTLs
+redis.call('SET', seen_key, tostring(now_ms), 'PX', ttl_ms)
+redis.call('PEXPIRE', winner_key, ttl_ms)
+return {3, 0}
+"""
+
+_ACTION_PROCEED = 1
+_ACTION_RESCHEDULE = 2
+_ACTION_DROP = 3
+
 
 class DebounceBlocked(AdmissionBlocked):
     """Raised when a task is blocked by debounce."""
 
-    reschedule = False
-
-    def __init__(self, execution: Execution, debounce_key: str, window: timedelta):
+    def __init__(
+        self,
+        execution: Execution,
+        debounce_key: str,
+        settle: timedelta,
+        *,
+        reschedule: bool,
+        retry_delay: timedelta | None = None,
+    ):
         self.debounce_key = debounce_key
-        self.window = window
-        reason = f"debounce ({window}) on {debounce_key}"
+        self.settle = settle
+        self.reschedule = reschedule  # type: ignore[assignment]
+        self.retry_delay = retry_delay  # type: ignore[assignment]
+        reason = f"debounce ({settle}) on {debounce_key}"
         super().__init__(execution, reason=reason)
 
 
 class Debounce(Dependency["Debounce"]):
-    """Leading-edge debounce: blocks execution if one was recently started.
+    """Wait for submissions to settle, then fire once.
 
-    Sets a Redis key on entry with a TTL equal to the window. If the key
-    already exists, the task is blocked via ``AdmissionBlocked``.
+    Uses two Redis keys per scope — a "winner" key (which execution gets
+    to proceed) and a "last_seen" timestamp.  Only the winner bounces
+    via reschedule; all other submissions are immediately dropped.
 
     Works both as a default parameter and as ``Annotated`` metadata::
 
-        # Per-task: don't start if one started in the last 30s
+        # Per-task: wait for 5s of quiet, then execute once
         async def process_webhooks(
-            debounce: Debounce = Debounce(timedelta(seconds=30)),
+            debounce: Debounce = Debounce(timedelta(seconds=5)),
         ) -> None: ...
 
-        # Per-parameter: don't start for this customer if one started in the last 30s
-        async def process_customer(
-            customer_id: Annotated[int, Debounce(timedelta(seconds=30))],
+        # Per-parameter: independent settle window per customer
+        async def sync_customer(
+            customer_id: Annotated[int, Debounce(timedelta(seconds=5))],
         ) -> None: ...
     """
 
     single: bool = True
 
-    def __init__(self, window: timedelta, *, scope: str | None = None) -> None:
-        self.window = window
+    def __init__(self, settle: timedelta, *, scope: str | None = None) -> None:
+        self.settle = settle
         self.scope = scope
         self._argument_name: str | None = None
         self._argument_value: Any = None
 
     def bind_to_parameter(self, name: str, value: Any) -> Debounce:
-        bound = Debounce(self.window, scope=self.scope)
+        bound = Debounce(self.settle, scope=self.scope)
         bound._argument_name = name
         bound._argument_value = value
         return bound
@@ -63,21 +136,46 @@ class Debounce(Dependency["Debounce"]):
 
         scope = self.scope or docket.name
         if self._argument_name is not None:
-            debounce_key = (
-                f"{scope}:debounce:{self._argument_name}:{self._argument_value}"
-            )
+            base_key = f"{scope}:debounce:{self._argument_name}:{self._argument_value}"
         else:
-            debounce_key = f"{scope}:debounce:{execution.function_name}"
+            base_key = f"{scope}:debounce:{execution.function_name}"
 
-        window_ms = int(self.window.total_seconds() * 1000)
+        winner_key = f"{base_key}:winner"
+        seen_key = f"{base_key}:last_seen"
+
+        settle_ms = int(self.settle.total_seconds() * 1000)
+        now_ms = int(time.time() * 1000)
+        ttl_ms = settle_ms * 10
 
         async with docket.redis() as redis:
-            acquired = await redis.set(debounce_key, 1, nx=True, px=window_ms)
+            script = redis.register_script(_DEBOUNCE_LUA)
+            result: list[int] = await script(
+                keys=[winner_key, seen_key],
+                args=[execution.key, settle_ms, now_ms, ttl_ms],
+            )
 
-        if not acquired:
-            raise DebounceBlocked(execution, debounce_key, self.window)
+        action = result[0]
+        remaining_ms = result[1]
 
-        return self
+        if action == _ACTION_PROCEED:
+            return self
+
+        if action == _ACTION_RESCHEDULE:
+            raise DebounceBlocked(
+                execution,
+                base_key,
+                self.settle,
+                reschedule=True,
+                retry_delay=timedelta(milliseconds=remaining_ms),
+            )
+
+        # DROP
+        raise DebounceBlocked(
+            execution,
+            base_key,
+            self.settle,
+            reschedule=False,
+        )
 
     async def __aexit__(
         self,

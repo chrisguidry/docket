@@ -421,20 +421,18 @@ async def monitor_concurrency_usage() -> None:
     duplication and is consistent with Debounce, Cooldown, and other
     dependencies.
 
-## Debounce
+## Cooldown
 
-Debounce is a leading-edge admission control: if a task was recently started, duplicate submissions within the window are silently dropped. This is useful for deduplicating rapid-fire events like webhooks, where the same event may arrive multiple times in quick succession.
+Cooldown executes the first submission immediately, then drops duplicates within a window. On entry it atomically sets a Redis key with a TTL (`SET key 1 NX PX window_ms`). If the key already exists the task is silently dropped. The key expires naturally after the window.
 
-### Per-Task Debounce
-
-Apply debounce to the whole task so only one execution can start within the window:
+### Per-Task Cooldown
 
 ```python
 from datetime import timedelta
-from docket import Debounce
+from docket import Cooldown
 
 async def process_webhooks(
-    debounce: Debounce = Debounce(timedelta(seconds=30)),
+    cooldown: Cooldown = Cooldown(timedelta(seconds=30)),
 ) -> None:
     events = await fetch_pending_webhook_events()
     await process_events(events)
@@ -446,15 +444,15 @@ await docket.add(process_webhooks)()
 await docket.add(process_webhooks)()
 ```
 
-### Per-Parameter Debounce
+### Per-Parameter Cooldown
 
-Annotate a parameter with `Debounce` to debounce based on its value. Different values get independent windows:
+Annotate a parameter with `Cooldown` to apply independent windows per value:
 
 ```python
 from typing import Annotated
 
 async def sync_customer(
-    customer_id: Annotated[int, Debounce(timedelta(seconds=30))],
+    customer_id: Annotated[int, Cooldown(timedelta(seconds=30))],
 ) -> None:
     await refresh_customer_data(customer_id)
 
@@ -468,62 +466,65 @@ await docket.add(sync_customer)(customer_id=1001)
 await docket.add(sync_customer)(customer_id=2002)
 ```
 
-### How It Works
+## Debounce
 
-On entry, debounce atomically sets a Redis key with a TTL equal to the window (`SET key 1 NX PX window_ms`). If the key already exists, the task is dropped without rescheduling. The key expires naturally after the window, so no cleanup is needed.
+Debounce waits for submissions to settle before firing. When rapid-fire events arrive, only one task runs — after a quiet period equal to the settle window. This is the classic "trailing-edge" debounce: keep resetting the timer on each new event, then fire once things calm down.
 
-## Cooldown
-
-Cooldown is a trailing-edge admission control: if a task recently _succeeded_, new submissions are dropped. Unlike debounce, the cooldown window only starts after a successful execution — failed tasks don't trigger it, so they can be retried immediately.
-
-### Per-Task Cooldown
+### Per-Task Debounce
 
 ```python
 from datetime import timedelta
-from docket import Cooldown
+from docket import Debounce
 
-async def send_daily_digest(
-    cooldown: Cooldown = Cooldown(timedelta(minutes=30)),
+async def process_webhooks(
+    debounce: Debounce = Debounce(timedelta(seconds=5)),
 ) -> None:
-    digest = await build_digest()
-    await send_email(digest)
+    events = await fetch_pending_webhook_events()
+    await process_events(events)
 
-# Runs and succeeds — starts a 30-minute cooldown
-await docket.add(send_daily_digest)()
+# First submission becomes the "winner" and gets rescheduled
+await docket.add(process_webhooks)()
 
-# Within the cooldown window — silently dropped
-await docket.add(send_daily_digest)()
+# More events arrive — they reset the settle timer but are dropped
+await docket.add(process_webhooks)()
+await docket.add(process_webhooks)()
+
+# After 5 seconds of quiet, the winner proceeds
 ```
 
-If `send_daily_digest` raises an exception, no cooldown key is set and the task can be submitted again immediately.
+### Per-Parameter Debounce
 
-### Per-Parameter Cooldown
+Annotate a parameter with `Debounce` to get independent settle windows per value:
 
 ```python
 from typing import Annotated
 
-async def send_notification(
-    customer_id: Annotated[int, Cooldown(timedelta(minutes=5))],
+async def sync_customer(
+    customer_id: Annotated[int, Debounce(timedelta(seconds=5))],
 ) -> None:
-    await deliver_notification(customer_id)
+    await refresh_customer_data(customer_id)
 
-# Notification for customer 1001 — sends and starts cooldown
-await docket.add(send_notification)(customer_id=1001)
-
-# Another for 1001 within 5 minutes — dropped
-await docket.add(send_notification)(customer_id=1001)
-
-# Different customer — sends immediately
-await docket.add(send_notification)(customer_id=2002)
+# Each customer_id gets its own independent settle window
+await docket.add(sync_customer)(customer_id=1001)
+await docket.add(sync_customer)(customer_id=1001)  # resets 1001's timer
+await docket.add(sync_customer)(customer_id=2002)  # independent window
 ```
+
+### How It Works
+
+Debounce uses two Redis keys per scope — a **winner** key (which task gets to proceed) and a **last_seen** timestamp — managed by an atomic Lua script:
+
+1. **No winner exists** — the task becomes the winner and gets rescheduled for the full settle window.
+2. **Winner returns from reschedule** — if enough time has passed since the last submission, it proceeds. Otherwise it reschedules for the remaining time.
+3. **Non-winner arrives** — updates the last_seen timestamp (resetting the settle timer) and is immediately dropped.
 
 ### Debounce vs. Cooldown
 
-| | Debounce | Cooldown |
+| | Cooldown | Debounce |
 |---|---|---|
-| **When does the window start?** | When the task _starts_ | When the task _succeeds_ |
-| **Failed tasks** | Still block the window | Don't trigger cooldown |
-| **Good for** | Deduplicating incoming events | Rate-limiting outgoing side effects |
+| **Behavior** | Execute first, drop duplicates | Wait for quiet, then execute |
+| **Window anchored to** | First execution | Last submission |
+| **Good for** | Deduplicating rapid-fire events | Batching bursts into one action |
 
 ### Combining with Other Controls
 

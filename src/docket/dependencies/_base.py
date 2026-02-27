@@ -60,9 +60,12 @@ class AdmissionBlocked(Exception):
     with a short delay.  When False, the task is silently acknowledged
     and dropped (appropriate for debounce/cooldown where re-trying would
     just hit the same window).
+
+    ``retry_delay`` overrides the default reschedule delay when set.
     """
 
     reschedule: bool = True
+    retry_delay: timedelta | None = None
 
     def __init__(self, execution: Execution, reason: str = "admission control"):
         self.execution = execution

@@ -12,8 +12,10 @@ from docket import ConcurrencyLimit, Docket, Worker
 from docket.dependencies import Cooldown
 
 
-async def test_task_level_cooldown_blocks_after_success(docket: Docket, worker: Worker):
-    """Task-level cooldown blocks re-execution after a successful run."""
+async def test_task_level_cooldown_blocks_rapid_reexecution(
+    docket: Docket, worker: Worker
+):
+    """Task-level cooldown drops duplicate execution within the window."""
     results: list[str] = []
 
     async def cooled_task(
@@ -22,38 +24,11 @@ async def test_task_level_cooldown_blocks_after_success(docket: Docket, worker: 
         results.append("executed")
 
     await docket.add(cooled_task)()
-    await worker.run_until_finished()
-    assert results == ["executed"]
-
     await docket.add(cooled_task)()
+
     await worker.run_until_finished()
 
     assert results == ["executed"]
-
-
-async def test_task_level_cooldown_does_not_block_after_failure(
-    docket: Docket, worker: Worker
-):
-    """Task-level cooldown does NOT block after failure (key not set)."""
-    attempts: list[int] = []
-    call_count = 0
-
-    async def cooled_task(
-        cooldown: Cooldown = Cooldown(timedelta(seconds=5)),
-    ):
-        nonlocal call_count
-        call_count += 1
-        attempts.append(call_count)
-        if call_count == 1:
-            raise RuntimeError("boom")
-
-    await docket.add(cooled_task)()
-    await worker.run_until_finished()
-    assert attempts == [1]
-
-    await docket.add(cooled_task)()
-    await worker.run_until_finished()
-    assert attempts == [1, 2]
 
 
 async def test_task_level_cooldown_allows_after_window(docket: Docket, worker: Worker):
@@ -86,11 +61,9 @@ async def test_per_parameter_cooldown_blocks_same_value(docket: Docket, worker: 
         results.append(customer_id)
 
     await docket.add(cooled_task)(customer_id=1)
-    await worker.run_until_finished()
-    assert results == [1]
-
     await docket.add(cooled_task)(customer_id=1)
     await docket.add(cooled_task)(customer_id=2)
+
     worker.concurrency = 10
     await worker.run_until_finished()
 
