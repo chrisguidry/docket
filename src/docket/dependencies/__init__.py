@@ -41,6 +41,7 @@ from ._perpetual import Perpetual
 from ._progress import Progress
 from ._resolution import (
     FailedDependency,
+    get_annotation_dependencies,
     get_single_dependency_of_type,
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
@@ -72,6 +73,7 @@ __all__ = [
     "DependencyFunction",
     "Shared",
     "SharedContext",
+    "get_annotation_dependencies",
     "get_dependency_parameters",
     # Retry
     "ForcedRetry",
