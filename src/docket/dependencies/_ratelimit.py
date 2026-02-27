@@ -2,7 +2,8 @@
 
 Caps how many times a task (or a per-parameter scope) can execute within a
 sliding window.  Uses a Redis sorted set as a sliding window log: members are
-execution keys, scores are millisecond timestamps.
+``{execution_key}:{now_ms}`` strings (unique per attempt), scores are
+millisecond timestamps.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from ._base import AdmissionBlocked, Dependency, current_docket, current_executi
 # Lua script for atomic sliding-window rate limit check.
 #
 # KEYS[1] = sorted set key (one per scope)
-# ARGV[1] = execution key (member)
+# ARGV[1] = member (execution key + timestamp, unique per attempt)
 # ARGV[2] = current time in milliseconds
 # ARGV[3] = window size in milliseconds
 # ARGV[4] = max allowed count (limit)
@@ -99,6 +100,8 @@ class RateLimit(Dependency["RateLimit"]):
         self.scope = scope
         self._argument_name: str | None = None
         self._argument_value: Any = None
+        self._ratelimit_key: str | None = None
+        self._member: str | None = None
 
     def bind_to_parameter(self, name: str, value: Any) -> RateLimit:
         bound = RateLimit(self.limit, per=self.per, drop=self.drop, scope=self.scope)
@@ -121,18 +124,21 @@ class RateLimit(Dependency["RateLimit"]):
         window_ms = int(self.per.total_seconds() * 1000)
         now_ms = int(time.time() * 1000)
         ttl_ms = window_ms * 2
+        member = f"{execution.key}:{now_ms}"
 
         async with docket.redis() as redis:
             script = redis.register_script(_RATELIMIT_LUA)
             result: list[int] = await script(
                 keys=[ratelimit_key],
-                args=[execution.key, now_ms, window_ms, self.limit, ttl_ms],
+                args=[member, now_ms, window_ms, self.limit, ttl_ms],
             )
 
         action = result[0]
         retry_after_ms = result[1]
 
         if action == _ACTION_PROCEED:
+            self._ratelimit_key = ratelimit_key
+            self._member = member
             return self
 
         reason = f"rate limit ({self.limit}/{self.per}) on {ratelimit_key}"
@@ -152,4 +158,9 @@ class RateLimit(Dependency["RateLimit"]):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        pass
+        if exc_type is not None and self._member is not None:
+            if issubclass(exc_type, AdmissionBlocked):
+                assert self._ratelimit_key is not None
+                docket = current_docket.get()
+                async with docket.redis() as redis:
+                    await redis.zrem(self._ratelimit_key, self._member)

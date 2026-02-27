@@ -6,7 +6,7 @@ import asyncio
 from datetime import timedelta
 from typing import Annotated
 
-from docket import ConcurrencyLimit, Docket, Worker
+from docket import ConcurrencyLimit, Docket, Perpetual, Worker
 from docket.dependencies import RateLimit
 
 
@@ -169,3 +169,71 @@ async def test_rate_limit_key_cleaned_up_after_ttl(docket: Docket, worker: Worke
             )
         ]
         assert ratelimit_keys == []
+
+
+async def test_rate_limit_slot_kept_on_task_failure(docket: Docket, worker: Worker):
+    """A failed task still counts against the rate limit."""
+    results: list[str] = []
+
+    async def failing_task(
+        rate: RateLimit = RateLimit(2, per=timedelta(seconds=5), drop=True),
+    ):
+        results.append("attempted")
+        if len(results) == 1:
+            raise RuntimeError("boom")
+
+    await docket.add(failing_task)()
+    await docket.add(failing_task)()
+    await docket.add(failing_task)()
+
+    await worker.run_until_finished()
+
+    assert len(results) == 2
+
+
+async def test_perpetual_task_counts_each_execution(docket: Docket, worker: Worker):
+    """Perpetual re-executions each count against the rate limit."""
+    results: list[str] = []
+
+    async def perpetual_rated(
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
+        rate: RateLimit = RateLimit(2, per=timedelta(seconds=5), drop=True),
+    ):
+        results.append("executed")
+
+    execution = await docket.add(perpetual_rated)()
+    await worker.run_at_most({execution.key: 4})
+
+    assert len(results) == 2
+
+
+async def test_rate_limit_slot_freed_when_another_dep_blocks(
+    docket: Docket, worker: Worker
+):
+    """RateLimit slot is freed if a later dependency blocks the task.
+
+    RateLimit (default-param, resolved first) proceeds and records a slot,
+    then ConcurrencyLimit (annotation, resolved second) blocks. Without
+    __aexit__ cleanup the phantom slot stays in the sorted set.
+    """
+    results: list[str] = []
+
+    async def blocker(
+        customer_id: Annotated[int, ConcurrencyLimit(1)],
+        rate: RateLimit = RateLimit(2, per=timedelta(seconds=5), drop=True),
+    ):
+        results.append(f"executed_{customer_id}")
+        if len(results) == 1:
+            await asyncio.sleep(0.3)
+
+    # Task 1 grabs both the rate-limit slot and the concurrency slot.
+    # Task 2 passes rate-limit (2/2) but is concurrency-blocked, then
+    # rescheduled.  Without cleanup, the phantom slot means task 2's
+    # retry hits 2/2 and gets dropped.
+    await docket.add(blocker)(customer_id=1)
+    await docket.add(blocker)(customer_id=1)
+
+    worker.concurrency = 2
+    await worker.run_until_finished()
+
+    assert len(results) == 2
