@@ -546,6 +546,66 @@ await docket.add(sync_data)(customer_id=2, region="eu")
 
 Only one `Debounce` is allowed per task — its reschedule mechanism requires a single settle window.
 
+## Rate Limiting
+
+Rate limiting caps how many times a task can execute within a sliding time window. Unlike cooldown (which drops duplicates) or debounce (which waits for quiet), rate limiting counts executions and blocks when the count exceeds a threshold.
+
+By default, excess tasks are rescheduled to exactly when a slot opens. With `drop=True`, they're quietly dropped instead.
+
+### Per-Task Rate Limit
+
+```python
+from datetime import timedelta
+from docket import RateLimit
+
+async def sync_data(
+    rate: RateLimit = RateLimit(10, per=timedelta(minutes=1)),
+) -> None:
+    await perform_sync()
+
+# The first 10 calls within a minute execute immediately.
+# The 11th is rescheduled to when the oldest slot frees up.
+```
+
+### Per-Parameter Rate Limit
+
+Annotate a parameter with `RateLimit` to apply independent limits per value:
+
+```python
+from typing import Annotated
+
+async def process_customer(
+    customer_id: Annotated[int, RateLimit(5, per=timedelta(minutes=1))],
+) -> None:
+    await refresh_customer_data(customer_id)
+
+# Each customer_id gets its own independent sliding window.
+# Customer 1001 can hit 5/min while customer 2002 independently hits 5/min.
+```
+
+### Dropping Excess Tasks
+
+When rescheduling isn't appropriate, use `drop=True` to silently discard excess tasks:
+
+```python
+async def fire_webhook(
+    endpoint: Annotated[str, RateLimit(100, per=timedelta(hours=1), drop=True)],
+) -> None:
+    await send_webhook(endpoint)
+
+# After 100 webhook calls to the same endpoint in an hour,
+# additional calls are dropped with an INFO log.
+```
+
+### Rate Limit vs. Cooldown vs. Debounce
+
+| | RateLimit | Cooldown | Debounce |
+|---|---|---|---|
+| **Behavior** | Allow N per window | Execute first, drop rest | Wait for quiet, then execute |
+| **Window anchored to** | Sliding (each execution) | First execution | Last submission |
+| **Over-limit default** | Reschedule | Drop | Drop (losers) / Reschedule (winner) |
+| **Good for** | Enforcing throughput caps | Deduplicating rapid-fire | Batching bursts into one action |
+
 ### Combining with Other Controls
 
 Debounce, cooldown, and concurrency limits can all coexist on the same task:
