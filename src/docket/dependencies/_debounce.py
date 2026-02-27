@@ -113,12 +113,15 @@ class Debounce(Dependency["Debounce"]):
 
         scope = self.scope or docket.name
         if self._argument_name is not None:
-            base_key = f"{scope}:debounce:{self._argument_name}:{self._argument_value}"
+            hash_tag = f"{self._argument_name}:{self._argument_value}"
+            base_key = f"{scope}:debounce:{hash_tag}"
         else:
-            base_key = f"{scope}:debounce:{execution.function_name}"
+            hash_tag = execution.function_name
+            base_key = f"{scope}:debounce:{hash_tag}"
 
-        winner_key = f"{base_key}:winner"
-        seen_key = f"{base_key}:last_seen"
+        # Use a Redis hash tag {…} so both keys land on the same cluster slot
+        winner_key = f"{base_key}:{{{hash_tag}}}:winner"
+        seen_key = f"{base_key}:{{{hash_tag}}}:last_seen"
 
         settle_ms = int(self.settle.total_seconds() * 1000)
         now_ms = int(time.time() * 1000)

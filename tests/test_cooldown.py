@@ -82,6 +82,8 @@ async def test_multiple_cooldowns_on_different_parameters(
         results.append((customer_id, region))
 
     await docket.add(task)(customer_id=1, region="us")
+    await worker.run_until_finished()
+
     await docket.add(task)(
         customer_id=1, region="eu"
     )  # same customer, different region
@@ -89,7 +91,6 @@ async def test_multiple_cooldowns_on_different_parameters(
         customer_id=2, region="us"
     )  # different customer, same region
 
-    worker.concurrency = 10
     await worker.run_until_finished()
 
     # First call runs. Second is blocked by customer_id=1. Third is blocked by region="us".
