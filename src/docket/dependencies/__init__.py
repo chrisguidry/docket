@@ -13,6 +13,9 @@ from ._base import (
     FailureHandler,
     Runtime,
     TaskOutcome,
+    current_docket,
+    current_execution,
+    current_worker,
     format_duration,
 )
 from ._concurrency import ConcurrencyBlocked, ConcurrencyLimit
@@ -53,6 +56,9 @@ __all__ = [
     "FailureHandler",
     "CompletionHandler",
     "TaskOutcome",
+    "current_docket",
+    "current_execution",
+    "current_worker",
     "format_duration",
     # Contextual dependencies
     "CurrentDocket",

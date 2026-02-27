@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from croniter import croniter
 
+from ._base import current_execution
 from ._perpetual import Perpetual
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -82,7 +83,7 @@ class Cron(Perpetual):
         self._croniter = croniter(self.expression, datetime.now(self.tz), datetime)
 
     async def __aenter__(self) -> Cron:
-        execution = self.execution.get()
+        execution = current_execution.get()
         cron = Cron(expression=self.expression, automatic=self.automatic, tz=self.tz)
         cron.args = execution.args
         cron.kwargs = execution.kwargs

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ._base import Dependency
+from ._base import Dependency, current_execution
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import ExecutionProgress
 
 
-class Progress(Dependency):
+class Progress(Dependency["Progress"]):
     """A dependency to report progress updates for the currently executing task.
 
     Tasks can use this to report their current progress (current/total values) and
@@ -33,7 +33,7 @@ class Progress(Dependency):
         self._progress: ExecutionProgress | None = None
 
     async def __aenter__(self) -> Progress:
-        execution = self.execution.get()
+        execution = current_execution.get()
         self._progress = execution.progress
         return self
 

@@ -28,7 +28,7 @@ async def test_retries_must_be_unique(docket: Docket, worker: Worker):
 
     with pytest.raises(
         ValueError,
-        match="Only one Retry dependency is allowed per task",
+        match="Only one Retry dependency is allowed",
     ):
         await docket.add(the_task)("a")
 
@@ -36,7 +36,7 @@ async def test_retries_must_be_unique(docket: Docket, worker: Worker):
 async def test_runtime_subclasses_must_be_unique(docket: Docket, worker: Worker):
     """Two different Runtime subclasses should conflict since Runtime.single=True."""
 
-    class CustomRuntime(Runtime):
+    class CustomRuntime(Runtime["CustomRuntime"]):
         async def __aenter__(self) -> "CustomRuntime":
             return self  # pragma: no cover
 
@@ -58,7 +58,7 @@ async def test_runtime_subclasses_must_be_unique(docket: Docket, worker: Worker)
 
     with pytest.raises(
         ValueError,
-        match=r"Only one Runtime dependency is allowed per task, but found: .+",
+        match=r"Only one Runtime dependency is allowed, but found: .+",
     ):
         await docket.add(the_task)("a")
 
@@ -68,7 +68,7 @@ async def test_failure_handler_subclasses_must_be_unique(
 ):
     """Two different FailureHandler subclasses should conflict since FailureHandler.single=True."""
 
-    class CustomFailureHandler(FailureHandler):
+    class CustomFailureHandler(FailureHandler["CustomFailureHandler"]):
         async def __aenter__(self) -> "CustomFailureHandler":
             return self  # pragma: no cover
 
@@ -86,7 +86,7 @@ async def test_failure_handler_subclasses_must_be_unique(
 
     with pytest.raises(
         ValueError,
-        match=r"Only one FailureHandler dependency is allowed per task, but found: .+",
+        match=r"Only one FailureHandler dependency is allowed, but found: .+",
     ):
         await docket.add(the_task)("a")
 
@@ -96,7 +96,7 @@ async def test_completion_handler_subclasses_must_be_unique(
 ):
     """Two different CompletionHandler subclasses should conflict since CompletionHandler.single=True."""
 
-    class CustomCompletionHandler(CompletionHandler):
+    class CustomCompletionHandler(CompletionHandler["CustomCompletionHandler"]):
         async def __aenter__(self) -> "CustomCompletionHandler":
             return self  # pragma: no cover
 
@@ -112,6 +112,6 @@ async def test_completion_handler_subclasses_must_be_unique(
 
     with pytest.raises(
         ValueError,
-        match=r"Only one CompletionHandler dependency is allowed per task, but found: .+",
+        match=r"Only one CompletionHandler dependency is allowed, but found: .+",
     ):
         await docket.add(the_task)("a")

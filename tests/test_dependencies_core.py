@@ -270,3 +270,23 @@ async def test_a_task_argument_cannot_ask_for_itself(
 
     assert "Failed to resolve dependencies for parameter(s): a" in caplog.text
     assert "ValueError: No parameter name specified" in caplog.text
+
+
+def test_dependency_class_has_backwards_compatible_context_vars():
+    """Dependency.execution/docket/worker are available for downstream consumers.
+
+    Prior to 0.18, docket's Dependency class had class-level ContextVars.  Now
+    that Dependency comes from uncalled-for, those ContextVars are module-level
+    in docket.dependencies._base.  We monkeypatch them back onto the class so
+    existing code (e.g. FastMCP's `Dependency.execution.get()`) keeps working.
+    """
+    from docket.dependencies import (
+        Dependency,
+        current_docket,
+        current_execution,
+        current_worker,
+    )
+
+    assert Dependency.execution is current_execution  # type: ignore[attr-defined]
+    assert Dependency.docket is current_docket  # type: ignore[attr-defined]
+    assert Dependency.worker is current_worker  # type: ignore[attr-defined]

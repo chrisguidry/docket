@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from ._base import Dependency
+from ._base import Dependency, current_docket, current_execution, current_worker
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..docket import Docket
@@ -13,9 +13,9 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..worker import Worker
 
 
-class _CurrentWorker(Dependency):
+class _CurrentWorker(Dependency["Worker"]):
     async def __aenter__(self) -> Worker:
-        return self.worker.get()
+        return current_worker.get()
 
 
 def CurrentWorker() -> Worker:
@@ -32,9 +32,9 @@ def CurrentWorker() -> Worker:
     return cast("Worker", _CurrentWorker())
 
 
-class _CurrentDocket(Dependency):
+class _CurrentDocket(Dependency["Docket"]):
     async def __aenter__(self) -> Docket:
-        return self.docket.get()
+        return current_docket.get()
 
 
 def CurrentDocket() -> Docket:
@@ -51,9 +51,9 @@ def CurrentDocket() -> Docket:
     return cast("Docket", _CurrentDocket())
 
 
-class _CurrentExecution(Dependency):
+class _CurrentExecution(Dependency["Execution"]):
     async def __aenter__(self) -> Execution:
-        return self.execution.get()
+        return current_execution.get()
 
 
 def CurrentExecution() -> Execution:
@@ -70,9 +70,9 @@ def CurrentExecution() -> Execution:
     return cast("Execution", _CurrentExecution())
 
 
-class _TaskKey(Dependency):
+class _TaskKey(Dependency[str]):
     async def __aenter__(self) -> str:
-        return self.execution.get().key
+        return current_execution.get().key
 
 
 def TaskKey() -> str:
@@ -89,7 +89,7 @@ def TaskKey() -> str:
     return cast(str, _TaskKey())
 
 
-class _TaskArgument(Dependency):
+class _TaskArgument(Dependency[Any]):
     parameter: str | None
     optional: bool
 
@@ -99,7 +99,7 @@ class _TaskArgument(Dependency):
 
     async def __aenter__(self) -> Any:
         assert self.parameter is not None
-        execution = self.execution.get()
+        execution = current_execution.get()
         try:
             return execution.get_argument(self.parameter)
         except KeyError:
@@ -128,15 +128,15 @@ def TaskArgument(parameter: str | None = None, optional: bool = False) -> Any:
     return cast(Any, _TaskArgument(parameter, optional))
 
 
-class _TaskLogger(Dependency):
+class _TaskLogger(Dependency["logging.LoggerAdapter[logging.Logger]"]):
     async def __aenter__(self) -> logging.LoggerAdapter[logging.Logger]:
-        execution = self.execution.get()
+        execution = current_execution.get()
         logger = logging.getLogger(f"docket.task.{execution.function_name}")
         return logging.LoggerAdapter(
             logger,
             {
-                **self.docket.get().labels(),
-                **self.worker.get().labels(),
+                **current_docket.get().labels(),
+                **current_worker.get().labels(),
                 **execution.specific_labels(),
             },
         )

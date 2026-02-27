@@ -8,7 +8,13 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from .._cancellation import CANCEL_MSG_CLEANUP, cancel_task
-from ._base import AdmissionBlocked, Dependency
+from ._base import (
+    AdmissionBlocked,
+    Dependency,
+    current_docket,
+    current_execution,
+    current_worker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +44,7 @@ class ConcurrencyBlocked(AdmissionBlocked):
         super().__init__(execution, reason=reason)
 
 
-class ConcurrencyLimit(Dependency):
+class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
     """Configures concurrency limits for task execution.
 
     Can limit concurrency globally for a task, or per specific argument value.
@@ -94,9 +100,9 @@ class ConcurrencyLimit(Dependency):
     async def __aenter__(self) -> ConcurrencyLimit:
         from ._functional import _Depends
 
-        execution = self.execution.get()
-        docket = self.docket.get()
-        worker = self.worker.get()
+        execution = current_execution.get()
+        docket = current_docket.get()
+        worker = current_worker.get()
 
         # Build concurrency key based on argument_name (if provided) or function name
         scope = self.scope or docket.name
@@ -151,9 +157,9 @@ class ConcurrencyLimit(Dependency):
 
     async def __aexit__(
         self,
-        _exc_type: type[BaseException] | None,
-        _exc_value: BaseException | None,
-        _traceback: type[BaseException] | None,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: type[BaseException] | None,
     ) -> None:
         # No-op: The original instance (used as default argument) has no state.
         # Actual cleanup is handled by _cleanup() on the per-task instance,
@@ -256,7 +262,7 @@ class ConcurrencyLimit(Dependency):
         # Note: only registered as callback for instances with valid keys
         assert self._concurrency_key and self._task_key
 
-        docket = self.docket.get()
+        docket = current_docket.get()
         async with docket.redis() as redis:
             # Remove this task from the sorted set and delete the key if empty
             # KEYS[1]: concurrency_key, ARGV[1]: task_key
@@ -272,7 +278,7 @@ class ConcurrencyLimit(Dependency):
 
     async def _renew_lease_loop(self, redelivery_timeout: timedelta) -> None:
         """Periodically refresh slot timestamp to prevent expiration."""
-        docket = self.docket.get()
+        docket = current_docket.get()
         renewal_interval = redelivery_timeout.total_seconds() / LEASE_RENEWAL_FACTOR
         key_ttl = max(
             MINIMUM_TTL_SECONDS,
