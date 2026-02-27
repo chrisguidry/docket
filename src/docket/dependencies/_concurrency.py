@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 from .._cancellation import CANCEL_MSG_CLEANUP, cancel_task
 from ._base import (
@@ -70,21 +70,40 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
 
     single: bool = True
 
+    @overload
+    def __init__(
+        self,
+        max_concurrent: int,
+        /,
+        *,
+        scope: str | None = None,
+    ) -> None:
+        """Annotated style: ``Annotated[int, ConcurrencyLimit(1)]``."""
+
+    @overload
+    def __init__(
+        self,
+        argument_name: str,
+        max_concurrent: int = 1,
+        scope: str | None = None,
+    ) -> None:
+        """Default-param style with per-argument grouping."""
+
+    @overload
+    def __init__(
+        self,
+        *,
+        max_concurrent: int = 1,
+        scope: str | None = None,
+    ) -> None:
+        """Per-task concurrency (no argument grouping)."""
+
     def __init__(
         self,
         argument_name: str | int | None = None,
         max_concurrent: int = 1,
         scope: str | None = None,
     ) -> None:
-        """
-        Args:
-            argument_name: The name of the task argument to use for concurrency grouping.
-                If an ``int`` is passed as the first positional arg, it is treated as
-                *max_concurrent* (convenient for ``Annotated[int, ConcurrencyLimit(1)]``).
-                If ``None``, limits concurrency for the task function itself.
-            max_concurrent: Maximum number of concurrent tasks
-            scope: Optional scope prefix for Redis keys (defaults to docket name)
-        """
         if isinstance(argument_name, int):
             self.argument_name: str | None = None
             self.max_concurrent: int = argument_name
@@ -99,10 +118,9 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
 
     def bind_to_parameter(self, name: str, value: Any) -> ConcurrencyLimit:
         """Bind to an ``Annotated`` parameter, inferring argument_name if not set."""
+        argument_name = self.argument_name if self.argument_name is not None else name
         return ConcurrencyLimit(
-            argument_name=self.argument_name
-            if self.argument_name is not None
-            else name,
+            argument_name,
             max_concurrent=self.max_concurrent,
             scope=self.scope,
         )

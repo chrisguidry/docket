@@ -29,8 +29,8 @@ def get_single_dependency_parameter_of_type(
     for _, dependency in get_dependency_parameters(function).items():
         if isinstance(dependency, dependency_type):
             return dependency
-    for _, deps in get_annotation_dependencies(function).items():
-        for dependency in deps:
+    for _, dependencies in get_annotation_dependencies(function).items():
+        for dependency in dependencies:
             if isinstance(dependency, dependency_type):
                 return dependency  # type: ignore[return-value]
     return None
@@ -86,15 +86,19 @@ async def resolved_dependencies(
                     except Exception as error:
                         arguments[parameter] = FailedDependency(parameter, error)
 
-                annotation_deps = get_annotation_dependencies(execution.function)
-                for param_name, deps in annotation_deps.items():
-                    value = execution.kwargs.get(param_name, arguments.get(param_name))
-                    for dep in deps:
-                        bound = dep.bind_to_parameter(param_name, value)
+                annotations = get_annotation_dependencies(execution.function)
+                for parameter_name, dependencies in annotations.items():
+                    value = execution.kwargs.get(
+                        parameter_name, arguments.get(parameter_name)
+                    )
+                    for dependency in dependencies:
+                        bound = dependency.bind_to_parameter(parameter_name, value)
                         try:
                             await stack.enter_async_context(bound)
                         except Exception as error:
-                            arguments[param_name] = FailedDependency(param_name, error)
+                            arguments[parameter_name] = FailedDependency(
+                                parameter_name, error
+                            )
 
                 yield arguments
             finally:
