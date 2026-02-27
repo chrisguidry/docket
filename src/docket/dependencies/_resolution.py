@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, TypeVar
 
 from uncalled_for import (
     FailedDependency as FailedDependency,
+    get_annotation_dependencies as get_annotation_dependencies,
     validate_dependencies as validate_dependencies,
 )
 
@@ -28,6 +29,10 @@ def get_single_dependency_parameter_of_type(
     for _, dependency in get_dependency_parameters(function).items():
         if isinstance(dependency, dependency_type):
             return dependency
+    for _, deps in get_annotation_dependencies(function).items():
+        for dependency in deps:
+            if isinstance(dependency, dependency_type):
+                return dependency  # type: ignore[return-value]
     return None
 
 
@@ -80,6 +85,16 @@ async def resolved_dependencies(
                         )
                     except Exception as error:
                         arguments[parameter] = FailedDependency(parameter, error)
+
+                annotation_deps = get_annotation_dependencies(execution.function)
+                for param_name, deps in annotation_deps.items():
+                    value = execution.kwargs.get(param_name, arguments.get(param_name))
+                    for dep in deps:
+                        bound = dep.bind_to_parameter(param_name, value)
+                        try:
+                            await stack.enter_async_context(bound)
+                        except Exception as error:
+                            arguments[param_name] = FailedDependency(param_name, error)
 
                 yield arguments
             finally:

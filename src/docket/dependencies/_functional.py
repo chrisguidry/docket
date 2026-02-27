@@ -9,7 +9,9 @@ from uncalled_for import (
     DependencyFactory,
     Shared as Shared,
     SharedContext as SharedContext,
-    _Depends as _UncalledForDepends,
+)
+from uncalled_for.functional import _Depends as _UncalledForDepends
+from uncalled_for.introspection import (
     _parameter_cache as _parameter_cache,
     get_dependency_parameters,
 )
