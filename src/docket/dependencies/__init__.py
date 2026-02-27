@@ -19,6 +19,8 @@ from ._base import (
     format_duration,
 )
 from ._concurrency import ConcurrencyBlocked, ConcurrencyLimit
+from ._cooldown import Cooldown
+from ._debounce import Debounce
 from ._cron import Cron
 from ._contextual import (
     CurrentDocket,
@@ -83,6 +85,8 @@ __all__ = [
     "AdmissionBlocked",
     "ConcurrencyBlocked",
     "ConcurrencyLimit",
+    "Cooldown",
+    "Debounce",
     "Cron",
     "Perpetual",
     "Progress",

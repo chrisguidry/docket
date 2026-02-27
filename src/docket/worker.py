@@ -528,15 +528,23 @@ class Worker:
                     await task
                     await ack_message(redis, message_id)
                 except AdmissionBlocked as e:
-                    logger.debug(
-                        "🔒 Task %s blocked by admission control, rescheduling",
-                        e.execution.key,
-                        extra=log_context,
-                    )
-                    e.execution.when = (
-                        datetime.now(timezone.utc) + ADMISSION_BLOCKED_RETRY_DELAY
-                    )
-                    await e.execution.schedule(reschedule_message=message_id)
+                    if e.reschedule:
+                        delay = e.retry_delay or ADMISSION_BLOCKED_RETRY_DELAY
+                        logger.debug(
+                            "⏳ Task %s blocked by admission control, rescheduling",
+                            e.execution.key,
+                            extra=log_context,
+                        )
+                        e.execution.when = datetime.now(timezone.utc) + delay
+                        await e.execution.schedule(reschedule_message=message_id)
+                    else:
+                        logger.debug(
+                            "⏭ Task %s blocked by admission control, dropping",
+                            e.execution.key,
+                            extra=log_context,
+                        )
+                        await e.execution.mark_as_cancelled()
+                        await ack_message(redis, message_id)
 
         async def ack_message(redis: Redis, message_id: RedisMessageID) -> None:
             logger.debug("Acknowledging message", extra=log_context)

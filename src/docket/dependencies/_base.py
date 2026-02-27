@@ -55,11 +55,27 @@ class AdmissionBlocked(Exception):
 
     This is the base exception for admission control mechanisms like
     concurrency limits, rate limits, or health gates.
+
+    When ``reschedule`` is True (default), the worker re-queues the task
+    with a short delay.  When False, the task is quietly acknowledged
+    and dropped with an INFO-level log (appropriate for debounce/cooldown
+    where re-trying would just hit the same window).
+
+    ``retry_delay`` overrides the default reschedule delay when set.
     """
 
-    def __init__(self, execution: Execution, reason: str = "admission control"):
+    def __init__(
+        self,
+        execution: Execution,
+        reason: str = "admission control",
+        *,
+        reschedule: bool = True,
+        retry_delay: timedelta | None = None,
+    ):
         self.execution = execution
         self.reason = reason
+        self.reschedule = reschedule
+        self.retry_delay = retry_delay
         super().__init__(f"Task {execution.key} blocked by {reason}")
 
 

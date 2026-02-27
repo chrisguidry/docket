@@ -32,7 +32,7 @@ def get_single_dependency_parameter_of_type(
     for _, dependencies in get_annotation_dependencies(function).items():
         for dependency in dependencies:
             if isinstance(dependency, dependency_type):
-                return dependency  # type: ignore[return-value]
+                return dependency
     return None
 
 
