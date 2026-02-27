@@ -21,6 +21,7 @@ from ._base import (
 from ._concurrency import ConcurrencyBlocked, ConcurrencyLimit
 from ._cooldown import Cooldown
 from ._debounce import Debounce
+from ._ratelimit import RateLimit
 from ._cron import Cron
 from ._contextual import (
     CurrentDocket,
@@ -87,6 +88,7 @@ __all__ = [
     "ConcurrencyLimit",
     "Cooldown",
     "Debounce",
+    "RateLimit",
     "Cron",
     "Perpetual",
     "Progress",
