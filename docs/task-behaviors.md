@@ -309,7 +309,7 @@ Docket provides fine-grained concurrency control that limits how many tasks can 
 
 ### Per-Argument Concurrency
 
-Use `Annotated` to limit concurrency based on a specific argument value. Each distinct value gets its own independent limit:
+Annotate a parameter with `ConcurrencyLimit` to limit concurrency based on its value. Each distinct value gets its own independent limit:
 
 ```python
 from typing import Annotated
@@ -448,7 +448,7 @@ await docket.add(process_webhooks)()
 
 ### Per-Parameter Debounce
 
-Use `Annotated` to debounce based on a specific argument value. Different values get independent windows:
+Annotate a parameter with `Debounce` to debounce based on its value. Different values get independent windows:
 
 ```python
 from typing import Annotated
