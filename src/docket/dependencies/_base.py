@@ -55,7 +55,14 @@ class AdmissionBlocked(Exception):
 
     This is the base exception for admission control mechanisms like
     concurrency limits, rate limits, or health gates.
+
+    When ``reschedule`` is True (default), the worker re-queues the task
+    with a short delay.  When False, the task is silently acknowledged
+    and dropped (appropriate for debounce/cooldown where re-trying would
+    just hit the same window).
     """
+
+    reschedule: bool = True
 
     def __init__(self, execution: Execution, reason: str = "admission control"):
         self.execution = execution
