@@ -8,24 +8,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ._base import AdmissionBlocked, Dependency, current_docket, current_execution
-
-if TYPE_CHECKING:  # pragma: no cover
-    from ..execution import Execution
-
-
-class CooldownBlocked(AdmissionBlocked):
-    """Raised when a task is blocked by cooldown."""
-
-    reschedule = False
-
-    def __init__(self, execution: Execution, cooldown_key: str, window: timedelta):
-        self.cooldown_key = cooldown_key
-        self.window = window
-        reason = f"cooldown ({window}) on {cooldown_key}"
-        super().__init__(execution, reason=reason)
 
 
 class Cooldown(Dependency["Cooldown"]):
@@ -46,8 +31,6 @@ class Cooldown(Dependency["Cooldown"]):
             customer_id: Annotated[int, Cooldown(timedelta(seconds=30))],
         ) -> None: ...
     """
-
-    single: bool = True
 
     def __init__(self, window: timedelta, *, scope: str | None = None) -> None:
         self.window = window
@@ -79,7 +62,11 @@ class Cooldown(Dependency["Cooldown"]):
             acquired = await redis.set(cooldown_key, 1, nx=True, px=window_ms)
 
         if not acquired:
-            raise CooldownBlocked(execution, cooldown_key, self.window)
+            raise AdmissionBlocked(
+                execution,
+                reason=f"cooldown ({self.window}) on {cooldown_key}",
+                reschedule=False,
+            )
 
         return self
 

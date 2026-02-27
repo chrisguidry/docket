@@ -10,12 +10,9 @@ from __future__ import annotations
 import time
 from datetime import timedelta
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ._base import AdmissionBlocked, Dependency, current_docket, current_execution
-
-if TYPE_CHECKING:  # pragma: no cover
-    from ..execution import Execution
 
 # Lua script for atomic debounce logic.
 #
@@ -74,26 +71,6 @@ return {3, 0}
 _ACTION_PROCEED = 1
 _ACTION_RESCHEDULE = 2
 _ACTION_DROP = 3
-
-
-class DebounceBlocked(AdmissionBlocked):
-    """Raised when a task is blocked by debounce."""
-
-    def __init__(
-        self,
-        execution: Execution,
-        debounce_key: str,
-        settle: timedelta,
-        *,
-        reschedule: bool,
-        retry_delay: timedelta | None = None,
-    ):
-        self.debounce_key = debounce_key
-        self.settle = settle
-        self.reschedule = reschedule  # type: ignore[assignment]
-        self.retry_delay = retry_delay  # type: ignore[assignment]
-        reason = f"debounce ({settle}) on {debounce_key}"
-        super().__init__(execution, reason=reason)
 
 
 class Debounce(Dependency["Debounce"]):
@@ -160,22 +137,17 @@ class Debounce(Dependency["Debounce"]):
         if action == _ACTION_PROCEED:
             return self
 
+        reason = f"debounce ({self.settle}) on {base_key}"
+
         if action == _ACTION_RESCHEDULE:
-            raise DebounceBlocked(
+            raise AdmissionBlocked(
                 execution,
-                base_key,
-                self.settle,
-                reschedule=True,
+                reason=reason,
                 retry_delay=timedelta(milliseconds=remaining_ms),
             )
 
         # DROP
-        raise DebounceBlocked(
-            execution,
-            base_key,
-            self.settle,
-            reschedule=False,
-        )
+        raise AdmissionBlocked(execution, reason=reason, reschedule=False)
 
     async def __aexit__(
         self,

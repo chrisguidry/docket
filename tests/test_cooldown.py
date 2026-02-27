@@ -6,8 +6,6 @@ import asyncio
 from datetime import timedelta
 from typing import Annotated
 
-import pytest
-
 from docket import ConcurrencyLimit, Docket, Worker
 from docket.dependencies import Cooldown
 
@@ -71,16 +69,31 @@ async def test_per_parameter_cooldown_blocks_same_value(docket: Docket, worker: 
     assert results.count(1) == 1
 
 
-async def test_cooldown_single_rejects_two(docket: Docket):
-    """single=True rejects two Cooldown on the same task."""
-    with pytest.raises(ValueError, match="Only one Cooldown"):
+async def test_multiple_cooldowns_on_different_parameters(
+    docket: Docket, worker: Worker
+):
+    """Multiple Cooldown annotations on different parameters are independent."""
+    results: list[tuple[int, str]] = []
 
-        async def task(
-            a: Annotated[int, Cooldown(timedelta(seconds=1))],
-            b: Annotated[str, Cooldown(timedelta(seconds=2))],
-        ): ...  # pragma: no cover
+    async def task(
+        customer_id: Annotated[int, Cooldown(timedelta(seconds=5))],
+        region: Annotated[str, Cooldown(timedelta(seconds=5))],
+    ):
+        results.append((customer_id, region))
 
-        await docket.add(task)(a=1, b="x")
+    await docket.add(task)(customer_id=1, region="us")
+    await docket.add(task)(
+        customer_id=1, region="eu"
+    )  # same customer, different region
+    await docket.add(task)(
+        customer_id=2, region="us"
+    )  # different customer, same region
+
+    worker.concurrency = 10
+    await worker.run_until_finished()
+
+    # First call runs. Second is blocked by customer_id=1. Third is blocked by region="us".
+    assert results == [(1, "us")]
 
 
 async def test_cooldown_coexists_with_concurrency_limit(docket: Docket, worker: Worker):

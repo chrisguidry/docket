@@ -66,8 +66,8 @@ async def test_per_parameter_debounce_independent_windows(
     assert results.count(1) == 1
 
 
-async def test_debounce_single_rejects_two(docket: Docket):
-    """single=True rejects two Debounce on the same task."""
+async def test_multiple_debounces_rejected(docket: Docket):
+    """Only one Debounce is allowed per task."""
     with pytest.raises(ValueError, match="Only one Debounce"):
 
         async def task(

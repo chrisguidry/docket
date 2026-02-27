@@ -64,12 +64,18 @@ class AdmissionBlocked(Exception):
     ``retry_delay`` overrides the default reschedule delay when set.
     """
 
-    reschedule: bool = True
-    retry_delay: timedelta | None = None
-
-    def __init__(self, execution: Execution, reason: str = "admission control"):
+    def __init__(
+        self,
+        execution: Execution,
+        reason: str = "admission control",
+        *,
+        reschedule: bool = True,
+        retry_delay: timedelta | None = None,
+    ):
         self.execution = execution
         self.reason = reason
+        self.reschedule = reschedule
+        self.retry_delay = retry_delay
         super().__init__(f"Task {execution.key} blocked by {reason}")
 
 

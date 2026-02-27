@@ -423,7 +423,7 @@ async def monitor_concurrency_usage() -> None:
 
 ## Cooldown
 
-Cooldown executes the first submission immediately, then drops duplicates within a window. On entry it atomically sets a Redis key with a TTL (`SET key 1 NX PX window_ms`). If the key already exists the task is silently dropped. The key expires naturally after the window.
+Cooldown executes the first submission immediately, then drops duplicates within a window. If another submission arrives before the window expires, it's silently dropped.
 
 ### Per-Task Cooldown
 
@@ -510,14 +510,6 @@ await docket.add(sync_customer)(customer_id=1001)  # resets 1001's timer
 await docket.add(sync_customer)(customer_id=2002)  # independent window
 ```
 
-### How It Works
-
-Debounce uses two Redis keys per scope — a **winner** key (which task gets to proceed) and a **last_seen** timestamp — managed by an atomic Lua script:
-
-1. **No winner exists** — the task becomes the winner and gets rescheduled for the full settle window.
-2. **Winner returns from reschedule** — if enough time has passed since the last submission, it proceeds. Otherwise it reschedules for the remaining time.
-3. **Non-winner arrives** — updates the last_seen timestamp (resetting the settle timer) and is immediately dropped.
-
 ### Debounce vs. Cooldown
 
 | | Cooldown | Debounce |
@@ -525,6 +517,34 @@ Debounce uses two Redis keys per scope — a **winner** key (which task gets to 
 | **Behavior** | Execute first, drop duplicates | Wait for quiet, then execute |
 | **Window anchored to** | First execution | Last submission |
 | **Good for** | Deduplicating rapid-fire events | Batching bursts into one action |
+
+### Multiple Cooldowns
+
+You can annotate multiple parameters with `Cooldown` on the same task. Each gets its own independent window scoped to that parameter's value. A task must pass *all* of its cooldown checks to start — if any one blocks, the task is dropped:
+
+```python
+from typing import Annotated
+
+async def sync_data(
+    customer_id: Annotated[int, Cooldown(timedelta(seconds=30))],
+    region: Annotated[str, Cooldown(timedelta(seconds=60))],
+) -> None:
+    await refresh_data(customer_id, region)
+
+# Runs immediately — both windows are clear
+await docket.add(sync_data)(customer_id=1, region="us")
+
+# Blocked — customer_id=1 is still in cooldown
+await docket.add(sync_data)(customer_id=1, region="eu")
+
+# Blocked — region="us" is still in cooldown
+await docket.add(sync_data)(customer_id=2, region="us")
+
+# Runs — both customer_id=2 and region="eu" are clear
+await docket.add(sync_data)(customer_id=2, region="eu")
+```
+
+Only one `Debounce` is allowed per task — its reschedule mechanism requires a single settle window.
 
 ### Combining with Other Controls
 
