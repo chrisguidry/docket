@@ -244,7 +244,7 @@ You now know the core concepts: creating dockets, scheduling work with idempoten
 
 Ready for more? Check out:
 
-- **[Task Behaviors](task-behaviors.md)** - Retries, timeouts, progress reporting, and concurrency control
+- **[Task Behaviors](task-behaviors.md)** - Retries, timeouts, progress reporting, concurrency control, debounce, and cooldown
 - **[Dependency Injection](dependency-injection.md)** - Access current docket, custom dependencies, shared resources
 - **[Testing with Docket](testing.md)** - Ergonomic testing utilities for unit and integration tests
 - **[Task Design Patterns](task-patterns.md)** - Find & flood, task scattering, logging, and task chains

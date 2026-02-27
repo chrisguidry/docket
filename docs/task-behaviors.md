@@ -305,18 +305,18 @@ For more details on progress monitoring patterns and real-time observation, see 
 
 ## Concurrency Control
 
-Docket provides fine-grained concurrency control that allows you to limit the number of concurrent tasks based on specific argument values. This is essential for protecting shared resources, preventing overwhelming external services, and managing database connections.
+Docket provides fine-grained concurrency control that limits how many tasks can run at the same time, based on specific argument values. This is useful for protecting shared resources, preventing overwhelming external services, and managing database connections.
 
-### Basic Concurrency Limits
+### Per-Argument Concurrency
 
-Use `ConcurrencyLimit` to restrict concurrent execution based on task arguments:
+Use `Annotated` to limit concurrency based on a specific argument value. Each distinct value gets its own independent limit:
 
 ```python
+from typing import Annotated
 from docket import ConcurrencyLimit
 
 async def process_customer_data(
-    customer_id: int,
-    concurrency: ConcurrencyLimit = ConcurrencyLimit("customer_id", max_concurrent=1)
+    customer_id: Annotated[int, ConcurrencyLimit(1)],
 ) -> None:
     # Only one task per customer_id can run at a time
     await update_customer_profile(customer_id)
@@ -325,11 +325,22 @@ async def process_customer_data(
 # These will run sequentially for the same customer
 await docket.add(process_customer_data)(customer_id=1001)
 await docket.add(process_customer_data)(customer_id=1001)
-await docket.add(process_customer_data)(customer_id=1001)
 
 # But different customers can run concurrently
 await docket.add(process_customer_data)(customer_id=2001)  # Runs in parallel
-await docket.add(process_customer_data)(customer_id=3001)  # Runs in parallel
+```
+
+### Per-Task Concurrency
+
+Use a default parameter to limit the total number of concurrent executions of a task, regardless of arguments:
+
+```python
+async def expensive_computation(
+    input_data: str,
+    concurrency: ConcurrencyLimit = ConcurrencyLimit(max_concurrent=3),
+) -> None:
+    # At most 3 of these tasks can run at once across all arguments
+    await run_computation(input_data)
 ```
 
 ### Database Connection Pooling
@@ -338,9 +349,8 @@ Limit concurrent database operations to prevent overwhelming your database:
 
 ```python
 async def backup_database_table(
-    db_name: str,
+    db_name: Annotated[str, ConcurrencyLimit(2)],
     table_name: str,
-    concurrency: ConcurrencyLimit = ConcurrencyLimit("db_name", max_concurrent=2)
 ) -> None:
     # Maximum 2 backup operations per database at once
     await create_table_backup(db_name, table_name)
@@ -360,8 +370,7 @@ Protect external APIs from being overwhelmed:
 ```python
 async def sync_user_with_external_service(
     user_id: int,
-    service_name: str,
-    concurrency: ConcurrencyLimit = ConcurrencyLimit("service_name", max_concurrent=5)
+    service_name: Annotated[str, ConcurrencyLimit(5)],
 ) -> None:
     # Limit to 5 concurrent API calls per external service
     api_client = get_api_client(service_name)
@@ -374,84 +383,22 @@ await docket.add(sync_user_with_external_service)(456, "salesforce")  # Will que
 await docket.add(sync_user_with_external_service)(789, "hubspot")     # Different service, runs in parallel
 ```
 
-### File Processing Limits
-
-Control concurrent file operations to manage disk I/O:
-
-```python
-async def process_media_file(
-    file_path: str,
-    operation_type: str,
-    concurrency: ConcurrencyLimit = ConcurrencyLimit("operation_type", max_concurrent=3)
-) -> None:
-    # Limit concurrent operations by type (e.g., 3 video transcodes, 3 image resizes)
-    if operation_type == "video_transcode":
-        await transcode_video(file_path)
-    elif operation_type == "image_resize":
-        await resize_image(file_path)
-    elif operation_type == "audio_compress":
-        await compress_audio(file_path)
-
-# Different operation types can run concurrently, but each type is limited
-await docket.add(process_media_file)("/videos/movie1.mp4", "video_transcode")
-await docket.add(process_media_file)("/videos/movie2.mp4", "video_transcode")
-await docket.add(process_media_file)("/images/photo1.jpg", "image_resize")  # Runs in parallel
-```
-
 ### Custom Scopes
 
 Use custom scopes to create independent concurrency limits:
 
 ```python
 async def process_tenant_data(
-    tenant_id: str,
+    tenant_id: Annotated[str, ConcurrencyLimit(2, scope="tenant_operations")],
     operation: str,
-    concurrency: ConcurrencyLimit = ConcurrencyLimit(
-        "tenant_id",
-        max_concurrent=2,
-        scope="tenant_operations"
-    )
 ) -> None:
     # Each tenant can have up to 2 concurrent operations
     await perform_tenant_operation(tenant_id, operation)
-
-async def process_global_data(
-    data_type: str,
-    concurrency: ConcurrencyLimit = ConcurrencyLimit(
-        "data_type",
-        max_concurrent=1,
-        scope="global_operations"  # Separate from tenant operations
-    )
-) -> None:
-    # Global operations have their own concurrency limits
-    await process_global_data_type(data_type)
 ```
-
-### Multi-Level Concurrency
-
-Combine multiple concurrency controls for complex scenarios:
-
-```python
-async def process_user_export(
-    user_id: int,
-    export_type: str,
-    region: str,
-    user_limit: ConcurrencyLimit = ConcurrencyLimit("user_id", max_concurrent=1),
-    type_limit: ConcurrencyLimit = ConcurrencyLimit("export_type", max_concurrent=3),
-    region_limit: ConcurrencyLimit = ConcurrencyLimit("region", max_concurrent=10)
-) -> None:
-    # This task respects ALL concurrency limits:
-    # - Only 1 export per user at a time
-    # - Only 3 exports of each type globally
-    # - Only 10 exports per region
-    await generate_user_export(user_id, export_type, region)
-```
-
-**Note**: When using multiple `ConcurrencyLimit` dependencies, all limits must be satisfied before the task can start.
 
 ### Monitoring Concurrency
 
-Concurrency limits are enforced using Redis sets, so you can monitor them:
+Concurrency limits are enforced using Redis sorted sets, so you can monitor them:
 
 ```python
 async def monitor_concurrency_usage() -> None:
@@ -467,14 +414,129 @@ async def monitor_concurrency_usage() -> None:
             print(f"{key}: {count} active tasks")
 ```
 
-### Tips
+!!! note "Legacy default-parameter style"
+    Prior to 0.18, `ConcurrencyLimit` required passing the argument name as a
+    string: `ConcurrencyLimit("customer_id", max_concurrent=1)`. This style
+    still works but `Annotated` is preferred — it avoids the string-name
+    duplication and is consistent with Debounce, Cooldown, and other
+    dependencies.
 
-1. **Choose appropriate argument names**: Use arguments that represent the resource you want to protect (database name, customer ID, API endpoint).
+## Debounce
 
-2. **Set reasonable limits**: Base limits on your system's capacity and external service constraints.
+Debounce is a leading-edge admission control: if a task was recently started, duplicate submissions within the window are silently dropped. This is useful for deduplicating rapid-fire events like webhooks, where the same event may arrive multiple times in quick succession.
 
-3. **Use descriptive scopes**: When you have multiple unrelated concurrency controls, use different scopes to avoid conflicts.
+### Per-Task Debounce
 
-4. **Monitor blocked tasks**: Tasks that can't start due to concurrency limits are automatically rescheduled with small delays.
+Apply debounce to the whole task so only one execution can start within the window:
 
-5. **Consider cascading effects**: Concurrency limits can create queuing effects - monitor your system to ensure tasks don't back up excessively.
+```python
+from datetime import timedelta
+from docket import Debounce
+
+async def process_webhooks(
+    debounce: Debounce = Debounce(timedelta(seconds=30)),
+) -> None:
+    events = await fetch_pending_webhook_events()
+    await process_events(events)
+
+# First call starts immediately and sets a 30-second window
+await docket.add(process_webhooks)()
+
+# This one arrives 5 seconds later — silently dropped
+await docket.add(process_webhooks)()
+```
+
+### Per-Parameter Debounce
+
+Use `Annotated` to debounce based on a specific argument value. Different values get independent windows:
+
+```python
+from typing import Annotated
+
+async def sync_customer(
+    customer_id: Annotated[int, Debounce(timedelta(seconds=30))],
+) -> None:
+    await refresh_customer_data(customer_id)
+
+# First sync for customer 1001 starts immediately
+await docket.add(sync_customer)(customer_id=1001)
+
+# Duplicate for 1001 within 30s — dropped
+await docket.add(sync_customer)(customer_id=1001)
+
+# Different customer — runs immediately
+await docket.add(sync_customer)(customer_id=2002)
+```
+
+### How It Works
+
+On entry, debounce atomically sets a Redis key with a TTL equal to the window (`SET key 1 NX PX window_ms`). If the key already exists, the task is dropped without rescheduling. The key expires naturally after the window, so no cleanup is needed.
+
+## Cooldown
+
+Cooldown is a trailing-edge admission control: if a task recently _succeeded_, new submissions are dropped. Unlike debounce, the cooldown window only starts after a successful execution — failed tasks don't trigger it, so they can be retried immediately.
+
+### Per-Task Cooldown
+
+```python
+from datetime import timedelta
+from docket import Cooldown
+
+async def send_daily_digest(
+    cooldown: Cooldown = Cooldown(timedelta(minutes=30)),
+) -> None:
+    digest = await build_digest()
+    await send_email(digest)
+
+# Runs and succeeds — starts a 30-minute cooldown
+await docket.add(send_daily_digest)()
+
+# Within the cooldown window — silently dropped
+await docket.add(send_daily_digest)()
+```
+
+If `send_daily_digest` raises an exception, no cooldown key is set and the task can be submitted again immediately.
+
+### Per-Parameter Cooldown
+
+```python
+from typing import Annotated
+
+async def send_notification(
+    customer_id: Annotated[int, Cooldown(timedelta(minutes=5))],
+) -> None:
+    await deliver_notification(customer_id)
+
+# Notification for customer 1001 — sends and starts cooldown
+await docket.add(send_notification)(customer_id=1001)
+
+# Another for 1001 within 5 minutes — dropped
+await docket.add(send_notification)(customer_id=1001)
+
+# Different customer — sends immediately
+await docket.add(send_notification)(customer_id=2002)
+```
+
+### Debounce vs. Cooldown
+
+| | Debounce | Cooldown |
+|---|---|---|
+| **When does the window start?** | When the task _starts_ | When the task _succeeds_ |
+| **Failed tasks** | Still block the window | Don't trigger cooldown |
+| **Good for** | Deduplicating incoming events | Rate-limiting outgoing side effects |
+
+### Combining with Other Controls
+
+Debounce, cooldown, and concurrency limits can all coexist on the same task:
+
+```python
+from typing import Annotated
+
+async def process_order(
+    order_id: Annotated[int, ConcurrencyLimit(1)],
+    cooldown: Cooldown = Cooldown(timedelta(seconds=60)),
+) -> None:
+    await finalize_order(order_id)
+```
+
+Each admission control is checked independently. A task must satisfy all of them to start.
