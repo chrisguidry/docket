@@ -423,7 +423,7 @@ async def monitor_concurrency_usage() -> None:
 
 ## Cooldown
 
-Cooldown executes the first submission immediately, then drops duplicates within a window. If another submission arrives before the window expires, it's silently dropped.
+Cooldown executes the first submission immediately, then drops duplicates within a window. If another submission arrives before the window expires, it's quietly dropped with an INFO-level log.
 
 ### Per-Task Cooldown
 
@@ -440,7 +440,7 @@ async def process_webhooks(
 # First call starts immediately and sets a 30-second window
 await docket.add(process_webhooks)()
 
-# This one arrives 5 seconds later — silently dropped
+# This one arrives 5 seconds later — quietly dropped
 await docket.add(process_webhooks)()
 ```
 

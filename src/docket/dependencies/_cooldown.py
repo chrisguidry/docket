@@ -17,7 +17,7 @@ class Cooldown(Dependency["Cooldown"]):
     """Execute first, drop duplicates within window.
 
     Sets a Redis key on entry with a TTL equal to the window. If the key
-    already exists, the task is blocked and silently dropped.
+    already exists, the task is blocked and quietly dropped.
 
     Works both as a default parameter and as ``Annotated`` metadata::
 

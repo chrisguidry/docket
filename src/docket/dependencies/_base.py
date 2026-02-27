@@ -57,9 +57,9 @@ class AdmissionBlocked(Exception):
     concurrency limits, rate limits, or health gates.
 
     When ``reschedule`` is True (default), the worker re-queues the task
-    with a short delay.  When False, the task is silently acknowledged
-    and dropped (appropriate for debounce/cooldown where re-trying would
-    just hit the same window).
+    with a short delay.  When False, the task is quietly acknowledged
+    and dropped with an INFO-level log (appropriate for debounce/cooldown
+    where re-trying would just hit the same window).
 
     ``retry_delay`` overrides the default reschedule delay when set.
     """
