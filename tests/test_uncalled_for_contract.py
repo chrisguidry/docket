@@ -201,3 +201,24 @@ def test_failed_dependency_captures_parameter_and_error():
 
     assert failed.parameter == "my_param"
     assert failed.error is error
+
+
+# --- Cache identity ---
+# Docket re-exports _signature_cache and _parameter_cache from uncalled-for.
+# FastMCP clears these caches after mutating function signatures (e.g.
+# transform_context_annotations), so docket's re-exports MUST be the same
+# dict objects that uncalled-for uses internally.
+
+
+def test_signature_cache_is_shared_with_uncalled_for():
+    from docket.execution import _signature_cache  # pyright: ignore[reportPrivateUsage]
+    from uncalled_for.introspection import _signature_cache as uf_cache  # pyright: ignore[reportPrivateUsage]
+
+    assert _signature_cache is uf_cache
+
+
+def test_parameter_cache_is_shared_with_uncalled_for():
+    from docket.dependencies import _parameter_cache  # pyright: ignore[reportPrivateUsage]
+    from uncalled_for.introspection import _parameter_cache as uf_cache  # pyright: ignore[reportPrivateUsage]
+
+    assert _parameter_cache is uf_cache

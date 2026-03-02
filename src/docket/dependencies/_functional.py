@@ -11,6 +11,11 @@ from uncalled_for import (
     SharedContext as SharedContext,
 )
 from uncalled_for.functional import _Depends as _UncalledForDepends
+
+# Re-export _parameter_cache from uncalled-for so that docket and uncalled-for
+# share one cache dict.  FastMCP clears `docket.dependencies._parameter_cache`
+# after mutating function signatures, so this must be the same object that
+# uncalled-for's get_dependency_parameters uses internally.
 from uncalled_for.introspection import (
     _parameter_cache as _parameter_cache,
     get_dependency_parameters,
