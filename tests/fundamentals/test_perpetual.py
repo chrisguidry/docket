@@ -1,8 +1,11 @@
 """Tests for Perpetual dependency (automatically rescheduling tasks)."""
 
+import logging
 from datetime import datetime, timedelta, timezone
 
-from docket import Docket, ExecutionState, Perpetual, Worker
+import pytest
+
+from docket import Depends, Docket, ExecutionState, Perpetual, Worker
 
 
 async def test_perpetual_tasks(docket: Docket, worker: Worker):
@@ -104,6 +107,52 @@ async def test_perpetual_tasks_perpetuate_even_after_errors(
     await worker.run_at_most({execution.key: 3})
 
     assert calls == 3
+
+
+async def test_perpetual_tasks_log_errors(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """Failing Perpetual tasks log the exception instead of swallowing it."""
+
+    async def perpetual_task(
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=50)),
+    ):
+        raise ValueError("something broke")
+
+    execution = await docket.add(perpetual_task)()
+
+    with caplog.at_level(logging.ERROR):
+        await worker.run_at_most({execution.key: 1})
+
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert any(
+        "something broke" in r.getMessage()
+        or (r.exc_info and "something broke" in str(r.exc_info[1]))
+        for r in error_records
+    )
+
+
+async def test_perpetual_tasks_log_dependency_errors(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """Failing dependencies in Perpetual tasks log the error instead of swallowing it."""
+
+    async def broken_dep() -> str:
+        raise RuntimeError("dependency failed")
+
+    async def perpetual_task(
+        value: str = Depends(broken_dep),
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=50)),
+    ):
+        pass
+
+    execution = await docket.add(perpetual_task)()
+
+    with caplog.at_level(logging.ERROR):
+        await worker.run_at_most({execution.key: 1})
+
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("dependency failed" in (r.exc_text or "") for r in error_records)
 
 
 async def test_perpetual_tasks_can_be_automatically_scheduled(

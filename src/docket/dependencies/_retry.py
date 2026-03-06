@@ -19,7 +19,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 from ..instrumentation import TASKS_RETRIED
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("docket.dependencies")
 
 
 class ForcedRetry(Exception):
@@ -89,6 +89,15 @@ class Retry(FailureHandler["Retry"]):
 
         worker = current_worker.get()
         TASKS_RETRIED.add(1, {**worker.labels(), **execution.general_labels()})
+
+        if outcome.exception:
+            logger.error(
+                "↩ [%s] %s",
+                format_duration(outcome.duration.total_seconds()),
+                execution.call_repr(),
+                exc_info=outcome.exception,
+            )
+
         logger.info(
             "↫ [%s] %s",
             format_duration(outcome.duration.total_seconds()),
