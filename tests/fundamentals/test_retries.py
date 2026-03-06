@@ -1,5 +1,6 @@
 """Tests for error handling and retry strategies."""
 
+import logging
 from datetime import datetime, timedelta
 from typing import Callable
 from unittest.mock import AsyncMock
@@ -26,6 +27,31 @@ async def test_errors_are_logged(
     the_task.assert_awaited_once_with("a", "b", c="c")
 
     assert "Faily McFailerson" in caplog.text
+
+
+async def test_retry_errors_are_logged(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """Each retry attempt logs the exception at ERROR level."""
+    calls = 0
+
+    async def the_task(retry: Retry = Retry(attempts=3)):
+        nonlocal calls
+        calls += 1
+        raise ValueError("attempt failed")
+
+    await docket.add(the_task)()
+
+    with caplog.at_level(logging.ERROR):
+        await worker.run_until_finished()
+
+    assert calls == 3
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert any(
+        "attempt failed" in r.getMessage()
+        or (r.exc_info and "attempt failed" in str(r.exc_info[1]))
+        for r in error_records
+    )
 
 
 async def test_supports_simple_linear_retries(
