@@ -20,7 +20,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 from ..instrumentation import TASKS_PERPETUATED, TASKS_SUPERSEDED
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("docket.dependencies")
 
 
 class Perpetual(CompletionHandler["Perpetual"]):
@@ -131,6 +131,15 @@ class Perpetual(CompletionHandler["Perpetual"]):
         )
 
         TASKS_PERPETUATED.add(1, {**worker.labels(), **execution.general_labels()})
+
+        if outcome.exception:
+            logger.error(
+                "↩ [%s] %s",
+                format_duration(outcome.duration.total_seconds()),
+                execution.call_repr(),
+                exc_info=outcome.exception,
+            )
+
         logger.info(
             "↫ [%s] %s",
             format_duration(outcome.duration.total_seconds()),

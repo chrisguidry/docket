@@ -16,7 +16,7 @@ from ._base import (
     current_worker,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("docket.dependencies")
 
 if TYPE_CHECKING:  # pragma: no cover
     from redis.asyncio import Redis

@@ -19,7 +19,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 from ..instrumentation import TASKS_RETRIED
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("docket.dependencies")
 
 
 class ForcedRetry(Exception):
