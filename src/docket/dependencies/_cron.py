@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, tzinfo
 from typing import TYPE_CHECKING
 
-from croniter import croniter
+from cronsim import CronSim
 
 from ._base import current_execution
 from ._perpetual import Perpetual
@@ -13,6 +13,16 @@ from ._perpetual import Perpetual
 if TYPE_CHECKING:  # pragma: no cover
     from ._base import TaskOutcome
     from ..execution import Execution
+
+VIXIE_KEYWORDS: dict[str, str] = {
+    "@yearly": "0 0 1 1 *",
+    "@annually": "0 0 1 1 *",
+    "@monthly": "0 0 1 * *",
+    "@weekly": "0 0 * * 0",
+    "@daily": "0 0 * * *",
+    "@midnight": "0 0 * * *",
+    "@hourly": "0 * * * *",
+}
 
 
 class Cron(Perpetual):
@@ -24,8 +34,7 @@ class Cron(Perpetual):
     schedules based on wall-clock time, ensuring tasks run at consistent times regardless
     of execution duration or delays.
 
-    Supports standard cron expressions and Vixie cron-style keywords (@daily, @hourly, etc.)
-    via the croniter library.
+    Supports standard cron expressions and Vixie cron-style keywords (@daily, @hourly, etc.).
 
     Example:
 
@@ -54,7 +63,7 @@ class Cron(Perpetual):
     expression: str
     tz: tzinfo
 
-    _croniter: croniter[datetime]
+    _iterator: CronSim
 
     def __init__(
         self,
@@ -78,9 +87,9 @@ class Cron(Perpetual):
                 This correctly handles daylight saving time transitions.
         """
         super().__init__(automatic=automatic)
-        self.expression = expression
+        self.expression = VIXIE_KEYWORDS.get(expression, expression)
         self.tz = tz
-        self._croniter = croniter(self.expression, datetime.now(self.tz), datetime)
+        self._iterator = CronSim(self.expression, datetime.now(self.tz))
 
     async def __aenter__(self) -> Cron:
         execution = current_execution.get()
@@ -89,10 +98,14 @@ class Cron(Perpetual):
         cron.kwargs = execution.kwargs
         return cron
 
+    def next_time(self) -> datetime:
+        """Return the next matching cron time from the underlying iterator."""
+        return next(self._iterator)
+
     @property
     def initial_when(self) -> datetime:
         """Return the next cron time for initial scheduling."""
-        return self._croniter.get_next()
+        return self.next_time()
 
     async def on_complete(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle completion by scheduling the next execution at the exact cron time.
@@ -100,5 +113,5 @@ class Cron(Perpetual):
         This overrides Perpetual's on_complete to ensure we hit the exact wall-clock
         time rather than adjusting for task duration.
         """
-        self.at(self._croniter.get_next())
+        self.at(self.next_time())
         return await super().on_complete(execution, outcome)
