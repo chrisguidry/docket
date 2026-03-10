@@ -7,10 +7,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from croniter import croniter
-
 from docket import Docket, Worker
 from docket.dependencies import Cron
+from docket.dependencies._cron import VIXIE_KEYWORDS
+
+
+def _soon() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(milliseconds=10)
 
 
 async def test_cron_task_reschedules_itself(docket: Docket, worker: Worker):
@@ -21,12 +24,7 @@ async def test_cron_task_reschedules_itself(docket: Docket, worker: Worker):
         nonlocal runs
         runs += 1
 
-    # Patch croniter.get_next to return a time 10ms in the future
-    with patch.object(
-        croniter,
-        "get_next",
-        return_value=datetime.now(timezone.utc) + timedelta(milliseconds=10),
-    ):
+    with patch.object(Cron, "next_time", side_effect=_soon):
         execution = await docket.add(my_cron_task)()
         await worker.run_at_most({execution.key: 3})
 
@@ -45,11 +43,7 @@ async def test_cron_tasks_are_automatically_scheduled(docket: Docket, worker: Wo
 
     docket.register(my_automatic_cron)
 
-    with patch.object(
-        croniter,
-        "get_next",
-        return_value=datetime.now(timezone.utc) + timedelta(milliseconds=10),
-    ):
+    with patch.object(Cron, "next_time", side_effect=_soon):
         await worker.run_at_most({"my_automatic_cron": 2})
 
     assert calls == 2
@@ -64,11 +58,7 @@ async def test_cron_tasks_continue_after_errors(docket: Docket, worker: Worker):
         calls += 1
         raise ValueError("Task failed!")
 
-    with patch.object(
-        croniter,
-        "get_next",
-        return_value=datetime.now(timezone.utc) + timedelta(milliseconds=10),
-    ):
+    with patch.object(Cron, "next_time", side_effect=_soon):
         execution = await docket.add(flaky_cron_task)()
         await worker.run_at_most({execution.key: 3})
 
@@ -85,31 +75,31 @@ async def test_cron_tasks_can_cancel_themselves(docket: Docket, worker: Worker):
         if calls >= 3:
             cron.cancel()
 
-    with patch.object(
-        croniter,
-        "get_next",
-        return_value=datetime.now(timezone.utc) + timedelta(milliseconds=10),
-    ):
+    with patch.object(Cron, "next_time", side_effect=_soon):
         await docket.add(limited_cron_task)()
         await worker.run_until_finished()
 
     assert calls == 3
 
 
+@pytest.mark.parametrize("keyword,expected", list(VIXIE_KEYWORDS.items()))
+def test_vixie_keywords_expand_to_valid_expressions(keyword: str, expected: str):
+    """Vixie cron keywords are expanded and produce valid next times via cronsim."""
+    now = datetime.now(timezone.utc)
+    cron = Cron(keyword, automatic=False)
+    assert cron.expression == expected
+    assert cron.next_time() > now
+
+
 async def test_cron_supports_vixie_keywords(docket: Docket, worker: Worker):
     """Cron supports Vixie cron keywords like @daily, @weekly, @hourly."""
     runs = 0
 
-    # @daily is equivalent to "0 0 * * *" (midnight every day)
     async def daily_task(cron: Cron = Cron("@daily", automatic=False)):
         nonlocal runs
         runs += 1
 
-    with patch.object(
-        croniter,
-        "get_next",
-        return_value=datetime.now(timezone.utc) + timedelta(milliseconds=10),
-    ):
+    with patch.object(Cron, "next_time", side_effect=_soon):
         execution = await docket.add(daily_task)()
         await worker.run_at_most({execution.key: 1})
 
@@ -130,13 +120,11 @@ async def test_automatic_cron_waits_for_scheduled_time(docket: Docket, worker: W
 
     docket.register(scheduled_task)
 
-    # Schedule for 100ms in the future (simulating next Monday 9 AM)
     future_time = datetime.now(timezone.utc) + timedelta(milliseconds=100)
-    with patch.object(croniter, "get_next", return_value=future_time):
+    with patch.object(Cron, "next_time", return_value=future_time):
         await worker.run_at_most({"scheduled_task": 1})
 
     assert len(calls) == 1
-    # The task ran at or after the scheduled time, not immediately
     assert calls[0] >= future_time - timedelta(milliseconds=50)
 
 
@@ -153,12 +141,33 @@ async def test_cron_with_timezone(docket: Docket, worker: Worker):
         nonlocal runs
         runs += 1
 
-    with patch.object(
-        croniter,
-        "get_next",
-        return_value=datetime.now(pacific) + timedelta(milliseconds=10),
-    ):
+    with patch.object(Cron, "next_time", side_effect=_soon):
         execution = await docket.add(pacific_task)()
         await worker.run_at_most({execution.key: 2})
 
     assert runs == 2
+
+
+def test_cron_next_time_returns_sequential_future_datetimes():
+    """next_time produces ascending aware datetimes via the real cronsim iterator."""
+    now = datetime.now(timezone.utc)
+    cron = Cron("0 9 * * *", automatic=False)
+    first = cron.next_time()
+    second = cron.next_time()
+    assert first > now
+    assert second > first
+    assert first.tzinfo is not None
+
+
+def test_cron_next_time_respects_timezone():
+    """next_time produces times matching the configured timezone."""
+    tokyo = ZoneInfo("Asia/Tokyo")
+    cron = Cron("0 9 * * *", automatic=False, tz=tokyo)
+    next_time = cron.next_time()
+    assert next_time.astimezone(tokyo).hour == 9
+
+
+def test_standard_expression_not_modified():
+    """Standard 5-field expressions pass through without modification."""
+    cron = Cron("30 2 15 * *", automatic=False)
+    assert cron.expression == "30 2 15 * *"
