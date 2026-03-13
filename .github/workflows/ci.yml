@@ -128,13 +128,21 @@ jobs:
       - name: Run tests
         env:
           REDIS_VERSION: ${{ matrix.backend.redis-version }}
-        run: uv run pytest --ignore=tests/cli --cov-branch --cov-config=.coveragerc-core --cov-fail-under=${{ matrix.cov-threshold }} --cov-report=xml --cov-report=term-missing:skip-covered ${{ matrix.pytest-args }}
+        run: uv run pytest --ignore=tests/cli --cov-branch --cov-config=.coveragerc-core --cov-fail-under=${{ matrix.cov-threshold }} --cov-report=xml --cov-report=term-missing:skip-covered --junitxml=junit.xml -o junit_family=legacy ${{ matrix.pytest-args }}
 
-      - name: Upload coverage reports to Codecov
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: python-${{ matrix.python-version }}
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
 
   test-cli:
     name: CLI, Python ${{ matrix.python-version }}
@@ -168,13 +176,22 @@ jobs:
           --cov-config=.coveragerc-cli
           --cov-branch --cov-fail-under=100
           --cov-report=xml --cov-report=term-missing:skip-covered
+          --junitxml=junit.xml -o junit_family=legacy
           --timeout=30
 
-      - name: Upload coverage reports to Codecov
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: cli-python-${{ matrix.python-version }}
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
 
   test-windows:
     name: Windows, Python ${{ matrix.python-version }}
@@ -217,12 +234,21 @@ jobs:
           --cov-branch --cov-config=.coveragerc-core
           --cov-fail-under=${{ matrix.cov-threshold }}
           --cov-report=xml --cov-report=term-missing:skip-covered
+          --junitxml=junit.xml -o junit_family=legacy
 
-      - name: Upload coverage reports to Codecov
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: windows-python-${{ matrix.python-version }}
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
 
   prek:
     name: Prek checks
