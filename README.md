@@ -129,4 +129,4 @@ uv run zensical serve
 ```
 
 This will start a local preview server. The docs are built with
-[Zensical](https://zensical.dev/) and configured in `mkdocs.yml`.
+[Zensical](https://zensical.org/) and configured in `mkdocs.yml`.
