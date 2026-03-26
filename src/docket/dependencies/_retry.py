@@ -30,11 +30,15 @@ class Retry(FailureHandler["Retry"]):
     """Configures linear retries for a task.  You can specify the total number of
     attempts (or `None` to retry indefinitely), and the delay between attempts.
 
-    Example:
+    Examples:
 
     ```python
     @task
     async def my_task(retry: Retry = Retry(attempts=3)) -> None:
+        ...
+
+    @task
+    async def critical_task(retry: Retry = Retry.forever(delay=timedelta(minutes=5))) -> None:
         ...
     ```
     """
@@ -55,6 +59,20 @@ class Retry(FailureHandler["Retry"]):
         self.attempts = attempts
         self.delay = delay
         self.attempt = 1
+
+    @classmethod
+    def forever(cls, delay: timedelta = timedelta(0)) -> Retry:
+        """Create a retry that retries indefinitely until the task succeeds.
+
+        Example:
+
+        ```python
+        @task
+        async def my_task(retry: Retry = Retry.forever(delay=timedelta(minutes=5))) -> None:
+            ...
+        ```
+        """
+        return cls(attempts=None, delay=delay)
 
     async def __aenter__(self) -> Retry:
         execution = current_execution.get()
@@ -80,6 +98,8 @@ class Retry(FailureHandler["Retry"]):
 
     async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle failure by scheduling a retry if attempts remain."""
+        assert outcome.exception
+
         if self.attempts is not None and execution.attempt >= self.attempts:
             return False
 
@@ -90,13 +110,12 @@ class Retry(FailureHandler["Retry"]):
         worker = current_worker.get()
         TASKS_RETRIED.add(1, {**worker.labels(), **execution.general_labels()})
 
-        if outcome.exception:
-            logger.error(
-                "↩ [%s] %s",
-                format_duration(outcome.duration.total_seconds()),
-                execution.call_repr(),
-                exc_info=outcome.exception,
-            )
+        logger.error(
+            "↩ [%s] %s",
+            format_duration(outcome.duration.total_seconds()),
+            execution.call_repr(),
+            exc_info=outcome.exception,
+        )
 
         logger.info(
             "↫ [%s] %s",
@@ -112,11 +131,17 @@ class ExponentialRetry(Retry):
     of attempts (or `None` to retry indefinitely), and the minimum and maximum delays
     between attempts.
 
-    Example:
+    Examples:
 
     ```python
     @task
     async def my_task(retry: ExponentialRetry = ExponentialRetry(attempts=3)) -> None:
+        ...
+
+    @task
+    async def critical_task(
+        retry: Retry = ExponentialRetry.forever(delay=timedelta(seconds=1))
+    ) -> None:
         ...
     ```
     """
@@ -136,6 +161,33 @@ class ExponentialRetry(Retry):
         """
         super().__init__(attempts=attempts, delay=minimum_delay)
         self.maximum_delay = maximum_delay
+
+    @classmethod
+    def forever(
+        cls,
+        delay: timedelta = timedelta(seconds=1),
+        maximum_delay: timedelta = timedelta(seconds=64),
+    ) -> ExponentialRetry:
+        """Create an exponential retry that retries indefinitely.
+
+        Args:
+            delay: The minimum delay between attempts (doubles each time).
+            maximum_delay: The maximum delay between attempts.
+
+        Example:
+
+        ```python
+        @task
+        async def my_task(
+            retry: Retry = ExponentialRetry.forever(
+                delay=timedelta(seconds=1),
+                maximum_delay=timedelta(minutes=10),
+            )
+        ) -> None:
+            ...
+        ```
+        """
+        return cls(attempts=None, minimum_delay=delay, maximum_delay=maximum_delay)
 
     async def __aenter__(self) -> ExponentialRetry:
         execution = current_execution.get()
