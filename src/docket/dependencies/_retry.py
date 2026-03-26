@@ -98,6 +98,8 @@ class Retry(FailureHandler["Retry"]):
 
     async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle failure by scheduling a retry if attempts remain."""
+        assert outcome.exception
+
         if self.attempts is not None and execution.attempt >= self.attempts:
             return False
 
