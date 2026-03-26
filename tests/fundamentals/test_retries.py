@@ -156,6 +156,106 @@ async def test_supports_infinite_retries(
     assert calls == 3
 
 
+async def test_supports_retry_forever(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """Retry.forever() creates a retry that keeps trying until the task succeeds."""
+
+    calls = 0
+
+    async def the_task(
+        retry: Retry = Retry.forever(),
+    ) -> None:
+        nonlocal calls
+        calls += 1
+
+        assert retry.attempts is None
+        assert retry.attempt == calls
+
+        if calls < 3:
+            raise Exception("Failed")
+
+    await docket.add(the_task)()
+
+    await worker.run_until_finished()
+
+    assert calls == 3
+
+
+async def test_supports_retry_forever_with_delay(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """Retry.forever() accepts a delay between attempts."""
+
+    calls = 0
+
+    async def the_task(
+        retry: Retry = Retry.forever(delay=timedelta(milliseconds=50)),
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise Exception("Failed")
+
+    await docket.add(the_task)()
+
+    start = now()
+
+    await worker.run_until_finished()
+
+    total_delay = now() - start
+    assert total_delay >= timedelta(milliseconds=100)
+
+    assert calls == 3
+
+
+async def test_supports_exponential_retry_forever(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """ExponentialRetry.forever() retries indefinitely with exponential backoff."""
+
+    calls = 0
+
+    async def the_task(
+        retry: Retry = ExponentialRetry.forever(
+            delay=timedelta(milliseconds=10),
+            maximum_delay=timedelta(milliseconds=100),
+        ),
+    ) -> None:
+        nonlocal calls
+        calls += 1
+
+        assert isinstance(retry, ExponentialRetry)
+        assert retry.attempts is None
+
+        if calls < 3:
+            raise Exception("Failed")
+
+    await docket.add(the_task)()
+
+    await worker.run_until_finished()
+
+    assert calls == 3
+
+
+def test_retry_forever_sets_attempts_to_none():
+    """Retry.forever() is equivalent to Retry(attempts=None)."""
+    retry = Retry.forever(delay=timedelta(seconds=5))
+    assert retry.attempts is None
+    assert retry.delay == timedelta(seconds=5)
+
+
+def test_exponential_retry_forever_sets_attempts_to_none():
+    """ExponentialRetry.forever() is equivalent to ExponentialRetry(attempts=None)."""
+    retry = ExponentialRetry.forever(
+        delay=timedelta(seconds=2),
+        maximum_delay=timedelta(minutes=10),
+    )
+    assert retry.attempts is None
+    assert retry.delay == timedelta(seconds=2)
+    assert retry.maximum_delay == timedelta(minutes=10)
+
+
 async def test_supports_exponential_backoff_retries(
     docket: Docket, worker: Worker, now: Callable[[], datetime]
 ):

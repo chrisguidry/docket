@@ -1,9 +1,62 @@
 """Tests for FailureHandler and CompletionHandler behavior."""
 
+import logging
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from docket import Docket, ExecutionState, Worker
 from docket.dependencies import Perpetual, Retry
+
+
+async def test_retry_without_exception_skips_error_log(
+    docket: Docket,
+    worker: Worker,
+    caplog: pytest.LogCaptureFixture,
+):
+    """handle_failure skips the ERROR log when there is no exception on the outcome."""
+
+    async def the_task(retry: Retry = Retry(attempts=3)):
+        nonlocal call_count
+        call_count += 1
+        raise ValueError("fail")
+
+    call_count = 0
+    execution = await docket.add(the_task)()
+
+    with caplog.at_level(logging.DEBUG):
+        await worker.run_at_most({execution.key: 1})
+
+    assert call_count == 1
+    # The normal path always has an exception, so the error log IS emitted
+    error_records = [r for r in caplog.records if "↩" in r.getMessage()]
+    assert len(error_records) == 1
+
+    # Now test the no-exception path directly
+    from docket.dependencies._base import TaskOutcome, current_execution, current_worker
+
+    caplog.clear()
+    retry = Retry(attempts=None)
+    await execution.sync()
+    current_execution.set(execution)
+    current_worker.set(worker)
+    retry_instance = await retry.__aenter__()
+
+    outcome = TaskOutcome(duration=timedelta(seconds=0.1))
+    with caplog.at_level(logging.DEBUG):
+        handled = await retry_instance.handle_failure(execution, outcome)
+
+    assert handled is True
+    # No ERROR-level "↩" record when exception is absent
+    error_records = [
+        r
+        for r in caplog.records
+        if "↩" in r.getMessage() and r.levelno >= logging.ERROR
+    ]
+    assert error_records == []
+    # But the INFO-level "↫" record is still emitted
+    info_records = [r for r in caplog.records if "↫" in r.getMessage()]
+    assert len(info_records) == 1
 
 
 async def test_retrying_task_is_not_marked_as_failed(docket: Docket, worker: Worker):

@@ -144,7 +144,7 @@ async def test_perpetual_tasks_log_dependency_errors(
         value: str = Depends(broken_dep),
         perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=50)),
     ):
-        pass
+        pass  # pragma: no cover — unreachable; broken_dep always raises
 
     execution = await docket.add(perpetual_task)()
 

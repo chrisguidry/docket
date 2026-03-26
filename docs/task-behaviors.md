@@ -206,21 +206,36 @@ async def call_external_api(
 
 ### Unlimited Retries
 
-For critical tasks that must eventually succeed, use `attempts=None`:
+For critical tasks that must eventually succeed, use `Retry.forever()`:
 
 ```python
 from docket import Retry
 
 async def critical_data_sync(
     source_url: str,
-    retry: Retry = Retry(attempts=None, delay=timedelta(minutes=5))
+    retry: Retry = Retry.forever(delay=timedelta(minutes=5))
 ) -> None:
-    # This will retry forever with 5-minute delays until it succeeds
     await sync_critical_data(source_url)
     print(f"Critical sync completed after {retry.attempt} attempts")
 ```
 
-Both `Retry` and `ExponentialRetry` support unlimited retries this way.
+`ExponentialRetry.forever()` works the same way:
+
+```python
+from docket import ExponentialRetry
+
+async def call_flaky_api(
+    url: str,
+    retry: Retry = ExponentialRetry.forever(
+        delay=timedelta(seconds=1),
+        maximum_delay=timedelta(minutes=10),
+    )
+) -> None:
+    response = await http_client.get(url)
+    response.raise_for_status()
+```
+
+You can also pass `attempts=None` directly, which is equivalent.
 
 ## Task Timeouts
 

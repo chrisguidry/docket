@@ -21,7 +21,7 @@ async def hello(
     greeting: str = Depends(emphatic_greeting),
     key: str = TaskKey(),
     docket: Docket = CurrentDocket(),
-    retry: Retry = Retry(attempts=sys.maxsize),
+    retry: Retry = Retry.forever(),
 ):
     logger.info("Starting task %s", key)
     logger.info("Greeting: %s", greeting)
