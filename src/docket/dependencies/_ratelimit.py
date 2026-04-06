@@ -11,16 +11,9 @@ from __future__ import annotations
 import time
 from datetime import timedelta
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from uncalled_for import Depends
-
-from ._base import AdmissionBlocked, Dependency
-from ._contextual import CurrentDocket, CurrentExecution
-
-if TYPE_CHECKING:  # pragma: no cover
-    from ..docket import Docket
-    from ..execution import Execution
+from ._base import AdmissionBlocked, Dependency, current_docket, current_execution
 
 # Lua script for atomic sliding-window rate limit check.
 #
@@ -93,9 +86,6 @@ class RateLimit(Dependency["RateLimit"]):
         ) -> None: ...
     """
 
-    execution: Execution = Depends(CurrentExecution)
-    docket: Docket = Depends(CurrentDocket)
-
     def __init__(
         self,
         limit: int,
@@ -120,20 +110,23 @@ class RateLimit(Dependency["RateLimit"]):
         return bound
 
     async def __aenter__(self) -> RateLimit:
-        scope = self.scope or self.docket.name
+        execution = current_execution.get()
+        docket = current_docket.get()
+
+        scope = self.scope or docket.name
         if self._argument_name is not None:
             ratelimit_key = (
                 f"{scope}:ratelimit:{self._argument_name}:{self._argument_value}"
             )
         else:
-            ratelimit_key = f"{scope}:ratelimit:{self.execution.function_name}"
+            ratelimit_key = f"{scope}:ratelimit:{execution.function_name}"
 
         window_ms = int(self.per.total_seconds() * 1000)
         now_ms = int(time.time() * 1000)
         ttl_ms = window_ms * 2
-        member = f"{self.execution.key}:{now_ms}"
+        member = f"{execution.key}:{now_ms}"
 
-        async with self.docket.redis() as redis:
+        async with docket.redis() as redis:
             script = redis.register_script(_RATELIMIT_LUA)
             result: list[int] = await script(
                 keys=[ratelimit_key],
@@ -151,10 +144,10 @@ class RateLimit(Dependency["RateLimit"]):
         reason = f"rate limit ({self.limit}/{self.per}) on {ratelimit_key}"
 
         if self.drop:
-            raise AdmissionBlocked(self.execution, reason=reason, reschedule=False)
+            raise AdmissionBlocked(execution, reason=reason, reschedule=False)
 
         raise AdmissionBlocked(
-            self.execution,
+            execution,
             reason=reason,
             retry_delay=timedelta(milliseconds=retry_after_ms),
         )
@@ -168,5 +161,6 @@ class RateLimit(Dependency["RateLimit"]):
         if exc_type is not None and self._member is not None:
             if issubclass(exc_type, AdmissionBlocked):
                 assert self._ratelimit_key is not None
-                async with self.docket.redis() as redis:
+                docket = current_docket.get()
+                async with docket.redis() as redis:
                     await redis.zrem(self._ratelimit_key, self._member)

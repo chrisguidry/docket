@@ -10,16 +10,9 @@ from __future__ import annotations
 import time
 from datetime import timedelta
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from uncalled_for import Depends
-
-from ._base import AdmissionBlocked, Dependency
-from ._contextual import CurrentDocket, CurrentExecution
-
-if TYPE_CHECKING:  # pragma: no cover
-    from ..docket import Docket
-    from ..execution import Execution
+from ._base import AdmissionBlocked, Dependency, current_docket, current_execution
 
 # Lua script for atomic debounce logic.
 #
@@ -102,9 +95,6 @@ class Debounce(Dependency["Debounce"]):
 
     single: bool = True
 
-    execution: Execution = Depends(CurrentExecution)
-    docket: Docket = Depends(CurrentDocket)
-
     def __init__(self, settle: timedelta, *, scope: str | None = None) -> None:
         self.settle = settle
         self.scope = scope
@@ -118,12 +108,15 @@ class Debounce(Dependency["Debounce"]):
         return bound
 
     async def __aenter__(self) -> Debounce:
-        scope = self.scope or self.docket.name
+        execution = current_execution.get()
+        docket = current_docket.get()
+
+        scope = self.scope or docket.name
         if self._argument_name is not None:
             hash_tag = f"{self._argument_name}:{self._argument_value}"
             base_key = f"{scope}:debounce:{hash_tag}"
         else:
-            hash_tag = self.execution.function_name
+            hash_tag = execution.function_name
             base_key = f"{scope}:debounce:{hash_tag}"
 
         # Use a Redis hash tag {…} so both keys land on the same cluster slot
@@ -134,11 +127,11 @@ class Debounce(Dependency["Debounce"]):
         now_ms = int(time.time() * 1000)
         ttl_ms = settle_ms * 10
 
-        async with self.docket.redis() as redis:
+        async with docket.redis() as redis:
             script = redis.register_script(_DEBOUNCE_LUA)
             result: list[int] = await script(
                 keys=[winner_key, seen_key],
-                args=[self.execution.key, settle_ms, now_ms, ttl_ms],
+                args=[execution.key, settle_ms, now_ms, ttl_ms],
             )
 
         action = result[0]
@@ -151,13 +144,13 @@ class Debounce(Dependency["Debounce"]):
 
         if action == _ACTION_RESCHEDULE:
             raise AdmissionBlocked(
-                self.execution,
+                execution,
                 reason=reason,
                 retry_delay=timedelta(milliseconds=remaining_ms),
             )
 
         # DROP
-        raise AdmissionBlocked(self.execution, reason=reason, reschedule=False)
+        raise AdmissionBlocked(execution, reason=reason, reschedule=False)
 
     async def __aexit__(
         self,
