@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
+from uncalled_for import Depends
+
 from ._base import Dependency, current_docket, current_execution, current_worker
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -71,8 +73,10 @@ def CurrentExecution() -> Execution:
 
 
 class _TaskKey(Dependency[str]):
+    execution: Execution = Depends(CurrentExecution)
+
     async def __aenter__(self) -> str:
-        return current_execution.get().key
+        return self.execution.key
 
 
 def TaskKey() -> str:
@@ -90,6 +94,7 @@ def TaskKey() -> str:
 
 
 class _TaskArgument(Dependency[Any]):
+    execution: Execution = Depends(CurrentExecution)
     parameter: str | None
     optional: bool
 
@@ -99,9 +104,8 @@ class _TaskArgument(Dependency[Any]):
 
     async def __aenter__(self) -> Any:
         assert self.parameter is not None
-        execution = current_execution.get()
         try:
-            return execution.get_argument(self.parameter)
+            return self.execution.get_argument(self.parameter)
         except KeyError:
             if self.optional:
                 return None
@@ -129,15 +133,18 @@ def TaskArgument(parameter: str | None = None, optional: bool = False) -> Any:
 
 
 class _TaskLogger(Dependency["logging.LoggerAdapter[logging.Logger]"]):
+    execution: Execution = Depends(CurrentExecution)
+    docket: Docket = Depends(CurrentDocket)
+    worker: Worker = Depends(CurrentWorker)
+
     async def __aenter__(self) -> logging.LoggerAdapter[logging.Logger]:
-        execution = current_execution.get()
-        logger = logging.getLogger(f"docket.task.{execution.function_name}")
+        logger = logging.getLogger(f"docket.task.{self.execution.function_name}")
         return logging.LoggerAdapter(
             logger,
             {
-                **current_docket.get().labels(),
-                **current_worker.get().labels(),
-                **execution.specific_labels(),
+                **self.docket.labels(),
+                **self.worker.labels(),
+                **self.execution.specific_labels(),
             },
         )
 

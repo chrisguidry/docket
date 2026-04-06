@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ._base import Dependency, current_execution
+from uncalled_for import Depends
+
+from ._base import Dependency
+from ._contextual import CurrentExecution
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..execution import ExecutionProgress
+    from ..execution import Execution, ExecutionProgress
 
 
 class Progress(Dependency["Progress"]):
@@ -29,12 +32,13 @@ class Progress(Dependency["Progress"]):
     ```
     """
 
+    execution: Execution = Depends(CurrentExecution)
+
     def __init__(self) -> None:
         self._progress: ExecutionProgress | None = None
 
     async def __aenter__(self) -> Progress:
-        execution = current_execution.get()
-        self._progress = execution.progress
+        self._progress = self.execution.progress
         return self
 
     @property

@@ -392,3 +392,97 @@ async def audited_task(
 ) -> None:
     ...
 ```
+
+### Class-Level Dependencies
+
+!!! info "New in `uncalled-for` 0.3.0"
+
+`Dependency` subclasses can declare their own dependencies as class-level
+attributes. They're resolved automatically before `__aenter__` runs and
+available as instance attributes:
+
+```python
+from docket import CurrentExecution, Depends, Execution
+from docket.dependencies import Dependency
+
+class AuditedClient(Dependency["AuditedClient"]):
+    execution: Execution = Depends(CurrentExecution)
+
+    def __init__(self, service_name: str) -> None:
+        self.service_name = service_name
+
+    async def __aenter__(self) -> AuditedClient:
+        self.client = httpx.AsyncClient(
+            headers={"X-Task-Key": self.execution.key}
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+        await self.client.aclose()
+
+async def call_api(
+    client: AuditedClient = AuditedClient("billing"),
+) -> None:
+    response = await client.client.get("https://api.example.com/charge")
+    ...
+```
+
+This avoids the need to read context variables directly in `__aenter__` — the
+dependency injection framework resolves them for you, just like it does for
+function parameters.
+
+#### Using `Depends()` for type-safe declarations
+
+When a dependency's `__aenter__` returns a different type than the class itself
+(like returning an `Execution` from a `Dependency[Execution]`), wrap it with
+`Depends()` and pass the class to get proper type inference:
+
+```python
+class MyDep(Dependency[str]):
+    execution: Execution = Depends(CurrentExecution)
+    pool: AsyncConnectionPool = Depends(create_db_pool)
+
+    async def __aenter__(self) -> str:
+        # self.execution and self.pool are already resolved
+        ...
+```
+
+When a dependency returns an instance of its own type (e.g.
+`Dependency["Config"]` returning `Config`), a bare instance works without any
+type gymnastics:
+
+```python
+class Config(Dependency["Config"]):
+    async def __aenter__(self) -> Config:
+        return self
+
+class Service(Dependency[str]):
+    config: Config = Config()  # type-safe, no Depends() needed
+
+    async def __aenter__(self) -> str:
+        return f"service at {self.config.url}"
+```
+
+#### Inheritance
+
+Class-level dependencies are inherited. A parent class can declare shared
+dependencies, and concrete children get them resolved automatically:
+
+```python
+class ResourceDependency(Dependency[str]):
+    execution: Execution = Depends(CurrentExecution)
+    docket: Docket = Depends(CurrentDocket)
+
+class ConcurrencyAware(ResourceDependency):
+    async def __aenter__(self) -> str:
+        # self.execution and self.docket are available here
+        key = f"concurrency:{self.execution.key}"
+        ...
+```
+
+#### Caching
+
+Class-level dependencies that use the same factory share cached values within
+a resolution scope, just like function-level `Depends()`. If two dependency
+classes both declare `pool: Pool = Depends(create_pool)`, they get the same
+pool instance.
