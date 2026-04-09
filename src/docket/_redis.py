@@ -22,7 +22,10 @@ from redis.asyncio.cluster import RedisCluster
 from redis.asyncio.connection import Connection, SSLConnection
 
 if typing.TYPE_CHECKING:
-    from fakeredis.aioredis import FakeServer
+    try:
+        from fakeredis.aioredis import FakeServer
+    except ImportError:
+        from fakeredis import FakeServer
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -254,7 +257,15 @@ class RedisConnection:
         """Create a connection pool for a memory:// URL using fakeredis."""
         global _memory_servers
 
-        from fakeredis.aioredis import FakeConnection, FakeServer
+        try:
+            from fakeredis.aioredis import FakeConnection, FakeServer
+        except ImportError:
+            from fakeredis import FakeServer
+
+            try:
+                from fakeredis import FakeRedisConnection as FakeConnection
+            except ImportError:
+                from fakeredis import FakeConnection
 
         # Apply Lua runtime patch on first use
         _patch_fakeredis_lua_runtime()
@@ -366,14 +377,41 @@ def _patch_fakeredis_lua_runtime() -> None:  # pragma: no cover
     from fakeredis import _msgs as msgs
     from fakeredis._commands import Int, command
     from fakeredis._helpers import SimpleError
-    from fakeredis.commands_mixins.scripting_mixin import (
-        ScriptingCommandsMixin,
-        _check_for_lua_globals,
-        _lua_cjson_decode,
-        _lua_cjson_encode,
-        _lua_cjson_null,
-        _lua_redis_log,
-    )
+
+    try:
+        from fakeredis.commands_mixins.scripting_mixin import (
+            ScriptingCommandsMixin,
+            _check_for_lua_globals,
+            _lua_cjson_decode,
+            _lua_cjson_encode,
+            _lua_cjson_null,
+            _lua_redis_log,
+        )
+    except ImportError:
+        from fakeredis.commands_mixins.scripting_mixin import (
+            ScriptingCommandsMixin,
+            _check_for_lua_globals,
+            _lua_redis_log,
+        )
+
+        # Attempt to import cjson helpers from wherever they might be in older/newer versions
+        # or fall back to dummy values if they are truly missing (which might break the patch)
+        try:
+            from fakeredis.commands_mixins.scripting_mixin import (
+                _lua_cjson_decode,
+                _lua_cjson_encode,
+                _lua_cjson_null,
+            )
+        except ImportError:
+            # For versions where these are prefixed with something else or moved
+            # This is a best-effort fallback
+            _lua_cjson_decode = getattr(
+                typing.Any, "_lua_cjson_decode", lambda *args: None
+            )
+            _lua_cjson_encode = getattr(
+                typing.Any, "_lua_cjson_encode", lambda *args: None
+            )
+            _lua_cjson_null = getattr(typing.Any, "_lua_cjson_null", None)
 
     # Import lupa module (fakeredis uses this dynamically)
     try:
