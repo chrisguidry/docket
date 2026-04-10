@@ -263,9 +263,12 @@ class RedisConnection:
             from fakeredis import FakeServer
 
             try:
-                from fakeredis import FakeRedisConnection as FakeConnection
+                from fakeredis import FakeAsyncRedisConnection as FakeConnection
             except ImportError:
-                from fakeredis import FakeConnection
+                try:
+                    from fakeredis import FakeAsyncConnection as FakeConnection
+                except ImportError:
+                    from fakeredis import FakeConnection
 
         # Apply Lua runtime patch on first use
         _patch_fakeredis_lua_runtime()
@@ -395,7 +398,6 @@ def _patch_fakeredis_lua_runtime() -> None:  # pragma: no cover
         )
 
         # Attempt to import cjson helpers from wherever they might be in older/newer versions
-        # or fall back to dummy values if they are truly missing (which might break the patch)
         try:
             from fakeredis.commands_mixins.scripting_mixin import (
                 _lua_cjson_decode,
@@ -403,15 +405,10 @@ def _patch_fakeredis_lua_runtime() -> None:  # pragma: no cover
                 _lua_cjson_null,
             )
         except ImportError:
-            # For versions where these are prefixed with something else or moved
-            # This is a best-effort fallback
-            _lua_cjson_decode = getattr(
-                typing.Any, "_lua_cjson_decode", lambda *args: None
-            )
-            _lua_cjson_encode = getattr(
-                typing.Any, "_lua_cjson_encode", lambda *args: None
-            )
-            _lua_cjson_null = getattr(typing.Any, "_lua_cjson_null", None)
+            # cjson helpers are required for the patch to work correctly.
+            # If we can't import them, skip the patch entirely rather than
+            # silently installing no-op hooks that break Lua scripts.
+            return
 
     # Import lupa module (fakeredis uses this dynamically)
     try:
