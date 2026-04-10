@@ -268,7 +268,10 @@ class RedisConnection:
                 try:
                     from fakeredis import FakeAsyncConnection as FakeConnection
                 except ImportError:
-                    from fakeredis import FakeConnection
+                    raise ImportError(
+                        "fakeredis async connection class not found — "
+                        "need fakeredis>=2.31.0 with `lupa` extra for memory:// backend"
+                    ) from None
 
         # Apply Lua runtime patch on first use
         _patch_fakeredis_lua_runtime()
