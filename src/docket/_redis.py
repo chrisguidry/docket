@@ -254,7 +254,7 @@ class RedisConnection:
         """Create a connection pool for a memory:// URL using fakeredis."""
         global _memory_servers
 
-        from fakeredis.aioredis import FakeConnection, FakeServer
+        from fakeredis.aioredis import FakeAsyncRedisConnection, FakeServer
 
         # Apply Lua runtime patch on first use
         _patch_fakeredis_lua_runtime()
@@ -263,7 +263,7 @@ class RedisConnection:
         server = _memory_servers.get(self.url)
         if server is not None:
             return ConnectionPool(
-                connection_class=FakeConnection,
+                connection_class=FakeAsyncRedisConnection,
                 server=server,
                 decode_responses=decode_responses,
             )
@@ -272,7 +272,7 @@ class RedisConnection:
             server = _memory_servers.get(self.url)
             if server is not None:  # pragma: no cover
                 return ConnectionPool(
-                    connection_class=FakeConnection,
+                    connection_class=FakeAsyncRedisConnection,
                     server=server,
                     decode_responses=decode_responses,
                 )
@@ -280,7 +280,7 @@ class RedisConnection:
             server = FakeServer()
             _memory_servers[self.url] = server
             return ConnectionPool(
-                connection_class=FakeConnection,
+                connection_class=FakeAsyncRedisConnection,
                 server=server,
                 decode_responses=decode_responses,
             )
