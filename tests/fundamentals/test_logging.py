@@ -28,7 +28,7 @@ async def test_tasks_can_opt_into_argument_logging(
     with caplog.at_level(logging.INFO):
         await worker.run_until_finished()
 
-        # Filter to only docket logs (exclude fakeredis DEBUG logs which contain raw pickle data)
+        # Filter to only docket logs (exclude non-docket DEBUG logs which may contain raw data)
         docket_logs = "\n".join(
             r.message for r in caplog.records if r.name.startswith("docket")
         )

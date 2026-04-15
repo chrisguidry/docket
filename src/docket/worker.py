@@ -472,8 +472,8 @@ class Worker:
         async def get_new_deliveries(redis: Redis) -> RedisReadGroupResponse:
             logger.debug("Getting new deliveries", extra=log_context)
             # Use non-blocking read with in-memory backend + manual sleep
-            # This is necessary because fakeredis's async blocking operations don't
-            # properly yield control to the asyncio event loop
+            # This is necessary because the in-memory backend's async blocking
+            # operations don't properly yield control to the asyncio event loop
             is_memory = self.docket.url.startswith("memory://")
             try:
                 with self._maybe_suppress_instrumentation():

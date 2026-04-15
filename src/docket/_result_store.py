@@ -176,9 +176,9 @@ class ClusterKeyValueStore:
 class ResultStorage:
     """Result storage that implements AsyncKeyValue using a RedisConnection.
 
-    This class wraps either a ClusterKeyValueStore (for cluster mode) or a RedisStore
-    (for standalone mode). It creates its own connection pool for standalone mode
-    (with decode_responses=True) using the RedisConnection's URL.
+    This class wraps either a ClusterKeyValueStore (for cluster and memory modes)
+    or a RedisStore (for standalone mode). It creates its own connection pool for
+    standalone mode (with decode_responses=True) using the RedisConnection's URL.
     """
 
     _store: RedisStore | ClusterKeyValueStore
@@ -203,6 +203,13 @@ class ResultStorage:
                 raise ValueError("RedisConnection not connected in cluster mode")
             self._store = ClusterKeyValueStore(
                 client=self._redis.cluster_client,
+                default_collection=self._default_collection,
+            )
+        elif self._redis.is_memory:
+            if self._redis.memory_client is None:
+                raise ValueError("RedisConnection not connected in memory mode")
+            self._store = ClusterKeyValueStore(
+                client=self._redis.memory_client,
                 default_collection=self._default_collection,
             )
         else:

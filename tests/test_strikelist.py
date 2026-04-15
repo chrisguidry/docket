@@ -154,18 +154,17 @@ async def test_local_only_mode(strike_name: str):
     await strikes.__aexit__(None, None, None)
 
 
-async def test_memory_url_without_fakeredis(
+async def test_memory_url_without_burner_redis(
     strike_name: str, monkeypatch: pytest.MonkeyPatch
 ):
-    """Test error when memory:// used without fakeredis."""
+    """Test error when memory:// used without burner-redis."""
     import sys
 
-    # Temporarily make fakeredis unimportable
-    monkeypatch.setitem(sys.modules, "fakeredis", None)
-    monkeypatch.setitem(sys.modules, "fakeredis.aioredis", None)
+    # Temporarily make burner_redis unimportable
+    monkeypatch.setitem(sys.modules, "burner_redis", None)
 
     strikes = StrikeList(url="memory://", name=strike_name)
-    with pytest.raises((ImportError, ModuleNotFoundError), match="fakeredis"):
+    with pytest.raises((ImportError, ModuleNotFoundError), match="burner_redis"):
         await strikes.__aenter__()
 
 

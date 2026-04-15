@@ -22,6 +22,13 @@ from tests._container import (
 )
 from tests._key_leak_checker import KeyCountChecker
 
+# Skip condition for tests that need Redis-specific features unavailable in
+# the in-memory backend (key enumeration via keys/scan_iter, TTL queries, etc.)
+skip_memory = pytest.mark.skipif(
+    BASE_VERSION == "memory",
+    reason="requires real Redis (keys/scan_iter/ttl not available in memory backend)",
+)
+
 if sys.platform != "win32" or TYPE_CHECKING:
     from docker import DockerClient
     from docker.models.containers import Container
@@ -272,6 +279,10 @@ async def key_leak_checker(docket: Docket) -> AsyncGenerator[KeyCountChecker, No
     Tests can add exemptions for specific keys:
     - key_leak_checker.add_exemption(f"{docket.name}:special-key")
     """
+    if BASE_VERSION == "memory":
+        yield KeyCountChecker(docket)
+        return
+
     checker = KeyCountChecker(docket)
 
     # Prime infrastructure with a temporary worker that exits immediately

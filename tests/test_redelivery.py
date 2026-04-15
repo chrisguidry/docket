@@ -20,6 +20,7 @@ from redis.asyncio.cluster import RedisCluster
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Perpetual, Retry, Timeout, Worker
+from tests.conftest import skip_memory
 
 
 @pytest.fixture
@@ -341,6 +342,7 @@ async def test_worker_joining_doesnt_steal_renewed_lease(docket: Docket):
     )
 
 
+@skip_memory  # test monkeypatches Redis methods which can't be patched on BurnerRedis
 async def test_lease_renewal_recovers_from_redis_error(
     docket: Docket, caplog: pytest.LogCaptureFixture
 ):

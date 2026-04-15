@@ -12,8 +12,7 @@ import pytest
 
 if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
-from redis.asyncio import Redis
-from redis.asyncio.cluster import RedisCluster
+from docket._redis import RedisClient
 from redis.exceptions import ConnectionError
 
 from docket import CurrentWorker, Docket, Worker
@@ -87,12 +86,12 @@ async def test_worker_reconnects_when_connection_is_lost(
     original_worker_loop = worker._worker_loop  # type: ignore[protected-access]
     call_count = 0
 
-    async def mock_worker_loop(redis: Redis, forever: bool = False):
+    async def mock_worker_loop(redis: RedisClient, forever: bool = False):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
             raise ConnectionError("Simulated connection error")
-        return await original_worker_loop(redis, forever=forever)
+        return await original_worker_loop(redis, forever=forever)  # type: ignore[arg-type]
 
     worker._worker_loop = mock_worker_loop  # type: ignore[protected-access]
 
@@ -328,7 +327,7 @@ async def test_worker_recovers_from_redis_errors(
     redis_calls = 0
 
     @asynccontextmanager
-    async def mock_redis() -> AsyncGenerator[Redis | RedisCluster, None]:
+    async def mock_redis() -> AsyncGenerator[RedisClient, None]:
         nonlocal redis_calls, error_time
         redis_calls += 1
 

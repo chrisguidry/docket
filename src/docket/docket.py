@@ -22,16 +22,14 @@ from typing import (
 import redis.exceptions
 from key_value.aio.protocols.key_value import AsyncKeyValue
 from opentelemetry import trace
-from redis.asyncio import Redis
 from redis.asyncio.client import PubSub
-from redis.asyncio.cluster import RedisCluster
 from typing_extensions import Self
 
 from ._docket_snapshot import DocketSnapshot as DocketSnapshot
 from ._docket_snapshot import DocketSnapshotMixin
 from ._docket_snapshot import RunningExecution as RunningExecution
 from ._docket_snapshot import WorkerInfo as WorkerInfo
-from ._redis import RedisConnection
+from ._redis import RedisClient, RedisConnection
 from ._result_store import ResultStorage
 from ._uuid7 import uuid7
 from .execution import (
@@ -217,7 +215,7 @@ class Docket(DocketSnapshotMixin):
             del self._stack
 
     @asynccontextmanager
-    async def redis(self) -> AsyncGenerator[Redis | RedisCluster, None]:
+    async def redis(self) -> AsyncGenerator[RedisClient, None]:
         async with self._redis.client() as r:
             yield r
 
@@ -656,7 +654,7 @@ class Docket(DocketSnapshotMixin):
             if "BUSYGROUP" not in str(e):
                 raise  # pragma: no cover
 
-    async def _cancel(self, redis: Redis | RedisCluster, key: str) -> None:
+    async def _cancel(self, redis: RedisClient, key: str) -> None:
         """Cancel a task atomically.
 
         Handles cancellation regardless of task location:

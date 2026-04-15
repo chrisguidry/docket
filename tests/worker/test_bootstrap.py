@@ -5,6 +5,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+from tests.conftest import skip_memory
+
 import pytest
 
 from docket import CurrentWorker, Docket, Worker
@@ -243,6 +245,7 @@ async def test_worker_handles_nogroup_error_gracefully(
         assert task_executed, "Task should have been executed"
 
 
+@skip_memory  # test monkeypatches Redis methods which can't be patched on BurnerRedis
 async def test_worker_handles_nogroup_in_xreadgroup(
     redis_url: str,
     make_docket_name: Callable[[], str],

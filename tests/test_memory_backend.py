@@ -1,10 +1,9 @@
+# pyright: reportUnknownVariableType=false
+
 import pytest
 
 from docket import Docket, Worker
 from docket._redis import clear_memory_servers, get_memory_server
-
-# Skip all tests in this file if fakeredis is not installed
-pytest.importorskip("fakeredis")
 
 
 @pytest.fixture(autouse=True)
@@ -79,7 +78,7 @@ async def test_multiple_memory_dockets():
 
 
 async def test_memory_backend_reuses_server():
-    """Test that identical memory:// URLs share the same FakeServer instance."""
+    """Test that identical memory:// URLs share the same BurnerRedis instance."""
     result = None
 
     async def shared_task(value: str) -> str:
@@ -107,7 +106,7 @@ async def test_memory_backend_reuses_server():
 
 
 async def test_different_memory_urls_are_isolated():
-    """Test that different memory:// URLs get completely separate FakeServer instances."""
+    """Test that different memory:// URLs get completely separate BurnerRedis instances."""
     result1 = None
     result2 = None
 
@@ -129,7 +128,7 @@ async def test_different_memory_urls_are_isolated():
         # Add task only to server1
         await docket1.add(task_for_server1)("value-for-server1")
 
-        # Verify server2 sees no tasks (they're on different FakeServer instances)
+        # Verify server2 sees no tasks (they're on different BurnerRedis instances)
         snapshot2 = await docket2.snapshot()
         assert snapshot2.total_tasks == 0, "server2 should have no tasks"
 
@@ -144,7 +143,7 @@ async def test_different_memory_urls_are_isolated():
         assert result1 == "value-for-server1"
         assert result2 is None  # task_for_server2 was never called
 
-    # Verify we created two separate FakeServer instances
+    # Verify we created two separate BurnerRedis instances
     server1 = get_memory_server("memory://server1")
     server2 = get_memory_server("memory://server2")
     assert server1 is not None
