@@ -392,3 +392,91 @@ async def audited_task(
 ) -> None:
     ...
 ```
+
+
+## Worker-level dependencies
+
+Sometimes you want a dependency to run around **every** task a worker
+executes — tracing, a database transaction, an audit log, a feature-flag
+context. Instead of repeating the same `Depends(...)` on every task,
+register factories on the worker itself:
+
+```python
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def trace_task(key: str = TaskKey()):
+    with tracer.start_as_current_span(f"task:{key}"):
+        yield
+
+async def get_db_pool() -> Pool:
+    return await create_pool()
+
+async with Worker(
+    docket,
+    dependencies={"trace": trace_task, "db": get_db_pool},
+) as worker:
+    await worker.run_forever()
+```
+
+Each value is a plain dependency factory — the same shape you pass to
+`Depends(...)`. Sync functions, async functions, `@contextmanager`, and
+`@asynccontextmanager` all work. Worker dependencies may declare their
+own parameters (`TaskKey`, `TaskArgument("customer_id")`, `CurrentWorker`,
+nested `Depends(...)`), which resolve recursively — exactly like
+task-level dependencies.
+
+### Lifecycle
+
+Worker dependencies enter **before** each task body runs and exit
+**after** it finishes, in LIFO order. Teardown runs even when the task
+raises or a `Timeout` cancels it.
+
+```
+enter:  trace → db → task body
+exit:   task body → db → trace
+```
+
+### Cache sharing
+
+Worker dependencies share the per-task resolution cache with task-level
+`Depends(...)`. If a worker dependency calls `Depends(get_db_pool)` and a
+task also calls `Depends(get_db_pool)`, both receive the same instance
+for that task — no duplicate setup.
+
+### Failures
+
+If a worker dependency fails during setup, the task fails with an
+`ExceptionGroup` naming the faulty dependency (the name you gave it in
+the dict), and any task-level `Retry` policy applies normally. Raising
+`AdmissionBlocked` from a worker dependency reschedules the task, just
+like task-level admission controls.
+
+Names starting with `__` are reserved for internal use and rejected at
+`Worker` construction.
+
+### Worker-level `single=True` dependencies
+
+Factories that return a `single=True` `Dependency` — `Timeout`, `Retry`,
+`Perpetual`, `ConcurrencyLimit`, `Debounce` — act as **defaults** for every
+task the worker runs:
+
+```python
+async with Worker(
+    docket,
+    dependencies={
+        "timeout": lambda: Timeout(timedelta(seconds=30)),
+        "retry":   lambda: Retry(attempts=3),
+    },
+) as worker:
+    await worker.run_forever()
+```
+
+A task that declares its own `Timeout`/`Retry`/etc. overrides the worker
+default — **but only if the worker doesn't also declare one**. Declaring
+the same `single=True` type in both places is an error: the task fails
+with a `ValueError` naming both sources. There can be only one.
+
+Use factories (not bare instances) — some of these dependencies hold
+per-execution state (e.g. `Retry.attempt`) and need a fresh instance per
+task run.

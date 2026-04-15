@@ -42,13 +42,16 @@ from ._functional import (
 )
 from ._perpetual import Perpetual
 from ._progress import Progress
-from ._resolution import (
+from uncalled_for import (
     FailedDependency,
     get_annotation_dependencies,
+    validate_dependencies,
+)
+
+from ._resolution import (
     get_single_dependency_of_type,
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
-    validate_dependencies,
 )
 from ._retry import ExponentialRetry, ForcedRetry, Retry
 from ._timeout import Timeout

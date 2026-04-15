@@ -2,18 +2,73 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncGenerator, TypeVar
 
 from uncalled_for import (
-    FailedDependency as FailedDependency,
-    get_annotation_dependencies as get_annotation_dependencies,
-    validate_dependencies as validate_dependencies,
+    DependencyFactory,
+    FailedDependency,
+    get_annotation_dependencies,
 )
 
-from ._base import Dependency, current_docket, current_execution, current_worker
+from ._base import (
+    CompletionHandler,
+    Dependency,
+    FailureHandler,
+    Runtime,
+    current_docket,
+    current_execution,
+    current_worker,
+)
+from ._concurrency import ConcurrencyLimit
 from ._contextual import _TaskArgument
+from ._debounce import Debounce
 from ._functional import _Depends, get_dependency_parameters
+
+SINGLE_DEPENDENCY_TYPES: tuple[type[Dependency[Any]], ...] = (
+    Runtime,
+    FailureHandler,
+    CompletionHandler,
+    ConcurrencyLimit,
+    Debounce,
+)
+
+
+def validate_worker_dependencies(
+    dependencies: (
+        Mapping[str, DependencyFactory[Any]] | Sequence[DependencyFactory[Any]] | None
+    ),
+) -> dict[str, DependencyFactory[Any]]:
+    if not dependencies:
+        return {}
+    if isinstance(dependencies, Mapping):
+        items: list[tuple[str | None, DependencyFactory[Any]]] = [
+            (name, factory) for name, factory in dependencies.items()
+        ]
+    else:
+        items = [(None, factory) for factory in dependencies]
+
+    validated: dict[str, DependencyFactory[Any]] = {}
+    for index, (given_name, factory) in enumerate(items):
+        if not callable(factory):
+            label = given_name if given_name is not None else f"index {index}"
+            raise TypeError(
+                f"Worker dependency {label!r} must be a callable factory, "
+                f"got {type(factory).__name__}."
+            )
+        if given_name is None:
+            name = f"__worker_dep_{index}__"
+        else:
+            if given_name.startswith("__"):
+                raise ValueError(
+                    f"Worker dependency name {given_name!r} is reserved; "
+                    "names starting with '__' are not allowed."
+                )
+            name = given_name
+        validated[name] = factory
+    return validated
+
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution, TaskFunction
@@ -46,6 +101,34 @@ def get_single_dependency_of_type(
     return None
 
 
+def detect_single_conflicts(
+    arguments: dict[str, Any],
+    annotations: Mapping[str, Sequence[Dependency[Any]]],
+) -> dict[str, FailedDependency]:
+    conflicts: dict[str, FailedDependency] = {}
+    for single_type in SINGLE_DEPENDENCY_TYPES:
+        matches: list[tuple[str, type[Dependency[Any]]]] = []
+        for key, resolved in arguments.items():
+            if isinstance(resolved, single_type):
+                matches.append((key, type(resolved)))
+        for parameter_name, deps in annotations.items():
+            for dependency in deps:
+                if isinstance(dependency, single_type):
+                    matches.append((parameter_name, type(dependency)))
+        if len(matches) > 1:
+            conflict_key = f"__conflict_{single_type.__name__}__"
+            described = ", ".join(f"{key!r} ({cls.__name__})" for key, cls in matches)
+            conflicts[conflict_key] = FailedDependency(
+                conflict_key,
+                ValueError(
+                    f"Conflicting single=True {single_type.__name__} "
+                    f"dependencies declared in this execution: {described}. "
+                    "Declare it in exactly one place (task or worker)."
+                ),
+            )
+    return conflicts
+
+
 @asynccontextmanager
 async def resolved_dependencies(
     worker: Worker, execution: Execution
@@ -60,6 +143,15 @@ async def resolved_dependencies(
             stack_token = _Depends.stack.set(stack)
             try:
                 arguments: dict[str, Any] = {}
+
+                for name, factory in worker.dependencies.items():
+                    slot = f"__worker_dep__{name}"
+                    try:
+                        arguments[slot] = await stack.enter_async_context(
+                            _Depends(factory)
+                        )
+                    except Exception as error:
+                        arguments[slot] = FailedDependency(name, error)
 
                 parameters = get_dependency_parameters(execution.function)
                 for parameter, dependency in parameters.items():
@@ -88,17 +180,25 @@ async def resolved_dependencies(
 
                 annotations = get_annotation_dependencies(execution.function)
                 for parameter_name, dependencies in annotations.items():
-                    value = execution.kwargs.get(
+                    argument_value = execution.kwargs.get(
                         parameter_name, arguments.get(parameter_name)
                     )
                     for dependency in dependencies:
-                        bound = dependency.bind_to_parameter(parameter_name, value)
+                        bound = dependency.bind_to_parameter(
+                            parameter_name, argument_value
+                        )
                         try:
                             await stack.enter_async_context(bound)
                         except Exception as error:
                             arguments[parameter_name] = FailedDependency(
                                 parameter_name, error
                             )
+
+                arguments.update(
+                    worker.validate_task_dependencies(
+                        execution.function, arguments, annotations
+                    )
+                )
 
                 yield arguments
             finally:

@@ -17,6 +17,7 @@ from typing import (
     Generator,
     Mapping,
     Protocol,
+    Sequence,
     TypeAlias,
     TypedDict,
     cast,
@@ -57,6 +58,12 @@ from .dependencies import (
     get_single_dependency_of_type,
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
+)
+from uncalled_for import DependencyFactory
+
+from .dependencies._resolution import (
+    detect_single_conflicts,
+    validate_worker_dependencies,
 )
 from .docket import (
     Docket,
@@ -156,6 +163,8 @@ class Worker:
     schedule_automatic_tasks: bool
     enable_internal_instrumentation: bool
     fallback_task: TaskFunction
+    dependencies: dict[str, DependencyFactory[Any]]
+    _single_conflicts: dict[TaskFunction, dict[str, FailedDependency]]
 
     def __init__(
         self,
@@ -169,6 +178,11 @@ class Worker:
         schedule_automatic_tasks: bool = True,
         enable_internal_instrumentation: bool = False,
         fallback_task: TaskFunction | None = None,
+        dependencies: (
+            Mapping[str, "DependencyFactory[Any]"]
+            | Sequence["DependencyFactory[Any]"]
+            | None
+        ) = None,
     ) -> None:
         self.docket = docket
         self.name = name or f"{socket.gethostname()}#{os.getpid()}"
@@ -180,6 +194,8 @@ class Worker:
         self.schedule_automatic_tasks = schedule_automatic_tasks
         self.enable_internal_instrumentation = enable_internal_instrumentation
         self.fallback_task = fallback_task or default_fallback_task
+        self.dependencies = validate_worker_dependencies(dependencies)
+        self._single_conflicts = {}
 
     @contextmanager
     def _maybe_suppress_instrumentation(self) -> Generator[None, None, None]:
@@ -253,6 +269,27 @@ class Worker:
             await self._stack.__aexit__(exc_type, exc_value, traceback)
         finally:
             del self._stack
+
+    def validate_task_dependencies(
+        self,
+        function: TaskFunction,
+        arguments: dict[str, Any],
+        annotations: Mapping[str, Sequence[Dependency[Any]]],
+    ) -> dict[str, FailedDependency]:
+        """Detect conflicts between task and worker ``single=True`` dependencies.
+
+        Task-only conflicts are caught at registration by
+        ``validate_dependencies``; only the task-vs-worker cross-check runs
+        here.  Result is stable per ``(worker, function)``, so memoize and
+        reuse on subsequent executions.
+        """
+        if not self.dependencies:
+            return {}
+        conflicts = self._single_conflicts.get(function)
+        if conflicts is None:
+            conflicts = detect_single_conflicts(arguments, annotations)
+            self._single_conflicts[function] = conflicts
+        return conflicts
 
     def labels(self) -> Mapping[str, str]:
         return {
@@ -875,7 +912,10 @@ class Worker:
                         raise ExceptionGroup(
                             (
                                 "Failed to resolve dependencies for parameter(s): "
-                                + ", ".join(dependency_failures.keys())
+                                + ", ".join(
+                                    failure.parameter
+                                    for failure in dependency_failures.values()
+                                )
                             ),
                             [
                                 dependency.error
@@ -883,8 +923,14 @@ class Worker:
                             ],
                         )
 
-                    # Merge resolved dependencies into execution kwargs
-                    final_kwargs = {**execution.kwargs, **dependencies}
+                    # Worker-level deps live in the resolved dict under synthetic
+                    # ``__worker_dep__`` keys and must not be passed to the task body.
+                    task_dependencies = {
+                        k: v
+                        for k, v in dependencies.items()
+                        if not k.startswith("__worker_dep__")
+                    }
+                    final_kwargs = {**execution.kwargs, **task_dependencies}
 
                     # Check for a Runtime dependency (e.g., Timeout) that controls execution
                     runtime = get_single_dependency_of_type(dependencies, Runtime)
