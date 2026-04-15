@@ -430,6 +430,18 @@ cache with the task's own `Depends(...)`, and a failed setup fails the
 task through the same path as any other dependency failure (including
 `Retry` and `AdmissionBlocked`). Names starting with `__` are reserved.
 
+If you don't care about the names (e.g. nothing else needs to reference
+them for diagnostics), pass a list or tuple instead and docket will
+generate internal names for you:
+
+```python
+async with Worker(
+    docket,
+    dependencies=[Depends(trace_task), Depends(get_db_pool)],
+) as worker:
+    ...
+```
+
 ### `single=True` dependencies
 
 `Timeout`, `Retry`, `Perpetual`, `ConcurrencyLimit`, and `Debounce` are
