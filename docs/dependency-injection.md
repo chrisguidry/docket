@@ -415,8 +415,9 @@ async def get_db_pool() -> Pool:
 async with Worker(
     docket,
     dependencies={
-        "trace": Depends(trace_task),
-        "db":    Depends(get_db_pool),
+        "trace":   Depends(trace_task),
+        "db":      Depends(get_db_pool),
+        "timeout": Timeout(timedelta(seconds=30)),
     },
 ) as worker:
     await worker.run_forever()
@@ -431,26 +432,9 @@ task through the same path as any other dependency failure (including
 
 ### `single=True` dependencies
 
-`single=True` dependencies — `Timeout`, `Retry`, `Perpetual`,
-`ConcurrencyLimit`, `Debounce` — act as **defaults** for every task the
-worker runs. Pass bare instances directly:
-
-```python
-async with Worker(
-    docket,
-    dependencies={
-        "timeout": Timeout(timedelta(seconds=30)),
-        "retry":   Retry(attempts=3),
-    },
-) as worker:
-    await worker.run_forever()
-```
-
-Bare instances are safe to reuse across tasks: stateful ones like `Retry`
-and `Perpetual` construct a fresh internal instance on each execution,
-so a single `Retry(attempts=3)` at worker construction gives every task
-its own attempt counter.
-
-Declaring the same `single=True` type in both task and worker is an
-error: the task fails with a `ValueError` naming both sources. There can
-be only one.
+`Timeout`, `Retry`, `Perpetual`, `ConcurrencyLimit`, and `Debounce` are
+`single=True`: a task may have at most one of each in scope. That rule
+applies across task- and worker-level declarations together, so
+declaring (for example) a `Timeout` on both the task and the worker
+fails the task with a `ValueError` naming both sources. Declare each
+one in exactly one place.
