@@ -422,44 +422,14 @@ async with Worker(
     await worker.run_forever()
 ```
 
-Each value is a `Dependency` instance: wrap factories with `Depends(...)`
-(sync functions, async functions, `@contextmanager`, `@asynccontextmanager`
-all work there), or pass a built-in dependency like `Retry(attempts=3)`
-directly. Worker dependencies may declare their own parameters
-(`TaskKey`, `TaskArgument("customer_id")`, `CurrentWorker`, nested
-`Depends(...)`), which resolve recursively — exactly like task-level
-dependencies.
+Worker dependencies behave like task-level `Depends(...)` — they can
+declare their own parameters (`TaskKey`, `TaskArgument("customer_id")`,
+`CurrentWorker`, nested `Depends(...)`), share the per-task resolution
+cache with the task's own `Depends(...)`, and a failed setup fails the
+task through the same path as any other dependency failure (including
+`Retry` and `AdmissionBlocked`). Names starting with `__` are reserved.
 
-### Lifecycle
-
-Worker dependencies enter **before** each task body runs and exit
-**after** it finishes, in LIFO order. Teardown runs even when the task
-raises or a `Timeout` cancels it.
-
-```
-enter:  trace → db → task body
-exit:   task body → db → trace
-```
-
-### Cache sharing
-
-Worker dependencies share the per-task resolution cache with task-level
-`Depends(...)`. If a worker dependency calls `Depends(get_db_pool)` and a
-task also calls `Depends(get_db_pool)`, both receive the same instance
-for that task — no duplicate setup.
-
-### Failures
-
-If a worker dependency fails during setup, the task fails with an
-`ExceptionGroup` naming the faulty dependency (the name you gave it in
-the dict), and any task-level `Retry` policy applies normally. Raising
-`AdmissionBlocked` from a worker dependency reschedules the task, just
-like task-level admission controls.
-
-Names starting with `__` are reserved for internal use and rejected at
-`Worker` construction.
-
-### Worker-level `single=True` dependencies
+### `single=True` dependencies
 
 `single=True` dependencies — `Timeout`, `Retry`, `Perpetual`,
 `ConcurrencyLimit`, `Debounce` — act as **defaults** for every task the
