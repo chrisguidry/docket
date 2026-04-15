@@ -174,7 +174,7 @@ async def test_conflicting_timeout_raises_and_task_fails(
             await docket.add(the_task)()
             await worker.run_until_finished()
 
-    assert "Conflicting single=True Runtime" in caplog.text
+    assert "Only one Timeout dependency is allowed" in caplog.text
 
 
 async def test_conflicting_retry_raises_and_task_fails(
@@ -199,7 +199,7 @@ async def test_conflicting_retry_raises_and_task_fails(
             await docket.add(the_task)()
             await worker.run_until_finished()
 
-    assert "Conflicting single=True FailureHandler" in caplog.text
+    assert "Only one Retry dependency is allowed" in caplog.text
 
 
 async def test_conflicting_concurrency_limit_raises_and_task_fails(
@@ -224,7 +224,7 @@ async def test_conflicting_concurrency_limit_raises_and_task_fails(
             await docket.add(the_task)("acme")
             await worker.run_until_finished()
 
-    assert "Conflicting single=True ConcurrencyLimit" in caplog.text
+    assert "Only one ConcurrencyLimit dependency is allowed" in caplog.text
 
 
 async def test_task_level_timeout_without_worker_conflict_still_works(

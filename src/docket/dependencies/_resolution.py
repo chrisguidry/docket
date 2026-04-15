@@ -12,26 +12,26 @@ from uncalled_for import (
 )
 
 from ._base import (
-    CompletionHandler,
     Dependency,
-    FailureHandler,
-    Runtime,
     current_docket,
     current_execution,
     current_worker,
 )
-from ._concurrency import ConcurrencyLimit
 from ._contextual import _TaskArgument
-from ._debounce import Debounce
 from ._functional import _Depends, get_dependency_parameters
 
-SINGLE_DEPENDENCY_TYPES: tuple[type[Dependency[Any]], ...] = (
-    Runtime,
-    FailureHandler,
-    CompletionHandler,
-    ConcurrencyLimit,
-    Debounce,
-)
+
+def _single_bases(cls: type) -> list[type[Dependency[Any]]]:
+    """``Dependency`` ancestors of ``cls`` (inherited or declared) with
+    ``single=True``.  Mirrors ``uncalled_for.validate_dependencies``.
+    """
+    return [
+        base
+        for base in cls.__mro__
+        if base is not Dependency
+        and issubclass(base, Dependency)
+        and getattr(base, "single", False)
+    ]
 
 
 def validate_worker_dependencies(
@@ -103,24 +103,56 @@ def detect_single_conflicts(
     arguments: dict[str, Any],
     annotations: Mapping[str, Sequence[Dependency[Any]]],
 ) -> dict[str, FailedDependency]:
+    """Detect ``single=True`` conflicts across worker- and task-scope
+    dependencies.  Mirrors ``uncalled_for.validate_dependencies``: check
+    concrete-type duplicates first so errors name the exact type (e.g.
+    ``Retry``), then cross-subclass conflicts under a shared single base
+    (e.g. ``Timeout`` + a custom ``Runtime``).
+    """
+    items: list[tuple[str, Dependency[Any]]] = [
+        (key, value)
+        for key, value in arguments.items()
+        if isinstance(value, Dependency)
+    ]
+    for parameter_name, deps in annotations.items():
+        for dependency in deps:
+            items.append((parameter_name, dependency))
+
     conflicts: dict[str, FailedDependency] = {}
-    for single_type in SINGLE_DEPENDENCY_TYPES:
-        matches: list[tuple[str, type[Dependency[Any]]]] = []
-        for key, resolved in arguments.items():
-            if isinstance(resolved, single_type):
-                matches.append((key, type(resolved)))
-        for parameter_name, deps in annotations.items():
-            for dependency in deps:
-                if isinstance(dependency, single_type):
-                    matches.append((parameter_name, type(dependency)))
-        if len(matches) > 1:
-            conflict_key = f"__conflict_{single_type.__name__}__"
+    reported: set[type[Dependency[Any]]] = set()
+
+    by_type: dict[type[Dependency[Any]], list[str]] = {}
+    for key, dependency in items:
+        by_type.setdefault(type(dependency), []).append(key)
+    for concrete, keys in by_type.items():
+        if getattr(concrete, "single", False) and len(keys) > 1:
+            conflict_key = f"__conflict_{concrete.__name__}__"
+            described = ", ".join(repr(k) for k in keys)
+            conflicts[conflict_key] = FailedDependency(
+                conflict_key,
+                ValueError(
+                    f"Only one {concrete.__name__} dependency is allowed, "
+                    f"but found at: {described}. "
+                    "Declare it in exactly one place (task or worker)."
+                ),
+            )
+            reported.add(concrete)
+
+    bases: set[type[Dependency[Any]]] = set()
+    for _, dependency in items:
+        bases.update(_single_bases(type(dependency)))
+    for base in bases:
+        if base in reported:
+            continue
+        matches = [(key, type(dep)) for key, dep in items if isinstance(dep, base)]
+        if len({cls for _, cls in matches}) > 1:
+            conflict_key = f"__conflict_{base.__name__}__"
             described = ", ".join(f"{key!r} ({cls.__name__})" for key, cls in matches)
             conflicts[conflict_key] = FailedDependency(
                 conflict_key,
                 ValueError(
-                    f"Conflicting single=True {single_type.__name__} "
-                    f"dependencies declared in this execution: {described}. "
+                    f"Only one {base.__name__} dependency is allowed, "
+                    f"but found: {described}. "
                     "Declare it in exactly one place (task or worker)."
                 ),
             )
