@@ -2,18 +2,71 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncGenerator, TypeVar
 
 from uncalled_for import (
-    FailedDependency as FailedDependency,
-    get_annotation_dependencies as get_annotation_dependencies,
-    validate_dependencies as validate_dependencies,
+    FailedDependency,
+    get_annotation_dependencies,
 )
 
-from ._base import Dependency, current_docket, current_execution, current_worker
+from ._base import (
+    Dependency,
+    current_docket,
+    current_execution,
+    current_worker,
+)
 from ._contextual import _TaskArgument
 from ._functional import _Depends, get_dependency_parameters
+
+
+def _single_bases(cls: type) -> list[type[Dependency[Any]]]:
+    """``Dependency`` ancestors of ``cls`` (inherited or declared) with
+    ``single=True``.  Mirrors ``uncalled_for.validate_dependencies``.
+    """
+    return [
+        base
+        for base in cls.__mro__
+        if base is not Dependency
+        and issubclass(base, Dependency)
+        and getattr(base, "single", False)
+    ]
+
+
+def validate_worker_dependencies(
+    dependencies: Mapping[str, Any] | Sequence[Any] | None,
+) -> dict[str, Dependency[Any]]:
+    if not dependencies:
+        return {}
+    if isinstance(dependencies, Mapping):
+        items: list[tuple[str | None, Dependency[Any]]] = [
+            (name, dependency) for name, dependency in dependencies.items()
+        ]
+    else:
+        items = [(None, dependency) for dependency in dependencies]
+
+    validated: dict[str, Dependency[Any]] = {}
+    for index, (given_name, dependency) in enumerate(items):
+        if given_name is None:
+            name = f"__worker_dep_{index}__"
+        else:
+            if given_name.startswith("__"):
+                raise ValueError(
+                    f"Worker dependency name {given_name!r} is reserved; "
+                    "names starting with '__' are not allowed."
+                )
+            name = given_name
+        if not isinstance(dependency, Dependency):
+            label = given_name if given_name is not None else f"index {index}"
+            raise TypeError(
+                f"Worker dependency {label!r} must be a Dependency instance "
+                f"(e.g. Depends(fn) or Retry(...)), got "
+                f"{type(dependency).__name__}."
+            )
+        validated[name] = dependency
+    return validated
+
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution, TaskFunction
@@ -46,6 +99,66 @@ def get_single_dependency_of_type(
     return None
 
 
+def detect_single_conflicts(
+    arguments: dict[str, Any],
+    annotations: Mapping[str, Sequence[Dependency[Any]]],
+) -> dict[str, FailedDependency]:
+    """Detect ``single=True`` conflicts across worker- and task-scope
+    dependencies.  Mirrors ``uncalled_for.validate_dependencies``: check
+    concrete-type duplicates first so errors name the exact type (e.g.
+    ``Retry``), then cross-subclass conflicts under a shared single base
+    (e.g. ``Timeout`` + a custom ``Runtime``).
+    """
+    items: list[tuple[str, Dependency[Any]]] = [
+        (key, value)
+        for key, value in arguments.items()
+        if isinstance(value, Dependency)
+    ]
+    for parameter_name, deps in annotations.items():
+        for dependency in deps:
+            items.append((parameter_name, dependency))
+
+    conflicts: dict[str, FailedDependency] = {}
+    reported: set[type[Dependency[Any]]] = set()
+
+    by_type: dict[type[Dependency[Any]], list[str]] = {}
+    for key, dependency in items:
+        by_type.setdefault(type(dependency), []).append(key)
+    for concrete, keys in by_type.items():
+        if getattr(concrete, "single", False) and len(keys) > 1:
+            conflict_key = f"__conflict_{concrete.__name__}__"
+            described = ", ".join(repr(k) for k in keys)
+            conflicts[conflict_key] = FailedDependency(
+                conflict_key,
+                ValueError(
+                    f"Only one {concrete.__name__} dependency is allowed, "
+                    f"but found at: {described}. "
+                    "Declare it in exactly one place (task or worker)."
+                ),
+            )
+            reported.add(concrete)
+
+    bases: set[type[Dependency[Any]]] = set()
+    for _, dependency in items:
+        bases.update(_single_bases(type(dependency)))
+    for base in bases:
+        if base in reported:
+            continue
+        matches = [(key, type(dep)) for key, dep in items if isinstance(dep, base)]
+        if len({cls for _, cls in matches}) > 1:
+            conflict_key = f"__conflict_{base.__name__}__"
+            described = ", ".join(f"{key!r} ({cls.__name__})" for key, cls in matches)
+            conflicts[conflict_key] = FailedDependency(
+                conflict_key,
+                ValueError(
+                    f"Only one {base.__name__} dependency is allowed, "
+                    f"but found: {described}. "
+                    "Declare it in exactly one place (task or worker)."
+                ),
+            )
+    return conflicts
+
+
 @asynccontextmanager
 async def resolved_dependencies(
     worker: Worker, execution: Execution
@@ -60,6 +173,13 @@ async def resolved_dependencies(
             stack_token = _Depends.stack.set(stack)
             try:
                 arguments: dict[str, Any] = {}
+
+                for name, dependency in worker.dependencies.items():
+                    slot = f"__worker_dep__{name}"
+                    try:
+                        arguments[slot] = await stack.enter_async_context(dependency)
+                    except Exception as error:
+                        arguments[slot] = FailedDependency(name, error)
 
                 parameters = get_dependency_parameters(execution.function)
                 for parameter, dependency in parameters.items():
@@ -88,17 +208,25 @@ async def resolved_dependencies(
 
                 annotations = get_annotation_dependencies(execution.function)
                 for parameter_name, dependencies in annotations.items():
-                    value = execution.kwargs.get(
+                    argument_value = execution.kwargs.get(
                         parameter_name, arguments.get(parameter_name)
                     )
                     for dependency in dependencies:
-                        bound = dependency.bind_to_parameter(parameter_name, value)
+                        bound = dependency.bind_to_parameter(
+                            parameter_name, argument_value
+                        )
                         try:
                             await stack.enter_async_context(bound)
                         except Exception as error:
                             arguments[parameter_name] = FailedDependency(
                                 parameter_name, error
                             )
+
+                arguments.update(
+                    worker.validate_task_dependencies(
+                        execution.function, arguments, annotations
+                    )
+                )
 
                 yield arguments
             finally:

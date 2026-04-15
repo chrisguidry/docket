@@ -392,3 +392,61 @@ async def audited_task(
 ) -> None:
     ...
 ```
+
+
+## Worker-level dependencies
+
+Sometimes you want a dependency to run around **every** task a worker
+executes — tracing, a database transaction, an audit log, a feature-flag
+context. Instead of repeating the same `Depends(...)` on every task,
+register them on the worker itself:
+
+```python
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def trace_task(key: str = TaskKey()):
+    with tracer.start_as_current_span(f"task:{key}"):
+        yield
+
+async def get_db_pool() -> Pool:
+    return await create_pool()
+
+async with Worker(
+    docket,
+    dependencies={
+        "trace":   Depends(trace_task),
+        "db":      Depends(get_db_pool),
+        "timeout": Timeout(timedelta(seconds=30)),
+    },
+) as worker:
+    await worker.run_forever()
+```
+
+Worker dependencies behave like task-level `Depends(...)` — they can
+declare their own parameters (`TaskKey`, `TaskArgument("customer_id")`,
+`CurrentWorker`, nested `Depends(...)`), share the per-task resolution
+cache with the task's own `Depends(...)`, and a failed setup fails the
+task through the same path as any other dependency failure (including
+`Retry` and `AdmissionBlocked`). Names starting with `__` are reserved.
+
+If you don't care about the names (e.g. nothing else needs to reference
+them for diagnostics), pass a list or tuple instead and docket will
+generate internal names for you:
+
+```python
+async with Worker(
+    docket,
+    dependencies=[Depends(trace_task), Depends(get_db_pool)],
+) as worker:
+    ...
+```
+
+### `single=True` dependencies
+
+`Timeout`, `Retry`, `Perpetual`, `ConcurrencyLimit`, and `Debounce` are
+`single=True`: a task may have at most one of each in scope. That rule
+applies across task- and worker-level declarations together, so
+declaring (for example) a `Timeout` on both the task and the worker
+fails the task with a `ValueError` naming both sources. Declare each
+one in exactly one place.
