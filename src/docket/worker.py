@@ -59,8 +59,6 @@ from .dependencies import (
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
 )
-from uncalled_for import DependencyFactory
-
 from .dependencies._resolution import (
     detect_single_conflicts,
     validate_worker_dependencies,
@@ -163,7 +161,7 @@ class Worker:
     schedule_automatic_tasks: bool
     enable_internal_instrumentation: bool
     fallback_task: TaskFunction
-    dependencies: dict[str, DependencyFactory[Any]]
+    dependencies: dict[str, Dependency[Any]]
     _single_conflicts: dict[TaskFunction, dict[str, FailedDependency]]
 
     def __init__(
@@ -178,11 +176,7 @@ class Worker:
         schedule_automatic_tasks: bool = True,
         enable_internal_instrumentation: bool = False,
         fallback_task: TaskFunction | None = None,
-        dependencies: (
-            Mapping[str, "DependencyFactory[Any]"]
-            | Sequence["DependencyFactory[Any]"]
-            | None
-        ) = None,
+        dependencies: (Mapping[str, Any] | Sequence[Any] | None) = None,
     ) -> None:
         self.docket = docket
         self.name = name or f"{socket.gethostname()}#{os.getpid()}"

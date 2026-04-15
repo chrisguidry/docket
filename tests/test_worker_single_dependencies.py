@@ -19,6 +19,7 @@ from docket import Docket, Worker
 from docket.dependencies import (
     ConcurrencyLimit,
     Debounce,
+    Depends,
     Perpetual,
     RateLimit,
     Retry,
@@ -44,7 +45,7 @@ async def test_worker_level_timeout_applies_when_task_has_none(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"timeout": lambda: Timeout(timedelta(milliseconds=50))},
+        dependencies={"timeout": Timeout(timedelta(milliseconds=50))},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -67,7 +68,7 @@ async def test_worker_level_retry_applies_when_task_has_none(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"retry": lambda: Retry(attempts=3)},
+        dependencies={"retry": Retry(attempts=3)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -99,7 +100,7 @@ async def test_worker_level_perpetual_applies_when_task_has_none(docket: Docket)
 
     async with Worker(
         docket,
-        dependencies={"perp": make_perpetual},
+        dependencies={"perp": make_perpetual()},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -121,7 +122,7 @@ async def test_worker_level_concurrency_limit_applies_when_task_has_none(
 
     async with Worker(
         docket,
-        dependencies={"limit": lambda: ConcurrencyLimit(max_concurrent=1)},
+        dependencies={"limit": ConcurrencyLimit(max_concurrent=1)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -141,7 +142,7 @@ async def test_worker_level_debounce_applies_when_task_has_none(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"deb": lambda: Debounce(timedelta(milliseconds=10))},
+        dependencies={"deb": Debounce(timedelta(milliseconds=10))},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -166,7 +167,7 @@ async def test_conflicting_timeout_raises_and_task_fails(
     with caplog.at_level(logging.ERROR, logger="docket"):
         async with Worker(
             docket,
-            dependencies={"timeout": lambda: Timeout(timedelta(seconds=30))},
+            dependencies={"timeout": Timeout(timedelta(seconds=30))},
             minimum_check_interval=FAST,
             scheduling_resolution=FAST,
         ) as worker:
@@ -191,7 +192,7 @@ async def test_conflicting_retry_raises_and_task_fails(
     with caplog.at_level(logging.ERROR, logger="docket"):
         async with Worker(
             docket,
-            dependencies={"retry": lambda: Retry(attempts=5)},
+            dependencies={"retry": Retry(attempts=5)},
             minimum_check_interval=FAST,
             scheduling_resolution=FAST,
         ) as worker:
@@ -216,7 +217,7 @@ async def test_conflicting_concurrency_limit_raises_and_task_fails(
     with caplog.at_level(logging.ERROR, logger="docket"):
         async with Worker(
             docket,
-            dependencies={"global_limit": lambda: ConcurrencyLimit(max_concurrent=3)},
+            dependencies={"global_limit": ConcurrencyLimit(max_concurrent=3)},
             minimum_check_interval=FAST,
             scheduling_resolution=FAST,
         ) as worker:
@@ -249,7 +250,7 @@ async def test_task_level_timeout_without_worker_conflict_still_works(
 
     async with Worker(
         docket,
-        dependencies={"setup": setup},
+        dependencies={"setup": Depends(setup)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -273,7 +274,7 @@ async def test_non_single_admission_dep_at_worker_level_no_conflict(docket: Dock
 
     async with Worker(
         docket,
-        dependencies={"worker_rate": lambda: RateLimit(50, per=timedelta(seconds=1))},
+        dependencies={"worker_rate": RateLimit(50, per=timedelta(seconds=1))},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:

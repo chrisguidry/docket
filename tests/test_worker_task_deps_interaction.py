@@ -10,6 +10,7 @@ from typing import Annotated
 from docket import Docket, Worker
 from docket.dependencies import (
     ConcurrencyLimit,
+    Depends,
     Perpetual,
     Retry,
     Timeout,
@@ -37,7 +38,7 @@ async def test_task_timeout_still_applies_with_worker_deps(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"n": noop},
+        dependencies={"n": Depends(noop)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -65,7 +66,7 @@ async def test_task_retry_still_applies_with_worker_deps(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"s": setup},
+        dependencies={"s": Depends(setup)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -96,7 +97,7 @@ async def test_task_perpetual_still_applies_with_worker_deps(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"s": setup},
+        dependencies={"s": Depends(setup)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -122,7 +123,7 @@ async def test_task_concurrency_limit_still_enforced_with_worker_deps(docket: Do
 
     async with Worker(
         docket,
-        dependencies={"s": setup},
+        dependencies={"s": Depends(setup)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:

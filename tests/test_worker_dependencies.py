@@ -2,11 +2,13 @@
 
 Worker-level dependencies are registered via ``Worker(dependencies={...})``
 and run around every task that worker executes — the analogue of FastAPI
-router dependencies / middleware. They use the same uncalled-for factory
-shapes as ``Depends(...)``: sync fn, async fn, sync context manager, async
-context manager. They can declare their own parameters (``TaskKey``,
-``TaskArgument``, ``CurrentWorker``, ``Depends(...)``) which resolve
-recursively against the same per-task cache as task-level dependencies.
+router dependencies / middleware. Values are ``Dependency`` instances:
+wrap factories with ``Depends(...)`` (sync fn, async fn, sync context
+manager, async context manager all work there), or pass a built-in
+dependency like ``Retry(attempts=3)`` directly. They can declare their
+own parameters (``TaskKey``, ``TaskArgument``, ``CurrentWorker``,
+``Depends(...)``) which resolve recursively against the same per-task
+cache as task-level dependencies.
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ async def test_sync_function_worker_dependency_runs_before_task(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"sync": setup_sync},
+        dependencies={"sync": Depends(setup_sync)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -69,7 +71,7 @@ async def test_async_function_worker_dependency_runs_before_task(docket: Docket)
 
     async with Worker(
         docket,
-        dependencies={"a": setup_async},
+        dependencies={"a": Depends(setup_async)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -97,7 +99,7 @@ async def test_sync_context_manager_worker_dependency_brackets_task(docket: Dock
 
     async with Worker(
         docket,
-        dependencies={"b": bracket},
+        dependencies={"b": Depends(bracket)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -125,7 +127,7 @@ async def test_async_context_manager_worker_dependency_brackets_task(docket: Doc
 
     async with Worker(
         docket,
-        dependencies={"b": bracket},
+        dependencies={"b": Depends(bracket)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -156,7 +158,11 @@ async def test_multiple_worker_dependencies_teardown_lifo(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"a": make("a"), "b": make("b"), "c": make("c")},
+        dependencies={
+            "a": Depends(make("a")),
+            "b": Depends(make("b")),
+            "c": Depends(make("c")),
+        },
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -193,7 +199,7 @@ async def test_worker_dependency_can_consume_task_key_and_argument(docket: Docke
 
     async with Worker(
         docket,
-        dependencies={"cap": capture},
+        dependencies={"cap": Depends(capture)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -222,7 +228,7 @@ async def test_worker_dependency_can_use_nested_depends(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"c": consume},
+        dependencies={"c": Depends(consume)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -251,7 +257,7 @@ async def test_worker_dep_and_task_depends_share_cache(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"w": worker_side},
+        dependencies={"w": Depends(worker_side)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -278,7 +284,7 @@ async def test_worker_dep_setup_failure_fails_task_without_running_body(
 
     async with Worker(
         docket,
-        dependencies={"db": broken},
+        dependencies={"db": Depends(broken)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -304,7 +310,7 @@ async def test_worker_dep_failure_names_appear_in_exception_group(
     with caplog.at_level(logging.ERROR, logger="docket"):
         async with Worker(
             docket,
-            dependencies={"db_pool": broken},
+            dependencies={"db_pool": Depends(broken)},
             minimum_check_interval=FAST,
             scheduling_resolution=FAST,
         ) as worker:
@@ -337,7 +343,7 @@ async def test_worker_dep_admission_blocked_reschedules(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"gate": gate},
+        dependencies={"gate": Depends(gate)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -365,7 +371,7 @@ async def test_worker_dep_teardown_error_fails_task(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies={"b": bad_exit},
+        dependencies={"b": Depends(bad_exit)},
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:
@@ -395,7 +401,7 @@ async def test_default_empty_dependencies_is_noop(docket: Docket):
 
 async def test_reserved_name_rejected_at_construction(docket: Docket):
     with pytest.raises(ValueError, match="reserved"):
-        Worker(docket, dependencies={"__secret": lambda: None})
+        Worker(docket, dependencies={"__secret": Depends(lambda: None)})
 
 
 async def test_non_callable_factory_rejected_at_construction(docket: Docket):
@@ -419,7 +425,7 @@ async def test_list_form_runs_in_order_with_internal_names(docket: Docket):
 
     async with Worker(
         docket,
-        dependencies=[tracing, auditing],
+        dependencies=[Depends(tracing), Depends(auditing)],
         minimum_check_interval=FAST,
         scheduling_resolution=FAST,
     ) as worker:

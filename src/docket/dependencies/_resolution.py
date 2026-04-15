@@ -7,7 +7,6 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncGenerator, TypeVar
 
 from uncalled_for import (
-    DependencyFactory,
     FailedDependency,
     get_annotation_dependencies,
 )
@@ -36,27 +35,19 @@ SINGLE_DEPENDENCY_TYPES: tuple[type[Dependency[Any]], ...] = (
 
 
 def validate_worker_dependencies(
-    dependencies: (
-        Mapping[str, DependencyFactory[Any]] | Sequence[DependencyFactory[Any]] | None
-    ),
-) -> dict[str, DependencyFactory[Any]]:
+    dependencies: Mapping[str, Any] | Sequence[Any] | None,
+) -> dict[str, Dependency[Any]]:
     if not dependencies:
         return {}
     if isinstance(dependencies, Mapping):
-        items: list[tuple[str | None, DependencyFactory[Any]]] = [
-            (name, factory) for name, factory in dependencies.items()
+        items: list[tuple[str | None, Dependency[Any]]] = [
+            (name, dependency) for name, dependency in dependencies.items()
         ]
     else:
-        items = [(None, factory) for factory in dependencies]
+        items = [(None, dependency) for dependency in dependencies]
 
-    validated: dict[str, DependencyFactory[Any]] = {}
-    for index, (given_name, factory) in enumerate(items):
-        if not callable(factory):
-            label = given_name if given_name is not None else f"index {index}"
-            raise TypeError(
-                f"Worker dependency {label!r} must be a callable factory, "
-                f"got {type(factory).__name__}."
-            )
+    validated: dict[str, Dependency[Any]] = {}
+    for index, (given_name, dependency) in enumerate(items):
         if given_name is None:
             name = f"__worker_dep_{index}__"
         else:
@@ -66,7 +57,14 @@ def validate_worker_dependencies(
                     "names starting with '__' are not allowed."
                 )
             name = given_name
-        validated[name] = factory
+        if not isinstance(dependency, Dependency):
+            label = given_name if given_name is not None else f"index {index}"
+            raise TypeError(
+                f"Worker dependency {label!r} must be a Dependency instance "
+                f"(e.g. Depends(fn) or Retry(...)), got "
+                f"{type(dependency).__name__}."
+            )
+        validated[name] = dependency
     return validated
 
 
@@ -144,12 +142,10 @@ async def resolved_dependencies(
             try:
                 arguments: dict[str, Any] = {}
 
-                for name, factory in worker.dependencies.items():
+                for name, dependency in worker.dependencies.items():
                     slot = f"__worker_dep__{name}"
                     try:
-                        arguments[slot] = await stack.enter_async_context(
-                            _Depends(factory)
-                        )
+                        arguments[slot] = await stack.enter_async_context(dependency)
                     except Exception as error:
                         arguments[slot] = FailedDependency(name, error)
 

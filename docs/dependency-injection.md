@@ -399,7 +399,7 @@ async def audited_task(
 Sometimes you want a dependency to run around **every** task a worker
 executes — tracing, a database transaction, an audit log, a feature-flag
 context. Instead of repeating the same `Depends(...)` on every task,
-register factories on the worker itself:
+register them on the worker itself:
 
 ```python
 from contextlib import asynccontextmanager
@@ -414,17 +414,21 @@ async def get_db_pool() -> Pool:
 
 async with Worker(
     docket,
-    dependencies={"trace": trace_task, "db": get_db_pool},
+    dependencies={
+        "trace": Depends(trace_task),
+        "db":    Depends(get_db_pool),
+    },
 ) as worker:
     await worker.run_forever()
 ```
 
-Each value is a plain dependency factory — the same shape you pass to
-`Depends(...)`. Sync functions, async functions, `@contextmanager`, and
-`@asynccontextmanager` all work. Worker dependencies may declare their
-own parameters (`TaskKey`, `TaskArgument("customer_id")`, `CurrentWorker`,
-nested `Depends(...)`), which resolve recursively — exactly like
-task-level dependencies.
+Each value is a `Dependency` instance: wrap factories with `Depends(...)`
+(sync functions, async functions, `@contextmanager`, `@asynccontextmanager`
+all work there), or pass a built-in dependency like `Retry(attempts=3)`
+directly. Worker dependencies may declare their own parameters
+(`TaskKey`, `TaskArgument("customer_id")`, `CurrentWorker`, nested
+`Depends(...)`), which resolve recursively — exactly like task-level
+dependencies.
 
 ### Lifecycle
 
@@ -457,26 +461,26 @@ Names starting with `__` are reserved for internal use and rejected at
 
 ### Worker-level `single=True` dependencies
 
-Factories that return a `single=True` `Dependency` — `Timeout`, `Retry`,
-`Perpetual`, `ConcurrencyLimit`, `Debounce` — act as **defaults** for every
-task the worker runs:
+`single=True` dependencies — `Timeout`, `Retry`, `Perpetual`,
+`ConcurrencyLimit`, `Debounce` — act as **defaults** for every task the
+worker runs. Pass bare instances directly:
 
 ```python
 async with Worker(
     docket,
     dependencies={
-        "timeout": lambda: Timeout(timedelta(seconds=30)),
-        "retry":   lambda: Retry(attempts=3),
+        "timeout": Timeout(timedelta(seconds=30)),
+        "retry":   Retry(attempts=3),
     },
 ) as worker:
     await worker.run_forever()
 ```
 
-A task that declares its own `Timeout`/`Retry`/etc. overrides the worker
-default — **but only if the worker doesn't also declare one**. Declaring
-the same `single=True` type in both places is an error: the task fails
-with a `ValueError` naming both sources. There can be only one.
+Bare instances are safe to reuse across tasks: stateful ones like `Retry`
+and `Perpetual` construct a fresh internal instance on each execution,
+so a single `Retry(attempts=3)` at worker construction gives every task
+its own attempt counter.
 
-Use factories (not bare instances) — some of these dependencies hold
-per-execution state (e.g. `Retry.attempt`) and need a fresh instance per
-task run.
+Declaring the same `single=True` type in both task and worker is an
+error: the task fails with a `ValueError` naming both sources. There can
+be only one.
