@@ -29,6 +29,15 @@ skip_memory = pytest.mark.skipif(
     reason="requires real Redis (keys/scan_iter/ttl not available in memory backend)",
 )
 
+# BurnerRedis pub/sub uses asyncio.wait_for(Queue.get(), timeout=T) which on
+# Python < 3.12 has a scheduling issue where task cancellation is not delivered
+# promptly (see https://github.com/python/cpython/issues/86296).  Tests that
+# cancel a worker while pub/sub is active hang on 3.10/3.11 with memory://.
+skip_memory_pubsub = pytest.mark.skipif(
+    BASE_VERSION == "memory" and sys.version_info < (3, 12),
+    reason="BurnerRedis pub/sub cancel issue on Python <3.12 (cpython#86296)",
+)
+
 if sys.platform != "win32" or TYPE_CHECKING:
     from docker import DockerClient
     from docker.models.containers import Container
