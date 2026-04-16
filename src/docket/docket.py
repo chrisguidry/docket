@@ -22,14 +22,13 @@ from typing import (
 import redis.exceptions
 from key_value.aio.protocols.key_value import AsyncKeyValue
 from opentelemetry import trace
-from redis.asyncio.client import PubSub
 from typing_extensions import Self
 
 from ._docket_snapshot import DocketSnapshot as DocketSnapshot
 from ._docket_snapshot import DocketSnapshotMixin
 from ._docket_snapshot import RunningExecution as RunningExecution
 from ._docket_snapshot import WorkerInfo as WorkerInfo
-from ._redis import RedisClient, RedisConnection
+from ._redis import PubSubClient, RedisClient, RedisConnection
 from ._result_store import ResultStorage
 from ._uuid7 import uuid7
 from .execution import (
@@ -220,7 +219,7 @@ class Docket(DocketSnapshotMixin):
             yield r
 
     @asynccontextmanager
-    async def _pubsub(self) -> AsyncGenerator[PubSub, None]:
+    async def _pubsub(self) -> AsyncGenerator[PubSubClient, None]:
         async with self._redis.pubsub() as pubsub:
             yield pubsub
 

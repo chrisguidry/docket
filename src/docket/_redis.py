@@ -10,10 +10,9 @@ this module will need to change.
 
 import asyncio
 import logging
-import typing
 from contextlib import AsyncExitStack, asynccontextmanager
 from types import TracebackType
-from typing import Any, AsyncGenerator, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Protocol, runtime_checkable
 from urllib.parse import ParseResult, urlparse, urlunparse
 
 from redis.asyncio import ConnectionPool, Redis
@@ -21,7 +20,7 @@ from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
 from redis.asyncio.connection import Connection, SSLConnection
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from burner_redis import BurnerRedis
 
 
@@ -87,6 +86,21 @@ class RedisClient(Protocol):
     def register_script(self, script: str | bytes) -> Any: ...
     def pipeline(self, **kwargs: Any) -> Any: ...
     def lock(self, *args: Any, **kwargs: Any) -> Any: ...
+
+
+@runtime_checkable
+class PubSubClient(Protocol):
+    """Protocol capturing the pub/sub interface that docket uses.
+
+    This is the structural type shared by redis.asyncio.client.PubSub and
+    burner_redis.pubsub.PubSub.
+    """
+
+    async def subscribe(self, *args: Any, **kwargs: Any) -> Any: ...
+    async def psubscribe(self, *args: Any, **kwargs: Any) -> Any: ...
+    async def get_message(self, *args: Any, **kwargs: Any) -> Any: ...
+    def listen(self) -> Any: ...
+    async def aclose(self) -> None: ...
 
 
 async def close_resource(resource: AsyncCloseable, name: str) -> None:
@@ -349,7 +363,7 @@ class RedisConnection:
                 yield r
 
     @asynccontextmanager
-    async def pubsub(self) -> AsyncGenerator[PubSub | typing.Any, None]:
+    async def pubsub(self) -> AsyncGenerator[PubSubClient, None]:
         """Get a pub/sub connection, handling standalone, cluster, and memory modes."""
         if self._cluster_client is not None:  # pragma: no cover
             async with self._cluster_pubsub() as ps:
