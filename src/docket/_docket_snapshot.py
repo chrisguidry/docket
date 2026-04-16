@@ -109,13 +109,6 @@ class DocketSnapshotMixin:
         Returns:
             A snapshot of the Docket.
         """
-        # For memory:// URLs, ensure the group exists upfront. BurnerRedis's
-        # pipeline returns command errors as result values instead of raising
-        # them, so the NOGROUP-recovery try/except around pipeline.execute()
-        # below doesn't catch them.
-        if self.url.startswith("memory://"):
-            await self._ensure_stream_and_group()
-
         running: list[RunningExecution] = []
         future: list[Execution] = []
 

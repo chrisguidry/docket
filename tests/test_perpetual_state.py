@@ -10,7 +10,6 @@ from docket import Docket, ExecutionState, Worker
 from docket._execution_progress import StateEvent
 from docket.dependencies import CurrentExecution, Perpetual
 from docket.execution import Execution
-from tests.conftest import skip_memory_pubsub
 
 
 async def test_perpetual_task_with_ttl_zero(zero_ttl_docket: Docket) -> None:
@@ -196,7 +195,6 @@ async def pubsub_docket(
         yield docket
 
 
-@skip_memory_pubsub
 async def test_perpetual_publishes_completed_event(pubsub_docket: Docket):
     """Perpetual tasks must still publish a completed state event on pub/sub.
 

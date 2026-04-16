@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, patch
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Worker, testing
-from tests.conftest import skip_memory_pubsub
 
 if sys.version_info >= (3, 11):  # pragma: no cover
     from asyncio import timeout as async_timeout
@@ -191,7 +190,6 @@ async def test_worker_cancellation_during_setup_before_scheduler_created(
         await worker.__aexit__(None, None, None)
 
 
-@skip_memory_pubsub
 async def test_cancellation_listener_handles_connection_error(docket: Docket):
     """Test that _cancellation_listener handles ConnectionError and reconnects."""
     error_handled = asyncio.Event()
@@ -235,7 +233,6 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
     assert error_count >= 2
 
 
-@skip_memory_pubsub
 async def test_cancellation_listener_handles_generic_exception(docket: Docket):
     """Test that _cancellation_listener handles generic Exception and continues."""
     error_handled = asyncio.Event()
