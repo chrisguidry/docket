@@ -1,14 +1,7 @@
 # pyright: reportUnknownVariableType=false
 
-import pytest
-
 from docket import Docket, Worker
-from docket._redis import clear_memory_servers, get_memory_server
-
-
-@pytest.fixture(autouse=True)
-async def clear_servers() -> None:
-    await clear_memory_servers()
+from docket._redis import get_memory_server
 
 
 async def test_docket_memory_backend():

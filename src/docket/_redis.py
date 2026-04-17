@@ -120,11 +120,18 @@ _memory_servers_lock = asyncio.Lock()
 
 
 async def clear_memory_servers() -> None:
-    """Clear all cached BurnerRedis instances.
+    """Close and discard all cached BurnerRedis instances.
 
-    This is primarily for testing to ensure isolation between tests.
+    Each BurnerRedis may hold internal state tied to the asyncio event loop
+    that created it (pub/sub listeners, blocking-read notifiers, Tokio
+    background tasks, etc.).  Calling ``aclose()`` drains in-flight futures
+    while the event loop is still alive, then clearing the cache forces the
+    next ``_get_or_create_memory_client()`` call to build a fresh instance
+    on the *current* event loop.
     """
     async with _memory_servers_lock:
+        for client in list(_memory_servers.values()):
+            await client.aclose()
         _memory_servers.clear()
 
 

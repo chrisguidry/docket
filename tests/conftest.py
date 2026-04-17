@@ -194,6 +194,22 @@ def redis_url(redis_port: int, acl_credentials: ACLCredentials) -> str:
     return url
 
 
+@pytest.fixture(autouse=True)
+async def _fresh_memory_server() -> AsyncGenerator[None, None]:  # pyright: ignore[reportUnusedFunction]
+    """Close BurnerRedis instances between tests so Tokio background tasks
+    don't hold stale event-loop refs across pytest-asyncio loop teardowns.
+
+    After yield, closes every cached BurnerRedis (draining in-flight futures
+    while the event loop is still alive), then clears the cache so the next
+    test gets a fresh instance.
+    """
+    from docket._redis import clear_memory_servers
+
+    await clear_memory_servers()
+    yield
+    await clear_memory_servers()
+
+
 @pytest.fixture
 async def docket(
     redis_url: str, make_docket_name: Callable[[], str]
