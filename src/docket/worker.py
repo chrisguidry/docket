@@ -981,7 +981,12 @@ class Worker:
                             extra=log_context,
                         )
             except AdmissionBlocked:
-                # Re-raise to be handled by process_completed_tasks
+                # Admission control (e.g. ConcurrencyLimit) is a rescheduling
+                # signal, not a task failure. Mark the span OK before re-raising
+                # so the default `set_status_on_exception` behavior of
+                # `start_as_current_span` doesn't leave these executions tagged
+                # ERROR in tracing backends.
+                span.set_status(Status(StatusCode.OK))
                 raise
             except asyncio.CancelledError:
                 # Task was cancelled externally via docket.cancel()
