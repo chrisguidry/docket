@@ -138,6 +138,10 @@ class Execution:
         # Redis key
         self._redis_key = docket.key(f"runs:{key}")
 
+        # Stream message id of this dispatch (set by worker); admission gates
+        # need it to atomically ACK+XDEL when parking the task.
+        self._inflight_message_id: "RedisMessageID | None" = None
+
     # Task definition properties (immutable)
     @property
     def docket(self) -> "Docket":

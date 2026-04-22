@@ -56,10 +56,17 @@ class AdmissionBlocked(Exception):
     This is the base exception for admission control mechanisms like
     concurrency limits, rate limits, or health gates.
 
-    When ``reschedule`` is True (default), the worker re-queues the task
-    with a short delay.  When False, the task is quietly acknowledged
-    and dropped with an INFO-level log (appropriate for debounce/cooldown
-    where re-trying would just hit the same window).
+    When ``waiter_key`` is set, the worker parks the task in the named
+    waiter sorted set.  Whoever frees the gated resource is expected to
+    pop the oldest waiter and re-inject it into the stream, so tasks
+    only make one attempt and wake up exactly when capacity is
+    available.  Used by ``ConcurrencyLimit``.
+
+    Otherwise, ``reschedule`` controls the fallback behavior: when True
+    (default), the worker re-queues the task with a short delay; when
+    False, the task is quietly acknowledged and dropped with an
+    INFO-level log (appropriate for debounce/cooldown where re-trying
+    would just hit the same window).
 
     ``retry_delay`` overrides the default reschedule delay when set.
     """
@@ -71,11 +78,13 @@ class AdmissionBlocked(Exception):
         *,
         reschedule: bool = True,
         retry_delay: timedelta | None = None,
+        waiter_key: str | None = None,
     ):
         self.execution = execution
         self.reason = reason
         self.reschedule = reschedule
         self.retry_delay = retry_delay
+        self.waiter_key = waiter_key
         super().__init__(f"Task {execution.key} blocked by {reason}")
 
 
