@@ -108,6 +108,7 @@ class Execution:
         redelivered: bool = False,
         function_name: str | None = None,
         generation: int = 0,
+        message_id: "RedisMessageID | None" = None,
     ) -> None:
         # Task definition (immutable)
         self._docket = docket
@@ -123,6 +124,7 @@ class Execution:
         self._trace_context = trace_context
         self._redelivered = redelivered
         self._generation = generation
+        self.message_id = message_id
 
         # Lifecycle state (mutable)
         self.state: ExecutionState = ExecutionState.SCHEDULED
@@ -137,10 +139,6 @@ class Execution:
 
         # Redis key
         self._redis_key = docket.key(f"runs:{key}")
-
-        # Stream message id of this dispatch (set by worker); admission gates
-        # need it to atomically ACK+XDEL when parking the task.
-        self._inflight_message_id: "RedisMessageID | None" = None
 
     # Task definition properties (immutable)
     @property
@@ -216,6 +214,7 @@ class Execution:
         message: Message,
         redelivered: bool = False,
         fallback_task: TaskFunction | None = None,
+        message_id: "RedisMessageID | None" = None,
     ) -> Self:
         function_name = message[b"function"].decode()
         if not (function := docket.tasks.get(function_name)):
@@ -237,6 +236,7 @@ class Execution:
             redelivered=redelivered,
             function_name=function_name,
             generation=int(message.get(b"generation", b"0")),
+            message_id=message_id,
         )
         await instance.sync()
         return instance

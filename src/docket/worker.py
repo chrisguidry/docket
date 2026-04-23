@@ -536,8 +536,8 @@ class Worker:
                 message,
                 redelivered=is_redelivery,
                 fallback_task=self.fallback_task,
+                message_id=message_id,
             )
-            execution._inflight_message_id = message_id
 
             task = asyncio.create_task(
                 self._execute(execution),
@@ -560,16 +560,10 @@ class Worker:
                     await task
                     await ack_message(redis, message_id)
                 except AdmissionBlocked as e:
-                    if e.waiter_key:
-                        # Admission gate already atomically parked the task
-                        # (XACK+XDEL'd the stream message, HSET parked hash,
-                        # ZADD waiter).  Nothing more to do here.
-                        logger.debug(
-                            "⏳ Task %s parked in waiter queue %s",
-                            e.execution.key,
-                            e.waiter_key,
-                            extra=log_context,
-                        )
+                    if e.handled:
+                        # The admission gate already handled the task,
+                        # so there is nothing more to do here.
+                        continue
                     elif e.reschedule:
                         delay = e.retry_delay or ADMISSION_BLOCKED_RETRY_DELAY
                         logger.debug(

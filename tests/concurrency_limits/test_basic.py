@@ -409,6 +409,6 @@ async def test_concurrency_keys_are_handled(
 
     # Verify the concurrency key is cleaned up after task completes
     async with docket.redis() as redis:
-        concurrency_key = f"{docket.name}:concurrency:resource_id:42"
+        concurrency_key = f"{docket.prefix}:concurrency:resource_id:42"
         exists = await redis.exists(concurrency_key)
         assert exists == 0, f"Concurrency key {concurrency_key} should be cleaned up"

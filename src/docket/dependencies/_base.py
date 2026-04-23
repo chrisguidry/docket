@@ -56,11 +56,10 @@ class AdmissionBlocked(Exception):
     This is the base exception for admission control mechanisms like
     concurrency limits, rate limits, or health gates.
 
-    When ``waiter_key`` is set, the worker parks the task in the named
-    waiter sorted set.  Whoever frees the gated resource is expected to
-    pop the oldest waiter and re-inject it into the stream, so tasks
-    only make one attempt and wake up exactly when capacity is
-    available.  Used by ``ConcurrencyLimit``.
+    When ``handled`` is True, the admission gate has already done
+    everything it needs to do (e.g. parked the task and acked its
+    stream message), and the worker should treat the exception as a
+    signal to move on without further action.
 
     Otherwise, ``reschedule`` controls the fallback behavior: when True
     (default), the worker re-queues the task with a short delay; when
@@ -76,15 +75,15 @@ class AdmissionBlocked(Exception):
         execution: Execution,
         reason: str = "admission control",
         *,
+        handled: bool = False,
         reschedule: bool = True,
         retry_delay: timedelta | None = None,
-        waiter_key: str | None = None,
     ):
         self.execution = execution
         self.reason = reason
+        self.handled = handled
         self.reschedule = reschedule
         self.retry_delay = retry_delay
-        self.waiter_key = waiter_key
         super().__init__(f"Task {execution.key} blocked by {reason}")
 
 
