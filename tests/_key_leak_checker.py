@@ -197,6 +197,13 @@ class KeyCountChecker:
             # Task is in the stream (immediate task)
             return True
 
+        # A task admission-blocked by ConcurrencyLimit is parked on a
+        # per-concurrency-key waiter stream; the acquire-or-park Lua
+        # records the stream name on the runs hash.
+        waiter_stream: str | None = await redis.hget(runs_key, "waiter_stream")  # type: ignore[assignment]
+        if waiter_stream is not None:
+            return True
+
         # Check if parked data exists (for scheduled tasks not yet in stream)
         parked_key = f"{self.docket_prefix}:{task_key}"
         parked_exists = await redis.exists(parked_key)

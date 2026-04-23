@@ -56,10 +56,16 @@ class AdmissionBlocked(Exception):
     This is the base exception for admission control mechanisms like
     concurrency limits, rate limits, or health gates.
 
-    When ``reschedule`` is True (default), the worker re-queues the task
-    with a short delay.  When False, the task is quietly acknowledged
-    and dropped with an INFO-level log (appropriate for debounce/cooldown
-    where re-trying would just hit the same window).
+    When ``handled`` is True, the admission gate has already done
+    everything it needs to do (e.g. parked the task and acked its
+    stream message), and the worker should treat the exception as a
+    signal to move on without further action.
+
+    Otherwise, ``reschedule`` controls the fallback behavior: when True
+    (default), the worker re-queues the task with a short delay; when
+    False, the task is quietly acknowledged and dropped with an
+    INFO-level log (appropriate for debounce/cooldown where re-trying
+    would just hit the same window).
 
     ``retry_delay`` overrides the default reschedule delay when set.
     """
@@ -69,11 +75,13 @@ class AdmissionBlocked(Exception):
         execution: Execution,
         reason: str = "admission control",
         *,
+        handled: bool = False,
         reschedule: bool = True,
         retry_delay: timedelta | None = None,
     ):
         self.execution = execution
         self.reason = reason
+        self.handled = handled
         self.reschedule = reschedule
         self.retry_delay = retry_delay
         super().__init__(f"Task {execution.key} blocked by {reason}")

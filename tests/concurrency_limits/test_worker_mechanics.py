@@ -147,7 +147,7 @@ async def test_worker_concurrency_cleanup_after_task_completion(docket: Docket):
     async with Worker(docket) as worker:
         await worker.run_until_finished()
         async with docket.redis() as redis:
-            await redis.keys(f"{docket.name}:concurrency:*")  # type: ignore
+            await redis.keys(f"{docket.prefix}:concurrency:*")  # type: ignore
             cleanup_verified = True
 
     assert cleanup_verified
@@ -230,7 +230,7 @@ async def test_stale_concurrency_slots_are_scavenged_when_full(docket: Docket):
 
     # Manually insert stale slots into the concurrency sorted set.
     # These simulate slots from workers that crashed without releasing.
-    concurrency_key = f"{docket.name}:concurrency:customer_id:123"
+    concurrency_key = f"{docket.prefix}:concurrency:customer_id:123"
     stale_timestamp = (
         datetime.now(timezone.utc).timestamp() - 400
     )  # >redelivery_timeout old
@@ -285,7 +285,7 @@ async def test_graceful_shutdown_releases_concurrency_slots(docket: Docket):
 
     await docket.add(slow_task_with_concurrency)(customer_id=42)
 
-    concurrency_key = f"{docket.name}:concurrency:customer_id:42"
+    concurrency_key = f"{docket.prefix}:concurrency:customer_id:42"
 
     async with Worker(docket) as worker:
         # Start worker in background
