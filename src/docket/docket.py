@@ -637,6 +637,16 @@ class Docket(DocketSnapshotMixin):
         """Return the collection name for result storage."""
         return self.key("results")
 
+    @property
+    def concurrency_waiter_registry_key(self) -> str:
+        """Return the Redis key for the waiter-stream registry hash.
+
+        The hash maps active waiter-stream names to their max_concurrent, so
+        the worker's concurrency-sweep loop can enumerate and service only
+        the concurrency groups that actually have parked tasks.
+        """
+        return self.key("concurrency-waiters")
+
     async def _ensure_stream_and_group(self) -> None:
         """Create stream and consumer group if they don't exist (idempotent).
 

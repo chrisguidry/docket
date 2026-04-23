@@ -22,6 +22,9 @@ from ._base import (
 logger = logging.getLogger("docket.dependencies")
 
 if TYPE_CHECKING:  # pragma: no cover
+    from redis.asyncio import Redis
+
+    from ..docket import Docket
     from ..execution import Execution
 
 
@@ -45,6 +48,7 @@ MINIMUM_TTL_SECONDS = 1
 # KEYS[2]: waiters stream (concurrency_key:waiters)
 # KEYS[3]: main stream_key
 # KEYS[4]: runs_key for this task
+# KEYS[5]: waiter-stream registry (docket-scoped HASH; see _concurrency_sweep_loop)
 # ARGV: max_concurrent, task_key, current_time, is_redelivery, stale_threshold,
 #       key_ttl, message_id, worker_group_name, state_channel,
 #       field1, value1, field2, value2, ... (task message payload)
@@ -53,6 +57,7 @@ local slots_key = KEYS[1]
 local waiters_stream = KEYS[2]
 local stream_key = KEYS[3]
 local runs_key = KEYS[4]
+local registry_key = KEYS[5]
 
 local max_concurrent = tonumber(ARGV[1])
 local task_key = ARGV[2]
@@ -122,6 +127,11 @@ end
 
 redis.call('XADD', waiters_stream, '*', unpack(message))
 
+-- Register this waiter stream so the sweep loop can find it.  We re-HSET on
+-- every park so the max_concurrent always reflects the latest value (in
+-- case the limit was bumped between parks).
+redis.call('HSET', registry_key, waiters_stream, tostring(max_concurrent))
+
 redis.call('HSET', runs_key,
     'state', 'scheduled',
     'waiter_stream', waiters_stream,
@@ -147,12 +157,14 @@ return 0
 # KEYS[1]: slots (concurrency_key)
 # KEYS[2]: waiters stream (concurrency_key:waiters)
 # KEYS[3]: main stream_key
+# KEYS[4]: waiter-stream registry (HASH, docket-scoped)
 # ARGV: task_key (releasing), max_concurrent, stale_threshold, runs_prefix,
 #       state_prefix
 _RELEASE_AND_WAKE = """
 local slots_key = KEYS[1]
 local waiters_stream = KEYS[2]
 local stream_key = KEYS[3]
+local registry_key = KEYS[4]
 
 local task_key = ARGV[1]
 local max_concurrent = tonumber(ARGV[2])
@@ -210,7 +222,98 @@ if redis.call('ZCARD', slots_key) == 0 then
 end
 if redis.call('XLEN', waiters_stream) == 0 then
     redis.call('DEL', waiters_stream)
+    redis.call('HDEL', registry_key, waiters_stream)
 end
+"""
+
+
+# Scavenge any stale slot holders and hand freed capacity to parked waiters.
+# Called by the worker's concurrency-sweep loop to recover the degenerate
+# case where every slot holder crashed without releasing AND no new tasks
+# are arriving to trigger the normal acquire-path scavenge.  Structurally
+# identical to _RELEASE_AND_WAKE's post-release body, minus the self-ZREM.
+#
+# Returns the number of waiters woken (zero means either no waiters were
+# parked, or no capacity was free to give them).
+#
+# KEYS[1]: slots (concurrency_key)
+# KEYS[2]: waiters stream
+# KEYS[3]: main stream_key
+# KEYS[4]: waiter-stream registry (HASH, docket-scoped)
+# ARGV: max_concurrent, stale_threshold, runs_prefix, state_prefix
+_SCAVENGE_AND_WAKE = """
+local slots_key = KEYS[1]
+local waiters_stream = KEYS[2]
+local stream_key = KEYS[3]
+local registry_key = KEYS[4]
+
+local max_concurrent = tonumber(ARGV[1])
+local stale_threshold = tonumber(ARGV[2])
+local runs_prefix = ARGV[3]
+local state_prefix = ARGV[4]
+
+local waiters_count = redis.call('XLEN', waiters_stream)
+if waiters_count == 0 then
+    -- Stream already drained; drop its registry entry and bail out.
+    redis.call('HDEL', registry_key, waiters_stream)
+    redis.call('DEL', waiters_stream)
+    return 0
+end
+
+-- Evict any stale slot holders; a live peer would be heartbeating every
+-- redelivery_timeout/4, so anything older than redelivery_timeout belongs
+-- to a dead worker.
+local stale = redis.call('ZRANGEBYSCORE', slots_key, 0, stale_threshold)
+for _, s in ipairs(stale) do
+    redis.call('ZREM', slots_key, s)
+end
+
+local capacity = max_concurrent - redis.call('ZCARD', slots_key)
+if capacity == 0 then
+    return 0
+end
+
+local woken = 0
+local entries = redis.call('XRANGE', waiters_stream, '-', '+', 'COUNT', capacity)
+for _, entry in ipairs(entries) do
+    local waiter_id = entry[1]
+    local fields = entry[2]
+
+    local waiter_task_key
+    for i = 1, #fields, 2 do
+        if fields[i] == 'key' then
+            waiter_task_key = fields[i + 1]
+            break
+        end
+    end
+
+    local runs_key = runs_prefix .. waiter_task_key
+    local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
+    for i = 1, #fields, 2 do
+        if fields[i] == 'generation' then
+            fields[i + 1] = tostring(new_gen)
+        end
+    end
+
+    local main_id = redis.call('XADD', stream_key, '*', unpack(fields))
+    redis.call('XDEL', waiters_stream, waiter_id)
+    redis.call('HSET', runs_key, 'state', 'queued', 'stream_id', main_id)
+    redis.call('HDEL', runs_key, 'waiter_stream')
+
+    local payload = '{"type":"state","key":"' .. waiter_task_key .. '","state":"queued"}'
+    redis.call('PUBLISH', state_prefix .. waiter_task_key, payload)
+    woken = woken + 1
+end
+
+if redis.call('ZCARD', slots_key) == 0 then
+    redis.call('DEL', slots_key)
+end
+if redis.call('XLEN', waiters_stream) == 0 then
+    redis.call('DEL', waiters_stream)
+    redis.call('HDEL', registry_key, waiters_stream)
+end
+
+return woken
 """
 
 
@@ -381,6 +484,7 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                     waiters_stream,
                     docket.stream_key,
                     execution._redis_key,
+                    docket.concurrency_waiter_registry_key,
                 ],
                 args=[
                     self.max_concurrent,
@@ -444,7 +548,12 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         async with docket.redis() as redis:
             release = redis.register_script(_RELEASE_AND_WAKE)
             await release(
-                keys=[self._concurrency_key, waiters_stream, docket.stream_key],
+                keys=[
+                    self._concurrency_key,
+                    waiters_stream,
+                    docket.stream_key,
+                    docket.concurrency_waiter_registry_key,
+                ],
                 args=[
                     self._task_key,
                     self.max_concurrent,
@@ -492,3 +601,55 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
             )
         assert self._concurrency_key is not None
         return self._concurrency_key
+
+
+async def sweep_concurrency_waiters(
+    docket: "Docket",
+    redis: "Redis",
+    redelivery_timeout: timedelta,
+) -> int:
+    """Scavenge dead concurrency holders and wake any stranded waiters.
+
+    Enumerates the docket's waiter-stream registry (populated lazily by
+    the acquire-or-park Lua script) and runs ``_SCAVENGE_AND_WAKE`` on
+    each active waiter stream.  If the registry is empty -- which is the
+    common case when no concurrency-limited task is currently blocked --
+    this function is effectively free: one HKEYS call and done.
+
+    Returns the total number of waiters woken across all streams.  Used
+    by the Worker's ``_concurrency_sweep_loop`` to recover the degenerate
+    case where every slot holder crashed without releasing AND no new
+    arriving task has triggered the normal acquire-path scavenge.
+    """
+    registry_key = docket.concurrency_waiter_registry_key
+    entries: dict[bytes, bytes] = await redis.hgetall(registry_key)  # type: ignore[assignment,misc]
+    if not entries:
+        return 0
+
+    scavenge = redis.register_script(_SCAVENGE_AND_WAKE)
+    stale_threshold = (
+        datetime.now(timezone.utc).timestamp() - redelivery_timeout.total_seconds()
+    )
+    runs_prefix = f"{docket.prefix}:runs:"
+    state_prefix = f"{docket.prefix}:state:"
+
+    total_woken = 0
+    for waiters_stream_bytes, max_concurrent_bytes in entries.items():
+        waiters_stream = waiters_stream_bytes.decode()
+        concurrency_key = waiters_stream.removesuffix(":waiters")
+        woken = await scavenge(
+            keys=[
+                concurrency_key,
+                waiters_stream,
+                docket.stream_key,
+                registry_key,
+            ],
+            args=[
+                int(max_concurrent_bytes),
+                stale_threshold,
+                runs_prefix,
+                state_prefix,
+            ],
+        )
+        total_woken += int(woken)
+    return total_woken

@@ -148,6 +148,82 @@ async def test_blocked_task_makes_no_polling_retries(docket: Docket, worker: Wor
     assert generations_seen == [3], generations_seen
 
 
+async def test_sweep_wakes_waiters_when_holder_died_without_releasing(
+    docket: Docket,
+):
+    """The degenerate case: a concurrency slot is held by a worker that
+    crashed without releasing, AND no new tasks are arriving to trigger
+    the normal acquire-path scavenge.  The periodic sweep loop should
+    detect the stale slot, free the capacity, and wake the parked waiter.
+
+    We seed Redis directly (rather than orchestrating a crash) because
+    the worker's own shutdown path would fire the release callback and
+    drain waiters legitimately, defeating the whole point of the test.
+    """
+    from datetime import timedelta
+
+    ran: list[int] = []
+
+    async def task(
+        customer_id: int,
+        task_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id", max_concurrent=1
+        ),
+    ):
+        ran.append(task_id)
+
+    # Use docket.add to register the task and build a valid message payload,
+    # then manually move it off the main stream and onto a waiter stream.
+    execution = await docket.add(task)(customer_id=1, task_id=42)
+    slots_key = f"{docket.prefix}:concurrency:customer_id:1"
+    waiters_stream = f"{slots_key}:waiters"
+
+    async with docket.redis() as redis:
+        # Pull the freshly-scheduled message out of the main stream.
+        entries = await redis.xrange(docket.stream_key, "-", "+")  # type: ignore
+        message_id, fields = entries[0]
+        await redis.xdel(docket.stream_key, message_id)  # type: ignore
+
+        # Re-park it on the waiter stream ourselves and wire up the state
+        # that the acquire-or-park script would normally produce.
+        await redis.xadd(waiters_stream, dict(fields))  # type: ignore
+        await redis.hset(  # type: ignore
+            docket.concurrency_waiter_registry_key,
+            waiters_stream,
+            "1",  # max_concurrent
+        )
+        await redis.hset(  # type: ignore
+            f"{docket.prefix}:runs:{execution.key}",
+            mapping={
+                "state": "scheduled",
+                "waiter_stream": waiters_stream,
+            },
+        )
+        # Seed a stale slot so the sweep thinks a dead holder is blocking
+        # the waiter.  Score of 0 is well below any live stale_threshold.
+        await redis.zadd(slots_key, {"dead-holder": 0.0})  # type: ignore
+
+        # Sanity: we really are in the "parked but nothing alive to wake us" state
+        assert await redis.xlen(waiters_stream) == 1  # type: ignore
+        assert await redis.xlen(docket.stream_key) == 0  # type: ignore
+        assert await redis.zcard(slots_key) == 1  # type: ignore
+
+    # Start a fresh worker with a short redelivery_timeout so the sweep
+    # loop fires within the test window.  No new tasks are added.  The
+    # worker's _concurrency_sweep_loop must scavenge the stale slot,
+    # re-XADD the parked task into the main stream, and run it.
+    async with Worker(docket, redelivery_timeout=timedelta(milliseconds=200)) as worker:
+        await asyncio.wait_for(worker.run_until_finished(), timeout=5.0)
+
+    assert ran == [42], ran
+
+    # Registry and waiter stream should be drained by the sweep's cleanup
+    async with docket.redis() as redis:
+        assert await redis.hlen(docket.concurrency_waiter_registry_key) == 0  # type: ignore
+        assert await redis.xlen(waiters_stream) == 0  # type: ignore
+
+
 async def test_many_contending_tasks_all_run_exactly_once(docket: Docket):
     """Stress test: N tasks contending for 1 slot all eventually run, each
     exactly once, without duplicates or drops.  The structural correctness

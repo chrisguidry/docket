@@ -59,6 +59,7 @@ from .dependencies import (
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
 )
+from .dependencies._concurrency import sweep_concurrency_waiters
 from .dependencies._resolution import (
     detect_single_conflicts,
     validate_worker_dependencies,
@@ -616,6 +617,10 @@ class Worker:
                     self._renew_leases(redis, active_tasks),
                     name=f"{self.docket.name} - lease renewal",
                 )
+                infra.create_task(
+                    self._concurrency_sweep_loop(redis),
+                    name=f"{self.docket.name} - concurrency sweep",
+                )
 
                 has_work: bool = True
                 stopping = self._worker_stopping.is_set
@@ -762,6 +767,50 @@ class Worker:
                 return  # Event was set, exit the loop
             except asyncio.TimeoutError:
                 pass  # Normal timeout, continue scheduling
+
+    async def _concurrency_sweep_loop(self, redis: Redis) -> None:
+        """Periodically recover orphaned concurrency waiters.
+
+        Every ``redelivery_timeout``, scan the docket's waiter-stream
+        registry and scavenge any slot holders whose lease has gone stale,
+        handing the freed capacity to parked waiters.  The registry is
+        lazily populated by the acquire-or-park script: if nothing is
+        currently blocked on a concurrency limit the registry is empty
+        and this loop is effectively free (one ``HKEYS`` per interval).
+
+        Cadence aligned to ``redelivery_timeout`` so the stale threshold
+        and the sweep period match -- sweeping more often just wastes
+        work, sweeping less often extends recovery time.
+        """
+        log_context = self._log_context()
+
+        while not self._worker_stopping.is_set():  # pragma: no branch
+            try:
+                with self._maybe_suppress_instrumentation():
+                    woken = await sweep_concurrency_waiters(
+                        self.docket, redis, self.redelivery_timeout
+                    )
+                if woken:
+                    logger.debug(
+                        "Woke %d stranded concurrency waiter(s) during sweep",
+                        woken,
+                        extra=log_context,
+                    )
+            except Exception:  # pragma: no cover
+                logger.exception(
+                    "Error in concurrency sweep loop",
+                    exc_info=True,
+                    extra=log_context,
+                )
+
+            try:
+                await asyncio.wait_for(
+                    self._worker_stopping.wait(),
+                    timeout=self.redelivery_timeout.total_seconds(),
+                )
+                return
+            except asyncio.TimeoutError:
+                pass
 
     async def _renew_leases(
         self,
