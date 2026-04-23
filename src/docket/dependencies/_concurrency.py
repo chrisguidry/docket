@@ -124,6 +124,7 @@ redis.call('XADD', waiters_stream, '*', unpack(message))
 
 redis.call('HSET', runs_key,
     'state', 'scheduled',
+    'waiter_stream', waiters_stream,
     'function', function_name,
     'args', args_data,
     'kwargs', kwargs_data
@@ -197,6 +198,7 @@ if capacity > 0 then
         local main_id = redis.call('XADD', stream_key, '*', unpack(fields))
         redis.call('XDEL', waiters_stream, waiter_id)
         redis.call('HSET', runs_key, 'state', 'queued', 'stream_id', main_id)
+        redis.call('HDEL', runs_key, 'waiter_stream')
 
         local payload = '{"type":"state","key":"' .. waiter_task_key .. '","state":"queued"}'
         redis.call('PUBLISH', state_prefix .. waiter_task_key, payload)
