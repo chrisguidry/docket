@@ -670,16 +670,19 @@ class Docket(DocketSnapshotMixin):
         """Cancel a task atomically.
 
         Handles cancellation regardless of task location:
-        - From the stream (using stored message ID)
-        - From the queue (scheduled tasks)
+        - From the main stream (using stored message ID)
+        - From the future queue (scheduled tasks)
+        - From a concurrency-limit waiter stream (admission-blocked tasks)
         - Cleans up all associated metadata keys
         """
         if self._cancel_task_script is None:
             self._cancel_task_script = cast(
                 _cancel_task,
                 redis.register_script(
-                    # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key, runs_key
-                    # ARGV: task_key, completed_at
+                    # KEYS: stream_key, known_key, parked_key, queue_key,
+                    #       stream_id_key, runs_key, waiter_stream_or_sentinel,
+                    #       registry_key, progress_key
+                    # ARGV: task_key, completed_at, waiter_entry_id
                     """
                     local stream_key = KEYS[1]
                     -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
@@ -688,8 +691,12 @@ class Docket(DocketSnapshotMixin):
                     local queue_key = KEYS[4]
                     local stream_id_key = KEYS[5]
                     local runs_key = KEYS[6]
+                    local waiter_stream = KEYS[7]
+                    local registry_key = KEYS[8]
+                    local progress_key = KEYS[9]
                     local task_key = ARGV[1]
                     local completed_at = ARGV[2]
+                    local waiter_entry_id = ARGV[3]
 
                     -- Get stream ID (check new location first, then legacy)
                     local message_id = redis.call('HGET', runs_key, 'stream_id')
@@ -699,17 +706,31 @@ class Docket(DocketSnapshotMixin):
                         message_id = redis.call('GET', stream_id_key)
                     end
 
-                    -- Delete from stream if message ID exists
+                    -- Delete from main stream if message ID exists
                     if message_id then
                         redis.call('XDEL', stream_key, message_id)
                     end
 
-                    -- Clean up legacy keys and parked data
-                    redis.call('DEL', known_key, parked_key, stream_id_key)
+                    -- Remove from a concurrency waiter stream if parked there.
+                    -- stream_key doubles as the "no waiter" sentinel so we can
+                    -- pass a cluster-slot-compatible KEYS entry unconditionally.
+                    if waiter_stream ~= stream_key and waiter_entry_id ~= '' then
+                        redis.call('XDEL', waiter_stream, waiter_entry_id)
+                        if redis.call('XLEN', waiter_stream) == 0 then
+                            redis.call('DEL', waiter_stream)
+                            redis.call('HDEL', registry_key, waiter_stream)
+                        end
+                    end
+
+                    -- Clean up legacy keys, parked data, and any progress
+                    -- hash left behind by claim() before a task was parked.
+                    redis.call('DEL', known_key, parked_key, stream_id_key,
+                               progress_key)
                     redis.call('ZREM', queue_key, task_key)
 
                     -- Clear scheduling markers so add() can reschedule this key
-                    redis.call('HDEL', runs_key, 'known', 'stream_id')
+                    redis.call('HDEL', runs_key, 'known', 'stream_id',
+                               'waiter_stream', 'waiter_entry_id')
 
                     -- Only set CANCELLED if not already in a terminal state
                     local current_state = redis.call('HGET', runs_key, 'state')
@@ -727,6 +748,23 @@ class Docket(DocketSnapshotMixin):
         completed_at = datetime.now(timezone.utc).isoformat()
         task_runs_key = self.runs_key(key)
 
+        # The script needs atomic access to the waiter stream (if any) to
+        # remove a parked entry alongside the other cancel work.  Read the
+        # location from the runs hash first; it's idempotent if the race
+        # goes the other way (wake-then-cancel).
+        waiter_info = await redis.hmget(  # type: ignore[misc]
+            task_runs_key, "waiter_stream", "waiter_entry_id"
+        )
+        waiter_stream_bytes, waiter_entry_id_bytes = waiter_info
+        waiter_stream = (
+            waiter_stream_bytes.decode()
+            if waiter_stream_bytes
+            else self.stream_key  # sentinel -- same hash slot, script treats as "no waiter"
+        )
+        waiter_entry_id = (
+            waiter_entry_id_bytes.decode() if waiter_entry_id_bytes else ""
+        )
+
         # Execute the cancellation script
         await cancel_task(
             keys=[
@@ -736,8 +774,11 @@ class Docket(DocketSnapshotMixin):
                 self.queue_key,
                 self.stream_id_key(key),
                 task_runs_key,
+                waiter_stream,
+                self.concurrency_waiter_registry_key,
+                self.key(f"progress:{key}"),
             ],
-            args=[key, completed_at],
+            args=[key, completed_at, waiter_entry_id],
         )
 
         # Apply TTL or delete tombstone based on execution_ttl

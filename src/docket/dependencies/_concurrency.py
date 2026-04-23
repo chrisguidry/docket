@@ -125,16 +125,19 @@ for i = 10, #ARGV, 2 do
     message[#message + 1] = field_value
 end
 
-redis.call('XADD', waiters_stream, '*', unpack(message))
+local waiter_entry_id = redis.call('XADD', waiters_stream, '*', unpack(message))
 
 -- Register this waiter stream so the sweep loop can find it.  We re-HSET on
 -- every park so the max_concurrent always reflects the latest value (in
 -- case the limit was bumped between parks).
 redis.call('HSET', registry_key, waiters_stream, tostring(max_concurrent))
 
+-- Record the waiter's location so docket.cancel() can XDEL it atomically
+-- before the release/wake path revives a cancelled task.
 redis.call('HSET', runs_key,
     'state', 'scheduled',
     'waiter_stream', waiters_stream,
+    'waiter_entry_id', waiter_entry_id,
     'function', function_name,
     'args', args_data,
     'kwargs', kwargs_data
@@ -210,7 +213,7 @@ if capacity > 0 then
         local main_id = redis.call('XADD', stream_key, '*', unpack(fields))
         redis.call('XDEL', waiters_stream, waiter_id)
         redis.call('HSET', runs_key, 'state', 'queued', 'stream_id', main_id)
-        redis.call('HDEL', runs_key, 'waiter_stream')
+        redis.call('HDEL', runs_key, 'waiter_stream', 'waiter_entry_id')
 
         local payload = '{"type":"state","key":"' .. waiter_task_key .. '","state":"queued"}'
         redis.call('PUBLISH', state_prefix .. waiter_task_key, payload)

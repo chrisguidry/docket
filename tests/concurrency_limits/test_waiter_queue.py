@@ -224,6 +224,67 @@ async def test_sweep_wakes_waiters_when_holder_died_without_releasing(
         assert await redis.xlen(waiters_stream) == 0  # type: ignore
 
 
+async def test_cancel_of_parked_task_prevents_wake_and_run(
+    docket: Docket, worker: Worker
+):
+    """Cancelling a concurrency-blocked task should remove it from the waiter
+    stream so the next slot release does not revive and run it.  Regression
+    guard: the previous queue-based reschedule path removed cancelled tasks
+    from the queue naturally; the stream-based park path needs an explicit
+    XDEL inside the cancel script."""
+    blocked_ran = False
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def holder(
+        customer_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id", max_concurrent=1
+        ),
+    ):
+        holder_entered.set()
+        await release_holder.wait()
+
+    async def blocked(  # pragma: no cover -- test asserts this never executes
+        customer_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id", max_concurrent=1
+        ),
+    ):
+        nonlocal blocked_ran
+        blocked_ran = True
+
+    await docket.add(holder)(customer_id=1)
+    blocked_exec = await docket.add(blocked)(customer_id=1)
+
+    worker_task = asyncio.create_task(worker.run_until_finished())
+    await holder_entered.wait()
+
+    # Make sure `blocked` is actually parked on the waiter stream
+    waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
+    await _wait_for_xlen(docket, waiters_stream, 1)
+
+    # Cancel the parked task; release the holder; verify blocked never ran
+    await docket.cancel(blocked_exec.key)
+    release_holder.set()
+    await worker_task
+
+    assert not blocked_ran, "cancelled parked task was revived and ran"
+
+    async with docket.redis() as redis:
+        runs_key = f"{docket.prefix}:runs:{blocked_exec.key}"
+        state = await redis.hget(runs_key, "state")  # type: ignore
+        assert state == b"cancelled", state
+        # Waiter stream should be fully drained and unregistered
+        assert await redis.xlen(waiters_stream) == 0  # type: ignore
+        assert (
+            await redis.hexists(  # type: ignore
+                docket.concurrency_waiter_registry_key, waiters_stream
+            )
+            == 0
+        )
+
+
 async def test_many_contending_tasks_all_run_exactly_once(docket: Docket):
     """Stress test: N tasks contending for 1 slot all eventually run, each
     exactly once, without duplicates or drops.  The structural correctness
