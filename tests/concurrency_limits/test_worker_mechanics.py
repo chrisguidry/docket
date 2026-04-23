@@ -285,7 +285,7 @@ async def test_graceful_shutdown_releases_concurrency_slots(docket: Docket):
 
     await docket.add(slow_task_with_concurrency)(customer_id=42)
 
-    concurrency_key = f"{docket.name}:concurrency:customer_id:42"
+    concurrency_key = f"{docket.prefix}:concurrency:customer_id:42"
 
     async with Worker(docket) as worker:
         # Start worker in background

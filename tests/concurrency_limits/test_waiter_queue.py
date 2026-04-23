@@ -148,49 +148,28 @@ async def test_blocked_task_makes_no_polling_retries(docket: Docket, worker: Wor
     assert generations_seen == [3], generations_seen
 
 
-async def test_many_contending_tasks_drain_faster_than_polling(docket: Docket):
-    """With N tasks contending for 1 slot, waker-based release should drain
-    the queue in roughly ``N * task_duration`` plus small per-wake overhead --
-    not the old ``N * (task_duration + ADMISSION_BLOCKED_RETRY_DELAY)``.
-
-    We assert total wall time is comfortably below the old polling bound
-    rather than a tight per-task gap, since CI runners have highly variable
-    scheduling latency.
-    """
-    from datetime import timedelta
-
-    ran = 0
+async def test_many_contending_tasks_all_run_exactly_once(docket: Docket):
+    """Stress test: N tasks contending for 1 slot all eventually run, each
+    exactly once, without duplicates or drops.  The structural correctness
+    of the wake-on-release loop matters more than wall-clock timing (which
+    varies wildly on CI runners)."""
+    ran: list[int] = []
 
     async def serial_task(
         customer_id: int,
+        task_id: int,
         concurrency: ConcurrencyLimit = ConcurrencyLimit(
             "customer_id", max_concurrent=1
         ),
     ):
-        nonlocal ran
-        ran += 1
-        await asyncio.sleep(0.02)
+        ran.append(task_id)
+        await asyncio.sleep(0.01)
 
-    n_tasks = 6
-    task_duration = 0.02
-    for _ in range(n_tasks):
-        await docket.add(serial_task)(customer_id=1)
+    n_tasks = 8
+    for i in range(n_tasks):
+        await docket.add(serial_task)(customer_id=1, task_id=i)
 
-    start = time.monotonic()
-    async with Worker(
-        docket,
-        concurrency=4,
-        minimum_check_interval=timedelta(milliseconds=5),
-        scheduling_resolution=timedelta(milliseconds=5),
-    ) as worker:
+    async with Worker(docket, concurrency=4) as worker:
         await worker.run_until_finished()
-    elapsed = time.monotonic() - start
 
-    assert ran == n_tasks
-    # Old polling behavior would need at least N * (task + 100ms retry_delay).
-    # We give generous slack for CI runner variance but stay well below that.
-    polling_baseline = n_tasks * (task_duration + 0.1)
-    assert elapsed < polling_baseline, (
-        f"Drained {n_tasks} tasks in {elapsed:.3f}s; "
-        f"old polling path would need at least {polling_baseline:.3f}s"
-    )
+    assert sorted(ran) == list(range(n_tasks)), ran

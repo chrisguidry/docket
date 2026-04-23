@@ -226,11 +226,14 @@ async def test_concurrency_limit_with_custom_scope(docket: Docket, worker: Worke
     """Test that custom scope parameter works correctly."""
     execution_order: list[str] = []
 
-    # Use my-application: prefix for custom scopes (allowed by ACL for user-managed keys)
+    # Custom scope anchored under the docket prefix so slots, waiters, stream,
+    # and runs keys share the same hash slot in Redis Cluster mode.
     async def task_with_scope(
         customer_id: int,
         concurrency: ConcurrencyLimit = ConcurrencyLimit(
-            "customer_id", max_concurrent=1, scope="my-application:custom"
+            "customer_id",
+            max_concurrent=1,
+            scope=f"{docket.prefix}:my-application:custom",
         ),
     ):
         execution_order.append(f"task_{customer_id}")
