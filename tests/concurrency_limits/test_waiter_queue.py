@@ -1,6 +1,6 @@
-"""Tests for the concurrency-limit waiter queue (admission-blocked tasks park
-in a Redis sorted set and are woken when capacity frees up, rather than
-polling via the future queue).
+"""Tests for the concurrency-limit waiter stream (admission-blocked tasks are
+re-XADD'd into a per-concurrency-key waiter stream and woken when capacity
+frees up, rather than polling via the future queue).
 """
 
 import asyncio
@@ -13,22 +13,23 @@ from docket import (
 )
 
 
-async def _wait_for_zcard(docket: Docket, key: str, target: int) -> None:
+async def _wait_for_xlen(docket: Docket, key: str, target: int) -> None:
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         async with docket.redis() as redis:
-            size = await redis.zcard(key)  # type: ignore
+            size = await redis.xlen(key)  # type: ignore
         if size == target:
             return
         await asyncio.sleep(0.01)
     raise AssertionError(  # pragma: no cover
-        f"ZCARD({key}) did not reach {target} in time"
+        f"XLEN({key}) did not reach {target} in time"
     )
 
 
-async def test_blocked_task_parks_in_waiter_zset(docket: Docket, worker: Worker):
-    """A task that can't acquire a slot lands in the waiter sorted set and its
-    payload is stored in the parked hash -- not in the scheduler's future queue.
+async def test_blocked_task_parks_on_waiter_stream(docket: Docket, worker: Worker):
+    """A task that can't acquire a slot is XADD'd onto the waiter stream with
+    its full message payload -- no separate parked hash, no entry in the
+    scheduler's future queue.
     """
     started = asyncio.Event()
     hold = asyncio.Event()
@@ -48,15 +49,14 @@ async def test_blocked_task_parks_in_waiter_zset(docket: Docket, worker: Worker)
     worker_task = asyncio.create_task(worker.run_until_finished())
     await started.wait()
 
-    waiters_key = f"{docket.prefix}:concurrency:customer_id:1:waiters"
-    await _wait_for_zcard(docket, waiters_key, 1)
+    waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
+    await _wait_for_xlen(docket, waiters_stream, 1)
 
     async with docket.redis() as redis:
-        waiters = await redis.zrange(waiters_key, 0, -1)  # type: ignore
-        assert len(waiters) == 1
-        parked_key = docket.parked_task_key(waiters[0].decode())
-        parked = await redis.hgetall(parked_key)  # type: ignore
-        assert parked[b"function"] == b"holder"
+        entries = await redis.xrange(waiters_stream, "-", "+")  # type: ignore
+        assert len(entries) == 1
+        fields = entries[0][1]
+        assert fields[b"function"] == b"holder"
         # Not sitting in the future queue
         assert await redis.zcard(docket.queue_key) == 0  # type: ignore
 
@@ -65,7 +65,7 @@ async def test_blocked_task_parks_in_waiter_zset(docket: Docket, worker: Worker)
 
 
 async def test_release_wakes_oldest_waiter_first(docket: Docket, worker: Worker):
-    """Waiters are woken in FIFO order based on the time they were parked."""
+    """Waiters are woken in FIFO order -- stream XADD IDs are monotonic."""
     order: list[int] = []
     holder_entered = asyncio.Event()
     release_holder = asyncio.Event()
@@ -87,11 +87,11 @@ async def test_release_wakes_oldest_waiter_first(docket: Docket, worker: Worker)
     worker_task = asyncio.create_task(worker.run_until_finished())
     await holder_entered.wait()
 
-    # Now enqueue waiters one at a time so their park timestamps strictly order
-    waiters_key = f"{docket.prefix}:concurrency:customer_id:1:waiters"
+    # Enqueue waiters one at a time so their park order is strict
+    waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
     for tid in (1, 2, 3):
         await docket.add(task)(customer_id=1, task_id=tid)
-        await _wait_for_zcard(docket, waiters_key, tid)
+        await _wait_for_xlen(docket, waiters_stream, tid)
 
     release_holder.set()
     await worker_task
@@ -138,8 +138,8 @@ async def test_blocked_task_makes_no_polling_retries(docket: Docket, worker: Wor
     # Wait for the blocked task to actually park -- otherwise release_holder
     # can fire before blocked reaches the concurrency gate, making it acquire
     # directly without parking (which would defeat the test's purpose).
-    waiters_key = f"{docket.prefix}:concurrency:customer_id:1:waiters"
-    await _wait_for_zcard(docket, waiters_key, 1)
+    waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
+    await _wait_for_xlen(docket, waiters_stream, 1)
 
     release_holder.set()
     await worker_task

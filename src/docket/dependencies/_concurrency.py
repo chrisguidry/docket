@@ -35,25 +35,24 @@ LEASE_RENEWAL_FACTOR = 4
 MINIMUM_TTL_SECONDS = 1
 
 
-# Acquire a concurrency slot, or park the task on the waiter queue atomically.
-# Returns 1 if acquired (task should run), 0 if parked (task has been XACK'd
-# out of the stream and stored in the parked hash; caller raises
-# ConcurrencyBlocked(handled=True) so the worker takes no further action).
+# Acquire a concurrency slot, or park the task on the waiter stream atomically.
+# Returns 1 if acquired (task should run), 0 if parked (the inflight stream
+# message has been XACK+XDEL'd and re-XADD'd into the waiter stream; caller
+# raises ConcurrencyBlocked(handled=True) so the worker takes no further
+# action).
 #
 # KEYS[1]: slots (concurrency_key)
-# KEYS[2]: waiters (concurrency_key:waiters)
-# KEYS[3]: stream_key
-# KEYS[4]: parked_key for this task
-# KEYS[5]: runs_key for this task
+# KEYS[2]: waiters stream (concurrency_key:waiters)
+# KEYS[3]: main stream_key
+# KEYS[4]: runs_key for this task
 # ARGV: max_concurrent, task_key, current_time, is_redelivery, stale_threshold,
 #       key_ttl, message_id, worker_group_name, state_channel,
-#       field1, value1, field2, value2, ... (parked task payload)
+#       field1, value1, field2, value2, ... (task message payload)
 _ACQUIRE_OR_PARK = """
 local slots_key = KEYS[1]
-local waiters_key = KEYS[2]
+local waiters_stream = KEYS[2]
 local stream_key = KEYS[3]
-local parked_key = KEYS[4]
-local runs_key = KEYS[5]
+local runs_key = KEYS[4]
 
 local max_concurrent = tonumber(ARGV[1])
 local task_key = ARGV[2]
@@ -83,8 +82,7 @@ else
         return 1
     end
 
-    -- All slots full.  Scavenge any that have gone stale (holder is dead)
-    -- and claim it ourselves.
+    -- All slots full.  Scavenge any that have gone stale (holder is dead).
     local stale_slots = redis.call('ZRANGEBYSCORE', slots_key, 0, stale_threshold, 'LIMIT', 0, 1)
     if #stale_slots > 0 then
         redis.call('ZREM', slots_key, stale_slots[1])
@@ -94,41 +92,35 @@ else
     end
 end
 
--- Park: ACK the stream message, store the task payload, enqueue into waiters.
--- Doing this here, atomically with the acquire check, keeps a concurrent
--- release from missing us in the gap between "blocked" and "parked".
+-- Park: ACK the main-stream message, re-XADD the payload into the waiter
+-- stream.  Doing this here, atomically with the acquire check, keeps a
+-- concurrent slot release from missing us in the gap between "blocked" and
+-- "parked".
 redis.call('XACK', stream_key, worker_group_name, message_id)
 redis.call('XDEL', stream_key, message_id)
 
+-- Bump generation so stale redeliveries of this task are superseded on wake,
+-- and splice the new value into the message as we forward it.
+local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
 local message = {}
-local function_name = nil
-local args_data = nil
-local kwargs_data = nil
-local generation_index = nil
+local function_name, args_data, kwargs_data
 for i = 10, #ARGV, 2 do
     local field_name = ARGV[i]
     local field_value = ARGV[i + 1]
-    message[#message + 1] = field_name
-    message[#message + 1] = field_value
-    if field_name == 'function' then
+    if field_name == 'generation' then
+        field_value = tostring(new_gen)
+    elseif field_name == 'function' then
         function_name = field_value
     elseif field_name == 'args' then
         args_data = field_value
     elseif field_name == 'kwargs' then
         kwargs_data = field_value
-    elseif field_name == 'generation' then
-        generation_index = #message
     end
+    message[#message + 1] = field_name
+    message[#message + 1] = field_value
 end
 
--- Bump generation so any stale redeliveries are superseded on wake.
-local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
-if generation_index then
-    message[generation_index] = tostring(new_gen)
-end
-
-redis.call('HSET', parked_key, unpack(message))
-redis.call('ZADD', waiters_key, current_time, task_key)
+redis.call('XADD', waiters_stream, '*', unpack(message))
 
 redis.call('HSET', runs_key,
     'state', 'scheduled',
@@ -145,32 +137,31 @@ return 0
 """
 
 
-# Release this task's slot and, if waiters are queued, hand the freed
-# capacity off to them by re-injecting the oldest waiter(s) into the stream.
+# Release this task's slot and, if waiters are parked, hand the freed
+# capacity off by re-injecting the oldest waiter(s) into the main stream.
 # Stale peer slots are scavenged opportunistically, but only when waiters
-# exist -- otherwise we'd prematurely evict slots held by briefly-paused
+# exist -- we don't want to prematurely evict slots held by briefly-paused
 # live workers.
 #
 # KEYS[1]: slots (concurrency_key)
-# KEYS[2]: waiters (concurrency_key:waiters)
-# KEYS[3]: stream_key
-# ARGV: task_key (releasing), max_concurrent, stale_threshold, docket_prefix,
-#       runs_prefix, state_prefix
+# KEYS[2]: waiters stream (concurrency_key:waiters)
+# KEYS[3]: main stream_key
+# ARGV: task_key (releasing), max_concurrent, stale_threshold, runs_prefix,
+#       state_prefix
 _RELEASE_AND_WAKE = """
 local slots_key = KEYS[1]
-local waiters_key = KEYS[2]
+local waiters_stream = KEYS[2]
 local stream_key = KEYS[3]
 
 local task_key = ARGV[1]
 local max_concurrent = tonumber(ARGV[2])
 local stale_threshold = tonumber(ARGV[3])
-local docket_prefix = ARGV[4]
-local runs_prefix = ARGV[5]
-local state_prefix = ARGV[6]
+local runs_prefix = ARGV[4]
+local state_prefix = ARGV[5]
 
 redis.call('ZREM', slots_key, task_key)
 
-local waiters_count = redis.call('ZCARD', waiters_key)
+local waiters_count = redis.call('XLEN', waiters_stream)
 if waiters_count > 0 then
     local stale = redis.call('ZRANGEBYSCORE', slots_key, 0, stale_threshold)
     for _, s in ipairs(stale) do
@@ -180,36 +171,43 @@ end
 
 local capacity = max_concurrent - redis.call('ZCARD', slots_key)
 if capacity > 0 then
-    local waiters = redis.call('ZRANGE', waiters_key, 0, capacity - 1)
-    for _, w in ipairs(waiters) do
-        redis.call('ZREM', waiters_key, w)
-        local parked_key = docket_prefix .. ':' .. w
-        local runs_key = runs_prefix .. w
-        local fields = redis.call('HGETALL', parked_key)
-        if #fields > 0 then
-            local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
-            for i = 1, #fields, 2 do
-                if fields[i] == 'generation' then
-                    fields[i + 1] = tostring(new_gen)
-                end
+    local entries = redis.call('XRANGE', waiters_stream, '-', '+', 'COUNT', capacity)
+    for _, entry in ipairs(entries) do
+        local waiter_id = entry[1]
+        local fields = entry[2]
+
+        -- Pull out the waiter's task_key so we can address its runs hash and
+        -- its state-change pubsub channel.
+        local waiter_task_key
+        for i = 1, #fields, 2 do
+            if fields[i] == 'key' then
+                waiter_task_key = fields[i + 1]
+                break
             end
-            local message_id = redis.call('XADD', stream_key, '*', unpack(fields))
-            redis.call('DEL', parked_key)
-            redis.call('HSET', runs_key,
-                'state', 'queued',
-                'stream_id', message_id
-            )
-            local payload = '{"type":"state","key":"' .. w .. '","state":"queued"}'
-            redis.call('PUBLISH', state_prefix .. w, payload)
         end
+
+        local runs_key = runs_prefix .. waiter_task_key
+        local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
+        for i = 1, #fields, 2 do
+            if fields[i] == 'generation' then
+                fields[i + 1] = tostring(new_gen)
+            end
+        end
+
+        local main_id = redis.call('XADD', stream_key, '*', unpack(fields))
+        redis.call('XDEL', waiters_stream, waiter_id)
+        redis.call('HSET', runs_key, 'state', 'queued', 'stream_id', main_id)
+
+        local payload = '{"type":"state","key":"' .. waiter_task_key .. '","state":"queued"}'
+        redis.call('PUBLISH', state_prefix .. waiter_task_key, payload)
     end
 end
 
 if redis.call('ZCARD', slots_key) == 0 then
     redis.call('DEL', slots_key)
 end
-if redis.call('ZCARD', waiters_key) == 0 then
-    redis.call('DEL', waiters_key)
+if redis.call('XLEN', waiters_stream) == 0 then
+    redis.call('DEL', waiters_stream)
 end
 """
 
@@ -355,7 +353,7 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         limit._task_key = execution.key
         limit._redelivery_timeout = worker.redelivery_timeout
 
-        waiters_key = f"{concurrency_key}:waiters"
+        waiters_stream = f"{concurrency_key}:waiters"
         redelivery_timeout = worker.redelivery_timeout
 
         message: dict[bytes, bytes] = execution.as_message()
@@ -368,8 +366,8 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
             int(redelivery_timeout.total_seconds() * LEASE_RENEWAL_FACTOR),
         )
 
-        # One atomic script: either acquire a slot, or XACK+XDEL the stream
-        # message, park the task's payload, and enqueue it on the waiter set.
+        # One atomic script: either acquire a slot, or XACK+XDEL the main
+        # stream message and re-XADD the payload into the waiter stream.
         # Folding acquire-and-park together closes a race where a slot holder
         # releases in the gap between an acquire failure and a Python-side
         # park, leaving the blocked task with nothing to wake it.
@@ -378,9 +376,8 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
             result = await acquire_or_park(
                 keys=[
                     concurrency_key,
-                    waiters_key,
+                    waiters_stream,
                     docket.stream_key,
-                    docket.parked_task_key(execution.key),
                     execution._redis_key,
                 ],
                 args=[
@@ -403,9 +400,9 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
 
         if not bool(result):  # pragma: no branch
             logger.debug(
-                "⏳ Task %s parked in waiter queue %s",
+                "⏳ Task %s parked on waiter stream %s",
                 execution.key,
-                waiters_key,
+                waiters_stream,
             )
             raise ConcurrencyBlocked(execution, concurrency_key, self.max_concurrent)
 
@@ -438,19 +435,18 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         assert self._concurrency_key and self._task_key and self._redelivery_timeout
 
         docket = current_docket.get()
-        waiters_key = f"{self._concurrency_key}:waiters"
+        waiters_stream = f"{self._concurrency_key}:waiters"
         current_time = datetime.now(timezone.utc).timestamp()
         stale_threshold = current_time - self._redelivery_timeout.total_seconds()
 
         async with docket.redis() as redis:
             release = redis.register_script(_RELEASE_AND_WAKE)
             await release(
-                keys=[self._concurrency_key, waiters_key, docket.stream_key],
+                keys=[self._concurrency_key, waiters_stream, docket.stream_key],
                 args=[
                     self._task_key,
                     self.max_concurrent,
                     stale_threshold,
-                    docket.prefix,
                     f"{docket.prefix}:runs:",
                     f"{docket.prefix}:state:",
                 ],
