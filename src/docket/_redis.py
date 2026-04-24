@@ -9,20 +9,18 @@ this module will need to change.
 """
 
 import asyncio
+import importlib
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
+from threading import Lock
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Protocol, runtime_checkable
+from typing import Any, AsyncGenerator, Callable, Protocol, cast, runtime_checkable
 from urllib.parse import ParseResult, urlparse, urlunparse
 
 from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
 from redis.asyncio.connection import Connection, SSLConnection
-
-if TYPE_CHECKING:
-    from burner_redis import BurnerRedis
-
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -103,6 +101,10 @@ class PubSubClient(Protocol):
     async def aclose(self) -> None: ...
 
 
+class MemoryRedisClient(RedisClient, AsyncCloseable, Protocol):
+    """Protocol for the in-process Redis client used by memory:// URLs."""
+
+
 async def close_resource(resource: AsyncCloseable, name: str) -> None:
     """Close a resource with error handling.
 
@@ -114,33 +116,63 @@ async def close_resource(resource: AsyncCloseable, name: str) -> None:
         logger.warning("Failed to close %s", name, exc_info=True)
 
 
-# Cache of BurnerRedis instances keyed by URL
-_memory_servers: dict[str, "BurnerRedis"] = {}
-_memory_servers_lock = asyncio.Lock()
+# Cache of BurnerRedis instances keyed by URL and event loop.  BurnerRedis is
+# loop-affine, so a memory:// URL may only reuse a client within the same loop.
+_MemoryServerKey = tuple[str, int]
+_MemoryServerEntry = tuple[asyncio.AbstractEventLoop, MemoryRedisClient]
+_memory_servers: dict[_MemoryServerKey, _MemoryServerEntry] = {}
+_memory_servers_lock = Lock()
+
+
+def _memory_server_key(url: str, loop: asyncio.AbstractEventLoop) -> _MemoryServerKey:
+    return url, id(loop)
+
+
+def _drop_closed_memory_servers() -> None:
+    for key, (loop, _) in list(_memory_servers.items()):
+        if loop.is_closed():
+            del _memory_servers[key]
+
+
+def _memory_client_factory() -> Callable[[], MemoryRedisClient]:
+    burner_redis = importlib.import_module("burner_redis")
+    return cast(
+        Callable[[], MemoryRedisClient],
+        getattr(burner_redis, "BurnerRedis"),
+    )
 
 
 async def clear_memory_servers() -> None:
-    """Close and discard all cached BurnerRedis instances.
+    """Discard cached BurnerRedis instances, closing current-loop clients.
 
     Each BurnerRedis may hold internal state tied to the asyncio event loop
     that created it (pub/sub listeners, blocking-read notifiers, Tokio
-    background tasks, etc.).  Calling ``aclose()`` drains in-flight futures
-    while the event loop is still alive, then clearing the cache forces the
-    next ``_get_or_create_memory_client()`` call to build a fresh instance
-    on the *current* event loop.
+    background tasks, etc.).  Calling this from the owning event loop drains
+    in-flight futures while the loop is still alive, then clearing the cache
+    forces the next ``_get_or_create_memory_client()`` call to build a fresh
+    instance on the *current* event loop.
     """
-    async with _memory_servers_lock:
-        for client in list(_memory_servers.values()):
-            await client.aclose()
+    current_loop = asyncio.get_running_loop()
+    with _memory_servers_lock:
+        servers = list(_memory_servers.values())
         _memory_servers.clear()
 
+    for loop, client in servers:
+        if loop is current_loop:
+            await client.aclose()
 
-def get_memory_server(url: str) -> "BurnerRedis | None":
+
+def get_memory_server(url: str) -> MemoryRedisClient | None:
     """Get the cached BurnerRedis instance for a URL, if any.
 
     This is primarily for testing to verify server isolation.
     """
-    return _memory_servers.get(url)
+    loop = asyncio.get_running_loop()
+    with _memory_servers_lock:
+        entry = _memory_servers.get(_memory_server_key(url, loop))
+    if entry is None:
+        return None
+    return entry[1]
 
 
 class RedisConnection:
@@ -165,7 +197,7 @@ class RedisConnection:
     # support pub/sub natively, so we connect directly to one primary node)
     _node_pool: ConnectionPool | None
     # Memory mode: in-process BurnerRedis instance
-    _memory_client: "BurnerRedis | None"
+    _memory_client: MemoryRedisClient | None
     _parsed: ParseResult
     _stack: AsyncExitStack
 
@@ -250,7 +282,7 @@ class RedisConnection:
         return self._cluster_client
 
     @property
-    def memory_client(self) -> "BurnerRedis | None":
+    def memory_client(self) -> MemoryRedisClient | None:
         """Get the memory client, if connected in memory mode."""
         return self._memory_client
 
@@ -338,24 +370,21 @@ class RedisConnection:
         """
         return ConnectionPool.from_url(self.url, decode_responses=decode_responses)
 
-    async def _get_or_create_memory_client(self) -> "BurnerRedis":
+    async def _get_or_create_memory_client(self) -> MemoryRedisClient:
         """Get or create a BurnerRedis instance for a memory:// URL."""
         global _memory_servers
 
-        from burner_redis import BurnerRedis
+        client_factory = _memory_client_factory()
+        loop = asyncio.get_running_loop()
+        key = _memory_server_key(self.url, loop)
 
-        # Fast path: instance already exists
-        client = _memory_servers.get(self.url)
-        if client is not None:
-            return client
-
-        async with _memory_servers_lock:
-            client = _memory_servers.get(self.url)
-            if client is not None:  # pragma: no cover
-                return client
-
-            client = BurnerRedis()
-            _memory_servers[self.url] = client
+        with _memory_servers_lock:
+            _drop_closed_memory_servers()
+            entry = _memory_servers.get(key)
+            if entry is not None:
+                return entry[1]
+            client = client_factory()
+            _memory_servers[key] = (loop, client)
             return client
 
     @asynccontextmanager

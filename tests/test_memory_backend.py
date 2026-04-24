@@ -1,7 +1,20 @@
 # pyright: reportUnknownVariableType=false
 
+import asyncio
+
 from docket import Docket, Worker
-from docket._redis import get_memory_server
+from docket._redis import (
+    MemoryRedisClient,
+    RedisConnection,
+    clear_memory_servers,
+    get_memory_server,
+)
+
+
+async def _get_memory_client(url: str) -> MemoryRedisClient:
+    async with RedisConnection(url) as connection:
+        assert connection.memory_client is not None
+        return connection.memory_client
 
 
 async def test_docket_memory_backend():
@@ -96,6 +109,46 @@ async def test_memory_backend_reuses_server():
         # This docket's tasks are isolated from docket1's by name prefix
         snapshot = await docket2.snapshot()
         assert snapshot.total_tasks == 0
+
+
+def test_memory_backend_cache_is_scoped_to_event_loop():
+    """Identical memory:// URLs reuse clients only within the same event loop."""
+    url = "memory://loop-scoped"
+    loop1 = asyncio.new_event_loop()
+    loop2 = asyncio.new_event_loop()
+    client2 = None
+
+    try:
+        client1 = loop1.run_until_complete(_get_memory_client(url))
+        client1_again = loop1.run_until_complete(_get_memory_client(url))
+        client2 = loop2.run_until_complete(_get_memory_client(url))
+
+        assert client1_again is client1
+        assert client2 is not client1
+    finally:
+        loop1.run_until_complete(clear_memory_servers())
+        if client2 is not None:  # pragma: no branch
+            loop2.run_until_complete(client2.aclose())
+        loop1.close()
+        loop2.close()
+
+
+def test_memory_backend_recreates_server_after_event_loop_closes():
+    """A cached memory client from a closed loop is not reused."""
+    url = "memory://closed-loop"
+    loop1 = asyncio.new_event_loop()
+    client1 = loop1.run_until_complete(_get_memory_client(url))
+    loop1.run_until_complete(client1.aclose())
+    loop1.close()
+
+    loop2 = asyncio.new_event_loop()
+    try:
+        client2 = loop2.run_until_complete(_get_memory_client(url))
+
+        assert client2 is not client1
+    finally:
+        loop2.run_until_complete(clear_memory_servers())
+        loop2.close()
 
 
 async def test_different_memory_urls_are_isolated():
