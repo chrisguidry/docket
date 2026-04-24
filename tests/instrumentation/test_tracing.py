@@ -1,11 +1,17 @@
 """Tests for OpenTelemetry tracing, span creation, and message handling."""
 
+import asyncio
+
 import pytest
 from opentelemetry import trace
-from opentelemetry.sdk.trace import Span, TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, Span, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 from opentelemetry.trace import StatusCode
 
-from docket import Docket, Worker
+from docket import ConcurrencyLimit, Docket, Worker
 from docket.dependencies import Retry
 from docket.instrumentation import message_getter, message_setter
 
@@ -18,6 +24,19 @@ def tracer_provider() -> TracerProvider:
     provider = TracerProvider()
     trace.set_tracer_provider(provider)
     return provider
+
+
+@pytest.fixture
+def span_exporter(tracer_provider: TracerProvider):
+    """Attaches an in-memory exporter so tests can inspect completed spans."""
+    exporter = InMemorySpanExporter()
+    processor = SimpleSpanProcessor(exporter)
+    tracer_provider.add_span_processor(processor)
+    try:
+        yield exporter
+    finally:
+        processor.shutdown()
+        exporter.clear()
 
 
 async def test_executing_a_task_is_wrapped_in_a_span(docket: Docket, worker: Worker):
@@ -187,6 +206,56 @@ async def test_infinitely_retrying_task_spans_have_error_status(
         assert span.status.status_code == StatusCode.ERROR
         assert span.status.description is not None
         assert f"Attempt {i + 1} failed" in span.status.description
+
+
+async def test_admission_blocked_span_has_ok_status(
+    docket: Docket, worker: Worker, span_exporter: InMemorySpanExporter
+):
+    """Tasks denied by admission control (e.g. ConcurrencyLimit) are rescheduled
+    flow-control events, not failures. Their spans must not be marked ERROR, or
+    APM error-rate monitors will fire on expected rescheduling activity.
+    """
+    body_entered = asyncio.Event()
+    release_body = asyncio.Event()
+
+    async def the_task(
+        customer_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id", max_concurrent=1
+        ),
+    ) -> None:
+        body_entered.set()
+        await release_body.wait()
+
+    # Schedule two tasks for the same key. With max_concurrent=1, exactly one
+    # will acquire the slot; the other will raise ConcurrencyBlocked from the
+    # dependency layer and be rescheduled by the worker.
+    await docket.add(the_task)(customer_id=1)
+    await docket.add(the_task)(customer_id=1)
+
+    worker_task = asyncio.create_task(worker.run_until_finished())
+    try:
+        await asyncio.wait_for(body_entered.wait(), timeout=5)
+        # Give the second task a chance to attempt admission and export its span
+        await asyncio.sleep(0.1)
+    finally:
+        release_body.set()
+        await worker_task
+
+    task_spans: list[ReadableSpan] = [
+        span for span in span_exporter.get_finished_spans() if span.name == "the_task"
+    ]
+
+    # We expect at least one admitted execution; the blocked execution may or
+    # may not have produced a completed span yet depending on timing. What
+    # matters is that no completed span is marked ERROR.
+    assert task_spans, "Expected at least one the_task span to be exported"
+    for span in task_spans:
+        assert span.status is not None
+        assert span.status.status_code != StatusCode.ERROR, (
+            f"Task span should not be ERROR (got description: "
+            f"{span.status.description!r})"
+        )
 
 
 async def test_message_getter_returns_none_for_missing_key():
