@@ -6,9 +6,8 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Collection, Sequence, cast
 
 import redis.exceptions
-from redis.asyncio import Redis
-from redis.asyncio.cluster import RedisCluster
 
+from ._redis import RedisClient
 from .execution import Execution, ExecutionState
 
 if TYPE_CHECKING:
@@ -90,7 +89,7 @@ class DocketSnapshotMixin:
 
         def key(self, suffix: str) -> str: ...
         def parked_task_key(self, task_key: str) -> str: ...
-        def redis(self) -> AbstractAsyncContextManager[Redis | RedisCluster]: ...
+        def redis(self) -> AbstractAsyncContextManager[RedisClient]: ...
         async def _ensure_stream_and_group(self) -> None: ...
 
     @property
@@ -110,12 +109,6 @@ class DocketSnapshotMixin:
         Returns:
             A snapshot of the Docket.
         """
-        # For memory:// URLs (fakeredis), ensure the group exists upfront. This
-        # avoids a fakeredis bug where xpending_range raises TypeError instead
-        # of NOGROUP when the consumer group doesn't exist.
-        if self.url.startswith("memory://"):
-            await self._ensure_stream_and_group()
-
         running: list[RunningExecution] = []
         future: list[Execution] = []
 

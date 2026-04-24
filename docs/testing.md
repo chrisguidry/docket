@@ -4,7 +4,7 @@ Docket includes utilities for testing background task systems in realistic ways 
 
 ## Using In-Memory Backend (No Redis Required)
 
-For the fastest tests and simplest setup, Docket supports an in-memory backend using [fakeredis](https://github.com/cunla/fakeredis-py). This is perfect for:
+For the fastest tests and simplest setup, Docket supports an in-memory backend using [burner-redis](https://github.com/PrefectHQ/burner-redis). This is perfect for:
 
 - **CI/CD environments** - No need to spin up Redis containers
 - **Local development** - Test without installing/running Redis
@@ -13,7 +13,7 @@ For the fastest tests and simplest setup, Docket supports an in-memory backend u
 
 ### Installation
 
-Fakeredis is included as a standard dependency, so no extra installation is needed.
+burner-redis is included as a standard dependency, so no extra installation is needed.
 
 ### Usage
 

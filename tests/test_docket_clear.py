@@ -8,7 +8,6 @@ import pytest
 
 from docket.docket import Docket
 
-
 # Tests for docket.clear()
 
 
@@ -254,7 +253,7 @@ async def test_snapshot_handles_nogroup_with_real_redis(
 
     This test uses real Redis (not memory://) to verify the NOGROUP error
     handling path in snapshot(), since the memory:// backend proactively
-    creates the group to work around a fakeredis bug.
+    creates the group to work around an in-memory backend issue.
     """
     docket = Docket(name=make_docket_name(), url=redis_url)
 

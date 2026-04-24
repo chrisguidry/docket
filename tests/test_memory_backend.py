@@ -1,15 +1,50 @@
+# pyright: reportUnknownVariableType=false
+
+import asyncio
+from typing import cast
+
+import docket._redis as redis_module
 import pytest
-
 from docket import Docket, Worker
-from docket._redis import clear_memory_servers, get_memory_server
+from docket._redis import (
+    MemoryRedisClient,
+    RedisConnection,
+    clear_memory_servers,
+    get_memory_server,
+)
 
-# Skip all tests in this file if fakeredis is not installed
-pytest.importorskip("fakeredis")
+
+class CloseTrackingMemoryClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
-@pytest.fixture(autouse=True)
-async def clear_servers() -> None:
-    await clear_memory_servers()
+def _install_close_tracking_memory_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[CloseTrackingMemoryClient]:
+    clients: list[CloseTrackingMemoryClient] = []
+
+    def create_client() -> MemoryRedisClient:
+        client = CloseTrackingMemoryClient()
+        clients.append(client)
+        return cast(MemoryRedisClient, client)
+
+    monkeypatch.setattr(redis_module, "_memory_client_factory", lambda: create_client)
+    return clients
+
+
+async def _get_memory_client(url: str) -> MemoryRedisClient:
+    async with RedisConnection(url) as connection:
+        assert connection.memory_client is not None
+        return connection.memory_client
+
+
+async def test_get_memory_server_returns_none_when_uncached():
+    """A memory URL has no cached client until a connection opens it."""
+    assert get_memory_server("memory://uncached") is None
 
 
 async def test_docket_memory_backend():
@@ -79,7 +114,7 @@ async def test_multiple_memory_dockets():
 
 
 async def test_memory_backend_reuses_server():
-    """Test that identical memory:// URLs share the same FakeServer instance."""
+    """Test that identical memory:// URLs share the same BurnerRedis instance."""
     result = None
 
     async def shared_task(value: str) -> str:
@@ -106,8 +141,90 @@ async def test_memory_backend_reuses_server():
         assert snapshot.total_tasks == 0
 
 
+def test_memory_backend_cache_is_scoped_to_event_loop():
+    """Identical memory:// URLs reuse clients only within the same event loop."""
+    url = "memory://loop-scoped"
+    loop1 = asyncio.new_event_loop()
+    loop2 = asyncio.new_event_loop()
+    client2 = None
+
+    try:
+        client1 = loop1.run_until_complete(_get_memory_client(url))
+        client1_again = loop1.run_until_complete(_get_memory_client(url))
+        client2 = loop2.run_until_complete(_get_memory_client(url))
+
+        assert client1_again is client1
+        assert client2 is not client1
+    finally:
+        loop1.run_until_complete(clear_memory_servers())
+        if client2 is not None:  # pragma: no branch
+            loop2.run_until_complete(client2.aclose())
+        loop1.close()
+        loop2.close()
+
+
+def test_closed_loop_memory_server_is_closed_when_evicted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Evicting a closed-loop cache entry closes its client first."""
+    clients = _install_close_tracking_memory_factory(monkeypatch)
+    url = "memory://closed-loop-eviction"
+    loop1 = asyncio.new_event_loop()
+    client1 = loop1.run_until_complete(_get_memory_client(url))
+    loop1.close()
+
+    loop2 = asyncio.new_event_loop()
+    try:
+        client2 = loop2.run_until_complete(_get_memory_client(url))
+
+        assert client2 is not client1
+        assert clients[0].closed is True
+        assert clients[1].closed is False
+    finally:
+        loop2.run_until_complete(clear_memory_servers())
+        loop2.close()
+
+
+def test_clear_memory_servers_closes_clients_from_all_event_loops(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Clearing the cache closes clients even if another loop created them."""
+    clients = _install_close_tracking_memory_factory(monkeypatch)
+    loop1 = asyncio.new_event_loop()
+    loop2 = asyncio.new_event_loop()
+
+    try:
+        loop1.run_until_complete(_get_memory_client("memory://clear-loop-1"))
+        loop2.run_until_complete(_get_memory_client("memory://clear-loop-2"))
+
+        loop1.run_until_complete(clear_memory_servers())
+
+        assert [client.closed for client in clients] == [True, True]
+    finally:
+        loop1.close()
+        loop2.close()
+
+
+def test_memory_backend_recreates_server_after_event_loop_closes():
+    """A cached memory client from a closed loop is not reused."""
+    url = "memory://closed-loop"
+    loop1 = asyncio.new_event_loop()
+    client1 = loop1.run_until_complete(_get_memory_client(url))
+    loop1.run_until_complete(client1.aclose())
+    loop1.close()
+
+    loop2 = asyncio.new_event_loop()
+    try:
+        client2 = loop2.run_until_complete(_get_memory_client(url))
+
+        assert client2 is not client1
+    finally:
+        loop2.run_until_complete(clear_memory_servers())
+        loop2.close()
+
+
 async def test_different_memory_urls_are_isolated():
-    """Test that different memory:// URLs get completely separate FakeServer instances."""
+    """Test that different memory:// URLs get completely separate BurnerRedis instances."""
     result1 = None
     result2 = None
 
@@ -129,7 +246,7 @@ async def test_different_memory_urls_are_isolated():
         # Add task only to server1
         await docket1.add(task_for_server1)("value-for-server1")
 
-        # Verify server2 sees no tasks (they're on different FakeServer instances)
+        # Verify server2 sees no tasks (they're on different BurnerRedis instances)
         snapshot2 = await docket2.snapshot()
         assert snapshot2.total_tasks == 0, "server2 should have no tasks"
 
@@ -144,7 +261,7 @@ async def test_different_memory_urls_are_isolated():
         assert result1 == "value-for-server1"
         assert result2 is None  # task_for_server2 was never called
 
-    # Verify we created two separate FakeServer instances
+    # Verify we created two separate BurnerRedis instances
     server1 = get_memory_server("memory://server1")
     server2 = get_memory_server("memory://server2")
     assert server1 is not None
