@@ -17,6 +17,11 @@ async def _get_memory_client(url: str) -> MemoryRedisClient:
         return connection.memory_client
 
 
+async def test_get_memory_server_returns_none_when_uncached():
+    """A memory URL has no cached client until a connection opens it."""
+    assert get_memory_server("memory://uncached") is None
+
+
 async def test_docket_memory_backend():
     """Test using in-memory backend via memory:// URL."""
     async with Docket(name="test-memory-docket", url="memory://") as docket:
