@@ -128,10 +128,20 @@ def _memory_server_key(url: str, loop: asyncio.AbstractEventLoop) -> _MemoryServ
     return url, id(loop)
 
 
-def _drop_closed_memory_servers() -> None:
-    for key, (loop, _) in list(_memory_servers.items()):
-        if loop.is_closed():
-            del _memory_servers[key]
+async def _close_memory_clients(clients: list[MemoryRedisClient]) -> None:
+    for client in clients:
+        await close_resource(client, "memory client")
+
+
+async def _drop_closed_memory_servers() -> None:
+    clients: list[MemoryRedisClient] = []
+    with _memory_servers_lock:
+        for key, (loop, client) in list(_memory_servers.items()):
+            if loop.is_closed():
+                clients.append(client)
+                del _memory_servers[key]
+
+    await _close_memory_clients(clients)
 
 
 def _memory_client_factory() -> Callable[[], MemoryRedisClient]:
@@ -143,23 +153,18 @@ def _memory_client_factory() -> Callable[[], MemoryRedisClient]:
 
 
 async def clear_memory_servers() -> None:
-    """Discard cached BurnerRedis instances, closing current-loop clients.
+    """Discard cached BurnerRedis instances, closing all cached clients.
 
     Each BurnerRedis may hold internal state tied to the asyncio event loop
     that created it (pub/sub listeners, blocking-read notifiers, Tokio
-    background tasks, etc.).  Calling this from the owning event loop drains
-    in-flight futures while the loop is still alive, then clearing the cache
-    forces the next ``_get_or_create_memory_client()`` call to build a fresh
-    instance on the *current* event loop.
+    background tasks, etc.).  Clearing the cache first prevents new users from
+    taking these instances while they are closing.
     """
-    current_loop = asyncio.get_running_loop()
     with _memory_servers_lock:
-        servers = list(_memory_servers.values())
+        clients = [client for _, client in _memory_servers.values()]
         _memory_servers.clear()
 
-    for loop, client in servers:
-        if loop is current_loop:
-            await client.aclose()
+    await _close_memory_clients(clients)
 
 
 def get_memory_server(url: str) -> MemoryRedisClient | None:
@@ -378,8 +383,8 @@ class RedisConnection:
         loop = asyncio.get_running_loop()
         key = _memory_server_key(self.url, loop)
 
+        await _drop_closed_memory_servers()
         with _memory_servers_lock:
-            _drop_closed_memory_servers()
             entry = _memory_servers.get(key)
             if entry is not None:
                 return entry[1]

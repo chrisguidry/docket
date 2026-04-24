@@ -1,7 +1,10 @@
 # pyright: reportUnknownVariableType=false
 
 import asyncio
+from typing import cast
 
+import docket._redis as redis_module
+import pytest
 from docket import Docket, Worker
 from docket._redis import (
     MemoryRedisClient,
@@ -9,6 +12,28 @@ from docket._redis import (
     clear_memory_servers,
     get_memory_server,
 )
+
+
+class CloseTrackingMemoryClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def _install_close_tracking_memory_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[CloseTrackingMemoryClient]:
+    clients: list[CloseTrackingMemoryClient] = []
+
+    def create_client() -> MemoryRedisClient:
+        client = CloseTrackingMemoryClient()
+        clients.append(client)
+        return cast(MemoryRedisClient, client)
+
+    monkeypatch.setattr(redis_module, "_memory_client_factory", lambda: create_client)
+    return clients
 
 
 async def _get_memory_client(url: str) -> MemoryRedisClient:
@@ -134,6 +159,48 @@ def test_memory_backend_cache_is_scoped_to_event_loop():
         loop1.run_until_complete(clear_memory_servers())
         if client2 is not None:  # pragma: no branch
             loop2.run_until_complete(client2.aclose())
+        loop1.close()
+        loop2.close()
+
+
+def test_closed_loop_memory_server_is_closed_when_evicted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Evicting a closed-loop cache entry closes its client first."""
+    clients = _install_close_tracking_memory_factory(monkeypatch)
+    url = "memory://closed-loop-eviction"
+    loop1 = asyncio.new_event_loop()
+    client1 = loop1.run_until_complete(_get_memory_client(url))
+    loop1.close()
+
+    loop2 = asyncio.new_event_loop()
+    try:
+        client2 = loop2.run_until_complete(_get_memory_client(url))
+
+        assert client2 is not client1
+        assert clients[0].closed is True
+        assert clients[1].closed is False
+    finally:
+        loop2.run_until_complete(clear_memory_servers())
+        loop2.close()
+
+
+def test_clear_memory_servers_closes_clients_from_all_event_loops(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Clearing the cache closes clients even if another loop created them."""
+    clients = _install_close_tracking_memory_factory(monkeypatch)
+    loop1 = asyncio.new_event_loop()
+    loop2 = asyncio.new_event_loop()
+
+    try:
+        loop1.run_until_complete(_get_memory_client("memory://clear-loop-1"))
+        loop2.run_until_complete(_get_memory_client("memory://clear-loop-2"))
+
+        loop1.run_until_complete(clear_memory_servers())
+
+        assert [client.closed for client in clients] == [True, True]
+    finally:
         loop1.close()
         loop2.close()
 
