@@ -861,9 +861,7 @@ class Execution:
                     # Update state
                     state_value = data.get(b"state")
                     if state_value:
-                        if isinstance(state_value, bytes):
-                            state_value = state_value.decode()
-                        self.state = ExecutionState(state_value)
+                        self.state = ExecutionState(state_value.decode())
 
                     # Update metadata
                     self.worker = (

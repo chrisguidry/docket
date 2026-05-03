@@ -157,3 +157,7 @@ include = ["src", "tests", "chaos"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
+
+[tool.codespell]
+# `exat`/`pxat` are redis SET command flags exposed as parameters by redis-py.
+ignore-words-list = "exat,pxat"

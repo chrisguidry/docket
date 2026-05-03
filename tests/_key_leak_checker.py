@@ -12,11 +12,9 @@ async def count_redis_keys_by_type(redis: RedisClient, prefix: str) -> dict[str,
     counts: dict[str, int] = {}
 
     # Use scan_iter instead of keys() for cluster compatibility
-    async for key in redis.scan_iter(match=pattern):  # type: ignore
-        key_type = await redis.type(key)  # type: ignore[reportUnknownArgumentType]
-        key_type_str = (
-            key_type.decode() if isinstance(key_type, bytes) else str(key_type)
-        )
+    async for key in redis.scan_iter(match=pattern):
+        key_type = await redis.type(key)
+        key_type_str = key_type.decode()
         counts[key_type_str] = counts.get(key_type_str, 0) + 1
 
     return counts
