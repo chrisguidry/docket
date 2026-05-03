@@ -28,7 +28,7 @@ async def run_redis(version: str) -> AsyncGenerator[tuple[str, Container], None]
     port = get_free_port()
 
     client = DockerClient.from_env()
-    container: Container = client.containers.run(  # type: ignore[reportUnknownMemberType]
+    container: Container = client.containers.run(
         f"redis:{version}",
         detach=True,
         ports={"6379/tcp": port},
@@ -36,11 +36,11 @@ async def run_redis(version: str) -> AsyncGenerator[tuple[str, Container], None]
     )
 
     # Wait for Redis to be ready
-    for line in container.logs(stream=True):  # type: ignore[reportUnknownMemberType]
+    for line in container.logs(stream=True):
         if b"Ready to accept connections" in line:
             break
 
     try:
         yield f"redis://localhost:{port}/0", container
     finally:
-        container.stop()  # type: ignore[reportUnknownMemberType]
+        container.stop()

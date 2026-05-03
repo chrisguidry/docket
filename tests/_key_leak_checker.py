@@ -81,7 +81,7 @@ class KeyCountChecker:
             keys_without_ttl: list[str] = []
 
             # Use scan_iter instead of keys() for cluster compatibility
-            async for key in redis.scan_iter(match=pattern):  # type: ignore
+            async for key in redis.scan_iter(match=pattern):
                 key_str = key.decode() if isinstance(key, bytes) else str(key)  # type: ignore[reportUnknownArgumentType]
 
                 # Skip explicitly permanent keys

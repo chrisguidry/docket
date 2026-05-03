@@ -188,7 +188,7 @@ async def test_superseded_message_skipped_before_execution(
     # pending in the consumer group (e.g. redelivery after crash).
     runs_key = docket.key("runs:head-check")
     async with docket.redis() as redis:
-        await redis.hincrby(runs_key, "generation", 1)  # type: ignore[misc]
+        await redis.hincrby(runs_key, "generation", 1)
 
     await worker.run_until_finished()
 
@@ -225,7 +225,7 @@ async def test_old_message_without_generation_runs_normally(
         message_id = await redis.xadd(docket.stream_key, message)  # type: ignore[arg-type]
 
         # Set up runs hash without generation, as old code would
-        await redis.hset(  # type: ignore[misc]
+        await redis.hset(
             docket.key("runs:old-to-new"),
             mapping={
                 "state": "queued",
@@ -265,16 +265,16 @@ async def test_new_task_moved_by_old_scheduler_runs_normally(
 
     async with docket.redis() as redis:
         # Verify new code set generation=1 in the runs hash
-        gen = await redis.hget(docket.key("runs:new-old-new"), "generation")  # type: ignore[misc]
+        gen = await redis.hget(docket.key("runs:new-old-new"), "generation")
         assert gen == b"1"
 
         # Simulate old scheduler moving from queue to stream WITHOUT generation
-        parked_data: dict[bytes, bytes] = await redis.hgetall(  # type: ignore[misc]
+        parked_data: dict[bytes, bytes] = await redis.hgetall(
             docket.parked_task_key("new-old-new")
         )
         stream_message: dict[bytes, bytes] = {
             k: v
-            for k, v in parked_data.items()  # type: ignore[misc]
+            for k, v in parked_data.items()
             if k != b"generation"  # old scheduler doesn't know about this field
         }
         message_id = await redis.xadd(docket.stream_key, stream_message)  # type: ignore[arg-type]
@@ -282,7 +282,7 @@ async def test_new_task_moved_by_old_scheduler_runs_normally(
         # Clean up queue/parked state as the old scheduler would
         await redis.zrem(docket.queue_key, "new-old-new")
         await redis.delete(docket.parked_task_key("new-old-new"))
-        await redis.hset(  # type: ignore[misc]
+        await redis.hset(
             docket.key("runs:new-old-new"),
             mapping={"state": "queued", "stream_id": message_id},
         )
@@ -370,17 +370,17 @@ async def test_perpetual_successor_survives_mark_as_terminal(
     # not "completed" and not deleted.
     runs_key = docket.key(f"runs:{key}")
     async with docket.redis() as redis:
-        runs_data: dict[bytes, bytes] = await redis.hgetall(runs_key)  # type: ignore[misc]
+        runs_data: dict[bytes, bytes] = await redis.hgetall(runs_key)
 
     assert runs_data, (
         f"runs hash for {key!r} was deleted (execution_ttl={docket.execution_ttl})"
     )
-    state: str = runs_data[b"state"].decode()  # type: ignore[union-attr]
+    state: str = runs_data[b"state"].decode()
     assert state == "scheduled", (
         f"runs hash state is {state!r}, expected 'scheduled' "
         f"(execution_ttl={docket.execution_ttl})"
     )
-    when = float(runs_data[b"when"])  # type: ignore[arg-type]
+    when = float(runs_data[b"when"])
     expected_earliest = (before + timedelta(hours=1) - timedelta(seconds=5)).timestamp()
     expected_latest = (before + timedelta(hours=1) + timedelta(seconds=5)).timestamp()
     assert expected_earliest <= when <= expected_latest, (

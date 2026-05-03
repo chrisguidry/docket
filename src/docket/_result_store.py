@@ -72,7 +72,7 @@ class ClusterKeyValueStore:
         data = await self._client.get(redis_key)
         if data is None:
             return None
-        return json.loads(data)  # type: ignore[no-any-return]
+        return json.loads(data)
 
     async def ttl(
         self,

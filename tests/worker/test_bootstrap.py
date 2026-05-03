@@ -284,8 +284,8 @@ async def test_worker_handles_nogroup_in_xreadgroup(
         original_redis_xreadgroup = redis.asyncio.Redis.xreadgroup
         original_cluster_xreadgroup = redis.asyncio.RedisCluster.xreadgroup
 
-        async def mock_redis_xreadgroup(  # pragma: no cover  # pyright: ignore[reportUnknownParameterType]
-            self: redis.asyncio.Redis,  # type: ignore[type-arg]
+        async def mock_redis_xreadgroup(  # pragma: no cover
+            self: redis.asyncio.Redis,
             *args: object,
             **kwargs: object,
         ) -> object:
@@ -295,8 +295,8 @@ async def test_worker_handles_nogroup_in_xreadgroup(
                 raise ResponseError("NOGROUP No such key or consumer group")
             return await original_redis_xreadgroup(self, *args, **kwargs)  # type: ignore[arg-type]
 
-        async def mock_cluster_xreadgroup(  # pragma: no cover  # pyright: ignore[reportUnknownParameterType]
-            self: redis.asyncio.RedisCluster,  # type: ignore[type-arg]
+        async def mock_cluster_xreadgroup(  # pragma: no cover
+            self: redis.asyncio.RedisCluster,
             *args: object,
             **kwargs: object,
         ) -> object:

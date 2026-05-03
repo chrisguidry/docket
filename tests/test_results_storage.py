@@ -216,8 +216,8 @@ async def test_result_storage_uses_provided_or_default(docket: Docket):
         assert isinstance(store, RedisStore)
 
         # Verify it's connected to the same Redis
-        result_client = store._client  # type: ignore[attr-defined]
-        pool_kwargs: dict[str, Any] = result_client.connection_pool.connection_kwargs  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        result_client = store._client
+        pool_kwargs: dict[str, Any] = result_client.connection_pool.connection_kwargs  # pyright: ignore[reportUnknownVariableType]
 
         parsed = urlparse(docket.url)
         assert pool_kwargs.get("host") == (parsed.hostname or "localhost")

@@ -157,6 +157,7 @@ include = ["src", "tests", "chaos"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
+reportUnnecessaryTypeIgnoreComment = "error"
 
 [tool.codespell]
 # `exat`/`pxat` are redis SET command flags exposed as parameters by redis-py.

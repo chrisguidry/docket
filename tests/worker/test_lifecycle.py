@@ -211,7 +211,7 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
                     raise ConnectionError("Test connection error")
                 # Signal that we got past the error handler
                 error_handled.set()
-                return await original_get_message(**kwargs)  # pyright: ignore[reportUnknownVariableType]
+                return await original_get_message(**kwargs)
 
             pubsub.get_message = failing_get_message  # type: ignore[method-assign]
             yield pubsub
@@ -254,7 +254,7 @@ async def test_cancellation_listener_handles_generic_exception(docket: Docket):
                     raise RuntimeError("Test generic error")
                 # Signal that we got past the error handler
                 error_handled.set()
-                return await original_get_message(**kwargs)  # pyright: ignore[reportUnknownVariableType]
+                return await original_get_message(**kwargs)
 
             pubsub.get_message = failing_get_message  # type: ignore[method-assign]
             yield pubsub

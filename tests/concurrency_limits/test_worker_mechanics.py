@@ -147,7 +147,7 @@ async def test_worker_concurrency_cleanup_after_task_completion(docket: Docket):
     async with Worker(docket) as worker:
         await worker.run_until_finished()
         async with docket.redis() as redis:
-            await redis.keys(f"{docket.name}:concurrency:*")  # type: ignore
+            await redis.keys(f"{docket.name}:concurrency:*")
             cleanup_verified = True
 
     assert cleanup_verified
@@ -237,11 +237,11 @@ async def test_stale_concurrency_slots_are_scavenged_when_full(docket: Docket):
 
     async with docket.redis() as redis:
         # Add two stale slots that fill up max_concurrent
-        await redis.zadd(concurrency_key, {"stale_task_1": stale_timestamp})  # type: ignore
-        await redis.zadd(concurrency_key, {"stale_task_2": stale_timestamp})  # type: ignore
+        await redis.zadd(concurrency_key, {"stale_task_1": stale_timestamp})
+        await redis.zadd(concurrency_key, {"stale_task_2": stale_timestamp})
 
         # Verify stale slots are present
-        count_before = await redis.zcard(concurrency_key)  # type: ignore
+        count_before = await redis.zcard(concurrency_key)
         assert count_before == 2
 
     # Run a task - this should scavenge ONE stale slot and execute
@@ -255,7 +255,7 @@ async def test_stale_concurrency_slots_are_scavenged_when_full(docket: Docket):
     # Verify: one stale slot was scavenged, task completed and released its slot,
     # so one stale slot should remain (we only scavenge what we need)
     async with docket.redis() as redis:
-        remaining = await redis.zrange(concurrency_key, 0, -1)  # type: ignore
+        remaining = await redis.zrange(concurrency_key, 0, -1)
         # One stale slot should remain (the other was scavenged)
         assert len(remaining) == 1
         # The remaining slot should be one of the stale ones

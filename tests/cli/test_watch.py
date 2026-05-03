@@ -86,7 +86,7 @@ async def test_watch_running_task_until_completion(docket: Docket, worker: Worke
     async def coordinated_task():
         # Wait for watch to be subscribed before completing
         async with docket.redis() as redis:
-            while not await redis.get(ready_key):  # type: ignore[misc]
+            while not await redis.get(ready_key):
                 await asyncio.sleep(0.01)
         # Now do the work
         await asyncio.sleep(0.5)
@@ -434,7 +434,7 @@ async def test_watch_task_with_incomplete_data(
     # Manually create runs hash with incomplete data (missing function/args/kwargs)
     async with docket.redis() as redis:
         runs_key = f"{docket.name}:runs:incomplete-task"
-        await redis.hset(runs_key, mapping={"state": "scheduled"})  # type: ignore[misc]
+        await redis.hset(runs_key, mapping={"state": "scheduled"})
 
     result = await run_cli(
         "watch",

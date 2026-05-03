@@ -599,7 +599,7 @@ class StrikeList:
 
         for _, messages in streams:
             for message_id, message in messages:
-                last_id = message_id  # type: ignore[assignment]
+                last_id = message_id
                 instruction = StrikeInstruction.from_message(message)
                 self.update(instruction)
                 logger.info(
