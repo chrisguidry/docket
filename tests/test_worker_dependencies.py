@@ -406,7 +406,7 @@ async def test_reserved_name_rejected_at_construction(docket: Docket):
 
 async def test_non_callable_factory_rejected_at_construction(docket: Docket):
     with pytest.raises(TypeError):
-        Worker(docket, dependencies={"bad": "not a function"})  # type: ignore[dict-item]
+        Worker(docket, dependencies={"bad": "not a function"})
 
 
 async def test_list_form_runs_in_order_with_internal_names(docket: Docket):

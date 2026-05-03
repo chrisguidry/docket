@@ -8,13 +8,31 @@ other modules can remain simple. When Redis Cluster support is added, only
 this module will need to change.
 """
 
+from __future__ import annotations
+
 import asyncio
 import importlib
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
-from threading import Lock
+from datetime import datetime, timedelta
+from threading import Lock as _ThreadLock
 from types import TracebackType
-from typing import Any, AsyncGenerator, Callable, Protocol, cast, runtime_checkable
+from typing import (
+    Any,
+    AsyncGenerator,
+    AsyncIterator,
+    Callable,
+    Iterable,
+    Literal,
+    Mapping,
+    Protocol,
+    Sequence,
+    TypeAlias,
+    TypedDict,
+    cast,
+    overload,
+    runtime_checkable,
+)
 from urllib.parse import ParseResult, urlparse, urlunparse
 
 from redis.asyncio import ConnectionPool, Redis
@@ -25,81 +43,159 @@ from redis.asyncio.connection import Connection, SSLConnection
 logger: logging.Logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Input type aliases (mirror redis-py's type domain)
+# ---------------------------------------------------------------------------
+
+KeyT: TypeAlias = str | bytes | memoryview
+EncodableT: TypeAlias = str | bytes | bytearray | memoryview | int | float
+StreamIDT: TypeAlias = str | bytes | int
+ExpiryT: TypeAlias = int | timedelta
+AbsExpiryT: TypeAlias = int | datetime
+
+
+# ---------------------------------------------------------------------------
+# Stream return-shape aliases
+#
+# docket always uses decode_responses=False, so stream-related responses are
+# fully bytes-typed.  These aliases consolidate the shapes that stream-reading
+# methods (xrange, xread, xreadgroup, xclaim, xautoclaim) return so callers
+# can annotate their receivers without restating the nesting each time.
+# ---------------------------------------------------------------------------
+
+RedisStreamID: TypeAlias = bytes
+RedisMessageID: TypeAlias = bytes
+RedisMessage: TypeAlias = dict[bytes, bytes]
+RedisMessages: TypeAlias = Sequence[tuple[RedisMessageID, RedisMessage]]
+RedisStream: TypeAlias = tuple[RedisStreamID, RedisMessages]
+RedisReadGroupResponse: TypeAlias = Sequence[RedisStream]
+
+
+class RedisStreamPendingMessage(TypedDict):
+    """One entry returned by XPENDING ... IDLE/RANGE."""
+
+    message_id: bytes
+    consumer: bytes
+    time_since_delivered: int
+    times_delivered: int
+
+
+# ---------------------------------------------------------------------------
+# Companion protocols
+# ---------------------------------------------------------------------------
+
+
 class AsyncCloseable(Protocol):
     """Protocol for objects with an async aclose() method."""
 
     async def aclose(self) -> None: ...
 
 
-@runtime_checkable
-class RedisClient(Protocol):
-    """Protocol capturing the Redis client interface that docket uses.
+class Pipeline(Protocol):
+    """The subset of pipeline operations docket actually invokes inside
+    ``async with redis.pipeline() as pipeline:`` blocks.
 
-    This is the structural type shared by redis.asyncio.Redis,
-    redis.asyncio.cluster.RedisCluster, and burner_redis.BurnerRedis.
-    Method signatures use Any to accommodate differences between implementations.
+    Pipeline command methods are synchronous: they queue the command and
+    return the pipeline itself for chaining.  Only ``execute()`` is awaited,
+    and it returns the heterogeneous results of the queued commands in
+    order.
     """
 
-    async def get(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def set(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def exists(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def keys(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def type(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def ttl(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def delete(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def expire(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def blmove(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def blpop(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def brpop(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def lindex(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def linsert(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def llen(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def lmove(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def lpop(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def lpush(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def lrange(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def lrem(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def lset(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def ltrim(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def rpop(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def rpoplpush(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def rpush(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def hget(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def hgetall(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def hdel(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def hincrby(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def hset(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def sadd(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def srem(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def smembers(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def scard(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def zadd(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def zrem(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def zcard(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def zrange(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def zrangebyscore(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def zscore(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xadd(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xack(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xautoclaim(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xclaim(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xread(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xreadgroup(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xrange(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xlen(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xtrim(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xpending(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xinfo_groups(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xinfo_consumers(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xinfo_stream(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def xgroup_create(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def info(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def publish(self, *args: Any, **kwargs: Any) -> Any: ...
-    def pubsub(self, **kwargs: Any) -> Any: ...
-    def scan_iter(self, *args: Any, **kwargs: Any) -> Any: ...
-    def register_script(self, script: str | bytes) -> Any: ...
-    def pipeline(self, **kwargs: Any) -> Any: ...
-    def lock(self, *args: Any, **kwargs: Any) -> Any: ...
+    def delete(self, *names: KeyT) -> "Pipeline": ...
+    def expire(self, name: KeyT, time: ExpiryT) -> "Pipeline": ...
+    def hgetall(self, name: KeyT) -> "Pipeline": ...
+    def sadd(self, name: KeyT, *values: EncodableT) -> "Pipeline": ...
+    def xack(self, name: KeyT, groupname: KeyT, *ids: StreamIDT) -> "Pipeline": ...
+    def xdel(self, name: KeyT, *ids: StreamIDT) -> "Pipeline": ...
+    def xlen(self, name: KeyT) -> "Pipeline": ...
+    def xpending_range(
+        self,
+        name: KeyT,
+        groupname: KeyT,
+        min: StreamIDT,
+        max: StreamIDT,
+        count: int,
+        consumername: KeyT | None = None,
+        idle: int | None = None,
+    ) -> "Pipeline": ...
+    def xrange(
+        self,
+        name: KeyT,
+        min: StreamIDT = "-",
+        max: StreamIDT = "+",
+        count: int | None = None,
+    ) -> "Pipeline": ...
+    def xtrim(
+        self,
+        name: KeyT,
+        maxlen: int | None = None,
+        approximate: bool = True,
+        minid: StreamIDT | None = None,
+        limit: int | None = None,
+    ) -> "Pipeline": ...
+    def zadd(
+        self,
+        name: KeyT,
+        mapping: Mapping[EncodableT, float | int],
+        nx: bool = False,
+        xx: bool = False,
+        ch: bool = False,
+        incr: bool = False,
+        gt: bool = False,
+        lt: bool = False,
+    ) -> "Pipeline": ...
+    def zcard(self, name: KeyT) -> "Pipeline": ...
+    def zcount(
+        self,
+        name: KeyT,
+        min: float | str | bytes,
+        max: float | str | bytes,
+    ) -> "Pipeline": ...
+    def zrange(
+        self, name: KeyT, start: int, end: int, desc: bool = False
+    ) -> "Pipeline": ...
+    def zremrangebyscore(
+        self,
+        name: KeyT,
+        min: float | str | bytes,
+        max: float | str | bytes,
+    ) -> "Pipeline": ...
+
+    async def execute(self, raise_on_error: bool = True) -> list[Any]: ...
+
+    async def __aenter__(self) -> "Pipeline": ...
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None: ...
+
+
+class Script(Protocol):
+    """A registered Lua script.  Return type varies by script body, so it is
+    typed as ``Any`` here and annotated locally at each call site (e.g.
+    ``result: list[int] = await my_script(keys=..., args=...)``).
+    """
+
+    async def __call__(
+        self,
+        keys: Sequence[KeyT] = ...,
+        args: Sequence[EncodableT] = ...,
+        client: "RedisClient | None" = None,
+    ) -> Any: ...
+
+
+class Lock(Protocol):
+    """A distributed lock acquired via ``async with redis.lock(name):``."""
+
+    async def __aenter__(self) -> "Lock": ...
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None: ...
 
 
 @runtime_checkable
@@ -110,11 +206,319 @@ class PubSubClient(Protocol):
     burner_redis.pubsub.PubSub.
     """
 
-    async def subscribe(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def psubscribe(self, *args: Any, **kwargs: Any) -> Any: ...
-    async def get_message(self, *args: Any, **kwargs: Any) -> Any: ...
-    def listen(self) -> Any: ...
+    async def subscribe(self, *channels: KeyT) -> None: ...
+    async def psubscribe(self, *patterns: KeyT) -> None: ...
+    async def get_message(
+        self,
+        ignore_subscribe_messages: bool = False,
+        timeout: float | None = 0.0,
+    ) -> dict[str, Any] | None: ...
+    def listen(self) -> AsyncIterator[dict[str, Any]]: ...
     async def aclose(self) -> None: ...
+
+
+# ---------------------------------------------------------------------------
+# RedisClient: the public surface advertised by docket.redis()
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class RedisClient(Protocol):
+    """The Redis client surface docket uses and exposes via ``docket.redis()``.
+
+    This is the structural type shared by ``redis.asyncio.Redis``,
+    ``redis.asyncio.cluster.RedisCluster``, and ``burner_redis.BurnerRedis``.
+    Signatures are async-only and committed to ``decode_responses=False``,
+    so reads return ``bytes`` rather than the decoded ``str``.
+
+    The protocol covers what docket itself calls plus the queue-pattern
+    methods (the LPUSH/BRPOP family) that downstream consumers rely on.
+    """
+
+    # ----- Strings & generic key ops -----
+
+    async def get(self, name: KeyT) -> bytes | None: ...
+    async def set(
+        self,
+        name: KeyT,
+        value: EncodableT,
+        ex: ExpiryT | None = None,
+        px: ExpiryT | None = None,
+        nx: bool = False,
+        xx: bool = False,
+        keepttl: bool = False,
+        get: bool = False,
+        exat: AbsExpiryT | None = None,
+        pxat: AbsExpiryT | None = None,
+    ) -> bool | bytes | None: ...
+    async def setex(self, name: KeyT, time: ExpiryT, value: EncodableT) -> bool: ...
+    async def mget(self, keys: Sequence[KeyT]) -> list[bytes | None]: ...
+    async def exists(self, *names: KeyT) -> int: ...
+    async def keys(self, pattern: KeyT = "*") -> list[bytes]: ...
+    async def type(self, name: KeyT) -> bytes: ...
+    async def ttl(self, name: KeyT) -> int: ...
+    async def delete(self, *names: KeyT) -> int: ...
+    async def expire(self, name: KeyT, time: ExpiryT) -> bool: ...
+
+    # ----- Lists -----
+
+    async def blmove(
+        self,
+        first_list: KeyT,
+        second_list: KeyT,
+        timeout: float,
+        src: Literal["LEFT", "RIGHT"] = "LEFT",
+        dest: Literal["LEFT", "RIGHT"] = "RIGHT",
+    ) -> bytes | None: ...
+    async def blpop(
+        self,
+        keys: KeyT | Iterable[KeyT],
+        timeout: float | None = 0,
+    ) -> tuple[bytes, bytes] | None: ...
+    async def brpop(
+        self,
+        keys: KeyT | Iterable[KeyT],
+        timeout: float | None = 0,
+    ) -> tuple[bytes, bytes] | None: ...
+    async def lindex(self, name: KeyT, index: int) -> bytes | None: ...
+    async def linsert(
+        self,
+        name: KeyT,
+        where: Literal["BEFORE", "AFTER"],
+        refvalue: EncodableT,
+        value: EncodableT,
+    ) -> int: ...
+    async def llen(self, name: KeyT) -> int: ...
+    async def lmove(
+        self,
+        first_list: KeyT,
+        second_list: KeyT,
+        src: Literal["LEFT", "RIGHT"] = "LEFT",
+        dest: Literal["LEFT", "RIGHT"] = "RIGHT",
+    ) -> bytes | None: ...
+    @overload
+    async def lpop(self, name: KeyT) -> bytes | None: ...
+    @overload
+    async def lpop(self, name: KeyT, count: int) -> list[bytes] | None: ...
+    async def lpush(self, name: KeyT, *values: EncodableT) -> int: ...
+    async def lrange(self, name: KeyT, start: int, end: int) -> list[bytes]: ...
+    async def lrem(self, name: KeyT, count: int, value: EncodableT) -> int: ...
+    async def lset(self, name: KeyT, index: int, value: EncodableT) -> bool: ...
+    async def ltrim(self, name: KeyT, start: int, end: int) -> bool: ...
+    @overload
+    async def rpop(self, name: KeyT) -> bytes | None: ...
+    @overload
+    async def rpop(self, name: KeyT, count: int) -> list[bytes] | None: ...
+    async def rpoplpush(self, src: KeyT, dst: KeyT) -> bytes | None: ...
+    async def rpush(self, name: KeyT, *values: EncodableT) -> int: ...
+
+    # ----- Hashes -----
+
+    async def hget(self, name: KeyT, key: KeyT) -> bytes | None: ...
+    async def hgetall(self, name: KeyT) -> dict[bytes, bytes]: ...
+    async def hdel(self, name: KeyT, *keys: KeyT) -> int: ...
+    async def hincrby(self, name: KeyT, key: KeyT, amount: int = 1) -> int: ...
+    async def hset(
+        self,
+        name: KeyT,
+        key: KeyT | None = None,
+        value: EncodableT | None = None,
+        mapping: Mapping[KeyT, EncodableT] | None = None,
+    ) -> int: ...
+
+    # ----- Sets -----
+
+    async def sadd(self, name: KeyT, *values: EncodableT) -> int: ...
+    async def srem(self, name: KeyT, *values: EncodableT) -> int: ...
+    async def smembers(self, name: KeyT) -> set[bytes]: ...
+    async def scard(self, name: KeyT) -> int: ...
+
+    # ----- Sorted sets -----
+
+    async def zadd(
+        self,
+        name: KeyT,
+        mapping: Mapping[EncodableT, float | int],
+        nx: bool = False,
+        xx: bool = False,
+        ch: bool = False,
+        incr: bool = False,
+        gt: bool = False,
+        lt: bool = False,
+    ) -> int | float | None: ...
+    async def zrem(self, name: KeyT, *values: EncodableT) -> int: ...
+    async def zcard(self, name: KeyT) -> int: ...
+    @overload
+    async def zrange(
+        self,
+        name: KeyT,
+        start: int,
+        end: int,
+        desc: bool = False,
+        *,
+        withscores: Literal[True],
+        score_cast_func: type[float] = float,
+    ) -> list[tuple[bytes, float]]: ...
+    @overload
+    async def zrange(
+        self,
+        name: KeyT,
+        start: int,
+        end: int,
+        desc: bool = False,
+        withscores: Literal[False] = False,
+        score_cast_func: type[float] = float,
+    ) -> list[bytes]: ...
+    @overload
+    async def zrangebyscore(
+        self,
+        name: KeyT,
+        min: float | str | bytes,
+        max: float | str | bytes,
+        start: int | None = None,
+        num: int | None = None,
+        *,
+        withscores: Literal[True],
+        score_cast_func: type[float] = float,
+    ) -> list[tuple[bytes, float]]: ...
+    @overload
+    async def zrangebyscore(
+        self,
+        name: KeyT,
+        min: float | str | bytes,
+        max: float | str | bytes,
+        start: int | None = None,
+        num: int | None = None,
+        withscores: Literal[False] = False,
+        score_cast_func: type[float] = float,
+    ) -> list[bytes]: ...
+    async def zremrangebyscore(
+        self,
+        name: KeyT,
+        min: float | str | bytes,
+        max: float | str | bytes,
+    ) -> int: ...
+    async def zscore(self, name: KeyT, value: EncodableT) -> float | None: ...
+
+    # ----- Streams -----
+
+    async def xadd(
+        self,
+        name: KeyT,
+        fields: Mapping[KeyT, EncodableT],
+        id: StreamIDT = "*",
+        maxlen: int | None = None,
+        approximate: bool = True,
+        nomkstream: bool = False,
+        minid: StreamIDT | None = None,
+        limit: int | None = None,
+    ) -> bytes: ...
+    async def xack(self, name: KeyT, groupname: KeyT, *ids: StreamIDT) -> int: ...
+    async def xautoclaim(
+        self,
+        name: KeyT,
+        groupname: KeyT,
+        consumername: KeyT,
+        min_idle_time: int,
+        start_id: StreamIDT = "0-0",
+        count: int | None = None,
+        justid: bool = False,
+    ) -> tuple[bytes, RedisMessages, list[bytes]]: ...
+    async def xclaim(
+        self,
+        name: KeyT,
+        groupname: KeyT,
+        consumername: KeyT,
+        min_idle_time: int,
+        message_ids: Sequence[StreamIDT],
+        idle: int | None = None,
+        time: int | None = None,
+        retrycount: int | None = None,
+        force: bool = False,
+        justid: bool = False,
+    ) -> RedisMessages: ...
+    async def xread(
+        self,
+        streams: Mapping[KeyT, StreamIDT],
+        count: int | None = None,
+        block: int | None = None,
+    ) -> RedisReadGroupResponse | None: ...
+    async def xreadgroup(
+        self,
+        groupname: KeyT,
+        consumername: KeyT,
+        streams: Mapping[KeyT, StreamIDT],
+        count: int | None = None,
+        block: int | None = None,
+        noack: bool = False,
+    ) -> RedisReadGroupResponse | None: ...
+    async def xrange(
+        self,
+        name: KeyT,
+        min: StreamIDT = "-",
+        max: StreamIDT = "+",
+        count: int | None = None,
+    ) -> RedisMessages: ...
+    async def xlen(self, name: KeyT) -> int: ...
+    async def xtrim(
+        self,
+        name: KeyT,
+        maxlen: int | None = None,
+        approximate: bool = True,
+        minid: StreamIDT | None = None,
+        limit: int | None = None,
+    ) -> int: ...
+    async def xdel(self, name: KeyT, *ids: StreamIDT) -> int: ...
+    async def xpending(self, name: KeyT, groupname: KeyT) -> dict[str, Any]: ...
+    async def xpending_range(
+        self,
+        name: KeyT,
+        groupname: KeyT,
+        min: StreamIDT,
+        max: StreamIDT,
+        count: int,
+        consumername: KeyT | None = None,
+        idle: int | None = None,
+    ) -> list[RedisStreamPendingMessage]: ...
+    async def xinfo_groups(self, name: KeyT) -> list[dict[str, Any]]: ...
+    async def xinfo_consumers(
+        self, name: KeyT, groupname: KeyT
+    ) -> list[dict[str, Any]]: ...
+    async def xinfo_stream(self, name: KeyT) -> dict[str, Any]: ...
+    async def xgroup_create(
+        self,
+        name: KeyT,
+        groupname: KeyT,
+        id: StreamIDT = "$",
+        mkstream: bool = False,
+        entries_read: int | None = None,
+    ) -> bool: ...
+
+    # ----- Server / pub-sub / scripting -----
+
+    async def info(self, section: str | None = None) -> dict[str, Any]: ...
+    async def publish(self, channel: KeyT, message: EncodableT) -> int: ...
+    def pubsub(self, **kwargs: Any) -> PubSubClient: ...
+    def scan_iter(
+        self,
+        match: KeyT | None = None,
+        count: int | None = None,
+        _type: str | None = None,
+    ) -> AsyncIterator[bytes]: ...
+    def register_script(self, script: str | bytes) -> Script: ...
+    def pipeline(
+        self,
+        transaction: bool = True,
+        shard_hint: str | None = None,
+    ) -> Pipeline: ...
+    def lock(
+        self,
+        name: KeyT,
+        timeout: float | None = None,
+        sleep: float = 0.1,
+        blocking: bool = True,
+        blocking_timeout: float | None = None,
+    ) -> Lock: ...
 
 
 class MemoryRedisClient(RedisClient, AsyncCloseable, Protocol):
@@ -137,7 +541,7 @@ async def close_resource(resource: AsyncCloseable, name: str) -> None:
 _MemoryServerKey = tuple[str, int]
 _MemoryServerEntry = tuple[asyncio.AbstractEventLoop, MemoryRedisClient]
 _memory_servers: dict[_MemoryServerKey, _MemoryServerEntry] = {}
-_memory_servers_lock = Lock()
+_memory_servers_lock = _ThreadLock()
 
 
 def _memory_server_key(url: str, loop: asyncio.AbstractEventLoop) -> _MemoryServerKey:
@@ -389,7 +793,9 @@ class RedisConnection:
         Returns:
             A ConnectionPool ready for use with Redis clients
         """
-        return ConnectionPool.from_url(self.url, decode_responses=decode_responses)
+        return ConnectionPool.from_url(  # pyright: ignore[reportUnknownMemberType]
+            self.url, decode_responses=decode_responses
+        )
 
     async def _get_or_create_memory_client(self) -> MemoryRedisClient:
         """Get or create a BurnerRedis instance for a memory:// URL."""
@@ -410,21 +816,27 @@ class RedisConnection:
 
     @asynccontextmanager
     async def client(self) -> AsyncGenerator[RedisClient, None]:
-        """Get a Redis client, handling standalone, cluster, and memory modes."""
+        """Get a Redis client, handling standalone, cluster, and memory modes.
+
+        Casts at the redis-py boundary translate from redis-py's
+        ``Awaitable[T] | T`` dual-mode signatures into our async-only protocol.
+        At runtime the awaitables resolve correctly; the cast just bridges
+        the static-type mismatch.
+        """
         if self._cluster_client is not None:  # pragma: no cover
-            yield self._cluster_client
+            yield cast(RedisClient, self._cluster_client)
         elif self._memory_client is not None:
             yield self._memory_client
         else:
             async with Redis(connection_pool=self._connection_pool) as r:
-                yield r
+                yield cast(RedisClient, r)
 
     @asynccontextmanager
     async def pubsub(self) -> AsyncGenerator[PubSubClient, None]:
         """Get a pub/sub connection, handling standalone, cluster, and memory modes."""
         if self._cluster_client is not None:  # pragma: no cover
             async with self._cluster_pubsub() as ps:
-                yield ps
+                yield cast(PubSubClient, ps)
         elif self._memory_client is not None:
             ps = self._memory_client.pubsub()
             try:
@@ -433,19 +845,19 @@ class RedisConnection:
                 await ps.aclose()
         else:
             async with Redis(connection_pool=self._connection_pool) as r:
-                async with r.pubsub() as pubsub:
-                    yield pubsub
+                async with r.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
+                    yield cast(PubSubClient, pubsub)
 
     async def publish(self, channel: str, message: str) -> int:
         """Publish a message to a pub/sub channel."""
         if self._cluster_client is not None:  # pragma: no cover
             async with Redis(connection_pool=self._node_pool) as r:
-                return await r.publish(channel, message)
+                return cast(int, await r.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
         elif self._memory_client is not None:
             return await self._memory_client.publish(channel, message)
         else:
             async with Redis(connection_pool=self._connection_pool) as r:
-                return await r.publish(channel, message)
+                return cast(int, await r.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
 
     @asynccontextmanager
     async def _cluster_pubsub(self) -> AsyncGenerator[PubSub, None]:  # pragma: no cover
@@ -459,7 +871,7 @@ class RedisConnection:
             A PubSub object connected to a cluster node
         """
         client = Redis(connection_pool=self._node_pool)
-        pubsub = client.pubsub()
+        pubsub = client.pubsub()  # pyright: ignore[reportUnknownMemberType]
         try:
             yield pubsub
         finally:

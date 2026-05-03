@@ -3,7 +3,18 @@
 import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Generator, Literal, TypedDict
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncGenerator,
+    Generator,
+    Literal,
+    Mapping,
+    TypedDict,
+    cast,
+)
+
+from ._redis import EncodableT, KeyT
 
 from ._telemetry import suppress_instrumentation
 from typing_extensions import Self
@@ -143,10 +154,10 @@ class ExecutionProgress:
         async with self.docket.redis() as redis:
             await redis.hset(
                 self._redis_key,
-                mapping={
-                    "message": message,
-                    "updated_at": updated_at,
-                },
+                mapping=cast(
+                    Mapping[KeyT, EncodableT],
+                    {"message": message, "updated_at": updated_at},
+                ),
             )
         # Update instance attributes
         self.message = message

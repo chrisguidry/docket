@@ -221,8 +221,8 @@ class DocketSnapshotMixin:
 
                 task_names: set[str] = {
                     task_name_bytes.decode()
-                    for task_name_bytes in cast(
-                        set[bytes], await r.smembers(self.worker_tasks_set(worker_name))
+                    for task_name_bytes in await r.smembers(
+                        self.worker_tasks_set(worker_name)
                     )
                 }
 
@@ -258,8 +258,8 @@ class DocketSnapshotMixin:
 
                 task_names: set[str] = {
                     task_name_bytes.decode()
-                    for task_name_bytes in cast(
-                        set[bytes], await r.smembers(self.worker_tasks_set(worker_name))
+                    for task_name_bytes in await r.smembers(
+                        self.worker_tasks_set(worker_name)
                     )
                 }
 

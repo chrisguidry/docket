@@ -59,7 +59,7 @@ def sync_redis(url: str) -> Generator[Redis, None, None]:
     redis = Redis.from_url(url)  # type: ignore
     try:
         with redis:
-            pool = redis.connection_pool  # type: ignore
+            pool = redis.connection_pool
             yield redis
     finally:
         if pool:
@@ -235,9 +235,7 @@ def wait_for_cluster(port: int) -> None:
     while True:
         try:
             # Try to connect and verify cluster state
-            r: RedisCluster = RedisCluster.from_url(  # type: ignore[reportUnknownMemberType]
-                f"redis://localhost:{port}"
-            )
+            r: RedisCluster = RedisCluster.from_url(f"redis://localhost:{port}")
             info: dict[str, str] = r.cluster_info()  # type: ignore[reportUnknownMemberType]
             if info.get("cluster_state") != "ok":
                 r.close()
@@ -266,7 +264,7 @@ def cleanup_stale_containers(docker_client: DockerClient) -> None:
 
     containers: Iterable[Container] = cast(
         Iterable[Container],
-        docker_client.containers.list(  # type: ignore
+        docker_client.containers.list(
             all=True,
             filters={"label": "source=docket-unit-tests"},
         ),

@@ -20,6 +20,7 @@ from docket.dependencies import (
     ConcurrencyLimit,
     Debounce,
     Depends,
+    ExponentialRetry,
     Perpetual,
     RateLimit,
     Retry,
@@ -184,6 +185,38 @@ async def test_conflicting_retry_raises_and_task_fails(
 
     async def the_task(
         retry: Retry = Retry(attempts=2),
+    ) -> None:  # pragma: no cover - body must not run
+        pass
+
+    docket.register(the_task)
+
+    with caplog.at_level(logging.ERROR, logger="docket"):
+        async with Worker(
+            docket,
+            dependencies={"retry": Retry(attempts=5)},
+            minimum_check_interval=FAST,
+            scheduling_resolution=FAST,
+        ) as worker:
+            await docket.add(the_task)()
+            await worker.run_until_finished()
+
+    assert "Only one Retry dependency is allowed" in caplog.text
+
+
+async def test_conflicting_retry_subclass_at_worker_and_task_levels(
+    docket: Docket, caplog: pytest.LogCaptureFixture
+):
+    """Different concrete subclasses of the same single=True base (here, Retry
+    and ExponentialRetry, both rooted at FailureHandler) should still conflict
+    when split across worker- and task-scope.
+
+    Covers the cross-subclass branch of detect_single_conflicts that the
+    same-concrete-type tests don't reach.
+    """
+    import logging
+
+    async def the_task(
+        retry: Retry = ExponentialRetry(attempts=3),
     ) -> None:  # pragma: no cover - body must not run
         pass
 

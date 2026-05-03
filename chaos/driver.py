@@ -243,7 +243,7 @@ async def main(
         while True:
             try:
                 async with docket.redis() as r:
-                    info: dict[str, Any] = await r.info()  # type: ignore[reportUnknownMemberType]
+                    info: dict[str, Any] = await r.info()
                     connected_clients = int(info.get("connected_clients", 0))
 
                     sent_tasks = await r.zcard("hello:sent")
@@ -283,7 +283,7 @@ async def main(
                 chaos_chance = random.random()
                 if chaos_chance < 0.02:
                     logger.warning("CHAOS: Restarting redis server...")
-                    redis_container.restart(timeout=2)  # type: ignore[reportUnknownMemberType]
+                    redis_container.restart(timeout=2)
 
                 elif chaos_chance < 0.10:
                     worker_index = random.randrange(len(worker_processes))
@@ -315,10 +315,10 @@ async def main(
             await asyncio.sleep(0.25)
 
         async with docket.redis() as r:
-            first_entries: Sequence[tuple[bytes, float]] = await r.zrange(  # type: ignore[reportUnknownMemberType]
+            first_entries: Sequence[tuple[bytes, float]] = await r.zrange(
                 "hello:received", 0, 0, withscores=True
             )
-            last_entries: Sequence[tuple[bytes, float]] = await r.zrange(  # type: ignore[reportUnknownMemberType]
+            last_entries: Sequence[tuple[bytes, float]] = await r.zrange(
                 "hello:received", -1, -1, withscores=True
             )
 

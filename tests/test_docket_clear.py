@@ -144,14 +144,14 @@ async def test_clear_no_redis_key_leaks(docket: Docket, the_task: AsyncMock):
     await docket.add(the_task, when=future + timedelta(seconds=1))("scheduled2")
 
     async with docket.redis() as r:
-        keys_before = cast(list[str], await r.keys("*"))  # type: ignore
+        keys_before = cast(list[str], await r.keys("*"))
         keys_before_count = len(keys_before)
 
     result = await docket.clear()
     assert result == 5
 
     async with docket.redis() as r:
-        keys_after = cast(list[str], await r.keys("*"))  # type: ignore
+        keys_after = cast(list[str], await r.keys("*"))
         keys_after_count = len(keys_after)
 
     assert keys_after_count <= keys_before_count

@@ -211,6 +211,7 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         If all slots are full, we scavenge any slot older than redelivery_timeout
         (meaning it hasn't been refreshed and the worker must be dead).
         """
+        assert self._concurrency_key and self._task_key
         # Lua script for atomic concurrency slot management.
         # KEYS[1]: concurrency_key (sorted set tracking slots)
         # ARGV[1]: max_concurrent, ARGV[2]: task_key, ARGV[3]: current_time,
@@ -306,6 +307,9 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
 
     async def _renew_lease_loop(self, redelivery_timeout: timedelta) -> None:
         """Periodically refresh slot timestamp to prevent expiration."""
+        # Lease renewal is only scheduled when a slot was acquired, which
+        # requires both keys to be set.
+        assert self._concurrency_key and self._task_key
         docket = current_docket.get()
         renewal_interval = redelivery_timeout.total_seconds() / LEASE_RENEWAL_FACTOR
         key_ttl = max(
@@ -320,9 +324,9 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                     current_time = datetime.now(timezone.utc).timestamp()
                     await redis.zadd(
                         self._concurrency_key,
-                        {self._task_key: current_time},  # type: ignore
+                        {self._task_key: current_time},
                     )
-                    await redis.expire(self._concurrency_key, key_ttl)  # type: ignore
+                    await redis.expire(self._concurrency_key, key_ttl)
             except Exception:  # pragma: no cover
                 # Lease renewal is best-effort; if it fails, the slot will eventually
                 # be scavenged as stale and the task can be redelivered

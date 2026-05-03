@@ -45,7 +45,7 @@ async def test_state_record_expires_immediately_with_ttl_zero(
 
         # Verify no state records exist in Redis
         async with zero_ttl_docket.redis() as redis:  # pragma: no branch
-            keys = await redis.keys(f"{zero_ttl_docket.name}:runs:*")  # type: ignore
+            keys = await redis.keys(f"{zero_ttl_docket.name}:runs:*")
             assert len(keys) == 0, f"Should have no state records, found {len(keys)}"
 
 

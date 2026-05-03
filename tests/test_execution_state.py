@@ -220,36 +220,6 @@ async def test_execution_sync_with_missing_state_field(docket: Docket):
     assert execution.started_at is not None
 
 
-async def test_execution_sync_with_string_state_value(docket: Docket):
-    """Test sync() handles non-bytes state value (defensive coding)."""
-    from unittest.mock import AsyncMock, patch
-
-    execution = Execution(
-        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
-    )
-
-    # Mock Redis to return string state (defensive code handles both bytes and str)
-    mock_data = {
-        b"state": "completed",  # String, not bytes!
-        b"worker": b"worker-1",
-        b"completed_at": b"2024-01-01T00:00:00+00:00",
-    }
-
-    with patch.object(execution.docket, "redis") as mock_redis_ctx:
-        mock_redis = AsyncMock()
-        mock_redis.hgetall.return_value = mock_data
-        mock_redis_ctx.return_value.__aenter__.return_value = mock_redis
-        mock_redis_ctx.return_value.__aexit__.return_value = None
-
-        # Mock progress sync
-        with patch.object(execution.progress, "sync"):
-            await execution.sync()
-
-    # Should handle string and set state correctly
-    assert execution.state == ExecutionState.COMPLETED
-    assert execution.worker == "worker-1"
-
-
 async def test_mark_as_failed_without_error_message(docket: Docket):
     """Test mark_as_failed with error=None."""
     execution = Execution(

@@ -84,7 +84,7 @@ async def test_perpetual_task_no_state_accumulation_with_ttl_zero(
         # Check that we're not accumulating state records
         # With TTL=0, state records should be deleted immediately
         async with zero_ttl_docket.redis() as redis:  # pragma: no branch
-            keys = await redis.keys(f"{zero_ttl_docket.name}:runs:*")  # type: ignore
+            keys = await redis.keys(f"{zero_ttl_docket.name}:runs:*")
             assert len(keys) == 0, f"Should have no state records, found {len(keys)}"
 
 
@@ -144,8 +144,8 @@ async def test_perpetual_same_key_no_state_accumulation(
         # reliably in cluster mode (curly braces confuse pattern matching)
         pattern = f"{docket.prefix}:runs:*"
         keys: list[bytes] = []
-        async for key in redis.scan_iter(match=pattern):  # type: ignore
-            keys.append(key)  # type: ignore[reportUnknownArgumentType]
+        async for key in redis.scan_iter(match=pattern):
+            keys.append(key)
         assert len(keys) == 1, (
             f"Should have exactly one state record, found {len(keys)}"
         )
@@ -213,7 +213,7 @@ async def test_perpetual_publishes_completed_event(pubsub_docket: Docket):
     async def collect_events():
         async for event in execution.subscribe():  # pragma: no cover
             if event["type"] == "state":
-                state_events.append(event)  # type: ignore[arg-type]
+                state_events.append(event)
                 if event["state"] == ExecutionState.COMPLETED:
                     return
 

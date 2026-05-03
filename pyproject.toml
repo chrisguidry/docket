@@ -157,3 +157,4 @@ include = ["src", "tests", "chaos"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
+reportUnnecessaryTypeIgnoreComment = "error"
