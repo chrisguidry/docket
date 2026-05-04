@@ -5,6 +5,7 @@ frees up, rather than polling via the future queue).
 
 import asyncio
 import time
+from datetime import datetime, timezone
 
 from docket import (
     ConcurrencyLimit,
@@ -57,8 +58,14 @@ async def test_blocked_task_parks_on_waiter_stream(docket: Docket, worker: Worke
         assert len(entries) == 1
         fields = entries[0][1]
         assert fields[b"function"] == b"holder"
-        # Not sitting in the future queue
-        assert await redis.zcard(docket.queue_key) == 0  # type: ignore
+        # The waiter task itself is not in the future queue.  The only
+        # queue entries are the safeguard backstops scheduled by the
+        # ConcurrencyLimit dependency (`__safeguard__:<task_key>`).
+        queue_keys = [
+            k.decode()
+            for k in await redis.zrange(docket.queue_key, 0, -1)  # type: ignore
+        ]
+        assert all(k.startswith("__safeguard__:") for k in queue_keys), queue_keys
 
     hold.set()
     await worker_task
@@ -148,79 +155,73 @@ async def test_blocked_task_makes_no_polling_retries(docket: Docket, worker: Wor
     assert generations_seen == [3], generations_seen
 
 
-async def test_sweep_wakes_waiters_when_holder_died_without_releasing(
+async def test_safeguard_wakes_waiter_when_holder_died_without_releasing(
     docket: Docket,
 ):
     """The degenerate case: a concurrency slot is held by a worker that
     crashed without releasing, AND no new tasks are arriving to trigger
-    the normal acquire-path scavenge.  The periodic sweep loop should
-    detect the stale slot, free the capacity, and wake the parked waiter.
+    the normal acquire-path scavenge.  The per-park safeguard task that
+    ConcurrencyLimit schedules at park-time must fire, scavenge the stale
+    slot, and wake the parked waiter.
 
-    We seed Redis directly (rather than orchestrating a crash) because
-    the worker's own shutdown path would fire the release callback and
-    drain waiters legitimately, defeating the whole point of the test.
+    A real running holder won't work here -- its lease-renewal loop would
+    overwrite any stale timestamp we forge.  Instead we seed the slot with
+    a fake holder that has a fresh timestamp so the waiter parks legitimately,
+    then later flip the timestamp to 0 (no live renewer to overwrite).
     """
     from datetime import timedelta
 
     ran: list[int] = []
 
-    async def task(
+    async def waiter(
         customer_id: int,
-        task_id: int,
         concurrency: ConcurrencyLimit = ConcurrencyLimit(
             "customer_id", max_concurrent=1
         ),
     ):
-        ran.append(task_id)
+        ran.append(1)
 
-    # Use docket.add to register the task and build a valid message payload,
-    # then manually move it off the main stream and onto a waiter stream.
-    execution = await docket.add(task)(customer_id=1, task_id=42)
     slots_key = f"{docket.prefix}:concurrency:customer_id:1"
     waiters_stream = f"{slots_key}:waiters"
 
+    # Pre-occupy the slot with a fresh timestamp so the acquire-path's
+    # stale-scavenge can't see it as recoverable.
     async with docket.redis() as redis:
-        # Pull the freshly-scheduled message out of the main stream.
-        entries = await redis.xrange(docket.stream_key, "-", "+")  # type: ignore
-        message_id, fields = entries[0]
-        await redis.xdel(docket.stream_key, message_id)  # type: ignore
+        fresh = datetime.now(timezone.utc).timestamp()
+        await redis.zadd(slots_key, {"fake-dead-holder": fresh})  # type: ignore
 
-        # Re-park it on the waiter stream ourselves and wire up the state
-        # that the acquire-or-park script would normally produce.
-        await redis.xadd(waiters_stream, dict(fields))  # type: ignore
-        await redis.hset(  # type: ignore
-            docket.concurrency_waiter_registry_key,
-            waiters_stream,
-            "1",  # max_concurrent
-        )
-        await redis.hset(  # type: ignore
-            f"{docket.prefix}:runs:{execution.key}",
-            mapping={
-                "state": "scheduled",
-                "waiter_stream": waiters_stream,
-            },
-        )
-        # Seed a stale slot so the sweep thinks a dead holder is blocking
-        # the waiter.  Score of 0 is well below any live stale_threshold.
-        await redis.zadd(slots_key, {"dead-holder": 0.0})  # type: ignore
-
-        # Sanity: we really are in the "parked but nothing alive to wake us" state
-        assert await redis.xlen(waiters_stream) == 1  # type: ignore
-        assert await redis.xlen(docket.stream_key) == 0  # type: ignore
-        assert await redis.zcard(slots_key) == 1  # type: ignore
-
-    # Start a fresh worker with a short redelivery_timeout so the sweep
-    # loop fires within the test window.  No new tasks are added.  The
-    # worker's _concurrency_sweep_loop must scavenge the stale slot,
-    # re-XADD the parked task into the main stream, and run it.
+    # Short redelivery_timeout so the per-park safeguard fires inside the
+    # test window without slowing the suite down.
     async with Worker(docket, redelivery_timeout=timedelta(milliseconds=200)) as worker:
-        await asyncio.wait_for(worker.run_until_finished(), timeout=5.0)
+        await docket.add(waiter)(customer_id=1)
 
-    assert ran == [42], ran
+        runner = asyncio.create_task(worker.run_forever())
+        try:
+            # Waiter parks because the (live-looking) fake slot is full.
+            await _wait_for_xlen(docket, waiters_stream, 1)
 
-    # Registry and waiter stream should be drained by the sweep's cleanup
+            # Now forge a stale-holder state.  No lease renewer is touching
+            # this slot, so the timestamp stays at 0 until the safeguard
+            # scavenges it.
+            async with docket.redis() as redis:
+                await redis.zadd(slots_key, {"fake-dead-holder": 0.0})  # type: ignore
+
+            # The safeguard fires ~200ms after the park, scavenges the
+            # stale slot, and the waiter is forwarded back to the main
+            # stream and runs.
+            for _ in range(200):
+                if ran:
+                    break
+                await asyncio.sleep(0.025)
+            assert ran == [1], ran
+        finally:
+            runner.cancel()
+            try:
+                await runner
+            except BaseException:
+                pass
+
     async with docket.redis() as redis:
-        assert await redis.hlen(docket.concurrency_waiter_registry_key) == 0  # type: ignore
         assert await redis.xlen(waiters_stream) == 0  # type: ignore
 
 
@@ -275,14 +276,16 @@ async def test_cancel_of_parked_task_prevents_wake_and_run(
         runs_key = f"{docket.prefix}:runs:{blocked_exec.key}"
         state = await redis.hget(runs_key, "state")  # type: ignore
         assert state == b"cancelled", state
-        # Waiter stream should be fully drained and unregistered
+        # Waiter stream should be fully drained
         assert await redis.xlen(waiters_stream) == 0  # type: ignore
-        assert (
-            await redis.hexists(  # type: ignore
-                docket.concurrency_waiter_registry_key, waiters_stream
-            )
-            == 0
-        )
+        # The safeguard task this waiter scheduled at park time should also
+        # be cleaned up so it doesn't sit in the future queue.
+        safeguard_key = f"__safeguard__:{blocked_exec.key}"
+        queue_keys = [
+            k.decode()
+            for k in await redis.zrange(docket.queue_key, 0, -1)  # type: ignore
+        ]
+        assert safeguard_key not in queue_keys, queue_keys
 
 
 async def test_many_contending_tasks_all_run_exactly_once(docket: Docket):
