@@ -208,26 +208,24 @@ async def test_result_storage_uses_provided_or_default(docket: Docket):
     if docket._redis.is_cluster:  # pragma: no cover
         # Cluster mode uses ClusterKeyValueStore
         assert isinstance(store, ClusterKeyValueStore)
+    elif docket._redis.is_memory:  # pragma: no cover
+        # Memory mode uses ClusterKeyValueStore
+        assert isinstance(store, ClusterKeyValueStore)
     else:  # pragma: no cover
         # Standalone mode uses RedisStore
         assert isinstance(store, RedisStore)
 
         # Verify it's connected to the same Redis
-        result_client = store._client  # type: ignore[attr-defined]
-        pool_kwargs: dict[str, Any] = result_client.connection_pool.connection_kwargs  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        result_client = store._client
+        pool_kwargs: dict[str, Any] = result_client.connection_pool.connection_kwargs  # pyright: ignore[reportUnknownVariableType]
 
-        if docket.url.startswith("memory://"):  # pragma: no cover
-            assert "server" in pool_kwargs
-        else:
-            parsed = urlparse(docket.url)
-            assert pool_kwargs.get("host") == (parsed.hostname or "localhost")
-            assert pool_kwargs.get("port") == (parsed.port or 6379)
-            expected_db = (
-                int(parsed.path.lstrip("/"))
-                if parsed.path and parsed.path != "/"
-                else 0
-            )
-            assert pool_kwargs.get("db") == expected_db
+        parsed = urlparse(docket.url)
+        assert pool_kwargs.get("host") == (parsed.hostname or "localhost")
+        assert pool_kwargs.get("port") == (parsed.port or 6379)
+        expected_db = (
+            int(parsed.path.lstrip("/")) if parsed.path and parsed.path != "/" else 0
+        )
+        assert pool_kwargs.get("db") == expected_db
 
 
 async def test_result_storage_uses_custom_when_provided(

@@ -2,25 +2,19 @@
 
 from fnmatch import fnmatch
 
-from redis.asyncio import Redis
-from redis.asyncio.cluster import RedisCluster
-
 from docket import Docket
+from docket._redis import RedisClient
 
 
-async def count_redis_keys_by_type(
-    redis: Redis | RedisCluster, prefix: str
-) -> dict[str, int]:
+async def count_redis_keys_by_type(redis: RedisClient, prefix: str) -> dict[str, int]:
     """Count Redis keys by type for a given prefix."""
     pattern = f"{prefix}:*"
     counts: dict[str, int] = {}
 
     # Use scan_iter instead of keys() for cluster compatibility
-    async for key in redis.scan_iter(match=pattern):  # type: ignore
-        key_type = await redis.type(key)  # type: ignore[reportUnknownArgumentType]
-        key_type_str = (
-            key_type.decode() if isinstance(key_type, bytes) else str(key_type)
-        )
+    async for key in redis.scan_iter(match=pattern):
+        key_type = await redis.type(key)
+        key_type_str = key_type.decode()
         counts[key_type_str] = counts.get(key_type_str, 0) + 1
 
     return counts
@@ -36,7 +30,7 @@ class KeyCountChecker:
     def __init__(self, docket: Docket) -> None:
         self.docket = docket
         self.docket_prefix = docket.prefix  # Use prefix for cluster-compatible keys
-        self.redis: Redis | RedisCluster | None = None
+        self.redis: RedisClient | None = None
         self.baseline_counts: dict[str, int] = {}
         self.exemptions: set[str] = set()
         self.pattern_exemptions: set[str] = set()
@@ -87,7 +81,7 @@ class KeyCountChecker:
             keys_without_ttl: list[str] = []
 
             # Use scan_iter instead of keys() for cluster compatibility
-            async for key in redis.scan_iter(match=pattern):  # type: ignore
+            async for key in redis.scan_iter(match=pattern):
                 key_str = key.decode() if isinstance(key, bytes) else str(key)  # type: ignore[reportUnknownArgumentType]
 
                 # Skip explicitly permanent keys
@@ -122,9 +116,7 @@ class KeyCountChecker:
                 f"tasks that are still scheduled/queued (not yet executed)."
             )
 
-    async def _is_scheduled_task_key(
-        self, key_str: str, redis: Redis | RedisCluster
-    ) -> bool:
+    async def _is_scheduled_task_key(self, key_str: str, redis: RedisClient) -> bool:
         """Check if a key without TTL is for a task that's still scheduled/queued.
 
         Args:
@@ -172,7 +164,7 @@ class KeyCountChecker:
         return await self._task_is_actually_scheduled(task_key, redis)
 
     async def _task_is_actually_scheduled(
-        self, task_key: str, redis: Redis | RedisCluster
+        self, task_key: str, redis: RedisClient
     ) -> bool:
         """Check if a task is actually present in the queue or stream.
 

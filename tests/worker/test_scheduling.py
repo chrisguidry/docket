@@ -305,7 +305,7 @@ async def test_wrongtype_error_with_legacy_known_task_key(
         await redis.set(known_task_key, str(when.timestamp()))
         await redis.zadd(docket.queue_key, {key: when.timestamp()})
 
-        await redis.hset(  # type: ignore
+        await redis.hset(
             docket.parked_task_key(key),
             mapping={
                 "key": key,

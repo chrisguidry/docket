@@ -2,7 +2,6 @@
 
 import asyncio
 import time
-from typing import cast
 
 from docket import Docket
 from docket.execution import ExecutionState
@@ -38,10 +37,10 @@ async def wait_for_progress_data(
 
     while time.monotonic() - start_time < timeout:
         async with docket.redis() as redis:
-            data = await redis.hgetall(progress_key)  # type: ignore[misc]
+            data = await redis.hgetall(progress_key)
             if data:  # pragma: no branch
-                current = int(cast(bytes, data.get(b"current", b"0")))  # type: ignore[misc]
-                total = int(cast(bytes, data.get(b"total", b"100")))  # type: ignore[misc]
+                current = int(data.get(b"current", b"0"))
+                total = int(data.get(b"total", b"100"))
 
                 if current >= min_current and total >= min_total:  # pragma: no branch
                     return (current, total)
@@ -79,11 +78,11 @@ async def wait_for_execution_state(
 
     while time.monotonic() - start_time < timeout:
         async with docket.redis() as redis:
-            data = await redis.hgetall(execution_key)  # type: ignore[misc]
+            data = await redis.hgetall(execution_key)
             if data:  # pragma: no branch
-                state_value = data.get(b"state")  # type: ignore[misc]
+                state_value = data.get(b"state")
                 if state_value:  # pragma: no branch
-                    current_state = ExecutionState(cast(bytes, state_value).decode())
+                    current_state = ExecutionState(state_value.decode())
                     if current_state == state:  # pragma: no branch
                         return
 
@@ -120,11 +119,11 @@ async def wait_for_worker_assignment(
 
     while time.monotonic() - start_time < timeout:
         async with docket.redis() as redis:
-            data = await redis.hgetall(execution_key)  # type: ignore[misc]
+            data = await redis.hgetall(execution_key)
             if data:  # pragma: no branch
-                worker = data.get(b"worker")  # type: ignore[misc]
+                worker = data.get(b"worker")
                 if worker:  # pragma: no branch
-                    return cast(bytes, worker).decode()
+                    return worker.decode()
 
         await asyncio.sleep(interval)
 

@@ -150,7 +150,7 @@ async def test_get_execution_with_incomplete_data(
     # Manually create runs hash with missing fields
     async with docket.redis() as redis:
         # Only set state, missing function/args/kwargs
-        await redis.hset(runs_key, mapping={"state": "scheduled"})  # type: ignore[misc]
+        await redis.hset(runs_key, mapping={"state": "scheduled"})
 
     execution = await docket.get_execution("incomplete-task")
     assert execution is None
@@ -170,7 +170,7 @@ async def test_get_execution_with_missing_when(
 
     # Manually create runs hash with function/args/kwargs but no when
     async with docket.redis() as redis:
-        await redis.hset(  # type: ignore[misc]
+        await redis.hset(
             runs_key,
             mapping={
                 "state": "scheduled",
@@ -198,7 +198,7 @@ async def test_get_execution_with_unregistered_function_creates_placeholder(
 
     # Manually create runs hash with unregistered function
     async with docket.redis() as redis:
-        await redis.hset(  # type: ignore[misc]
+        await redis.hset(
             runs_key,
             mapping={
                 "state": "scheduled",

@@ -541,19 +541,13 @@ class Worker:
 
         async def get_new_deliveries(redis: Redis) -> RedisReadGroupResponse:
             logger.debug("Getting new deliveries", extra=log_context)
-            # Use non-blocking read with in-memory backend + manual sleep
-            # This is necessary because fakeredis's async blocking operations don't
-            # properly yield control to the asyncio event loop
-            is_memory = self.docket.url.startswith("memory://")
             try:
                 with self._maybe_suppress_instrumentation():
                     result = await redis.xreadgroup(
                         groupname=self.docket.worker_group_name,
                         consumername=self.name,
                         streams={self.docket.stream_key: ">"},
-                        block=0
-                        if is_memory
-                        else int(self.minimum_check_interval.total_seconds() * 1000),
+                        block=int(self.minimum_check_interval.total_seconds() * 1000),
                         count=available_slots,
                     )
             except ResponseError as e:
@@ -561,8 +555,6 @@ class Worker:
                     await self.docket._ensure_stream_and_group()
                     return await get_new_deliveries(redis)
                 raise  # pragma: no cover
-            if is_memory and not result:
-                await asyncio.sleep(self.minimum_check_interval.total_seconds())
             return result
 
         async def start_task(
@@ -1210,15 +1202,12 @@ class Worker:
                     await pubsub.psubscribe(cancel_pattern)
                     self._cancellation_ready.set()
                     # Poll for messages, checking _worker_stopping periodically
-                    is_memory = self.docket.url.startswith("memory://")
                     while not self._worker_stopping.is_set():
                         message = await pubsub.get_message(
                             ignore_subscribe_messages=True, timeout=0.1
                         )
                         if message is not None and message["type"] == "pmessage":
                             await self._handle_cancellation(message)
-                        elif is_memory:  # pragma: no cover
-                            await asyncio.sleep(0.1)
             except ConnectionError:
                 if self._worker_stopping.is_set():
                     return  # pragma: no cover

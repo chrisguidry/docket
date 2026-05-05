@@ -835,7 +835,7 @@ class Execution:
                 if result_data and "data" in result_data:
                     # Base64-decode and unpickle
                     pickled_exception = base64.b64decode(result_data["data"])
-                    exception = cloudpickle.loads(pickled_exception)  # type: ignore[arg-type]
+                    exception = cloudpickle.loads(pickled_exception)
                     raise exception
             # If no stored exception, raise a generic error with the error message
             error_msg = self.error or "Task execution failed"
@@ -847,7 +847,7 @@ class Execution:
             if result_data is not None and "data" in result_data:
                 # Base64-decode and unpickle
                 pickled_result = base64.b64decode(result_data["data"])
-                return cloudpickle.loads(pickled_result)  # type: ignore[arg-type]
+                return cloudpickle.loads(pickled_result)
 
         # No result stored - task returned None
         return None
@@ -865,9 +865,7 @@ class Execution:
                     # Update state
                     state_value = data.get(b"state")
                     if state_value:
-                        if isinstance(state_value, bytes):
-                            state_value = state_value.decode()
-                        self.state = ExecutionState(state_value)
+                        self.state = ExecutionState(state_value.decode())
 
                     # Update metadata
                     self.worker = (

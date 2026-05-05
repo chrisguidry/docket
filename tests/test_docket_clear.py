@@ -8,7 +8,6 @@ import pytest
 
 from docket.docket import Docket
 
-
 # Tests for docket.clear()
 
 
@@ -145,14 +144,14 @@ async def test_clear_no_redis_key_leaks(docket: Docket, the_task: AsyncMock):
     await docket.add(the_task, when=future + timedelta(seconds=1))("scheduled2")
 
     async with docket.redis() as r:
-        keys_before = cast(list[str], await r.keys("*"))  # type: ignore
+        keys_before = cast(list[str], await r.keys("*"))
         keys_before_count = len(keys_before)
 
     result = await docket.clear()
     assert result == 5
 
     async with docket.redis() as r:
-        keys_after = cast(list[str], await r.keys("*"))  # type: ignore
+        keys_after = cast(list[str], await r.keys("*"))
         keys_after_count = len(keys_after)
 
     assert keys_after_count <= keys_before_count
@@ -254,7 +253,7 @@ async def test_snapshot_handles_nogroup_with_real_redis(
 
     This test uses real Redis (not memory://) to verify the NOGROUP error
     handling path in snapshot(), since the memory:// backend proactively
-    creates the group to work around a fakeredis bug.
+    creates the group to work around an in-memory backend issue.
     """
     docket = Docket(name=make_docket_name(), url=redis_url)
 

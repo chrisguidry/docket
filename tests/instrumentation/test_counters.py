@@ -401,9 +401,7 @@ async def test_superseded_task_increments_superseded_counter(
 
     # Bump the generation so the worker sees the message as superseded
     async with docket.redis() as redis:
-        await redis.hincrby(  # type: ignore[misc]
-            docket.key("runs:metrics-superseded"), "generation", 1
-        )
+        await redis.hincrby(docket.key("runs:metrics-superseded"), "generation", 1)
 
     await worker.run_until_finished()
 

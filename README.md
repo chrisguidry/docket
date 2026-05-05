@@ -86,7 +86,7 @@ introduced in Redis 5.0.0). Docket is tested with:
 
 - Redis 6.2, 7.4, and 8.6 (standalone and cluster modes)
 - [Valkey](https://valkey.io/) 8.1
-- In-memory backend via [fakeredis](https://github.com/cunla/fakeredis-py) for testing
+- In-memory backend via [burner-redis](https://github.com/PrefectHQ/burner-redis) for testing
 
 For testing without Redis, use the in-memory backend:
 

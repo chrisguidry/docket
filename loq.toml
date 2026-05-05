@@ -22,8 +22,12 @@ max_lines = 1018
 
 [[rules]]
 path = "src/docket/docket.py"
-max_lines = 874
+max_lines = 870
+
+[[rules]]
+path = "src/docket/_redis.py"
+max_lines = 900
 
 [[rules]]
 path = "src/docket/dependencies/_concurrency.py"
-max_lines = 851
+max_lines = 871

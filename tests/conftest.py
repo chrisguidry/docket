@@ -22,6 +22,13 @@ from tests._container import (
 )
 from tests._key_leak_checker import KeyCountChecker
 
+# Skip condition for tests that need Redis-specific features unavailable in
+# the in-memory backend (key enumeration via keys/scan_iter, TTL queries, etc.)
+skip_memory = pytest.mark.skipif(
+    BASE_VERSION == "memory",
+    reason="requires real Redis (keys/scan_iter/ttl not available in memory backend)",
+)
+
 if sys.platform != "win32" or TYPE_CHECKING:
     from docker import DockerClient
     from docker.models.containers import Container
@@ -187,6 +194,22 @@ def redis_url(redis_port: int, acl_credentials: ACLCredentials) -> str:
     return url
 
 
+@pytest.fixture(autouse=True)
+async def _fresh_memory_server() -> AsyncGenerator[None, None]:  # pyright: ignore[reportUnusedFunction]
+    """Close BurnerRedis instances between tests so Tokio background tasks
+    don't hold stale event-loop refs across pytest-asyncio loop teardowns.
+
+    After yield, closes every cached BurnerRedis (draining in-flight futures
+    while the event loop is still alive), then clears the cache so the next
+    test gets a fresh instance.
+    """
+    from docket._redis import clear_memory_servers
+
+    await clear_memory_servers()
+    yield
+    await clear_memory_servers()
+
+
 @pytest.fixture
 async def docket(
     redis_url: str, make_docket_name: Callable[[], str]
@@ -272,6 +295,10 @@ async def key_leak_checker(docket: Docket) -> AsyncGenerator[KeyCountChecker, No
     Tests can add exemptions for specific keys:
     - key_leak_checker.add_exemption(f"{docket.name}:special-key")
     """
+    if BASE_VERSION == "memory":
+        yield KeyCountChecker(docket)
+        return
+
     checker = KeyCountChecker(docket)
 
     # Prime infrastructure with a temporary worker that exits immediately

@@ -18,7 +18,7 @@ async def _wait_for_xlen(docket: Docket, key: str, target: int) -> None:
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         async with docket.redis() as redis:
-            size = await redis.xlen(key)  # type: ignore
+            size = await redis.xlen(key)
         if size == target:
             return
         await asyncio.sleep(0.01)
@@ -54,17 +54,14 @@ async def test_blocked_task_parks_on_waiter_stream(docket: Docket, worker: Worke
     await _wait_for_xlen(docket, waiters_stream, 1)
 
     async with docket.redis() as redis:
-        entries = await redis.xrange(waiters_stream, "-", "+")  # type: ignore
+        entries = await redis.xrange(waiters_stream, "-", "+")
         assert len(entries) == 1
         fields = entries[0][1]
         assert fields[b"function"] == b"holder"
         # The waiter task itself is not in the future queue.  The only
         # queue entries are the safeguard backstops scheduled by the
         # ConcurrencyLimit dependency (`__safeguard__:<task_key>`).
-        queue_keys = [
-            k.decode()
-            for k in await redis.zrange(docket.queue_key, 0, -1)  # type: ignore
-        ]
+        queue_keys = [k.decode() for k in await redis.zrange(docket.queue_key, 0, -1)]
         assert all(k.startswith("__safeguard__:") for k in queue_keys), queue_keys
 
     hold.set()
@@ -132,7 +129,7 @@ async def test_blocked_task_makes_no_polling_retries(docket: Docket, worker: Wor
     ):
         runs_key = f"{docket.prefix}:runs:{blocked_key}"
         async with docket.redis() as redis:
-            gen: bytes | None = await redis.hget(runs_key, "generation")  # type: ignore[assignment]
+            gen: bytes | None = await redis.hget(runs_key, "generation")
         generations_seen.append(int(gen) if gen else -1)
 
     await docket.add(watcher)(customer_id=1)
@@ -188,7 +185,7 @@ async def test_safeguard_wakes_waiter_when_holder_died_without_releasing(
     # stale-scavenge can't see it as recoverable.
     async with docket.redis() as redis:
         fresh = datetime.now(timezone.utc).timestamp()
-        await redis.zadd(slots_key, {"fake-dead-holder": fresh})  # type: ignore
+        await redis.zadd(slots_key, {"fake-dead-holder": fresh})
 
     # Short redelivery_timeout so the per-park safeguard fires inside the
     # test window without slowing the suite down.
@@ -204,7 +201,7 @@ async def test_safeguard_wakes_waiter_when_holder_died_without_releasing(
             # this slot, so the timestamp stays at 0 until the safeguard
             # scavenges it.
             async with docket.redis() as redis:
-                await redis.zadd(slots_key, {"fake-dead-holder": 0.0})  # type: ignore
+                await redis.zadd(slots_key, {"fake-dead-holder": 0.0})
 
             # The safeguard fires ~200ms after the park, scavenges the
             # stale slot, and the waiter is forwarded back to the main
@@ -222,7 +219,7 @@ async def test_safeguard_wakes_waiter_when_holder_died_without_releasing(
                 pass
 
     async with docket.redis() as redis:
-        assert await redis.xlen(waiters_stream) == 0  # type: ignore
+        assert await redis.xlen(waiters_stream) == 0
 
 
 async def test_cancel_of_parked_task_prevents_wake_and_run(
@@ -274,17 +271,14 @@ async def test_cancel_of_parked_task_prevents_wake_and_run(
 
     async with docket.redis() as redis:
         runs_key = f"{docket.prefix}:runs:{blocked_exec.key}"
-        state = await redis.hget(runs_key, "state")  # type: ignore
+        state = await redis.hget(runs_key, "state")
         assert state == b"cancelled", state
         # Waiter stream should be fully drained
-        assert await redis.xlen(waiters_stream) == 0  # type: ignore
+        assert await redis.xlen(waiters_stream) == 0
         # The safeguard task this waiter scheduled at park time should also
         # be cleaned up so it doesn't sit in the future queue.
         safeguard_key = f"__safeguard__:{blocked_exec.key}"
-        queue_keys = [
-            k.decode()
-            for k in await redis.zrange(docket.queue_key, 0, -1)  # type: ignore
-        ]
+        queue_keys = [k.decode() for k in await redis.zrange(docket.queue_key, 0, -1)]
         assert safeguard_key not in queue_keys, queue_keys
 
 

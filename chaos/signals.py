@@ -40,13 +40,13 @@ async def signal_test_task(
     channel = os.environ.get(CHANNEL_ENV_VAR, "signal-test:events")
 
     async with docket.redis() as redis:
-        await redis.publish(channel, f"started:{task_id}")  # type: ignore[reportUnknownMemberType]
+        await redis.publish(channel, f"started:{task_id}")
         logger.info("Task %s started", task_id)
 
     await asyncio.sleep(duration)
 
     async with docket.redis() as redis:
-        await redis.publish(channel, f"completed:{task_id}")  # type: ignore[reportUnknownMemberType]
+        await redis.publish(channel, f"completed:{task_id}")
         logger.info("Task %s completed", task_id)
 
 
@@ -102,8 +102,8 @@ async def wait_for_tasks_via_pubsub(
     remaining = task_ids.copy()
 
     async with docket.redis() as redis:
-        pubsub = redis.pubsub()  # type: ignore[reportUnknownMemberType]
-        await pubsub.subscribe(channel)  # type: ignore[reportUnknownMemberType]
+        pubsub = redis.pubsub()
+        await pubsub.subscribe(channel)
 
         try:
             deadline = asyncio.get_event_loop().time() + timeout
@@ -120,12 +120,10 @@ async def wait_for_tasks_via_pubsub(
 
                 # Wait for next message with remaining timeout
                 try:
-                    message: (  # type: ignore[reportUnknownVariableType]
+                    message: (
                         dict[str, bytes | str | None] | None
                     ) = await asyncio.wait_for(
-                        pubsub.get_message(  # type: ignore[reportUnknownMemberType]
-                            ignore_subscribe_messages=True, timeout=1.0
-                        ),
+                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
                         timeout=min(time_left, 2.0),
                     )
                 except asyncio.TimeoutError:
@@ -155,7 +153,7 @@ async def wait_for_tasks_via_pubsub(
 
         finally:
             await pubsub.unsubscribe(channel)  # type: ignore[reportUnknownMemberType]
-            await pubsub.aclose()  # type: ignore[reportUnknownMemberType]
+            await pubsub.aclose()
 
 
 async def verify_tasks_completed(
@@ -172,7 +170,7 @@ async def verify_tasks_completed(
     async with docket.redis() as redis:
         for key in task_keys:
             runs_key = f"{docket.name}:runs:{key}"
-            state: bytes | None = await redis.hget(runs_key, "state")  # type: ignore[reportUnknownMemberType]
+            state: bytes | None = await redis.hget(runs_key, "state")
 
             if state is None:
                 logger.error("Task %s has no state in Redis", key)
