@@ -168,7 +168,7 @@ async def test_safeguard_wakes_waiter_when_holder_died_without_releasing(
     """
     from datetime import timedelta
 
-    ran: list[int] = []
+    ran_event = asyncio.Event()
 
     async def waiter(
         customer_id: int,
@@ -176,7 +176,7 @@ async def test_safeguard_wakes_waiter_when_holder_died_without_releasing(
             "customer_id", max_concurrent=1
         ),
     ):
-        ran.append(1)
+        ran_event.set()
 
     slots_key = f"{docket.prefix}:concurrency:customer_id:1"
     waiters_stream = f"{slots_key}:waiters"
@@ -193,30 +193,25 @@ async def test_safeguard_wakes_waiter_when_holder_died_without_releasing(
         await docket.add(waiter)(customer_id=1)
 
         runner = asyncio.create_task(worker.run_forever())
-        try:
-            # Waiter parks because the (live-looking) fake slot is full.
-            await _wait_for_xlen(docket, waiters_stream, 1)
 
-            # Now forge a stale-holder state.  No lease renewer is touching
-            # this slot, so the timestamp stays at 0 until the safeguard
-            # scavenges it.
-            async with docket.redis() as redis:
-                await redis.zadd(slots_key, {"fake-dead-holder": 0.0})
+        # Waiter parks because the (live-looking) fake slot is full.
+        await _wait_for_xlen(docket, waiters_stream, 1)
 
-            # The safeguard fires ~200ms after the park, scavenges the
-            # stale slot, and the waiter is forwarded back to the main
-            # stream and runs.
-            for _ in range(200):
-                if ran:
-                    break
-                await asyncio.sleep(0.025)
-            assert ran == [1], ran
-        finally:
-            runner.cancel()
-            try:
-                await runner
-            except BaseException:
-                pass
+        # Now forge a stale-holder state.  No lease renewer is touching
+        # this slot, so the timestamp stays at 0 until the safeguard
+        # scavenges it.
+        async with docket.redis() as redis:
+            await redis.zadd(slots_key, {"fake-dead-holder": 0.0})
+
+        # The safeguard fires ~200ms after the park, scavenges the stale
+        # slot, and the waiter is forwarded back to the main stream and
+        # runs.
+        await asyncio.wait_for(ran_event.wait(), timeout=5.0)
+
+        runner.cancel()
+        # Drain the cancelled run_forever() task; gather absorbs the
+        # CancelledError so we don't leave it as an "unawaited" warning.
+        await asyncio.gather(runner, return_exceptions=True)
 
     async with docket.redis() as redis:
         assert await redis.xlen(waiters_stream) == 0

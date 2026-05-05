@@ -177,8 +177,11 @@ local parked_prefix = ARGV[6]
 
 redis.call('ZREM', slots_key, task_key)
 
-local waiters_count = redis.call('XLEN', waiters_stream)
-if waiters_count > 0 then
+-- Probe the waiter stream with XRANGE COUNT 1 instead of XLEN -- some
+-- in-memory Redis stand-ins (burner-redis on Windows) don't expose XLEN
+-- to Lua scripts.  An empty list means the stream is empty.
+local waiter_probe = redis.call('XRANGE', waiters_stream, '-', '+', 'COUNT', 1)
+if #waiter_probe > 0 then
     local stale = redis.call('ZRANGEBYSCORE', slots_key, 0, stale_threshold)
     for _, s in ipairs(stale) do
         redis.call('ZREM', slots_key, s)
@@ -246,7 +249,8 @@ end
 if redis.call('ZCARD', slots_key) == 0 then
     redis.call('DEL', slots_key)
 end
-if redis.call('XLEN', waiters_stream) == 0 then
+local final_probe = redis.call('XRANGE', waiters_stream, '-', '+', 'COUNT', 1)
+if #final_probe == 0 then
     redis.call('DEL', waiters_stream)
 end
 """
@@ -279,8 +283,10 @@ local runs_prefix = ARGV[3]
 local state_prefix = ARGV[4]
 local parked_prefix = ARGV[5]
 
-local waiters_count = redis.call('XLEN', waiters_stream)
-if waiters_count == 0 then
+-- Probe with XRANGE COUNT 1 instead of XLEN (XLEN is unsupported in
+-- some in-memory Redis stand-ins like burner-redis on Windows).
+local waiter_probe = redis.call('XRANGE', waiters_stream, '-', '+', 'COUNT', 1)
+if #waiter_probe == 0 then
     redis.call('DEL', waiters_stream)
     return 0
 end
@@ -349,7 +355,8 @@ end
 if redis.call('ZCARD', slots_key) == 0 then
     redis.call('DEL', slots_key)
 end
-if redis.call('XLEN', waiters_stream) == 0 then
+local final_probe = redis.call('XRANGE', waiters_stream, '-', '+', 'COUNT', 1)
+if #final_probe == 0 then
     redis.call('DEL', waiters_stream)
 end
 
@@ -370,7 +377,8 @@ local runs_key = KEYS[3]
 local waiter_entry_id = ARGV[1]
 
 redis.call('XDEL', waiters_stream, waiter_entry_id)
-if redis.call('XLEN', waiters_stream) == 0 then
+local probe = redis.call('XRANGE', waiters_stream, '-', '+', 'COUNT', 1)
+if #probe == 0 then
     redis.call('DEL', waiters_stream)
 end
 
