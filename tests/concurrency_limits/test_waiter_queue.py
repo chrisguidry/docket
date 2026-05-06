@@ -132,16 +132,19 @@ async def test_blocked_task_makes_no_polling_retries(docket: Docket, worker: Wor
             gen: bytes | None = await redis.hget(runs_key, "generation")
         generations_seen.append(int(gen) if gen else -1)
 
+    # Add the slot holder first and wait until it's actually inside the
+    # function body before adding ``blocked``.  Otherwise the worker can
+    # pick up both messages in one read and ``blocked`` may win the race
+    # for the single slot -- running directly without ever parking.
     await docket.add(watcher)(customer_id=1)
-    blocked_exec = await docket.add(blocked)(customer_id=1)
-    blocked_key = blocked_exec.key
-
     worker_task = asyncio.create_task(worker.run_until_finished())
     await holder_entered.wait()
 
-    # Wait for the blocked task to actually park -- otherwise release_holder
-    # can fire before blocked reaches the concurrency gate, making it acquire
-    # directly without parking (which would defeat the test's purpose).
+    blocked_exec = await docket.add(blocked)(customer_id=1)
+    blocked_key = blocked_exec.key
+
+    # Wait for the blocked task to actually park on the waiter stream
+    # before releasing the holder.
     waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
     await _wait_for_xlen(docket, waiters_stream, 1)
 
@@ -247,11 +250,15 @@ async def test_cancel_of_parked_task_prevents_wake_and_run(
         nonlocal blocked_ran
         blocked_ran = True
 
+    # Add the slot holder first and wait until it's actually inside the
+    # function body before adding ``blocked``.  Otherwise the worker can
+    # pick up both messages in one read and ``blocked`` may win the race
+    # for the single slot -- running directly without ever parking.
     await docket.add(holder)(customer_id=1)
-    blocked_exec = await docket.add(blocked)(customer_id=1)
-
     worker_task = asyncio.create_task(worker.run_until_finished())
     await holder_entered.wait()
+
+    blocked_exec = await docket.add(blocked)(customer_id=1)
 
     # Make sure `blocked` is actually parked on the waiter stream
     waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
