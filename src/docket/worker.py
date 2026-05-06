@@ -403,7 +403,13 @@ class Worker:
                             pass
 
     async def run_until_finished(self) -> None:
-        """Run the worker until there are no more tasks to process."""
+        """Run the worker until there are no more tasks to process.
+
+        Note: this will not return if any task uses the `Perpetual` dependency
+        and does not cancel itself, since perpetuals usually reschedule themselves
+        on completion.  For testing perpetual tasks, use `run_at_most` to bound
+        iterations per key.
+        """
         return await self._run(forever=False)
 
     async def run_forever(self) -> None:
@@ -422,6 +428,13 @@ class Worker:
 
         Args:
             iterations_by_key: Maps task keys to their maximum allowed executions
+
+        Example:
+
+        ```python
+        execution = await docket.add(my_perpetual)()
+        await worker.run_at_most({execution.key: 3})
+        ```
         """
         self._execution_counts = {key: 0 for key in iterations_by_key}
 

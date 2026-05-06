@@ -225,7 +225,7 @@ async def test_task_registration_by_name(test_docket: Docket, test_worker: Worke
 
 ## Controlling Perpetual Tasks
 
-Use [`run_at_most()`](api-reference.md#docket.Worker.run_at_most) to limit how many times specific tasks run, which is essential for testing perpetual tasks:
+Perpetual tasks usually reschedule themselves on completion, so unless they cancel themselves a worker running them via `run_until_finished()` will not finish — there is more work in the queue. Use [`run_at_most()`](api-reference.md#docket.Worker.run_at_most) to bound iterations per task key for testing:
 
 ```python
 async def test_perpetual_monitoring(test_docket: Docket, test_worker: Worker) -> None:
