@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
-from typing import AsyncIterator, Iterator
+from typing import AsyncGenerator, Generator
 
 import pytest
 
@@ -85,7 +85,7 @@ async def test_sync_context_manager_worker_dependency_brackets_task(docket: Dock
     events: list[str] = []
 
     @contextmanager
-    def bracket() -> Iterator[str]:
+    def bracket() -> Generator[str, None, None]:
         events.append("enter")
         try:
             yield "value"
@@ -113,7 +113,7 @@ async def test_async_context_manager_worker_dependency_brackets_task(docket: Doc
     events: list[str] = []
 
     @asynccontextmanager
-    async def bracket() -> AsyncIterator[str]:
+    async def bracket() -> AsyncGenerator[str, None]:
         events.append("enter")
         try:
             yield "value"
@@ -142,7 +142,7 @@ async def test_multiple_worker_dependencies_teardown_lifo(docket: Docket):
 
     def make(name: str):
         @asynccontextmanager
-        async def dep() -> AsyncIterator[None]:
+        async def dep() -> AsyncGenerator[None, None]:
             events.append(f"enter_{name}")
             try:
                 yield None
@@ -358,7 +358,7 @@ async def test_worker_dep_teardown_error_fails_task(docket: Docket):
     events: list[str] = []
 
     @asynccontextmanager
-    async def bad_exit() -> AsyncIterator[None]:
+    async def bad_exit() -> AsyncGenerator[None, None]:
         events.append("enter")
         yield None
         events.append("exit")
