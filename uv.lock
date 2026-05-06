@@ -81,7 +81,7 @@ wheels = [
 [[package]]
 name = "burner-redis"
 version = "0.1.6"
-source = { git = "https://github.com/prefectlabs/burner-redis.git?rev=stream-cmds-in-lua#d4f0e98e57c2546ab4beff3cf8ddfbff7d5fa227" }
+source = { git = "https://github.com/prefectlabs/burner-redis.git?rev=main#6251e0c2485f8a24b8a7aec9bd5215d3bc98ce5c" }
 
 [[package]]
 name = "cachetools"
@@ -1543,7 +1543,7 @@ examples = [
 
 [package.metadata]
 requires-dist = [
-    { name = "burner-redis", git = "https://github.com/prefectlabs/burner-redis.git?rev=stream-cmds-in-lua" },
+    { name = "burner-redis", git = "https://github.com/prefectlabs/burner-redis.git?rev=main" },
     { name = "cloudpickle", specifier = ">=3.1.1" },
     { name = "cronsim", specifier = ">=2.6" },
     { name = "exceptiongroup", marker = "python_full_version < '3.11'", specifier = ">=1.2.0" },
