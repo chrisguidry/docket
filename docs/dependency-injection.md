@@ -362,6 +362,36 @@ async def fetch_pages(
         await process_response(response)
 ```
 
+### As `Annotated` metadata
+
+When a dependency **wraps** the task's execution rather than supplying a value — tracing, validation, audit logging — attach it as `Annotated[T, ...]` metadata on the parameter you want to scope it to. Docket calls `bind_to_parameter(name, value)` so the dependency can capture context, then enters it as an async context manager around the task body. The parameter still receives its real value from the caller.
+
+```python
+from typing import Annotated, Any
+from docket.dependencies import Dependency
+
+class Traced(Dependency):
+    """Wraps the task body in a trace span tagged with the parameter."""
+
+    def bind_to_parameter(self, name: str, value: Any) -> "Traced":
+        copy = Traced()
+        copy._tag = (name, value)
+        return copy
+
+    async def __aenter__(self) -> None:
+        self._span = tracer.start_span("task", attributes=dict([self._tag]))
+
+    async def __aexit__(self, *exc: Any) -> None:
+        self._span.end()
+
+async def fetch_pages(
+    urls: Annotated[list[str], Traced],
+) -> None:
+    ...
+```
+
+For parameterless subclasses the bare class is shorthand: `Annotated[list[str], Traced]` and `Annotated[list[str], Traced()]` are equivalent.
+
 Inside `__aenter__`, you can access the current execution context through the
 module-level context variables `current_docket`, `current_worker`, and
 `current_execution`:
