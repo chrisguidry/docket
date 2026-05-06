@@ -111,6 +111,17 @@ async def resilient_sync(
 
 You don't need try/except blocks to ensure rescheduling - Docket handles this automatically. Whether the task completes successfully or raises an exception, the next execution will be scheduled according to the `every` interval.
 
+### Testing perpetual tasks
+
+Perpetual tasks usually reschedule themselves on completion, so unless the task cancels itself `worker.run_until_finished()` will not return — there is more work in the queue. For tests, use [`run_at_most()`](api-reference.md#docket.Worker.run_at_most) to bound how many times each task runs:
+
+```python
+execution = await docket.add(my_perpetual)()
+await worker.run_at_most({execution.key: 3})
+```
+
+See [Testing with Docket](testing.md#controlling-perpetual-tasks) for the full testing guide.
+
 ## Cron Tasks
 
 For tasks that need to run at specific wall-clock times rather than at fixed intervals, use the `Cron` dependency. It extends `Perpetual` with cron expression support, scheduling the next run at the exact matching time after each execution.
