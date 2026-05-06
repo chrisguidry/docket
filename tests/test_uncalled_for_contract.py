@@ -106,6 +106,29 @@ def test_extracts_from_multiple_parameters():
     assert "b" in deps
 
 
+def test_extracts_bare_dependency_class_from_annotated():
+    async def func(x: Annotated[int, StubDependency]) -> None: ...
+
+    deps = get_annotation_dependencies(func)
+
+    assert "x" in deps
+    assert len(deps["x"]) == 1
+    assert isinstance(deps["x"][0], StubDependency)
+
+
+def test_mixes_bare_class_and_instance_metadata():
+    async def func(
+        x: Annotated[int, StubDependency, TrackingDependency()],
+    ) -> None: ...
+
+    deps = get_annotation_dependencies(func)
+
+    assert "x" in deps
+    assert len(deps["x"]) == 2
+    assert isinstance(deps["x"][0], StubDependency)
+    assert isinstance(deps["x"][1], TrackingDependency)
+
+
 # --- get_dependency_parameters ---
 
 
