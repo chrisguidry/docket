@@ -84,7 +84,7 @@ jobs:
           PROMPT="$(cat .github/docs-audit/prompt.md)"
           npx -y @anthropic-ai/claude-code --print \
             --max-turns 100 \
-            --model claude-haiku-4-5-20251001 \
+            --model sonnet \
             --allowedTools "Read,Grep,Glob,Bash,Write" \
             "$PROMPT"
 
