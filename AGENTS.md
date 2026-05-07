@@ -79,6 +79,17 @@ uv run prek install
 - This project uses Github for issue tracking
 - This project can use git worktrees under .worktrees/
 
+### Keeping docs honest as you edit
+
+While editing `src/docket/`, `docs/*.md`, or `README.md`, follow the
+**`audit-docs`** skill at `.claude/skills/audit-docs/SKILL.md`. It is a
+*habit*, not a deliverable: when you change a function body, signature,
+Lua script, or any public contract, re-read the affected docstring and
+any narrative-docs section that mentions the API, and fix any drift in
+the same edit. The aim is to never let stale docstrings or wrong doc
+prose ride along to a PR. Only switch into the skill's standalone
+"report" mode if the user explicitly asks for an audit pass.
+
 ## Core Architecture
 
 ### Key Classes
