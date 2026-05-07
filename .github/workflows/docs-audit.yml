@@ -76,7 +76,11 @@ jobs:
 
       - name: Run docs audit (Claude Code Action)
         if: ${{ steps.keycheck.outputs.skipped == 'false' }}
-        uses: anthropics/claude-code-action@v1
+        # Pin a specific release. The floating `@v1` tag is from Aug 2025
+        # and the action has 115+ patch releases since then; some of them
+        # touch Bun handling, where the floating tag has hit
+        # https://github.com/anthropics/claude-code-action/issues/1266.
+        uses: anthropics/claude-code-action@v1.0.115
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # Use the workflow's GITHUB_TOKEN rather than OIDC (which would
@@ -84,9 +88,6 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: ${{ steps.prompt.outputs.content }}
           claude_args: --model claude-haiku-4-5-20251001
-          # We render our own summary via the post-processor below.
-          display_report: false
-          show_full_output: false
 
       - name: Post-process findings
         id: postprocess
