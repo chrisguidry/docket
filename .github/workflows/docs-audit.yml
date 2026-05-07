@@ -81,12 +81,11 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          PROMPT="$(cat .github/docs-audit/prompt.md)"
           npx -y @anthropic-ai/claude-code --print \
             --max-turns 100 \
             --model claude-sonnet-4-6 \
             --allowedTools "Read,Grep,Glob,Bash,Write" \
-            "$PROMPT"
+            < .github/docs-audit/prompt.md
 
       - name: Post-process findings
         id: postprocess
