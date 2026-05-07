@@ -83,7 +83,6 @@ jobs:
         run: |
           PROMPT="$(cat .github/docs-audit/prompt.md)"
           npx -y @anthropic-ai/claude-code --print \
-            --dangerously-skip-permissions \
             --max-turns 100 \
             --model claude-haiku-4-5-20251001 \
             --allowedTools "Read,Grep,Glob,Bash,Write" \
