@@ -65,52 +65,36 @@ jobs:
             echo "skipped=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Load audit prompt
-        id: prompt
+      - name: Setup Node.js
+        if: ${{ steps.keycheck.outputs.skipped == 'false' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      # We invoke the Claude Code CLI directly via npx rather than going
+      # through anthropics/claude-code-action because the action is currently
+      # crashing with a Bun/tsconfig symlink bug
+      # (https://github.com/anthropics/claude-code-action/issues/1266).
+      # Following the pattern used in other PrefectHQ workflows.
+      - name: Run docs audit
+        if: ${{ steps.keycheck.outputs.skipped == 'false' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          {
-            echo 'content<<DOCSAUDITPROMPTEOF'
-            cat .github/docs-audit/prompt.md
-            echo 'DOCSAUDITPROMPTEOF'
-          } >> "$GITHUB_OUTPUT"
-
-      # Install Bun ourselves so we can pin to 1.3.5. Bun 1.3.6 (which the
-      # action installs by default) has a regression that crashes the action's
-      # entrypoint with a tsconfig symlink error — see
-      # https://github.com/anthropics/claude-code-action/issues/1266.
-      - name: Install Bun 1.3.5
-        if: ${{ steps.keycheck.outputs.skipped == 'false' }}
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.5
-
-      - name: Resolve bun path
-        if: ${{ steps.keycheck.outputs.skipped == 'false' }}
-        id: bunpath
-        run: echo "path=$(command -v bun)" >> "$GITHUB_OUTPUT"
-
-      - name: Run docs audit (Claude Code Action)
-        if: ${{ steps.keycheck.outputs.skipped == 'false' }}
-        # Pin a specific release; the floating `@v1` tag is from Aug 2025 and
-        # is far behind on patches.
-        uses: anthropics/claude-code-action@v1.0.115
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Use the workflow's GITHUB_TOKEN rather than OIDC (which would
-          # require id-token:write that we don't grant).
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Skip the action's bundled Bun 1.3.6 install in favor of the 1.3.5
-          # installed above. See the comment on the Bun install step.
-          path_to_bun_executable: ${{ steps.bunpath.outputs.path }}
-          prompt: ${{ steps.prompt.outputs.content }}
-          claude_args: --model claude-haiku-4-5-20251001
+          PROMPT="$(cat .github/docs-audit/prompt.md)"
+          npx -y @anthropic-ai/claude-code --print \
+            --dangerously-skip-permissions \
+            --max-turns 100 \
+            --model claude-haiku-4-5-20251001 \
+            --allowedTools "Read,Grep,Glob,Bash,Write" \
+            "$PROMPT"
 
       - name: Post-process findings
         id: postprocess
         if: ${{ steps.keycheck.outputs.skipped == 'false' && !cancelled() }}
         run: |
           if [ ! -f audit-output.json ]; then
-            echo "::warning::audit-output.json was not produced by the action"
+            echo "::warning::audit-output.json was not produced by the audit"
             exit 0
           fi
           uv run python .github/docs-audit/check.py audit-output.json
