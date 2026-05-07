@@ -18,11 +18,11 @@ max_lines = 945
 
 [[rules]]
 path = "src/docket/execution.py"
-max_lines = 1012
+max_lines = 1014
 
 [[rules]]
 path = "src/docket/docket.py"
-max_lines = 861
+max_lines = 870
 
 [[rules]]
 path = "src/docket/_redis.py"

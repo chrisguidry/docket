@@ -276,6 +276,9 @@ class Docket(DocketSnapshotMixin):
     ) -> Callable[P, Awaitable[Execution]]:
         """Add a task to the Docket.
 
+        If a task with the same key is already scheduled or running, this is
+        a no-op; use `replace()` to overwrite.
+
         Args:
             function: The task function to add.
             when: The time to schedule the task.
@@ -291,6 +294,9 @@ class Docket(DocketSnapshotMixin):
     ) -> Callable[..., Awaitable[Execution]]:
         """Add a task to the Docket.
 
+        If a task with the same key is already scheduled or running, this is
+        a no-op; use `replace()` to overwrite.
+
         Args:
             function: The name of a task to add.
             when: The time to schedule the task.
@@ -304,6 +310,9 @@ class Docket(DocketSnapshotMixin):
         key: str | None = None,
     ) -> Callable[..., Awaitable[Execution]]:
         """Add a task to the Docket.
+
+        If a task with the same key is already scheduled or running, this is
+        a no-op; use `replace()` to overwrite.
 
         Args:
             function: The task to add.

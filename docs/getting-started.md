@@ -111,7 +111,7 @@ await docket.replace(send_reminder, when=next_month, key=key)(
 await docket.cancel(key)
 ```
 
-Note that canceling only works for tasks scheduled in the future. Tasks that are ready for immediate execution cannot be canceled once they've been added to the processing queue.
+Cancellation is best-effort: tasks waiting in the stream or queue are removed atomically, but a task already running by the time the cancel arrives may complete before the signal is processed.
 
 ## Running Tasks: Workers
 
@@ -205,11 +205,10 @@ Long-running tasks can report their progress to provide visibility:
 
 ```python
 from docket import Progress
-from docket.execution import ExecutionProgress
 
 async def import_records(
     file_path: str,
-    progress: ExecutionProgress = Progress()
+    progress: Progress = Progress()
 ) -> None:
     records = await load_records(file_path)
     await progress.set_total(len(records))

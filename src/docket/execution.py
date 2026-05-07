@@ -301,7 +301,8 @@ class Execution:
 
         Args:
             replace: If True, replaces any existing task with the same key.
-                    If False, raises an error if the task already exists.
+                    If False and the task already exists, this is a no-op
+                    (the existing schedule is preserved).
             reschedule_message: If provided, atomically acknowledges and deletes
                     this stream message ID before rescheduling the task to the queue.
                     Used when a task needs to be rescheduled from an active stream message.
@@ -771,6 +772,7 @@ class Execution:
 
         Raises:
             ValueError: If both timeout and deadline are provided
+            ExecutionCancelled: If the execution was cancelled before completing
             Exception: If the task failed, raises the stored exception
             TimeoutError: If timeout/deadline is reached before execution completes
         """
