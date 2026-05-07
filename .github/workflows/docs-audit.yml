@@ -86,6 +86,11 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # TEMP(docs-audit-ci): pass github_token explicitly while iterating
+          # from this PR branch. The action's OIDC path requires the workflow
+          # file to match main, which it won't until this lands. Drop this
+          # before merge and rely on the OIDC path that customer-managed uses.
+          github_token: ${{ github.token }}
           additional_permissions: |
             actions: read
           prompt: ${{ steps.prompt.outputs.content }}
