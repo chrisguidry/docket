@@ -35,6 +35,10 @@ class Perpetual(CompletionHandler["Perpetual"]):
     async def my_task(perpetual: Perpetual = Perpetual()) -> None:
         ...
     ```
+
+    When testing perpetuals, use `Worker.run_at_most({key: N})` to bound iterations.
+    Unless the task cancels itself, `run_until_finished()` will not return for a task
+    that uses `Perpetual`, since the task usually reschedules itself on completion.
     """
 
     every: timedelta
