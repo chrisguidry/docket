@@ -79,6 +79,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Use the workflow's GITHUB_TOKEN rather than OIDC (which would
+          # require id-token:write that we don't grant).
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: ${{ steps.prompt.outputs.content }}
           claude_args: --model claude-haiku-4-5-20251001
           # We render our own summary via the post-processor below.
