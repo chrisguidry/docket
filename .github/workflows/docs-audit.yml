@@ -20,9 +20,17 @@ on:
       - ".github/workflows/docs-audit.yml"
   workflow_dispatch:
 
+# Permissions match the proven pattern from PrefectHQ/customer-managed:
+#   - id-token: write — the action authenticates via OIDC; without this it
+#     falls back to a github_token path that has triggered the Bun/tsconfig
+#     symlink crash in our setup.
+#   - actions: read — lets Claude inspect CI status when reviewing.
+#   - pull-requests: write — for the sticky comment.
 permissions:
   contents: read
   pull-requests: write
+  id-token: write
+  actions: read
 
 concurrency:
   group: docs-audit-${{ github.ref }}
@@ -34,17 +42,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Install uv and Python
-        uses: astral-sh/setup-uv@v7
+      # Pin to actions/checkout@v5 to match the working PrefectHQ workflows.
+      # The @v6 release is brand new and is a plausible factor in the action's
+      # tsconfig directory-mismatch crash we hit.
+      - uses: actions/checkout@v5
         with:
-          python-version: "3.13"
-          enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
-
-      - name: Install dependencies
-        run: uv sync
+          fetch-depth: 1
 
       - name: Skip if no API key
         id: keycheck
@@ -65,27 +68,28 @@ jobs:
             echo "skipped=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Setup Node.js
+      # Load the prompt via the same heredoc-into-GITHUB_OUTPUT pattern that
+      # customer-managed/analyze-upstream-pr.yml uses for its long prompt.
+      - name: Load audit prompt
+        id: prompt
         if: ${{ steps.keycheck.outputs.skipped == 'false' }}
-        uses: actions/setup-node@v6
-        with:
-          node-version: "20"
-
-      # We invoke the Claude Code CLI directly via npx rather than going
-      # through anthropics/claude-code-action because the action is currently
-      # crashing with a Bun/tsconfig symlink bug
-      # (https://github.com/anthropics/claude-code-action/issues/1266).
-      # Following the pattern used in other PrefectHQ workflows.
-      - name: Run docs audit
-        if: ${{ steps.keycheck.outputs.skipped == 'false' }}
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          npx -y @anthropic-ai/claude-code --print \
-            --max-turns 100 \
-            --model claude-sonnet-4-6 \
-            --allowedTools "Read,Grep,Glob,Bash,Write" \
-            < .github/docs-audit/prompt.md
+          {
+            echo 'content<<DOCSAUDITPROMPTEOF'
+            cat .github/docs-audit/prompt.md
+            echo 'DOCSAUDITPROMPTEOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run docs audit
+        id: claude
+        if: ${{ steps.keycheck.outputs.skipped == 'false' }}
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          additional_permissions: |
+            actions: read
+          prompt: ${{ steps.prompt.outputs.content }}
+          claude_args: '--model claude-sonnet-4-6 --permission-mode acceptEdits --allowedTools "Read,Grep,Glob,Bash,Write"'
 
       - name: Post-process findings
         id: postprocess
@@ -95,7 +99,10 @@ jobs:
             echo "::warning::audit-output.json was not produced by the audit"
             exit 0
           fi
-          uv run python .github/docs-audit/check.py audit-output.json
+          # check.py uses only the standard library, so the runner's system
+          # python3 is enough — no uv needed (and no uv state to confuse the
+          # earlier action step).
+          python3 .github/docs-audit/check.py audit-output.json
 
       - name: Post sticky PR comment
         if: ${{ github.event_name == 'pull_request' && steps.keycheck.outputs.skipped == 'false' && hashFiles('audit-comment.md') != '' && !cancelled() }}
