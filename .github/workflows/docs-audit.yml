@@ -1,0 +1,114 @@
+name: Docs Audit
+
+on:
+  pull_request:
+    paths:
+      - "**/*.py"
+      - "**/*.md"
+      - "docs/**"
+      - "README.md"
+      - ".github/docs-audit/**"
+      - ".github/workflows/docs-audit.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.py"
+      - "**/*.md"
+      - "docs/**"
+      - "README.md"
+      - ".github/docs-audit/**"
+      - ".github/workflows/docs-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: docs-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit docstrings and docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Skip if no API key
+        id: keycheck
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Docs audit — skipped"
+              echo ""
+              echo "ANTHROPIC_API_KEY is not available in this run "
+              echo "(this happens for fork PRs, which can't see secrets)."
+              echo ""
+              echo "A maintainer can re-run on demand via the workflow_dispatch trigger."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Load audit prompt
+        id: prompt
+        run: |
+          {
+            echo 'content<<DOCSAUDITPROMPTEOF'
+            cat .github/docs-audit/prompt.md
+            echo 'DOCSAUDITPROMPTEOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run docs audit (Claude Code Action)
+        if: ${{ steps.keycheck.outputs.skipped == 'false' }}
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: ${{ steps.prompt.outputs.content }}
+          claude_args: --model claude-haiku-4-5-20251001
+          # We render our own summary via the post-processor below.
+          display_report: false
+          show_full_output: false
+
+      - name: Post-process findings
+        id: postprocess
+        if: ${{ steps.keycheck.outputs.skipped == 'false' && !cancelled() }}
+        run: |
+          if [ ! -f audit-output.json ]; then
+            echo "::warning::audit-output.json was not produced by the action"
+            exit 0
+          fi
+          uv run python .github/docs-audit/check.py audit-output.json
+
+      - name: Post sticky PR comment
+        if: ${{ github.event_name == 'pull_request' && steps.keycheck.outputs.skipped == 'false' && hashFiles('audit-comment.md') != '' && !cancelled() }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: docs-audit
+          path: audit-comment.md
+
+      - name: Upload audit output as artifact
+        if: ${{ steps.keycheck.outputs.skipped == 'false' && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-audit-output
+          path: |
+            audit-output.json
+            audit-comment.md
+          if-no-files-found: ignore
+          retention-days: 30
