@@ -500,7 +500,7 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         # user-supplied scope bypasses the docket prefix: in cluster mode,
         # users sharing a concurrency limit across dockets must hash-tag their
         # scope themselves (e.g. "{shared}").
-        scope = self.scope or docket.prefix
+        scope = f"{docket.prefix}:{self.scope}"
         if self.argument_name is not None:
             try:
                 argument_value = execution.get_argument(self.argument_name)
