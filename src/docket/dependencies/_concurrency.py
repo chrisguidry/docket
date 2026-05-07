@@ -494,13 +494,15 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
             "atomically ACKs the message when the task is blocked."
         )
 
-        # Build the concurrency key.  Defaults to docket.prefix (hash-tagged in
-        # Redis Cluster mode) so the slot, waiter, stream, parked, and runs
-        # keys that the Lua script touches all share the same hash slot.  A
-        # user-supplied scope bypasses the docket prefix: in cluster mode,
-        # users sharing a concurrency limit across dockets must hash-tag their
-        # scope themselves (e.g. "{shared}").
-        scope = f"{docket.prefix}:{self.scope}"
+        # Build the concurrency key.  Always anchored under ``docket.prefix``
+        # so the slot, waiter, stream, parked, and runs keys touched by the
+        # Lua script share the same hash slot in Redis Cluster mode.  A
+        # user-supplied ``scope`` is treated as a sub-namespace within the
+        # docket; it cannot bypass the docket prefix because the
+        # acquire/release/scavenge scripts now also reference the docket's
+        # ``stream_key`` and ``runs:*`` keys, which would CROSSSLOT against
+        # any independent prefix in cluster mode.
+        scope = f"{docket.prefix}:{self.scope}" if self.scope else docket.prefix
         if self.argument_name is not None:
             try:
                 argument_value = execution.get_argument(self.argument_name)
