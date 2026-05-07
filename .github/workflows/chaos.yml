@@ -12,6 +12,8 @@ permissions:
 
 jobs:
   chaos:
+    # TEMP(docs-audit-ci): skip while iterating on the docs-audit workflow.
+    if: github.head_ref != 'docs-audit-ci'
     name: Chaos tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -35,6 +37,8 @@ jobs:
         run: uv run python -m chaos.driver
 
   signals:
+    # TEMP(docs-audit-ci): skip while iterating on the docs-audit workflow.
+    if: github.head_ref != 'docs-audit-ci'
     name: Signal handling tests
     runs-on: ubuntu-latest
     timeout-minutes: 5

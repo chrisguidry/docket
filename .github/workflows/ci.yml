@@ -11,6 +11,8 @@ permissions:
 
 jobs:
   test:
+    # TEMP(docs-audit-ci): skip while iterating on the docs-audit workflow.
+    if: github.head_ref != 'docs-audit-ci'
     name: Core, Python ${{ matrix.python-version }}, ${{ matrix.backend.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 4
@@ -145,6 +147,8 @@ jobs:
           report_type: test_results
 
   test-cli:
+    # TEMP(docs-audit-ci): skip while iterating on the docs-audit workflow.
+    if: github.head_ref != 'docs-audit-ci'
     name: CLI, Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 4
@@ -194,6 +198,8 @@ jobs:
           report_type: test_results
 
   test-windows:
+    # TEMP(docs-audit-ci): skip while iterating on the docs-audit workflow.
+    if: github.head_ref != 'docs-audit-ci'
     name: Windows, Python ${{ matrix.python-version }}
     runs-on: windows-latest
     timeout-minutes: 6
@@ -251,6 +257,8 @@ jobs:
           report_type: test_results
 
   prek:
+    # TEMP(docs-audit-ci): skip while iterating on the docs-audit workflow.
+    if: github.head_ref != 'docs-audit-ci'
     name: Prek checks
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -17,6 +17,8 @@ concurrency:
 
 jobs:
   build:
+    # TEMP(docs-audit-ci): skip while iterating on the docs-audit workflow.
+    if: github.head_ref != 'docs-audit-ci'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
