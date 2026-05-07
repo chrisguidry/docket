@@ -79,6 +79,21 @@ async with Docket() as docket:
     await docket.add(process_order, key=key)(12345)  # Ignored - key already exists
 ```
 
+If you need to confirm whether your call actually placed a task or was a no-op (for audit logs, dead-man switches, or any handoff where safety matters), inspect the returned execution's `disposition`:
+
+```python
+from docket import Disposition
+
+execution = await docket.add(process_order, key=key)(12345)
+
+if execution.disposition is Disposition.SCHEDULED:
+    log.info("handoff confirmed", key=execution.key)
+elif execution.disposition is Disposition.ALREADY_SCHEDULED:
+    log.info("duplicate handoff, prior schedule preserved", key=execution.key)
+elif execution.disposition is Disposition.STRUCK:
+    log.warning("blocked by a strike rule", key=execution.key)
+```
+
 This is especially valuable for web APIs where client retries or network issues might cause the same request to arrive multiple times:
 
 ```python

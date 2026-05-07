@@ -2,7 +2,7 @@
 
 from unittest.mock import AsyncMock, call
 
-from docket import Docket, Worker
+from docket import Disposition, Docket, Worker
 from tests._key_leak_checker import KeyCountChecker
 
 
@@ -221,3 +221,17 @@ async def test_striking_tasks_for_specific_parameters(
         ],
         any_order=True,
     )
+
+
+async def test_disposition_reports_struck_on_blocked_add(
+    docket: Docket, the_task: AsyncMock
+):
+    """When a strike rule blocks a docket.add, the returned Execution reports
+    Disposition.STRUCK so callers can distinguish a refused handoff from a
+    successful one without inspecting Redis."""
+
+    await docket.strike(the_task)
+
+    execution = await docket.add(the_task)("anything")
+
+    assert execution.disposition is Disposition.STRUCK

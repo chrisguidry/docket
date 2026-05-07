@@ -48,6 +48,29 @@ async def test_docket_schedule_with_stricken_task(docket: Docket, the_task: Asyn
     assert len(snapshot.future) == 0
 
 
+async def test_docket_schedule_is_idempotent_per_key(
+    docket: Docket, the_task: AsyncMock
+):
+    """A second docket.schedule for the same key is a no-op; the prior
+    schedule is preserved and the new execution reports ALREADY_SCHEDULED."""
+    from docket import Disposition
+
+    docket.register(the_task)
+
+    when = datetime.now(timezone.utc) + timedelta(seconds=60)
+
+    first = Execution(docket, the_task, ("first",), {}, "dup-key", when, 1)
+    await docket.schedule(first)
+    assert first.disposition is Disposition.SCHEDULED
+
+    second = Execution(docket, the_task, ("second",), {}, "dup-key", when, 1)
+    await docket.schedule(second)
+    assert second.disposition is Disposition.ALREADY_SCHEDULED
+
+    snapshot = await docket.snapshot()
+    assert len(snapshot.future) == 1
+
+
 async def test_get_execution_nonexistent_key(docket: Docket):
     """get_execution should return None for non-existent key."""
     execution = await docket.get_execution("nonexistent-key")
