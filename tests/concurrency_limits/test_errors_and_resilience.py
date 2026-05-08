@@ -46,9 +46,8 @@ async def test_worker_concurrency_with_task_failures(docket: Docket):
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
-
-    assert execution_count == 3
-    assert failure_count == 1
+        assert execution_count == 3
+        assert failure_count == 1
 
 
 async def test_worker_concurrency_error_handling_during_execution(docket: Docket):
@@ -75,9 +74,8 @@ async def test_worker_concurrency_error_handling_during_execution(docket: Docket
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
-
-    assert tasks_executed == 2
-    assert error_count == 1
+        assert tasks_executed == 2
+        assert error_count == 1
 
 
 async def test_worker_concurrency_multiple_workers_coordination(docket: Docket):
@@ -118,9 +116,8 @@ async def test_worker_concurrency_multiple_workers_coordination(docket: Docket):
 
     async with worker1, worker2:
         await asyncio.gather(worker1.run_until_finished(), worker2.run_until_finished())
-
-    assert worker1_executions + worker2_executions == 8
-    assert max_concurrent_observed <= 2
+        assert worker1_executions + worker2_executions == 8
+        assert max_concurrent_observed <= 2
 
 
 async def test_worker_concurrency_refresh_handles_redis_errors(docket: Docket):
@@ -157,8 +154,7 @@ async def test_worker_concurrency_refresh_handles_redis_errors(docket: Docket):
     with patch.object(docket, "redis", flaky_redis):
         async with worker:
             await worker.run_until_finished()
-
-    assert task_completed
+            assert task_completed
 
 
 async def test_worker_concurrency_robustness_under_stress(docket: Docket):
@@ -191,9 +187,8 @@ async def test_worker_concurrency_robustness_under_stress(docket: Docket):
 
     async with worker1, worker2:
         await asyncio.gather(worker1.run_until_finished(), worker2.run_until_finished())
-
-    assert successful_executions == 20
-    assert max_concurrent <= 3
+        assert successful_executions == 20
+        assert max_concurrent <= 3
 
 
 async def test_worker_concurrency_edge_cases(docket: Docket):
@@ -213,8 +208,7 @@ async def test_worker_concurrency_edge_cases(docket: Docket):
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
-
-    assert edge_case_handled
+        assert edge_case_handled
 
 
 async def test_worker_graceful_shutdown_with_concurrency_management(docket: Docket):
@@ -231,6 +225,5 @@ async def test_worker_graceful_shutdown_with_concurrency_management(docket: Dock
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
-
-    assert task_started.is_set(), "Task should have started"
-    assert task_completed.is_set(), "Task should have completed"
+        assert task_started.is_set(), "Task should have started"
+        assert task_completed.is_set(), "Task should have completed"

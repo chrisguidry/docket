@@ -31,9 +31,8 @@ async def test_worker_concurrency_missing_argument_fails_task(docket: Docket):
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
-
-    # Task should NOT execute - it should fail due to missing argument
-    assert not task_executed
+        # Task should NOT execute - it should fail due to missing argument
+        assert not task_executed
 
 
 async def test_worker_concurrency_no_limit_early_return(docket: Docket):
@@ -48,8 +47,7 @@ async def test_worker_concurrency_no_limit_early_return(docket: Docket):
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
-
-    assert task_executed
+        assert task_executed
 
 
 async def test_worker_concurrency_missing_argument_shows_available_args(docket: Docket):
@@ -69,9 +67,8 @@ async def test_worker_concurrency_missing_argument_shows_available_args(docket: 
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
-
-    # Task should NOT execute - it should fail due to missing argument
-    assert not task_executed
+        # Task should NOT execute - it should fail due to missing argument
+        assert not task_executed
 
 
 async def test_worker_concurrency_cleanup_on_success(docket: Docket):
@@ -93,9 +90,8 @@ async def test_worker_concurrency_cleanup_on_success(docket: Docket):
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
-
-    assert len(completed_tasks) == 3
-    assert all(customer_id == 1 for customer_id in completed_tasks)
+        assert len(completed_tasks) == 3
+        assert all(customer_id == 1 for customer_id in completed_tasks)
 
 
 async def test_worker_concurrency_cleanup_on_failure(docket: Docket):
@@ -121,12 +117,11 @@ async def test_worker_concurrency_cleanup_on_failure(docket: Docket):
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
-
-    assert len(execution_results) == 3
-    failed_tasks = [r for r in execution_results if r[2] is True]
-    successful_tasks = [r for r in execution_results if r[2] is False]
-    assert len(failed_tasks) == 1
-    assert len(successful_tasks) == 2
+        assert len(execution_results) == 3
+        failed_tasks = [r for r in execution_results if r[2] is True]
+        successful_tasks = [r for r in execution_results if r[2] is False]
+        assert len(failed_tasks) == 1
+        assert len(successful_tasks) == 2
 
 
 async def test_worker_concurrency_cleanup_after_task_completion(docket: Docket):
@@ -149,8 +144,7 @@ async def test_worker_concurrency_cleanup_after_task_completion(docket: Docket):
         async with docket.redis() as redis:
             await redis.keys(f"{docket.name}:concurrency:*")
             cleanup_verified = True
-
-    assert cleanup_verified
+        assert cleanup_verified
 
 
 async def test_worker_handles_concurrent_task_cleanup_gracefully(docket: Docket):
@@ -182,9 +176,8 @@ async def test_worker_handles_concurrent_task_cleanup_gracefully(docket: Docket)
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
-
-    assert task_count == 3
-    assert not cleanup_success
+        assert task_count == 3
+        assert not cleanup_success
 
 
 async def test_finally_block_releases_concurrency_on_success(docket: Docket):
@@ -206,8 +199,7 @@ async def test_finally_block_releases_concurrency_on_success(docket: Docket):
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
-
-    assert task_completed
+        assert task_completed
 
 
 async def test_stale_concurrency_slots_are_scavenged_when_full(docket: Docket):
@@ -249,17 +241,16 @@ async def test_stale_concurrency_slots_are_scavenged_when_full(docket: Docket):
 
     async with Worker(docket) as worker:
         await worker.run_until_finished()
+        assert task_completed
 
-    assert task_completed
-
-    # Verify: one stale slot was scavenged, task completed and released its slot,
-    # so one stale slot should remain (we only scavenge what we need)
-    async with docket.redis() as redis:
-        remaining = await redis.zrange(concurrency_key, 0, -1)
-        # One stale slot should remain (the other was scavenged)
-        assert len(remaining) == 1
-        # The remaining slot should be one of the stale ones
-        assert remaining[0] in [b"stale_task_1", b"stale_task_2"]
+        # Verify: one stale slot was scavenged, task completed and released its slot,
+        # so one stale slot should remain (we only scavenge what we need)
+        async with docket.redis() as redis:
+            remaining = await redis.zrange(concurrency_key, 0, -1)
+            # One stale slot should remain (the other was scavenged)
+            assert len(remaining) == 1
+            # The remaining slot should be one of the stale ones
+            assert remaining[0] in [b"stale_task_1", b"stale_task_2"]
 
 
 async def test_graceful_shutdown_releases_concurrency_slots(docket: Docket):

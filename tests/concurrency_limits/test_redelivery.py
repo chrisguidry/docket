@@ -238,18 +238,18 @@ async def test_redeliveries_respect_concurrency_limits(docket: Docket):
     ) as worker:
         await worker.run_until_finished()
 
-    # Verify all tasks eventually executed
-    customer_1_intervals = [(s, e) for cid, s, e in task_executions if cid == 1]
-    customer_2_intervals = [(s, e) for cid, s, e in task_executions if cid == 2]
+        # Verify all tasks eventually executed
+        customer_1_intervals = [(s, e) for cid, s, e in task_executions if cid == 1]
+        customer_2_intervals = [(s, e) for cid, s, e in task_executions if cid == 2]
 
-    # At least 3 executions for customer 1 (redelivery may cause more)
-    assert len(customer_1_intervals) >= 3
-    assert len(customer_2_intervals) >= 1
+        # At least 3 executions for customer 1 (redelivery may cause more)
+        assert len(customer_1_intervals) >= 3
+        assert len(customer_2_intervals) >= 1
 
-    # Verify tasks for customer 1 didn't overlap (concurrency limit = 1)
-    assert_no_overlaps(customer_1_intervals, "Customer 1 tasks")
+        # Verify tasks for customer 1 didn't overlap (concurrency limit = 1)
+        assert_no_overlaps(customer_1_intervals, "Customer 1 tasks")
 
-    assert failure_count >= 1
+        assert failure_count >= 1
 
 
 async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
@@ -304,10 +304,10 @@ async def test_concurrency_blocked_task_executes_exactly_once(docket: Docket):
             worker2.run_until_finished(),
         )
 
-    # Group executions by customer_id
-    by_customer: dict[int, list[tuple[float, float, str]]] = {}
-    for customer_id, start, end, key in executions:
-        by_customer.setdefault(customer_id, []).append((start, end, key))
+        # Group executions by customer_id
+        by_customer: dict[int, list[tuple[float, float, str]]] = {}
+        for customer_id, start, end, key in executions:
+            by_customer.setdefault(customer_id, []).append((start, end, key))
 
     # Verify each customer's tasks completed and didn't overlap
     for customer_id, customer_executions in by_customer.items():

@@ -125,7 +125,7 @@ async def test_worker_timeout_exceeds_redelivery_timeout(docket: Docket):
     async with Worker(docket, redelivery_timeout=timedelta(milliseconds=100)) as worker:
         await worker.run_until_finished()
 
-    assert task_executed
+        assert task_executed
 
 
 async def test_replacement_race_condition_stream_tasks(

@@ -70,10 +70,10 @@ async def test_two_workers_split_work(docket: Docket):
         await run1
         await run2
 
-    assert call_counts[worker1] + call_counts[worker2] == 100
-    # Both workers should participate (at least 20% each)
-    assert call_counts[worker1] > 20
-    assert call_counts[worker2] > 20
+        assert call_counts[worker1] + call_counts[worker2] == 100
+        # Both workers should participate (at least 20% each)
+        assert call_counts[worker1] > 20
+        assert call_counts[worker2] > 20
 
 
 async def test_worker_reconnects_when_connection_is_lost(
@@ -100,8 +100,8 @@ async def test_worker_reconnects_when_connection_is_lost(
     async with worker:
         await worker.run_until_finished()
 
-    assert call_count == 2
-    the_task.assert_called_once()
+        assert call_count == 2
+        the_task.assert_called_once()
 
 
 async def test_worker_respects_concurrency_limit(docket: Docket, worker: Worker):
@@ -377,7 +377,7 @@ async def test_worker_can_be_told_to_skip_automatic_tasks(docket: Docket):
     async with Worker(docket, schedule_automatic_tasks=False) as worker:
         await worker.run_until_finished()
 
-    assert not called
+        assert not called
 
 
 async def test_worker_concurrency_cleanup_without_dependencies(docket: Docket):
@@ -395,9 +395,9 @@ async def test_worker_concurrency_cleanup_without_dependencies(docket: Docket):
         # This should trigger the finally block cleanup
         await worker.run_until_finished()
 
-    # Exception was handled by worker, test that it didn't crash
-    cleanup_executed = True
-    assert cleanup_executed
+        # Exception was handled by worker, test that it didn't crash
+        cleanup_executed = True
+        assert cleanup_executed
 
 
 async def test_worker_concurrency_no_limit_with_custom_docket(docket: Docket):
@@ -413,7 +413,7 @@ async def test_worker_concurrency_no_limit_with_custom_docket(docket: Docket):
     async with Worker(docket) as worker:
         await worker.run_until_finished()
 
-    assert task_executed
+        assert task_executed
 
 
 async def test_worker_exception_before_dependencies(docket: Docket):
@@ -450,5 +450,5 @@ async def test_worker_exception_before_dependencies(docket: Docket):
             # This should trigger the finally block where "dependencies" not in locals()
             await worker.run_until_finished()
 
-    # The task function shouldn't run via worker due to dependency failure
-    assert task_failed is False
+        # The task function shouldn't run via worker due to dependency failure
+        assert task_failed is False

@@ -38,30 +38,6 @@ jobs:
             redis-version: "valkey-8.1"
             redis-py-version: ">=5"
         include:
-          - python-version: "3.10"
-            cov-threshold: 100
-            pytest-args: ""
-          # Python 3.11 coverage reporting is unstable, so use 98% threshold
-          - python-version: "3.11"
-            cov-threshold: 98
-            pytest-args: ""
-          - python-version: "3.12"
-            cov-threshold: 100
-            pytest-args: ""
-          - python-version: "3.13"
-            cov-threshold: 100
-            pytest-args: ""
-          - python-version: "3.14"
-            cov-threshold: 100
-            pytest-args: ""
-          # Memory backend: coverage threshold is lower due to pytest-xdist
-          # coverage data combination issues.
-          - backend:
-              name: "Memory"
-              redis-version: "memory"
-              redis-py-version: ">=5"
-            cov-threshold: 95
-            pytest-args: ""
           # Debug hanging tests in 3.12 cluster mode
           - python-version: "3.12"
             backend:
@@ -102,14 +78,12 @@ jobs:
               name: "Redis 8 with ACL"
               redis-version: "8.6-acl"
               redis-py-version: ">=5"
-            cov-threshold: 100
             pytest-args: ""
           - python-version: "3.14"
             backend:
               name: "Valkey 8 with ACL"
               redis-version: "valkey-8.1-acl"
               redis-py-version: ">=5"
-            cov-threshold: 100
             pytest-args: ""
 
     steps:
@@ -128,7 +102,7 @@ jobs:
       - name: Run tests
         env:
           REDIS_VERSION: ${{ matrix.backend.redis-version }}
-        run: uv run pytest --ignore=tests/cli --cov-branch --cov-config=.coveragerc-core --cov-fail-under=${{ matrix.cov-threshold }} --cov-report=xml --cov-report=term-missing:skip-covered --junitxml=junit.xml -o junit_family=legacy ${{ matrix.pytest-args }}
+        run: uv run pytest --ignore=tests/cli --cov-branch --cov-config=.coveragerc-core --cov-fail-under=100 --cov-report=xml --cov-report=term-missing:skip-covered --junitxml=junit.xml -o junit_family=legacy ${{ matrix.pytest-args }}
 
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
@@ -201,18 +175,6 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-        include:
-          - python-version: "3.10"
-            cov-threshold: 100
-          # Python 3.11 coverage reporting is unstable, so use 98% threshold
-          - python-version: "3.11"
-            cov-threshold: 98
-          - python-version: "3.12"
-            cov-threshold: 100
-          - python-version: "3.13"
-            cov-threshold: 100
-          - python-version: "3.14"
-            cov-threshold: 100
     steps:
       - uses: actions/checkout@v6
 
@@ -232,7 +194,7 @@ jobs:
         run: >
           uv run pytest --ignore=tests/cli
           --cov-branch --cov-config=.coveragerc-core
-          --cov-fail-under=${{ matrix.cov-threshold }}
+          --cov-fail-under=100
           --cov-report=xml --cov-report=term-missing:skip-covered
           --junitxml=junit.xml -o junit_family=legacy
 

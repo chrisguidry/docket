@@ -149,10 +149,10 @@ async def test_fallback_dependency_injection(
     ) as worker:
         await worker.run_until_finished()
 
-    assert captured_execution is not None
-    assert captured_execution.function_name == "some_task"
-    assert captured_execution.args == (123,)
-    assert captured_logger is not None
+        assert captured_execution is not None
+        assert captured_execution.function_name == "some_task"
+        assert captured_execution.args == (123,)
+        assert captured_logger is not None
 
 
 async def test_fallback_custom_user_dependency(
@@ -261,7 +261,7 @@ async def test_fallback_exception_triggers_retry(
     ) as worker:
         await worker.run_until_finished()
 
-    assert call_count == 3
+        assert call_count == 3
 
 
 async def test_execution_function_name_matches_for_known_tasks(
