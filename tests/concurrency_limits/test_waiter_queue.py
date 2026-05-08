@@ -307,5 +307,4 @@ async def test_many_contending_tasks_all_run_exactly_once(docket: Docket):
 
     async with Worker(docket, concurrency=4) as worker:
         await worker.run_until_finished()
-
-    assert sorted(ran) == list(range(n_tasks)), ran
+        assert sorted(ran) == list(range(n_tasks)), ran
