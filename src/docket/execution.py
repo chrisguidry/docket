@@ -57,7 +57,7 @@ Message = dict[bytes, bytes]
 class _schedule_task(Protocol):
     async def __call__(
         self, keys: list[str], args: list[str | float | bytes]
-    ) -> str: ...  # pragma: no cover
+    ) -> bytes | str: ...  # pragma: no cover
 
 
 def get_signature(function: Callable[..., Any]) -> inspect.Signature:
@@ -86,6 +86,32 @@ class ExecutionState(enum.Enum):
 
     CANCELLED = "cancelled"
     """Task was explicitly cancelled before completion."""
+
+
+class Disposition(enum.Enum):
+    """Outcome of a scheduling attempt for an Execution.
+
+    This is distinct from ExecutionState: ExecutionState tracks the lifecycle
+    of the task itself (scheduled → queued → running → completed / failed /
+    cancelled), while Disposition records what happened the moment a caller
+    tried to schedule it via Docket.add or Docket.replace.
+    """
+
+    LOADED = "loaded"
+    """This Execution was not produced by a fresh scheduling attempt. Default
+    for any Execution constructed outside of ``Docket.add`` / ``Docket.replace``
+    (for example, one reconstructed from a stream message inside the worker)."""
+
+    SCHEDULED = "scheduled"
+    """The task was placed on the queue (or stream, for immediate tasks)."""
+
+    ALREADY_SCHEDULED = "already_scheduled"
+    """A task with the same key was already known to the docket; the prior
+    schedule was preserved and this attempt was a no-op. Only possible with
+    ``Docket.add`` (``Docket.replace`` overwrites)."""
+
+    STRUCK = "struck"
+    """A strike rule blocked the call before any Redis state was touched."""
 
 
 class Execution:
@@ -133,6 +159,7 @@ class Execution:
         self.completed_at: datetime | None = None
         self.error: str | None = None
         self.result_key: str | None = None
+        self.disposition: Disposition = Disposition.LOADED
 
         # Progress tracking
         self.progress: ExecutionProgress = ExecutionProgress(docket, key)
@@ -287,7 +314,7 @@ class Execution:
 
     async def schedule(
         self, replace: bool = False, reschedule_message: "RedisMessageID | None" = None
-    ) -> None:
+    ) -> Disposition:
         """Schedule this task atomically in Redis.
 
         This performs an atomic operation that:
@@ -305,10 +332,18 @@ class Execution:
 
         Args:
             replace: If True, replaces any existing task with the same key.
-                    If False, raises an error if the task already exists.
+                    If False and the task already exists, this is a no-op
+                    (the existing schedule is preserved).
             reschedule_message: If provided, atomically acknowledges and deletes
                     this stream message ID before rescheduling the task to the queue.
                     Used when a task needs to be rescheduled from an active stream message.
+
+        Returns:
+            ``Disposition.SCHEDULED`` if the task was placed on the queue/stream,
+            or ``Disposition.ALREADY_SCHEDULED`` if a task with the same key was
+            already known and ``replace=False`` (in which case the existing
+            schedule is preserved and no local state changes are published).
+            Sets ``self.disposition`` to the same value.
         """
         message: dict[bytes, bytes] = self.as_message()
         propagate.inject(message, setter=message_setter)
@@ -482,7 +517,7 @@ class Execution:
                     ),
                 )
 
-                await schedule_script(
+                reply = await schedule_script(
                     keys=[
                         self.docket.stream_key,
                         known_task_key,
@@ -506,6 +541,12 @@ class Execution:
                     ],
                 )
 
+        if reply in (b"EXISTS", "EXISTS"):
+            # The Lua script kept the prior schedule untouched; leave local
+            # state alone and do not publish a misleading state event.
+            self.disposition = Disposition.ALREADY_SCHEDULED
+            return self.disposition
+
         # Update local state based on whether task is immediate, scheduled, or being rescheduled
         if reschedule_message:
             # When rescheduling from stream, task is always parked and queued (never immediate)
@@ -523,6 +564,9 @@ class Execution:
             await self._publish_state(
                 {"state": ExecutionState.SCHEDULED.value, "when": when.isoformat()}
             )
+
+        self.disposition = Disposition.SCHEDULED
+        return self.disposition
 
     async def claim(self, worker: str) -> bool:
         """Atomically check supersession and claim task in a single round-trip.
@@ -775,6 +819,7 @@ class Execution:
 
         Raises:
             ValueError: If both timeout and deadline are provided
+            ExecutionCancelled: If the execution was cancelled before completing
             Exception: If the task failed, raises the stored exception
             TimeoutError: If timeout/deadline is reached before execution completes
         """

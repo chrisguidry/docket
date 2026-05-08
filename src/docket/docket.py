@@ -41,6 +41,7 @@ from ._redis import (
 from ._result_store import ResultStorage
 from ._uuid7 import uuid7
 from .execution import (
+    Disposition,
     Execution,
     TaskFunction,
 )
@@ -276,6 +277,9 @@ class Docket(DocketSnapshotMixin):
     ) -> Callable[P, Awaitable[Execution]]:
         """Add a task to the Docket.
 
+        If a task with the same key is already scheduled or running, this is
+        a no-op; use `replace()` to overwrite.
+
         Args:
             function: The task function to add.
             when: The time to schedule the task.
@@ -291,6 +295,9 @@ class Docket(DocketSnapshotMixin):
     ) -> Callable[..., Awaitable[Execution]]:
         """Add a task to the Docket.
 
+        If a task with the same key is already scheduled or running, this is
+        a no-op; use `replace()` to overwrite.
+
         Args:
             function: The name of a task to add.
             when: The time to schedule the task.
@@ -305,10 +312,22 @@ class Docket(DocketSnapshotMixin):
     ) -> Callable[..., Awaitable[Execution]]:
         """Add a task to the Docket.
 
+        If a task with the same key is already scheduled or running, this is
+        a no-op; use `replace()` to overwrite.
+
         Args:
             function: The task to add.
             when: The time to schedule the task.
             key: The key to schedule the task under.
+
+        Returns:
+            A callable that, when invoked with the task's arguments, returns
+            an :class:`Execution`. The returned execution's ``disposition``
+            reports the outcome of the scheduling attempt:
+            ``Disposition.SCHEDULED`` if the task was placed,
+            ``Disposition.ALREADY_SCHEDULED`` if a task with the same key was
+            already known and the prior schedule was preserved, or
+            ``Disposition.STRUCK`` if a strike rule blocked the call.
         """
         function_name: str | None = None
         if isinstance(function, str):
@@ -342,7 +361,7 @@ class Docket(DocketSnapshotMixin):
                     **execution.specific_labels(),
                     "code.function.name": execution.function_name,
                 },
-            ):
+            ) as span:
                 # Check if task is stricken before scheduling
                 if self.strike_list.is_stricken(execution):
                     logger.warning(
@@ -358,13 +377,19 @@ class Docket(DocketSnapshotMixin):
                             "docket.where": "docket",
                         },
                     )
+                    execution.disposition = Disposition.STRUCK
+                    span.set_attribute(
+                        "docket.disposition", execution.disposition.value
+                    )
                     return execution
 
                 # Schedule atomically (includes state record write)
                 await execution.schedule(replace=False)
+                span.set_attribute("docket.disposition", execution.disposition.value)
 
             TASKS_ADDED.add(1, {**self.labels(), **execution.general_labels()})
-            TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
+            if execution.disposition is Disposition.SCHEDULED:
+                TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
 
             return execution
 
@@ -412,6 +437,13 @@ class Docket(DocketSnapshotMixin):
             function: The task to replace.
             when: The time to schedule the task.
             key: The key to schedule the task under.
+
+        Returns:
+            A callable that, when invoked with the task's arguments, returns
+            an :class:`Execution`. The returned execution's ``disposition`` is
+            ``Disposition.SCHEDULED`` if the task was placed (overwriting any
+            prior schedule for ``key``), or ``Disposition.STRUCK`` if a strike
+            rule blocked the call.
         """
         function_name: str | None = None
         if isinstance(function, str):
@@ -439,7 +471,7 @@ class Docket(DocketSnapshotMixin):
                     **execution.specific_labels(),
                     "code.function.name": execution.function_name,
                 },
-            ):
+            ) as span:
                 # Check if task is stricken before scheduling
                 if self.strike_list.is_stricken(execution):
                     logger.warning(
@@ -455,10 +487,15 @@ class Docket(DocketSnapshotMixin):
                             "docket.where": "docket",
                         },
                     )
+                    execution.disposition = Disposition.STRUCK
+                    span.set_attribute(
+                        "docket.disposition", execution.disposition.value
+                    )
                     return execution
 
                 # Schedule atomically (includes state record write)
                 await execution.schedule(replace=True)
+                span.set_attribute("docket.disposition", execution.disposition.value)
 
             TASKS_REPLACED.add(1, {**self.labels(), **execution.general_labels()})
             TASKS_CANCELLED.add(1, {**self.labels(), **execution.general_labels()})
@@ -476,7 +513,7 @@ class Docket(DocketSnapshotMixin):
                 **execution.specific_labels(),
                 "code.function.name": execution.function_name,
             },
-        ):
+        ) as span:
             # Check if task is stricken before scheduling
             if self.strike_list.is_stricken(execution):
                 logger.warning(
@@ -492,12 +529,16 @@ class Docket(DocketSnapshotMixin):
                         "docket.where": "docket",
                     },
                 )
+                execution.disposition = Disposition.STRUCK
+                span.set_attribute("docket.disposition", execution.disposition.value)
                 return
 
             # Schedule atomically (includes state record write)
             await execution.schedule(replace=False)
+            span.set_attribute("docket.disposition", execution.disposition.value)
 
-        TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
+        if execution.disposition is Disposition.SCHEDULED:
+            TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
 
     async def cancel(self, key: str) -> None:
         """Cancel a previously scheduled task on the Docket.

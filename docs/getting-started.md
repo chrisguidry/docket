@@ -79,6 +79,21 @@ async with Docket() as docket:
     await docket.add(process_order, key=key)(12345)  # Ignored - key already exists
 ```
 
+If you need to confirm whether your call actually placed a task or was a no-op (for audit logs, dead-man switches, or any handoff where safety matters), inspect the returned execution's `disposition`:
+
+```python
+from docket import Disposition
+
+execution = await docket.add(process_order, key=key)(12345)
+
+if execution.disposition is Disposition.SCHEDULED:
+    log.info("handoff confirmed", key=execution.key)
+elif execution.disposition is Disposition.ALREADY_SCHEDULED:
+    log.info("duplicate handoff, prior schedule preserved", key=execution.key)
+elif execution.disposition is Disposition.STRUCK:
+    log.warning("blocked by a strike rule", key=execution.key)
+```
+
 This is especially valuable for web APIs where client retries or network issues might cause the same request to arrive multiple times:
 
 ```python
@@ -111,7 +126,7 @@ await docket.replace(send_reminder, when=next_month, key=key)(
 await docket.cancel(key)
 ```
 
-Note that canceling only works for tasks scheduled in the future. Tasks that are ready for immediate execution cannot be canceled once they've been added to the processing queue.
+Cancellation is best-effort: tasks waiting in the stream or queue are removed atomically, but a task already running by the time the cancel arrives may complete before the signal is processed.
 
 ## Running Tasks: Workers
 
@@ -205,11 +220,10 @@ Long-running tasks can report their progress to provide visibility:
 
 ```python
 from docket import Progress
-from docket.execution import ExecutionProgress
 
 async def import_records(
     file_path: str,
-    progress: ExecutionProgress = Progress()
+    progress: Progress = Progress()
 ) -> None:
     records = await load_records(file_path)
     await progress.set_total(len(records))

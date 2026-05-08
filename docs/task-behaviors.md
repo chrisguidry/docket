@@ -205,7 +205,7 @@ async def call_external_api(
         maximum_delay=timedelta(minutes=5)
     )
 ) -> None:
-    # Retries with delays: 1s, 2s, 4s, 8s, 16s (but capped at 5 minutes)
+    # Retries with delays: 1s, 2s, 4s, 8s (capped at 5 minutes)
     try:
         response = await http_client.get(url)
         response.raise_for_status()
