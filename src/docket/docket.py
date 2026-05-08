@@ -696,12 +696,18 @@ class Docket(DocketSnapshotMixin):
         - From the stream (using stored message ID)
         - From the queue (scheduled tasks)
         - Cleans up all associated metadata keys
+
+        Dependencies that park tasks on side channels (e.g. ConcurrencyLimit's
+        waiter streams) clean up via the state-transition pub/sub channel
+        published by ``Docket.cancel`` -- Docket itself stays unaware of any
+        dependency-specific storage.
         """
         if self._cancel_task_script is None:
             self._cancel_task_script = cast(
                 _cancel_task,
                 redis.register_script(
-                    # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key, runs_key
+                    # KEYS: stream_key, known_key, parked_key, queue_key,
+                    #       stream_id_key, runs_key, progress_key
                     # ARGV: task_key, completed_at
                     """
                     local stream_key = KEYS[1]
@@ -711,6 +717,7 @@ class Docket(DocketSnapshotMixin):
                     local queue_key = KEYS[4]
                     local stream_id_key = KEYS[5]
                     local runs_key = KEYS[6]
+                    local progress_key = KEYS[7]
                     local task_key = ARGV[1]
                     local completed_at = ARGV[2]
 
@@ -730,6 +737,12 @@ class Docket(DocketSnapshotMixin):
                     -- Clean up legacy keys and parked data
                     redis.call('DEL', known_key, parked_key, stream_id_key)
                     redis.call('ZREM', queue_key, task_key)
+
+                    -- Drop the per-task progress hash that ``Execution.claim``
+                    -- creates -- without a TTL of its own, it would otherwise
+                    -- leak when a task is cancelled after being claimed but
+                    -- before it completes (e.g. parked on a side channel).
+                    redis.call('DEL', progress_key)
 
                     -- Clear scheduling markers so add() can reschedule this key
                     redis.call('HDEL', runs_key, 'known', 'stream_id')
@@ -759,6 +772,7 @@ class Docket(DocketSnapshotMixin):
                 self.queue_key,
                 self.stream_id_key(key),
                 task_runs_key,
+                self.key(f"progress:{key}"),
             ],
             args=[key, completed_at],
         )

@@ -55,6 +55,7 @@ from .dependencies import (
     current_docket,
     current_worker,
     format_duration,
+    get_annotation_dependencies,
     get_single_dependency_of_type,
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
@@ -472,6 +473,44 @@ class Worker:
                 )
                 await asyncio.sleep(self.reconnection_delay.total_seconds())
 
+    def _dependency_lifecycle_classes(self) -> list[type[Dependency[Any]]]:
+        """Discover Dependency subclasses (used by registered tasks or worker
+        dependencies) that declare a ``worker_lifecycle`` classmethod.
+
+        The hook lets dependencies do worker-scoped setup/teardown -- start
+        background subscribers, register internal tasks, etc. -- without the
+        Worker needing to know anything specific about them.  Each class's
+        lifecycle is invoked at most once per worker lifetime, regardless of
+        how many tasks reference it.
+        """
+        seen: set[type[Dependency[Any]]] = set()
+        ordered: list[type[Dependency[Any]]] = []
+
+        def consider(dep: Any) -> None:
+            if not isinstance(dep, Dependency):
+                return
+            cls = type(dep)
+            if cls in seen or not hasattr(cls, "worker_lifecycle"):
+                return
+            seen.add(cls)
+            ordered.append(cls)
+
+        for task_func in self.docket.tasks.values():
+            try:
+                sig = get_signature(task_func)
+            except (ValueError, TypeError):  # pragma: no cover
+                continue
+            for param in sig.parameters.values():
+                consider(param.default)
+            for deps in get_annotation_dependencies(task_func).values():
+                for dep in deps:
+                    consider(dep)
+
+        for dep in (self.dependencies or {}).values():
+            consider(dep)
+
+        return ordered
+
     async def _worker_loop(self, redis: Redis, forever: bool = False):
         self._worker_stopping.clear()
         self._worker_done.clear()
@@ -541,6 +580,7 @@ class Worker:
                 message,
                 redelivered=is_redelivery,
                 fallback_task=self.fallback_task,
+                message_id=message_id,
             )
 
             task = asyncio.create_task(
@@ -564,7 +604,11 @@ class Worker:
                     await task
                     await ack_message(redis, message_id)
                 except AdmissionBlocked as e:
-                    if e.reschedule:
+                    if e.handled:
+                        # The admission gate already handled the task,
+                        # so there is nothing more to do here.
+                        continue
+                    elif e.reschedule:
                         delay = e.retry_delay or ADMISSION_BLOCKED_RETRY_DELAY
                         logger.debug(
                             "⏳ Task %s blocked by admission control, rescheduling",
@@ -597,54 +641,68 @@ class Worker:
                 await pipeline.execute()
 
         try:
-            async with TaskGroup() as infra:
-                # Start cancellation listener and wait for it to be ready
-                infra.create_task(
-                    self._cancellation_listener(),
-                    name=f"{self.docket.name} - cancellation listener",
-                )
-                await self._cancellation_ready.wait()
+            async with AsyncExitStack() as dependency_stack:
+                # Each Dependency class used by a registered task may declare
+                # a ``worker_lifecycle`` classmethod that returns an async
+                # context manager.  We enter all of them around the worker's
+                # main loop so dependency-owned background work (subscribers,
+                # housekeeping tasks, etc.) gets started up and torn down in
+                # lockstep with the worker.  Worker stays dependency-agnostic.
+                for dep_cls in self._dependency_lifecycle_classes():
+                    cm = dep_cls.worker_lifecycle(self.docket, self)
+                    if cm is not None:
+                        await dependency_stack.enter_async_context(cm)
 
-                if self.schedule_automatic_tasks:
-                    await self._schedule_all_automatic_perpetual_tasks()
+                async with TaskGroup() as infra:
+                    # Start cancellation listener and wait for it to be ready
+                    infra.create_task(
+                        self._cancellation_listener(),
+                        name=f"{self.docket.name} - cancellation listener",
+                    )
+                    await self._cancellation_ready.wait()
 
-                infra.create_task(
-                    self._scheduler_loop(redis),
-                    name=f"{self.docket.name} - scheduler",
-                )
-                infra.create_task(
-                    self._renew_leases(redis, active_tasks),
-                    name=f"{self.docket.name} - lease renewal",
-                )
+                    if self.schedule_automatic_tasks:
+                        await self._schedule_all_automatic_perpetual_tasks()
 
-                has_work: bool = True
-                stopping = self._worker_stopping.is_set
-                while (forever or has_work or active_tasks) and not stopping():
-                    await process_completed_tasks()
+                    infra.create_task(
+                        self._scheduler_loop(redis),
+                        name=f"{self.docket.name} - scheduler",
+                    )
+                    infra.create_task(
+                        self._renew_leases(redis, active_tasks),
+                        name=f"{self.docket.name} - lease renewal",
+                    )
 
-                    available_slots = self.concurrency - len(active_tasks)
+                    has_work: bool = True
+                    stopping = self._worker_stopping.is_set
+                    while (forever or has_work or active_tasks) and not stopping():
+                        await process_completed_tasks()
 
-                    if available_slots <= 0:
-                        await asyncio.sleep(self.minimum_check_interval.total_seconds())
-                        continue
-
-                    for source in [get_redeliveries, get_new_deliveries]:
-                        for stream_key, messages in await source(redis):
-                            is_redelivery = stream_key == b"__redelivery__"
-                            for message_id, message in messages:
-                                if not message:  # pragma: no cover
-                                    continue
-
-                                await start_task(message_id, message, is_redelivery)
+                        available_slots = self.concurrency - len(active_tasks)
 
                         if available_slots <= 0:
-                            break
+                            await asyncio.sleep(
+                                self.minimum_check_interval.total_seconds()
+                            )
+                            continue
 
-                    if not forever and not active_tasks:
-                        has_work = await check_for_work()
+                        for source in [get_redeliveries, get_new_deliveries]:
+                            for stream_key, messages in await source(redis):
+                                is_redelivery = stream_key == b"__redelivery__"
+                                for message_id, message in messages:
+                                    if not message:  # pragma: no cover
+                                        continue
 
-                # Signal internal tasks to stop before exiting TaskGroup
-                self._worker_stopping.set()
+                                    await start_task(message_id, message, is_redelivery)
+
+                            if available_slots <= 0:
+                                break
+
+                        if not forever and not active_tasks:
+                            has_work = await check_for_work()
+
+                    # Signal internal tasks to stop before exiting TaskGroup
+                    self._worker_stopping.set()
 
         except asyncio.CancelledError:
             if active_tasks:  # pragma: no cover

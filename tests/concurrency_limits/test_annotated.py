@@ -113,5 +113,5 @@ async def test_annotated_concurrency_keys_cleaned_up(docket: Docket, worker: Wor
     await worker.run_until_finished()
 
     async with docket.redis() as redis:
-        key = f"{docket.name}:concurrency:customer_id:42"
+        key = f"{docket.prefix}:concurrency:customer_id:42"
         assert await redis.exists(key) == 0
