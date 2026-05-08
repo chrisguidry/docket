@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 from unittest.mock import AsyncMock, patch
 
@@ -313,3 +313,96 @@ async def test_perpetual_without_retry_survives_repeated_body_failures(
     await worker.run_at_most({"perpetual": 5})
 
     assert len(executions) == 5
+
+
+# Cancellation paths
+#
+# The seven tests above cover every Redis touchpoint between "worker reads
+# message" and "message XACKed".  The three tests below cover the parallel
+# question of how a Perpetual ends *intentionally*.  They pin down the
+# ``asyncio.CancelledError`` semantics that the failure-injection tests don't
+# exercise: when a cancel reaches the body, the chain stops cleanly, no
+# successor is scheduled, and the message is ACKed.
+
+
+async def test_docket_cancel_during_running_perpetual_body_stops_the_chain(
+    docket: Docket, worker: Worker
+):
+    """``docket.cancel(key)`` on a running Perpetual cancels the body via
+    ``asyncio.CancelledError``; the worker's ``except asyncio.CancelledError:``
+    branch marks the execution cancelled and the message is ACKed.  No
+    successor is scheduled, so ``run_until_finished`` returns once the cancel
+    is processed.  This pins down "explicit cancel ends the chain" for the
+    ``CancelledError`` path."""
+    started = asyncio.Event()
+    started_count = 0
+    body_completed = False
+
+    async def perpetual_body(
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=20)),
+    ) -> None:
+        nonlocal started_count, body_completed
+        started_count += 1
+        started.set()
+        await asyncio.sleep(60)
+        body_completed = True  # pragma: no cover - cancelled before reaching here
+
+    execution = await docket.add(perpetual_body, key="perpetual")()
+    worker_task = asyncio.create_task(worker.run_until_finished())
+
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+    await docket.cancel(execution.key)
+    await asyncio.wait_for(worker_task, timeout=5.0)
+
+    assert started_count == 1
+    assert body_completed is False
+
+
+async def test_docket_cancel_on_scheduled_perpetual_stops_the_chain(
+    docket: Docket, worker: Worker
+):
+    """Cancelling a Perpetual that is scheduled but not yet running removes it
+    from the queue — the body never runs and no successor is ever scheduled.
+    This path doesn't go through ``CancelledError`` at all (the message is
+    gone before the worker would have read it); it's the calmer parallel to
+    the running-body case above."""
+    started_count = 0
+
+    async def perpetual_body(
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=20)),
+    ) -> None:
+        nonlocal started_count
+        started_count += 1  # pragma: no cover - cancelled before any iteration
+
+    future = datetime.now(timezone.utc) + timedelta(seconds=60)
+    execution = await docket.add(perpetual_body, when=future, key="perpetual")()
+    await docket.cancel(execution.key)
+    await worker.run_until_finished()
+
+    assert started_count == 0
+
+
+async def test_cancelled_error_in_perpetual_body_stops_the_chain(
+    docket: Docket, worker: Worker
+):
+    """A Perpetual body that raises ``asyncio.CancelledError`` directly (not
+    received from ``docket.cancel``) hits the same ``except
+    asyncio.CancelledError:`` path: the chain stops.  The worker cannot
+    distinguish user-raised from cancel-driven, and the current behavior is
+    uniform — treat ``CancelledError`` as "this Perpetual is done."  Locking
+    this in keeps a future change to the cancellation handler from quietly
+    altering the contract."""
+    started_count = 0
+
+    async def perpetual_body(
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=20)),
+    ) -> None:
+        nonlocal started_count
+        started_count += 1
+        raise asyncio.CancelledError()
+
+    await docket.add(perpetual_body, key="perpetual")()
+
+    await worker.run_at_most({"perpetual": 5})
+
+    assert started_count == 1
