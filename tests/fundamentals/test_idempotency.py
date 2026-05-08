@@ -5,7 +5,7 @@ from typing import Callable
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
-from docket import Docket, Worker, testing
+from docket import Disposition, Docket, Worker, testing
 
 
 async def test_adding_is_idempotent(
@@ -99,3 +99,35 @@ async def test_task_keys_are_idempotent_in_the_present(
     await worker.run_until_finished()
 
     the_task.assert_awaited_once_with("d", "e", c="f")
+
+
+async def test_disposition_reports_whether_a_handoff_was_accepted(
+    docket: Docket, the_task: AsyncMock
+):
+    """The Execution returned by docket.add reports whether the call actually
+    placed a task on the queue or was a no-op because a task with the same
+    key was already known."""
+
+    key = f"my-cool-task:{uuid4()}"
+
+    first = await docket.add(the_task, key=key)("first")
+    assert first.disposition is Disposition.SCHEDULED
+
+    second = await docket.add(the_task, key=key)("second")
+    assert second.disposition is Disposition.ALREADY_SCHEDULED
+
+
+async def test_replace_disposition_is_always_scheduled(
+    docket: Docket, the_task: AsyncMock, now: Callable[[], datetime]
+):
+    """docket.replace overwrites any prior schedule for the key, so its
+    disposition is always SCHEDULED (the no-op path doesn't apply)."""
+
+    key = f"my-cool-task:{uuid4()}"
+    soon = now() + timedelta(seconds=60)
+
+    first = await docket.add(the_task, when=soon, key=key)("first")
+    assert first.disposition is Disposition.SCHEDULED
+
+    second = await docket.replace(the_task, when=soon, key=key)("second")
+    assert second.disposition is Disposition.SCHEDULED
