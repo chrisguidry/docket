@@ -139,7 +139,7 @@ async def test_worker_done_set_after_early_cancellation(docket: Docket):
 
 async def test_worker_rapid_start_cancel_cycles(docket: Docket):
     """Verify worker handles rapid start/cancel cycles without hanging."""
-    for _ in range(10):
+    for _ in range(10):  # pragma: no branch
         async with Worker(
             docket,
             minimum_check_interval=timedelta(milliseconds=5),
@@ -230,7 +230,7 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
             with suppress(asyncio.CancelledError):  # pragma: no branch
                 await worker_task
 
-    assert error_count >= 2
+        assert error_count >= 2
 
 
 async def test_cancellation_listener_handles_generic_exception(docket: Docket):
@@ -273,7 +273,7 @@ async def test_cancellation_listener_handles_generic_exception(docket: Docket):
             with suppress(asyncio.CancelledError):  # pragma: no branch
                 await worker_task
 
-    assert error_count >= 2
+        assert error_count >= 2
 
 
 async def test_worker_drains_active_tasks_on_shutdown(docket: Docket):
@@ -317,4 +317,4 @@ async def test_worker_drains_active_tasks_on_shutdown(docket: Docket):
                 await worker_task
         await release
 
-    assert task_drained
+        assert task_drained

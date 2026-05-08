@@ -205,9 +205,9 @@ async def test_multiple_workers_racing_to_create_group(
             await w.__aexit__(None, None, None)
 
         total_calls = sum(call_counts.values())
-        assert total_calls == 20
 
         async with docket.redis() as redis:
+            assert total_calls == 20
             groups = await redis.xinfo_groups(docket.stream_key)
             assert len(groups) == 1
 

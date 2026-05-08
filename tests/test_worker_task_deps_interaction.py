@@ -73,8 +73,8 @@ async def test_task_retry_still_applies_with_worker_deps(docket: Docket):
         await docket.add(the_task)()
         await worker.run_until_finished()
 
-    assert task_attempts == [1, 2, 3]
-    assert len(worker_setups) == 3
+        assert task_attempts == [1, 2, 3]
+        assert len(worker_setups) == 3
 
 
 async def test_task_perpetual_still_applies_with_worker_deps(docket: Docket):
@@ -104,8 +104,8 @@ async def test_task_perpetual_still_applies_with_worker_deps(docket: Docket):
         await docket.add(the_task)()
         await worker.run_until_finished()
 
-    assert len(runs) == 3
-    assert len(worker_setups) == 3
+        assert len(runs) == 3
+        assert len(worker_setups) == 3
 
 
 async def test_task_concurrency_limit_still_enforced_with_worker_deps(docket: Docket):

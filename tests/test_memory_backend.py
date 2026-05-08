@@ -261,12 +261,12 @@ async def test_different_memory_urls_are_isolated():
         assert result1 == "value-for-server1"
         assert result2 is None  # task_for_server2 was never called
 
-    # Verify we created two separate BurnerRedis instances
-    server1 = get_memory_server("memory://server1")
-    server2 = get_memory_server("memory://server2")
-    assert server1 is not None
-    assert server2 is not None
-    assert server1 is not server2
+        # Verify we created two separate BurnerRedis instances
+        server1 = get_memory_server("memory://server1")
+        server2 = get_memory_server("memory://server2")
+        assert server1 is not None
+        assert server2 is not None
+        assert server1 is not server2
 
 
 async def test_memory_url_with_path_isolation():
@@ -291,8 +291,8 @@ async def test_memory_url_with_path_isolation():
         snapshot1 = await docket1.snapshot()
         assert snapshot1.total_tasks == 1
 
-    db1_server = get_memory_server("memory://localhost/db1")
-    db2_server = get_memory_server("memory://localhost/db2")
-    assert db1_server is not None
-    assert db2_server is not None
-    assert db1_server is not db2_server
+        db1_server = get_memory_server("memory://localhost/db1")
+        db2_server = get_memory_server("memory://localhost/db2")
+        assert db1_server is not None
+        assert db2_server is not None
+        assert db1_server is not db2_server
