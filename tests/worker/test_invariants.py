@@ -90,7 +90,7 @@ async def test_invariant_execution_counts_cleared_after_run_at_most(docket: Dock
         # run_at_most clears _execution_counts in its finally block
         assert len(worker._execution_counts) == 0  # type: ignore[protected-access]
 
-    assert iteration_count == 3
+        assert iteration_count == 3
 
 
 async def test_invariant_worker_attributes_deleted_after_exit(docket: Docket):

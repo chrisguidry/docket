@@ -235,7 +235,7 @@ async def test_worker_dependency_can_use_nested_depends(docket: Docket):
         await docket.add(the_task)()
         await worker.run_until_finished()
 
-    assert seen == [42, -1]
+        assert seen == [42, -1]
 
 
 async def test_worker_dep_and_task_depends_share_cache(docket: Docket):
@@ -264,8 +264,8 @@ async def test_worker_dep_and_task_depends_share_cache(docket: Docket):
         await docket.add(the_task)()
         await worker.run_until_finished()
 
-    assert len(calls) == 1
-    assert observed["worker"] is observed["task"]
+        assert len(calls) == 1
+        assert observed["worker"] is observed["task"]
 
 
 async def test_worker_dep_setup_failure_fails_task_without_running_body(
@@ -291,7 +291,7 @@ async def test_worker_dep_setup_failure_fails_task_without_running_body(
         await docket.add(the_task)()
         await worker.run_until_finished()
 
-    assert body_ran is False
+        assert body_ran is False
 
 
 async def test_worker_dep_failure_names_appear_in_exception_group(
@@ -396,7 +396,7 @@ async def test_default_empty_dependencies_is_noop(docket: Docket):
         await docket.add(the_task)()
         await worker.run_until_finished()
 
-    assert called
+        assert called
 
 
 async def test_reserved_name_rejected_at_construction(docket: Docket):

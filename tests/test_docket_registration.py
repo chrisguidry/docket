@@ -65,15 +65,10 @@ async def test_docket_reentry_preserves_tasks():
 
     docket.register(my_task)
 
-    # First entry/exit
-    async with docket:
-        assert "my_task" in docket.tasks
-        assert "trace" in docket.tasks
-
-    # Re-entry should still have all tasks
-    async with docket:
-        assert "my_task" in docket.tasks
-        assert "trace" in docket.tasks
+    for _ in range(2):  # pragma: no branch
+        async with docket:
+            assert "my_task" in docket.tasks
+            assert "trace" in docket.tasks
 
 
 def test_register_collection():

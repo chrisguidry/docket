@@ -76,7 +76,7 @@ async def test_worker_level_retry_applies_when_task_has_none(docket: Docket):
         await docket.add(the_task)()
         await worker.run_until_finished()
 
-    assert len(attempts) == 3
+        assert len(attempts) == 3
 
 
 async def test_worker_level_perpetual_applies_when_task_has_none(docket: Docket):
@@ -108,7 +108,7 @@ async def test_worker_level_perpetual_applies_when_task_has_none(docket: Docket)
         await docket.add(the_task)()
         await worker.run_until_finished()
 
-    assert len(runs) == 3
+        assert len(runs) == 3
 
 
 async def test_worker_level_concurrency_limit_applies_when_task_has_none(

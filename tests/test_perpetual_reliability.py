@@ -62,8 +62,7 @@ async def test_chain_survives_worker_death_during_task_body(docket: Docket):
         with pytest.raises(ExceptionGroup) as exc_info:
             await worker_a.run_until_finished()
         assert any("simulated crash" in str(e) for e in exc_info.value.exceptions)
-
-    assert executions == []  # body never ran on worker_a
+        assert executions == []  # body never ran on worker_a
 
     await asyncio.sleep(0.25)  # > redelivery_timeout
 
@@ -71,8 +70,7 @@ async def test_chain_survives_worker_death_during_task_body(docket: Docket):
         docket, redelivery_timeout=timedelta(milliseconds=200)
     ) as worker_b:
         await worker_b.run_at_most({"perpetual": 3})
-
-    assert len(executions) >= 3  # chain ran on worker_b after redelivery
+        assert len(executions) >= 3  # chain ran on worker_b after redelivery
 
 
 async def test_chain_survives_on_complete_failure_in_success_path(docket: Docket):
@@ -102,8 +100,7 @@ async def test_chain_survives_on_complete_failure_in_success_path(docket: Docket
         with patch.object(Perpetual, "on_complete", crashing_on_complete):
             with pytest.raises(ExceptionGroup):
                 await worker_a.run_until_finished()
-
-    assert len(executions) == 1  # body ran once on worker_a before on_complete
+        assert len(executions) == 1  # body ran once on worker_a before on_complete
 
     await asyncio.sleep(0.25)
 
@@ -111,8 +108,7 @@ async def test_chain_survives_on_complete_failure_in_success_path(docket: Docket
         docket, redelivery_timeout=timedelta(milliseconds=200)
     ) as worker_b:
         await worker_b.run_at_most({"perpetual": 3})
-
-    assert len(executions) >= 3  # body ran again on worker_b, chain continued
+        assert len(executions) >= 3  # body ran again on worker_b, chain continued
 
 
 async def test_chain_survives_on_complete_failure_in_failure_path_no_retry(
@@ -148,8 +144,7 @@ async def test_chain_survives_on_complete_failure_in_failure_path_no_retry(
         with patch.object(Perpetual, "on_complete", crashing_on_complete):
             with pytest.raises(ExceptionGroup):
                 await worker_a.run_until_finished()
-
-    assert len(executions) == 1
+        assert len(executions) == 1
 
     await asyncio.sleep(0.25)
 
@@ -157,8 +152,7 @@ async def test_chain_survives_on_complete_failure_in_failure_path_no_retry(
         docket, redelivery_timeout=timedelta(milliseconds=200)
     ) as worker_b:
         await worker_b.run_at_most({"perpetual": 3})
-
-    assert len(executions) >= 3  # chain continued despite repeated body failures
+        assert len(executions) >= 3  # chain continued despite repeated body failures
 
 
 async def test_chain_survives_replace_failure_inside_on_complete(docket: Docket):
@@ -192,8 +186,7 @@ async def test_chain_survives_replace_failure_inside_on_complete(docket: Docket)
         with patch.object(Docket, "replace", crashing_replace):
             with pytest.raises(ExceptionGroup):
                 await worker_a.run_until_finished()
-
-    assert len(executions) == 1
+        assert len(executions) == 1
 
     await asyncio.sleep(0.25)
 
@@ -201,8 +194,7 @@ async def test_chain_survives_replace_failure_inside_on_complete(docket: Docket)
         docket, redelivery_timeout=timedelta(milliseconds=200)
     ) as worker_b:
         await worker_b.run_at_most({"perpetual": 3})
-
-    assert len(executions) >= 3
+        assert len(executions) >= 3
 
 
 async def test_chain_survives_mark_as_completed_failure_via_in_execute_recovery(
@@ -238,9 +230,8 @@ async def test_chain_survives_mark_as_completed_failure_via_in_execute_recovery(
     async with Worker(docket, redelivery_timeout=timedelta(milliseconds=200)) as worker:
         with patch.object(Execution, "mark_as_completed", flaky_mark_as_completed):
             await worker.run_at_most({"perpetual": 3})
-
-    assert failed_once is True
-    assert len(executions) >= 3  # in-place recovery kept the chain going
+        assert failed_once is True
+        assert len(executions) >= 3  # in-place recovery kept the chain going
 
 
 async def test_chain_survives_terminal_failure_after_on_complete_via_supersession(
@@ -287,8 +278,7 @@ async def test_chain_survives_terminal_failure_after_on_complete_via_supersessio
         ):
             with pytest.raises((ExceptionGroup, RuntimeError)):
                 await worker_a.run_until_finished()
-
-    assert len(executions) == 1  # body ran once before worker_a died
+        assert len(executions) == 1  # body ran once before worker_a died
 
     await asyncio.sleep(0.25)
 
@@ -296,12 +286,11 @@ async def test_chain_survives_terminal_failure_after_on_complete_via_supersessio
         docket, redelivery_timeout=timedelta(milliseconds=200)
     ) as worker_b:
         await worker_b.run_at_most({"perpetual": 3})
-
-    # Worker_b reclaims the original via XAUTOCLAIM, sees claim() return
-    # SUPERSEDED (generation was incremented when worker_a's on_complete ran),
-    # ACKs without re-running the body. The successor that on_complete already
-    # scheduled then runs. Chain continues.
-    assert len(executions) >= 3
+        # Worker_b reclaims the original via XAUTOCLAIM, sees claim() return
+        # SUPERSEDED (generation was incremented when worker_a's on_complete ran),
+        # ACKs without re-running the body. The successor that on_complete already
+        # scheduled then runs. Chain continues.
+        assert len(executions) >= 3
 
 
 async def test_perpetual_without_retry_survives_repeated_body_failures(
