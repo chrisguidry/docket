@@ -6,6 +6,7 @@ import pytest
 
 from docket import Docket
 from docket.agenda import Agenda
+from docket.execution import Disposition
 
 
 @pytest.fixture
@@ -29,6 +30,7 @@ async def test_agenda_add_single_task(agenda: Agenda, the_task: AsyncMock):
     assert tasks[0][0] == the_task
     assert tasks[0][1] == ("arg1",)
     assert tasks[0][2] == {"kwarg1": "value1"}
+    assert tasks[0][3] is None
 
 
 async def test_agenda_add_multiple_tasks(
@@ -389,6 +391,82 @@ async def test_agenda_scatter_auto_registers_unregistered_functions(
     # Verify tasks were scheduled
     snapshot = await docket.snapshot()
     assert len(snapshot.future) == 2
+
+
+async def test_agenda_add_records_explicit_key(agenda: Agenda, the_task: AsyncMock):
+    """An explicit key on add() should be retained on the agenda tuple."""
+    agenda.add(the_task, key="stable-1")("arg1")
+    agenda.add(the_task)("arg2")
+
+    tasks = list(agenda)
+    assert tasks[0] == (the_task, ("arg1",), {}, "stable-1")
+    assert tasks[1] == (the_task, ("arg2",), {}, None)
+
+
+async def test_agenda_scatter_uses_explicit_keys(
+    docket: Docket, agenda: Agenda, the_task: AsyncMock
+):
+    """Explicit keys should flow through to the resulting Execution.key."""
+    docket.register(the_task)
+
+    agenda.add(the_task, key="item-1")("one")
+    agenda.add(the_task, key="item-2")("two")
+
+    executions = await agenda.scatter(docket, over=timedelta(seconds=30))
+
+    assert [e.key for e in executions] == ["item-1", "item-2"]
+
+
+async def test_agenda_scatter_explicit_key_is_idempotent(
+    docket: Docket, agenda: Agenda, the_task: AsyncMock
+):
+    """Rescattering with the same explicit keys should not duplicate tasks."""
+    docket.register(the_task)
+
+    agenda.add(the_task, key="item-1")("one")
+    agenda.add(the_task, key="item-2")("two")
+
+    first = await agenda.scatter(docket, over=timedelta(seconds=30))
+    assert all(e.disposition is Disposition.SCHEDULED for e in first)
+
+    second = await agenda.scatter(docket, over=timedelta(seconds=30))
+    assert all(e.disposition is Disposition.ALREADY_SCHEDULED for e in second)
+
+    snapshot = await docket.snapshot()
+    assert len(snapshot.future) == 2
+
+
+async def test_agenda_scatter_mixes_explicit_and_generated_keys(
+    docket: Docket, agenda: Agenda, the_task: AsyncMock
+):
+    """Tasks without a key should still get a generated uuid7."""
+    docket.register(the_task)
+
+    agenda.add(the_task, key="stable")("one")
+    agenda.add(the_task)("two")
+
+    executions = await agenda.scatter(docket, over=timedelta(seconds=30))
+
+    assert executions[0].key == "stable"
+    assert executions[1].key != "stable"
+    assert len(executions[1].key) > 0
+
+
+async def test_agenda_add_by_name_with_key(
+    docket: Docket, agenda: Agenda, the_task: AsyncMock
+):
+    """Adding a task by name should also accept an explicit key."""
+    docket.register(the_task)
+
+    agenda.add("the_task", key="named-key")("arg1", flag=True)
+
+    executions = await agenda.scatter(docket, over=timedelta(seconds=30))
+
+    assert len(executions) == 1
+    assert executions[0].key == "named-key"
+    assert executions[0].function == the_task
+    assert executions[0].args == ("arg1",)
+    assert executions[0].kwargs == {"flag": True}
 
 
 async def test_agenda_clear(agenda: Agenda, the_task: AsyncMock):

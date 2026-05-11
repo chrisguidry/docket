@@ -30,12 +30,19 @@ class Agenda:
         >>> agenda.add(process_item)(item2)
         >>> agenda.add(send_email)(email)
         >>> await agenda.scatter(docket, over=timedelta(minutes=50))
+
+        Pass a stable ``key`` to make a re-scatter idempotent — the second
+        scatter will preserve the first schedule rather than enqueue a
+        duplicate::
+
+            >>> for item in items:
+            ...     agenda.add(process_item, key=f"item-{item.id}")(item)
     """
 
     def __init__(self) -> None:
         """Initialize an empty Agenda."""
         self._tasks: list[
-            tuple[TaskFunction | str, tuple[Any, ...], dict[str, Any]]
+            tuple[TaskFunction | str, tuple[Any, ...], dict[str, Any], str | None]
         ] = []
 
     def __len__(self) -> int:
@@ -44,7 +51,9 @@ class Agenda:
 
     def __iter__(
         self,
-    ) -> Iterator[tuple[TaskFunction | str, tuple[Any, ...], dict[str, Any]]]:
+    ) -> Iterator[
+        tuple[TaskFunction | str, tuple[Any, ...], dict[str, Any], str | None]
+    ]:
         """Iterate over tasks in the agenda."""
         return iter(self._tasks)
 
@@ -52,11 +61,17 @@ class Agenda:
     def add(
         self,
         function: Callable[P, Awaitable[R]],
+        key: str | None = None,
     ) -> Callable[P, None]:
         """Add a task function to the agenda.
 
         Args:
             function: The task function to add.
+            key: Optional explicit key for the scheduled execution. If omitted,
+                a fresh uuid7 is generated at scatter time. Supplying a stable
+                key makes a re-scatter of this entry idempotent against the
+                Docket — a colliding key preserves the prior schedule rather
+                than queuing a duplicate.
 
         Returns:
             A callable that accepts the task arguments.
@@ -66,11 +81,17 @@ class Agenda:
     def add(
         self,
         function: str,
+        key: str | None = None,
     ) -> Callable[..., None]:
         """Add a task by name to the agenda.
 
         Args:
             function: The name of a registered task.
+            key: Optional explicit key for the scheduled execution. If omitted,
+                a fresh uuid7 is generated at scatter time. Supplying a stable
+                key makes a re-scatter of this entry idempotent against the
+                Docket — a colliding key preserves the prior schedule rather
+                than queuing a duplicate.
 
         Returns:
             A callable that accepts the task arguments.
@@ -79,18 +100,21 @@ class Agenda:
     def add(
         self,
         function: Callable[P, Awaitable[R]] | str,
+        key: str | None = None,
     ) -> Callable[..., None]:
         """Add a task to the agenda.
 
         Args:
             function: The task function or name to add.
+            key: Optional explicit key for the scheduled execution. If omitted,
+                a fresh uuid7 is generated at scatter time.
 
         Returns:
             A callable that accepts the task arguments and adds them to the agenda.
         """
 
         def scheduler(*args: Any, **kwargs: Any) -> None:
-            self._tasks.append((function, args, kwargs))
+            self._tasks.append((function, args, kwargs, key))
 
         return scheduler
 
@@ -162,41 +186,30 @@ class Agenda:
                 jittered_times.append(jittered_time)
             schedule_times = jittered_times
 
-        # Build all Execution objects first, validating as we go
-        executions: list[Execution] = []
-        for (task_func, args, kwargs), schedule_time in zip(
+        # Validate and resolve every task first, so an unregistered name fails
+        # before we schedule anything.
+        planned: list[
+            tuple[TaskFunction, tuple[Any, ...], dict[str, Any], str, datetime]
+        ] = []
+        for (task_func, args, kwargs, explicit_key), schedule_time in zip(
             self._tasks, schedule_times
         ):
-            # Resolve task function if given by name
             if isinstance(task_func, str):
                 if task_func not in docket.tasks:
                     raise KeyError(f"Task '{task_func}' is not registered")
                 resolved_func = docket.tasks[task_func]
             else:
-                # Ensure task is registered
                 if task_func not in docket.tasks.values():
                     docket.register(task_func)
                 resolved_func = task_func
 
-            # Create execution with unique key
-            key = str(uuid7())
-            execution = Execution(
-                docket=docket,
-                function=resolved_func,
-                args=args,
-                kwargs=kwargs,
-                key=key,
-                when=schedule_time,
-                attempt=1,
-            )
-            executions.append(execution)
+            key = explicit_key if explicit_key is not None else str(uuid7())
+            planned.append((resolved_func, args, kwargs, key, schedule_time))
 
-        # Schedule all tasks - if any fail, some tasks may have been scheduled
-        for execution in executions:
-            scheduler = docket.add(
-                execution.function, when=execution.when, key=execution.key
-            )
-            # Actually schedule the task - if this fails, earlier tasks remain scheduled
-            await scheduler(*execution.args, **execution.kwargs)
+        # Schedule each task; if one fails partway, earlier ones stay scheduled.
+        executions: list[Execution] = []
+        for resolved_func, args, kwargs, key, schedule_time in planned:
+            scheduler = docket.add(resolved_func, when=schedule_time, key=key)
+            executions.append(await scheduler(*args, **kwargs))
 
         return executions
