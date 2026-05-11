@@ -121,6 +121,30 @@ agenda.add(process_item)(item_id=42)
 await agenda.scatter(docket, over=timedelta(minutes=10))
 ```
 
+### Idempotent Scatter with Stable Keys
+
+By default, every task scattered from an `Agenda` is assigned a fresh `uuid7`
+key, so re-running the same find-and-flood job enqueues a duplicate batch.
+Pass an explicit `key` to `Agenda.add()` when you have a stable identifier
+for each unit of work — re-scattering then becomes idempotent, because the
+Docket preserves the existing schedule for any key it already knows:
+
+```python
+agenda = Agenda()
+for item in items_needing_processing:
+    agenda.add(process_item, key=f"process-item:{item.id}")(item.id)
+
+executions = await agenda.scatter(docket, over=timedelta(minutes=10))
+
+# Running the same scan again — anything still pending stays where it was.
+executions = await agenda.scatter(docket, over=timedelta(minutes=10))
+```
+
+Each returned `Execution` carries a `disposition` (`SCHEDULED`,
+`ALREADY_SCHEDULED`, or `STRUCK`) so you can tell which tasks were newly
+placed and which were no-ops. Explicit and generated keys can be mixed
+freely inside the same agenda.
+
 ### Agenda Reusability
 
 Agendas can be reused for multiple scatter operations:
