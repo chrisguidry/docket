@@ -20,7 +20,8 @@ from contextlib import (
     contextmanager,
 )
 from dataclasses import dataclass
-from typing import assert_type
+
+from typing_extensions import assert_type
 
 from docket.dependencies import Depends
 
