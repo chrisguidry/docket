@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, TypeVar, cast
+from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
+from typing import Any, TypeVar, cast, overload
 
 from uncalled_for import (
     DependencyFactory,
@@ -48,6 +49,14 @@ class _Depends(_UncalledForDepends[R]):
         return arguments
 
 
+@overload
+def Depends(dependency: Callable[..., AbstractAsyncContextManager[R]]) -> R: ...
+@overload
+def Depends(dependency: Callable[..., AbstractContextManager[R]]) -> R: ...
+@overload
+def Depends(dependency: Callable[..., Awaitable[R]]) -> R: ...
+@overload
+def Depends(dependency: Callable[..., R]) -> R: ...
 def Depends(dependency: DependencyFactory[R]) -> R:
     """Include a user-defined function as a dependency.  Dependencies may be:
     - Synchronous functions returning a value
