@@ -53,7 +53,6 @@ dev = [
     "urllib3>=2.6.3",
     "ipython>=8.0.0",
     "loq>=0.1.0a3",
-    "mypy>=1.14.1",
     "opentelemetry-distro>=0.60b0",
     "opentelemetry-exporter-otlp>=1.33.0",
     "opentelemetry-exporter-prometheus>=0.60b0",
