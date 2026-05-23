@@ -130,8 +130,6 @@ class ExecutionProgress:
 
         updated_at_dt = datetime.now(timezone.utc)
         updated_at = updated_at_dt.isoformat()
-        # Pipeline the two writes so they hit the wire as one MULTI/EXEC.
-        # PUBLISH stays separate because its payload needs HINCRBY's return.
         async with self.docket.redis() as redis:
             async with redis.pipeline() as pipe:
                 pipe.hincrby(self._redis_key, "current", amount)
