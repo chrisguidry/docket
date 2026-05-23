@@ -293,8 +293,7 @@ async def _terminal(
 ) -> bytes:
     """
     -- Check supersession (generation 0 = pre-tracking, always write).  Even
-    -- when superseded we still publish the terminal-state event, matching
-    -- the pre-fusion behavior where _publish_state ran unconditionally so
+    -- when superseded we still publish the terminal-state event so
     -- subscribers waiting on completion don't deadlock when a Perpetual
     -- successor has already taken over the runs hash.
     if generation > 0 then
@@ -619,9 +618,8 @@ class Execution:
         known_task_key = self.docket.known_task_key(key)
         is_immediate = when <= datetime.now(timezone.utc)
 
-        # Pre-build the state-change payload so the Lua just does PUBLISH.
-        # On the EXISTS branch the Lua returns before reaching PUBLISH, so
-        # this work is wasted in that case (a small cost for a cleaner Lua).
+        # The Lua takes the payload as a pre-formatted string so it can just
+        # call PUBLISH; cjson isn't available on the in-memory backend.
         published_state = (
             ExecutionState.QUEUED.value
             if is_immediate and not reschedule_message
@@ -659,13 +657,11 @@ class Execution:
                 )
 
         if reply in (b"EXISTS", "EXISTS"):
-            # The Lua script kept the prior schedule untouched; leave local
+            # An existing schedule for this key remains untouched; leave local
             # state alone and do not publish a misleading state event.
             self.disposition = Disposition.ALREADY_SCHEDULED
             return self.disposition
 
-        # The Lua script PUBLISHed the matching state event atomically with
-        # the writes; just mirror the chosen state into local attributes.
         if reschedule_message or not is_immediate:
             # Rescheduling from stream lands on the queue (never immediate).
             self.state = ExecutionState.SCHEDULED
@@ -725,8 +721,6 @@ class Execution:
         if result == b"SUPERSEDED":
             return False
 
-        # Update local state. The Lua script PUBLISHed the running-state event
-        # atomically with the writes on the non-SUPERSEDED path.
         self.state = ExecutionState.RUNNING
         self.worker = worker
         self.started_at = started_at
@@ -798,9 +792,6 @@ class Execution:
                     extra_fields=extra_fields,
                 )
 
-        # The Lua script PUBLISHed the terminal-state event atomically with
-        # the writes, including on the supersession path (matching the
-        # pre-fusion behavior where _publish_state ran unconditionally).
         self.state = state
         if result_key is not None:
             self.result_key = result_key
