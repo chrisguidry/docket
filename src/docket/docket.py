@@ -11,7 +11,6 @@ from typing import (
     Iterable,
     Mapping,
     ParamSpec,
-    Protocol,
     TypeVar,
     cast,
     overload,
@@ -37,6 +36,8 @@ from ._redis import (
     RedisStream as RedisStream,
     RedisStreamID as RedisStreamID,
     RedisStreamPendingMessage as RedisStreamPendingMessage,
+    Script,
+    run_script,
 )
 from ._result_store import ResultStorage
 from ._uuid7 import uuid7
@@ -64,10 +65,90 @@ logger: logging.Logger = logging.getLogger(__name__)
 tracer: trace.Tracer = trace.get_tracer(__name__)
 
 
-class _cancel_task(Protocol):
-    async def __call__(
-        self, keys: list[str], args: list[str]
-    ) -> str: ...  # pragma: no cover
+_CANCEL_TASK_LUA = """
+local stream_key = KEYS[1]
+-- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
+local known_key = KEYS[2]
+local parked_key = KEYS[3]
+local queue_key = KEYS[4]
+local stream_id_key = KEYS[5]
+local runs_key = KEYS[6]
+local progress_key = KEYS[7]
+local task_key = ARGV[1]
+local completed_at = ARGV[2]
+
+-- Get stream ID (check new location first, then legacy)
+local message_id = redis.call('HGET', runs_key, 'stream_id')
+
+-- TODO: Remove in next breaking release (v0.14.0) - check legacy location
+if not message_id then
+    message_id = redis.call('GET', stream_id_key)
+end
+
+-- Delete from stream if message ID exists
+if message_id then
+    redis.call('XDEL', stream_key, message_id)
+end
+
+-- Clean up legacy keys and parked data
+redis.call('DEL', known_key, parked_key, stream_id_key)
+redis.call('ZREM', queue_key, task_key)
+
+-- Drop the per-task progress hash that ``Execution.claim``
+-- creates -- without a TTL of its own, it would otherwise
+-- leak when a task is cancelled after being claimed but
+-- before it completes (e.g. parked on a side channel).
+redis.call('DEL', progress_key)
+
+-- Clear scheduling markers so add() can reschedule this key
+redis.call('HDEL', runs_key, 'known', 'stream_id')
+
+-- Only set CANCELLED if not already in a terminal state
+local current_state = redis.call('HGET', runs_key, 'state')
+if current_state ~= 'completed' and current_state ~= 'failed' and current_state ~= 'cancelled' then
+    redis.call('HSET', runs_key, 'state', 'cancelled', 'completed_at', completed_at)
+end
+
+return 'OK'
+"""
+
+_cancel_task_script: Script | None = None
+
+
+async def _cancel_task(
+    redis: RedisClient,
+    *,
+    stream_key: str,
+    known_key: str,
+    parked_key: str,
+    queue_key: str,
+    stream_id_key: str,
+    runs_key: str,
+    progress_key: str,
+    task_key: str,
+    completed_at: str,
+) -> bytes:
+    """Atomically cancel a task across all storage locations."""
+    global _cancel_task_script
+    if _cancel_task_script is None:
+        _cancel_task_script = redis.register_script(_CANCEL_TASK_LUA)
+    return cast(
+        bytes,
+        await run_script(
+            _cancel_task_script,
+            keys=[
+                stream_key,
+                known_key,
+                parked_key,
+                queue_key,
+                stream_id_key,
+                runs_key,
+                progress_key,
+            ],
+            args=[task_key, completed_at],
+            client=redis,
+        ),
+    )
 
 
 P = ParamSpec("P")
@@ -96,7 +177,6 @@ class Docket(DocketSnapshotMixin):
 
     _redis: RedisConnection
     _result_storage: ResultStorage | None
-    _cancel_task_script: _cancel_task | None
     _stack: AsyncExitStack
 
     def __init__(
@@ -134,7 +214,6 @@ class Docket(DocketSnapshotMixin):
         self.missed_heartbeats = missed_heartbeats
         self.execution_ttl = execution_ttl
         self.enable_internal_instrumentation = enable_internal_instrumentation
-        self._cancel_task_script = None
         self._user_result_storage = result_storage
         self._redis = RedisConnection(url)
 
@@ -702,79 +781,22 @@ class Docket(DocketSnapshotMixin):
         published by ``Docket.cancel`` -- Docket itself stays unaware of any
         dependency-specific storage.
         """
-        if self._cancel_task_script is None:
-            self._cancel_task_script = cast(
-                _cancel_task,
-                redis.register_script(
-                    # KEYS: stream_key, known_key, parked_key, queue_key,
-                    #       stream_id_key, runs_key, progress_key
-                    # ARGV: task_key, completed_at
-                    """
-                    local stream_key = KEYS[1]
-                    -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
-                    local known_key = KEYS[2]
-                    local parked_key = KEYS[3]
-                    local queue_key = KEYS[4]
-                    local stream_id_key = KEYS[5]
-                    local runs_key = KEYS[6]
-                    local progress_key = KEYS[7]
-                    local task_key = ARGV[1]
-                    local completed_at = ARGV[2]
-
-                    -- Get stream ID (check new location first, then legacy)
-                    local message_id = redis.call('HGET', runs_key, 'stream_id')
-
-                    -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
-                    if not message_id then
-                        message_id = redis.call('GET', stream_id_key)
-                    end
-
-                    -- Delete from stream if message ID exists
-                    if message_id then
-                        redis.call('XDEL', stream_key, message_id)
-                    end
-
-                    -- Clean up legacy keys and parked data
-                    redis.call('DEL', known_key, parked_key, stream_id_key)
-                    redis.call('ZREM', queue_key, task_key)
-
-                    -- Drop the per-task progress hash that ``Execution.claim``
-                    -- creates -- without a TTL of its own, it would otherwise
-                    -- leak when a task is cancelled after being claimed but
-                    -- before it completes (e.g. parked on a side channel).
-                    redis.call('DEL', progress_key)
-
-                    -- Clear scheduling markers so add() can reschedule this key
-                    redis.call('HDEL', runs_key, 'known', 'stream_id')
-
-                    -- Only set CANCELLED if not already in a terminal state
-                    local current_state = redis.call('HGET', runs_key, 'state')
-                    if current_state ~= 'completed' and current_state ~= 'failed' and current_state ~= 'cancelled' then
-                        redis.call('HSET', runs_key, 'state', 'cancelled', 'completed_at', completed_at)
-                    end
-
-                    return 'OK'
-                    """
-                ),
-            )
-        cancel_task = self._cancel_task_script
-
         # Create tombstone with CANCELLED state
         completed_at = datetime.now(timezone.utc).isoformat()
         task_runs_key = self.runs_key(key)
 
         # Execute the cancellation script
-        await cancel_task(
-            keys=[
-                self.stream_key,
-                self.known_task_key(key),
-                self.parked_task_key(key),
-                self.queue_key,
-                self.stream_id_key(key),
-                task_runs_key,
-                self.key(f"progress:{key}"),
-            ],
-            args=[key, completed_at],
+        await _cancel_task(
+            redis,
+            stream_key=self.stream_key,
+            known_key=self.known_task_key(key),
+            parked_key=self.parked_task_key(key),
+            queue_key=self.queue_key,
+            stream_id_key=self.stream_id_key(key),
+            runs_key=task_runs_key,
+            progress_key=self.key(f"progress:{key}"),
+            task_key=key,
+            completed_at=completed_at,
         )
 
         # Apply TTL or delete tombstone based on execution_ttl

@@ -10,8 +10,9 @@ from __future__ import annotations
 import time
 from datetime import timedelta
 from types import TracebackType
-from typing import Any
+from typing import Any, cast
 
+from .._redis import RedisClient, Script, run_script
 from ._base import AdmissionBlocked, Dependency, current_docket, current_execution
 
 # Lua script for atomic debounce logic.
@@ -73,6 +74,34 @@ _ACTION_RESCHEDULE = 2
 _ACTION_DROP = 3
 
 
+_debounce_script: Script | None = None
+
+
+async def _debounce(
+    redis: RedisClient,
+    *,
+    winner_key: str,
+    seen_key: str,
+    execution_key: str,
+    settle_ms: int,
+    now_ms: int,
+    ttl_ms: int,
+) -> list[int]:
+    """Atomically run the debounce decision script, lazily caching the Script."""
+    global _debounce_script
+    if _debounce_script is None:
+        _debounce_script = redis.register_script(_DEBOUNCE_LUA)
+    return cast(
+        list[int],
+        await run_script(
+            _debounce_script,
+            keys=[winner_key, seen_key],
+            args=[execution_key, settle_ms, now_ms, ttl_ms],
+            client=redis,
+        ),
+    )
+
+
 class Debounce(Dependency["Debounce"]):
     """Wait for submissions to settle, then fire once.
 
@@ -128,10 +157,14 @@ class Debounce(Dependency["Debounce"]):
         ttl_ms = settle_ms * 10
 
         async with docket.redis() as redis:
-            script = redis.register_script(_DEBOUNCE_LUA)
-            result: list[int] = await script(
-                keys=[winner_key, seen_key],
-                args=[execution.key, settle_ms, now_ms, ttl_ms],
+            result = await _debounce(
+                redis,
+                winner_key=winner_key,
+                seen_key=seen_key,
+                execution_key=execution.key,
+                settle_ms=settle_ms,
+                now_ms=now_ms,
+                ttl_ms=ttl_ms,
             )
 
         action = result[0]

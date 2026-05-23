@@ -11,8 +11,9 @@ from __future__ import annotations
 import time
 from datetime import timedelta
 from types import TracebackType
-from typing import Any
+from typing import Any, cast
 
+from .._redis import RedisClient, Script, run_script
 from ._base import AdmissionBlocked, Dependency, current_docket, current_execution
 
 # Lua script for atomic sliding-window rate limit check.
@@ -61,6 +62,34 @@ return {2, retry_after}
 
 _ACTION_PROCEED = 1
 _ACTION_BLOCKED = 2
+
+
+_ratelimit_script: Script | None = None
+
+
+async def _ratelimit(
+    redis: RedisClient,
+    *,
+    ratelimit_key: str,
+    member: str,
+    now_ms: int,
+    window_ms: int,
+    limit: int,
+    ttl_ms: int,
+) -> list[int]:
+    """Atomically run the sliding-window rate limit script, lazily caching the Script."""
+    global _ratelimit_script
+    if _ratelimit_script is None:
+        _ratelimit_script = redis.register_script(_RATELIMIT_LUA)
+    return cast(
+        list[int],
+        await run_script(
+            _ratelimit_script,
+            keys=[ratelimit_key],
+            args=[member, now_ms, window_ms, limit, ttl_ms],
+            client=redis,
+        ),
+    )
 
 
 class RateLimit(Dependency["RateLimit"]):
@@ -127,10 +156,14 @@ class RateLimit(Dependency["RateLimit"]):
         member = f"{execution.key}:{now_ms}"
 
         async with docket.redis() as redis:
-            script = redis.register_script(_RATELIMIT_LUA)
-            result: list[int] = await script(
-                keys=[ratelimit_key],
-                args=[member, now_ms, window_ms, self.limit, ttl_ms],
+            result = await _ratelimit(
+                redis,
+                ratelimit_key=ratelimit_key,
+                member=member,
+                now_ms=now_ms,
+                window_ms=window_ms,
+                limit=self.limit,
+                ttl_ms=ttl_ms,
             )
 
         action = result[0]

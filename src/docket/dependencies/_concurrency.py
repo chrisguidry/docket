@@ -6,11 +6,12 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, AsyncIterator, overload
+from typing import TYPE_CHECKING, Any, AsyncIterator, cast, overload
 
 from opentelemetry import propagate
 
 from .._cancellation import CANCEL_MSG_CLEANUP, cancel_task
+from .._redis import RedisClient, Script, run_script
 from ..instrumentation import message_setter
 from ._base import (
     AdmissionBlocked,
@@ -383,6 +384,146 @@ redis.call('HDEL', runs_key, 'waiter_stream', 'waiter_entry_id')
 """
 
 
+# Lazy module-level Script singletons.  Each wrapper registers its script once
+# (computing the SHA at first call) and reuses it for all subsequent calls,
+# passing ``client=redis`` to stay loop-agnostic.
+_acquire_or_park_script: Script | None = None
+_release_and_wake_script: Script | None = None
+_scavenge_and_wake_script: Script | None = None
+_cancel_cleanup_script: Script | None = None
+
+
+async def _acquire_or_park(
+    redis: RedisClient,
+    *,
+    slots_key: str,
+    waiters_stream: str,
+    stream_key: str,
+    runs_key: str,
+    max_concurrent: int,
+    task_key: str,
+    current_time: float,
+    is_redelivery: bool,
+    stale_threshold: float,
+    key_ttl: int,
+    message_id: bytes | str,
+    worker_group_name: str,
+    state_channel: str,
+    message: dict[bytes, bytes],
+) -> int:
+    """Atomically acquire a concurrency slot or park onto the waiter stream."""
+    global _acquire_or_park_script
+    if _acquire_or_park_script is None:
+        _acquire_or_park_script = redis.register_script(_ACQUIRE_OR_PARK)
+    return cast(
+        int,
+        await run_script(
+            _acquire_or_park_script,
+            keys=[slots_key, waiters_stream, stream_key, runs_key],
+            args=[
+                max_concurrent,
+                task_key,
+                current_time,
+                1 if is_redelivery else 0,
+                stale_threshold,
+                key_ttl,
+                message_id,
+                worker_group_name,
+                state_channel,
+                *(item for field, value in message.items() for item in (field, value)),
+            ],
+            client=redis,
+        ),
+    )
+
+
+async def _release_and_wake(
+    redis: RedisClient,
+    *,
+    slots_key: str,
+    waiters_stream: str,
+    stream_key: str,
+    queue_key: str,
+    task_key: str,
+    max_concurrent: int,
+    stale_threshold: float,
+    runs_prefix: str,
+    state_prefix: str,
+    parked_prefix: str,
+) -> None:
+    """Release this task's slot and hand freed capacity to waiters."""
+    global _release_and_wake_script
+    if _release_and_wake_script is None:
+        _release_and_wake_script = redis.register_script(_RELEASE_AND_WAKE)
+    await run_script(
+        _release_and_wake_script,
+        keys=[slots_key, waiters_stream, stream_key, queue_key],
+        args=[
+            task_key,
+            max_concurrent,
+            stale_threshold,
+            runs_prefix,
+            state_prefix,
+            parked_prefix,
+        ],
+        client=redis,
+    )
+
+
+async def _scavenge_and_wake(
+    redis: RedisClient,
+    *,
+    slots_key: str,
+    waiters_stream: str,
+    stream_key: str,
+    queue_key: str,
+    max_concurrent: int,
+    stale_threshold: float,
+    runs_prefix: str,
+    state_prefix: str,
+    parked_prefix: str,
+) -> int:
+    """Scavenge stale slot holders and wake waiters with the freed capacity."""
+    global _scavenge_and_wake_script
+    if _scavenge_and_wake_script is None:
+        _scavenge_and_wake_script = redis.register_script(_SCAVENGE_AND_WAKE)
+    return cast(
+        int,
+        await run_script(
+            _scavenge_and_wake_script,
+            keys=[slots_key, waiters_stream, stream_key, queue_key],
+            args=[
+                max_concurrent,
+                stale_threshold,
+                runs_prefix,
+                state_prefix,
+                parked_prefix,
+            ],
+            client=redis,
+        ),
+    )
+
+
+async def _cancel_cleanup(
+    redis: RedisClient,
+    *,
+    waiters_stream: str,
+    progress_key: str,
+    runs_key: str,
+    waiter_entry_id: str,
+) -> None:
+    """Tear down a cancelled task's waiter footprint."""
+    global _cancel_cleanup_script
+    if _cancel_cleanup_script is None:
+        _cancel_cleanup_script = redis.register_script(_CANCEL_CLEANUP)
+    await run_script(
+        _cancel_cleanup_script,
+        keys=[waiters_stream, progress_key, runs_key],
+        args=[waiter_entry_id],
+        client=redis,
+    )
+
+
 class ConcurrencyBlocked(AdmissionBlocked):
     """Raised when a task cannot start due to concurrency limits.
 
@@ -545,30 +686,22 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         # releases in the gap between an acquire failure and a Python-side
         # park, leaving the blocked task with nothing to wake it.
         async with docket.redis() as redis:
-            acquire_or_park = redis.register_script(_ACQUIRE_OR_PARK)
-            result = await acquire_or_park(
-                keys=[
-                    concurrency_key,
-                    waiters_stream,
-                    docket.stream_key,
-                    execution._redis_key,
-                ],
-                args=[
-                    self.max_concurrent,
-                    execution.key,
-                    current_time,
-                    1 if execution.redelivered else 0,
-                    stale_threshold,
-                    key_ttl,
-                    execution.message_id,
-                    docket.worker_group_name,
-                    f"{docket.prefix}:state:{execution.key}",
-                    *[
-                        item
-                        for field, value in message.items()
-                        for item in (field, value)
-                    ],
-                ],
+            result = await _acquire_or_park(
+                redis,
+                slots_key=concurrency_key,
+                waiters_stream=waiters_stream,
+                stream_key=docket.stream_key,
+                runs_key=execution._redis_key,
+                max_concurrent=self.max_concurrent,
+                task_key=execution.key,
+                current_time=current_time,
+                is_redelivery=execution.redelivered,
+                stale_threshold=stale_threshold,
+                key_ttl=key_ttl,
+                message_id=execution.message_id,
+                worker_group_name=docket.worker_group_name,
+                state_channel=f"{docket.prefix}:state:{execution.key}",
+                message=message,
             )
 
         if not bool(result):  # pragma: no branch
@@ -720,14 +853,12 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                 return
             waiter_stream = waiter_stream_b.decode()
             waiter_entry_id = waiter_entry_id_b.decode()
-            cleanup = redis.register_script(_CANCEL_CLEANUP)
-            await cleanup(
-                keys=[
-                    waiter_stream,
-                    f"{docket.prefix}:progress:{task_key}",
-                    runs_key,
-                ],
-                args=[waiter_entry_id],
+            await _cancel_cleanup(
+                redis,
+                waiters_stream=waiter_stream,
+                progress_key=f"{docket.prefix}:progress:{task_key}",
+                runs_key=runs_key,
+                waiter_entry_id=waiter_entry_id,
             )
         # Drop the safeguard task this waiter scheduled at park time.
         # Cancelling routes through the same cancel pubsub we're subscribed
@@ -745,22 +876,18 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         stale_threshold = current_time - self._redelivery_timeout.total_seconds()
 
         async with docket.redis() as redis:
-            release = redis.register_script(_RELEASE_AND_WAKE)
-            await release(
-                keys=[
-                    self._concurrency_key,
-                    waiters_stream,
-                    docket.stream_key,
-                    docket.queue_key,
-                ],
-                args=[
-                    self._task_key,
-                    self.max_concurrent,
-                    stale_threshold,
-                    f"{docket.prefix}:runs:",
-                    f"{docket.prefix}:state:",
-                    f"{docket.prefix}:",
-                ],
+            await _release_and_wake(
+                redis,
+                slots_key=self._concurrency_key,
+                waiters_stream=waiters_stream,
+                stream_key=docket.stream_key,
+                queue_key=docket.queue_key,
+                task_key=self._task_key,
+                max_concurrent=self.max_concurrent,
+                stale_threshold=stale_threshold,
+                runs_prefix=f"{docket.prefix}:runs:",
+                state_prefix=f"{docket.prefix}:state:",
+                parked_prefix=f"{docket.prefix}:",
             )
 
     async def _renew_lease_loop(self, redelivery_timeout: timedelta) -> None:
@@ -838,19 +965,15 @@ async def _safeguard_wake(waiter_stream: str, max_concurrent: int) -> None:
     )
 
     async with docket.redis() as redis:
-        scavenge = redis.register_script(_SCAVENGE_AND_WAKE)
-        await scavenge(
-            keys=[
-                concurrency_key,
-                waiter_stream,
-                docket.stream_key,
-                docket.queue_key,
-            ],
-            args=[
-                max_concurrent,
-                stale_threshold,
-                f"{docket.prefix}:runs:",
-                f"{docket.prefix}:state:",
-                f"{docket.prefix}:",
-            ],
+        await _scavenge_and_wake(
+            redis,
+            slots_key=concurrency_key,
+            waiters_stream=waiter_stream,
+            stream_key=docket.stream_key,
+            queue_key=docket.queue_key,
+            max_concurrent=max_concurrent,
+            stale_threshold=stale_threshold,
+            runs_prefix=f"{docket.prefix}:runs:",
+            state_prefix=f"{docket.prefix}:state:",
+            parked_prefix=f"{docket.prefix}:",
         )
