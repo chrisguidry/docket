@@ -460,6 +460,14 @@ class Execution:
         self._generation = generation
         self.message_id = message_id
 
+        # True once the stream message identified by ``message_id`` has been
+        # XACKed (by ``_terminal``, ``_claim`` on SUPERSEDED, or ``_schedule``
+        # when re-routing this same message).  The worker uses this as a
+        # safety-net signal: anything that calls a ``FailureHandler`` whose
+        # ``handle_failure`` returns True without rescheduling will leave this
+        # False, and the worker can ack defensively.
+        self._acked: bool = False
+
         # Lifecycle state (mutable)
         self.state: ExecutionState = ExecutionState.SCHEDULED
         self.worker: str | None = None
@@ -713,6 +721,12 @@ class Execution:
         else:
             self.state = ExecutionState.SCHEDULED
 
+        # The reschedule branch in `_schedule` XACKed and XDELed the original
+        # stream message, so any caller passing in our own message_id has
+        # implicitly retired this Execution's pending entry.
+        if reschedule_message and reschedule_message == self.message_id:
+            self._acked = True
+
         self.disposition = Disposition.SCHEDULED
         return self.disposition
 
@@ -767,6 +781,10 @@ class Execution:
                 )
 
         if result == b"SUPERSEDED":
+            # The `_claim` Lua XACKed and XDELed the stale stream message
+            # before returning SUPERSEDED (skipping the ack when message_id
+            # is empty -- harmless either way).
+            self._acked = True
             return False
 
         self.state = ExecutionState.RUNNING
@@ -852,6 +870,12 @@ class Execution:
         self.progress.total = 100
         self.progress.message = None
         self.progress.updated_at = None
+
+        # ``_terminal`` XACKs and XDELs the stream message inline on both
+        # the success and SUPERSEDED branches when message_id is set, and
+        # is a no-op for the XACK when it isn't.  Either way this Execution
+        # no longer needs the worker's safety-net ack.
+        self._acked = True
 
     async def mark_as_completed(self, result_key: str | None = None) -> None:
         """Mark task as completed successfully.

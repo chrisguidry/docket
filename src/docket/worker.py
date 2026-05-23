@@ -659,8 +659,9 @@ class Worker:
                     await task
                 except AdmissionBlocked as e:
                     if e.handled:
-                        # The admission gate already handled the task,
-                        # so there is nothing more to do here.
+                        # The admission gate already handled the task --
+                        # including acking the stream message -- so there is
+                        # nothing more to do here.
                         continue
                     elif e.reschedule:
                         delay = e.retry_delay or ADMISSION_BLOCKED_RETRY_DELAY
@@ -678,6 +679,18 @@ class Worker:
                             extra=log_context,
                         )
                         await e.execution.mark_as_cancelled()
+
+                # Safety net: if nothing inside _execute or these except
+                # handlers acked the stream message (e.g. a custom
+                # FailureHandler that returned True without rescheduling or
+                # calling a mark_as_* method), drive the terminal-state Lua
+                # ourselves.  That atomically acks the stream entry, cleans
+                # up progress, and either expires or deletes the runs hash --
+                # everything a handler would have had to remember to do.
+                # ``_terminal``'s supersession check makes this safe even
+                # when a successor is already in flight.
+                if not execution._acked:
+                    await execution.mark_as_failed(error=None)
 
         try:
             async with AsyncExitStack() as dependency_stack:

@@ -10,10 +10,12 @@ from docket import CurrentDocket, CurrentWorker, Disposition, Docket, Worker
 from docket.dependencies import (
     Depends,
     ExponentialRetry,
+    FailureHandler,
     Retry,
     TaskArgument,
+    TaskOutcome,
 )
-from docket.execution import ExecutionState
+from docket.execution import Execution, ExecutionState
 
 
 async def test_dependencies_may_be_duplicated(docket: Docket, worker: Worker):
@@ -273,6 +275,38 @@ async def test_concurrent_add_during_retry_wait_is_deduplicated(
     await worker_task
 
     assert attempts == ["original", "original"]
+
+
+async def test_custom_failure_handler_returning_true_still_acks_message(
+    docket: Docket, worker: Worker
+):
+    """A custom FailureHandler that returns True without rescheduling or
+    marking a terminal state must still leave the stream message acked.
+    The worker's safety net guarantees the message isn't left pending and
+    redelivered indefinitely."""
+
+    class JustLog(FailureHandler["JustLog"]):
+        async def __aenter__(self) -> "JustLog":
+            return self
+
+        async def handle_failure(
+            self, execution: Execution, outcome: TaskOutcome
+        ) -> bool:
+            # Pretend we logged + moved on, doing nothing with the message.
+            return True
+
+    async def the_task(value: str, handler: JustLog = JustLog()):
+        raise RuntimeError(f"boom: {value}")
+
+    await docket.add(the_task, key="leaky-key")("once")
+    await worker.run_until_finished()
+
+    # If the safety net works, the stream is empty -- nothing pending, no
+    # message body left behind to redeliver.
+    async with docket.redis() as redis:
+        assert await redis.xlen(docket.stream_key) == 0
+        pending = await redis.xpending(docket.stream_key, docket.worker_group_name)
+        assert pending["pending"] == 0
 
 
 async def test_dependencies_error_for_missing_task_argument(
