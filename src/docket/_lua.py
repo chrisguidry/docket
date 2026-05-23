@@ -64,25 +64,26 @@ from redis.exceptions import NoScriptError
 from ._redis import RedisClient
 
 
+# Marker classes used as ``Annotated`` metadata.  The class objects
+# themselves go into ``__metadata__`` -- no instances needed -- and the
+# decorator uses identity checks (``meta is _Key``) to discriminate slots.
+
+
 class _Key:
-    """Metadata sentinel for ``Annotated`` -- marks a parameter as a Lua KEYS slot."""
+    """``Annotated`` metadata marker -- one Lua KEYS slot."""
 
 
 class _Arg:
-    """Metadata sentinel for ``Annotated`` -- marks a parameter as a single ARGV slot."""
+    """``Annotated`` metadata marker -- one Lua ARGV slot."""
 
 
 class _Args:
-    """Metadata sentinel for ``Annotated`` -- marks a parameter as variadic ARGV.
+    """``Annotated`` metadata marker -- variadic Lua ARGV slots.
 
     Dicts are flattened to alternating ``k1, v1, k2, v2, ...`` (insertion
     order); lists and tuples are spread element-wise.
     """
 
-
-_KEY = _Key()
-_ARG = _Arg()
-_ARGS = _Args()
 
 # Constrained TypeVars give the marker aliases their bounds: ``Key[int]``
 # / ``Arg[dict[...]]`` / ``Args[str]`` fail at pyright time, not at
@@ -93,13 +94,13 @@ _KeyT = TypeVar("_KeyT", str, bytes)
 _ArgT = TypeVar("_ArgT", str, bytes, int, float, bool)
 _ArgsT = TypeVar("_ArgsT", dict[Any, Any], list[Any], tuple[Any, ...])
 
-Key: TypeAlias = Annotated[_KeyT, _KEY]
+Key: TypeAlias = Annotated[_KeyT, _Key]
 """One Lua ``KEYS`` slot.  Bounded to the types Redis accepts as keys."""
 
-Arg: TypeAlias = Annotated[_ArgT, _ARG]
+Arg: TypeAlias = Annotated[_ArgT, _Arg]
 """One Lua ``ARGV`` slot.  Bounded to scalar types the decoder knows how to format."""
 
-Args: TypeAlias = Annotated[_ArgsT, _ARGS]
+Args: TypeAlias = Annotated[_ArgsT, _Args]
 """Variadic Lua ``ARGV`` slots.
 
 A ``dict`` flattens into alternating field/value pairs in insertion order
@@ -140,21 +141,20 @@ def _expand_args(value: Any) -> list[Any]:
     return [_encode_scalar(item) for item in sequence]
 
 
-def _kind_for(hint: Any) -> _Key | _Arg | _Args | None:
-    """Return the marker sentinel for a parameter, or ``None`` if untagged.
+_Marker: TypeAlias = type[_Key] | type[_Arg] | type[_Args]
+
+
+def _kind_for(hint: Any) -> _Marker | None:
+    """Return the marker class for a parameter, or ``None`` if untagged.
 
     ``Key[str]`` / ``Arg[int]`` / ``Args[dict[...]]`` are ``Annotated``
     generic aliases; ``get_type_hints(..., include_extras=True)`` resolves
     them directly to ``Annotated[T, marker]`` and exposes ``__metadata__``.
     """
-    return next(
-        (
-            meta
-            for meta in getattr(hint, "__metadata__", ())
-            if isinstance(meta, (_Key, _Arg, _Args))
-        ),
-        None,
-    )
+    for meta in getattr(hint, "__metadata__", ()):
+        if meta in (_Key, _Arg, _Args):
+            return meta
+    return None
 
 
 def redis_script(fn: _F) -> _F:
@@ -175,7 +175,7 @@ def redis_script(fn: _F) -> _F:
     hints = get_type_hints(fn, include_extras=True)
 
     key_params: list[str] = []
-    arg_params: list[tuple[str, _Arg | _Args]] = []
+    arg_params: list[tuple[str, _Marker]] = []
     redis_param: str | None = None
 
     for name, param in sig.parameters.items():
@@ -190,7 +190,7 @@ def redis_script(fn: _F) -> _F:
                 f"annotated as Key[...], Arg[...], or Args[...] "
                 f"(or typed as RedisClient for the first parameter)"
             )
-        if isinstance(kind, _Key):
+        if kind is _Key:
             key_params.append(name)
         else:
             arg_params.append((name, kind))
@@ -214,7 +214,7 @@ def redis_script(fn: _F) -> _F:
         argv: list[Any] = []
         for name, kind in arg_params:
             value = kwargs[name]
-            if isinstance(kind, _Args):
+            if kind is _Args:
                 argv.extend(_expand_args(value))
             else:
                 argv.append(_encode_scalar(value))
