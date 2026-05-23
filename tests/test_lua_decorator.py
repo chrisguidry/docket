@@ -16,7 +16,7 @@ import pytest
 from docket import Docket
 from docket._lua import Arg, Args, Key, redis_script
 from docket._redis import RedisClient
-from tests.conftest import skip_memory
+from tests.conftest import skip_cluster, skip_memory
 
 # Each test builds its keys off the docket fixture's prefix.  The
 # ``Docket`` factory in conftest already gives that prefix the
@@ -282,6 +282,7 @@ async def test_empty_variadic_emits_no_argv_entries(docket: Docket) -> None:
 
 
 @skip_memory
+@skip_cluster
 async def test_noscript_path_recovers_after_script_flush(  # pragma: no cover
     docket: Docket,
 ) -> None:
@@ -291,9 +292,13 @@ async def test_noscript_path_recovers_after_script_flush(  # pragma: no cover
     every existing dependency test that creates two ``Docket`` fixtures
     against ``memory://`` (each owning a separate ``BurnerRedis``).
     Here we explicitly drive the real-Redis path that ``SCRIPT FLUSH``
-    enables.  The body is unreachable on memory by design, so it's
-    marked ``no cover`` -- per-job ``--cov-fail-under=100`` is enforced
-    on every backend independently.
+    enables.  Skipped on cluster because ``SCRIPT FLUSH`` is a
+    server-wide admin command that needs ``target_nodes`` routing the
+    cluster client doesn't infer; the cluster jobs exercise the same
+    recovery code path through every production wrapper anyway.  The
+    body is unreachable on memory and cluster by design, so it's marked
+    ``no cover`` -- per-job ``--cov-fail-under=100`` is enforced on
+    every backend independently.
     """
     async with docket.redis() as redis:
         first = await _noscript_echo(redis, key=_k(docket, "k"))
