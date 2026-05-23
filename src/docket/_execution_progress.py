@@ -130,13 +130,13 @@ class ExecutionProgress:
 
         updated_at_dt = datetime.now(timezone.utc)
         updated_at = updated_at_dt.isoformat()
+        # Pipeline the two writes so they hit the wire as one MULTI/EXEC.
+        # PUBLISH stays separate because its payload needs HINCRBY's return.
         async with self.docket.redis() as redis:
-            new_current = await redis.hincrby(self._redis_key, "current", amount)
-            await redis.hset(
-                self._redis_key,
-                "updated_at",
-                updated_at,
-            )
+            async with redis.pipeline() as pipe:
+                pipe.hincrby(self._redis_key, "current", amount)
+                pipe.hset(self._redis_key, "updated_at", updated_at)
+                new_current, _ = await pipe.execute()
         # Update instance attributes using Redis return value
         self.current = new_current
         self.updated_at = updated_at_dt
