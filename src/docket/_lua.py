@@ -249,6 +249,21 @@ def redis_script(fn: _F) -> _F:
             f"@redis_script: {fn.__qualname__} must declare at least one Key[...] parameter"
         )
 
+    # A variadic ``Args[...]`` parameter consumes an unknown number of ARGV
+    # slots at runtime, so any scalar ``Arg[...]`` after it would have an
+    # indeterminate index in the generated preamble.  Forbid that shape at
+    # decoration time rather than silently emit wrong ARGV indices.
+    for position, (name, kind, _) in enumerate(arg_params):
+        if kind is _Args:
+            tail = arg_params[position + 1 :]
+            if tail:
+                trailing = ", ".join(rest_name for rest_name, _, _ in tail)
+                raise TypeError(
+                    f"@redis_script: {fn.__qualname__} has Arg[...] parameter(s) "
+                    f"{trailing} after Args[...] parameter {name}; "
+                    f"Args[...] must be the last parameter"
+                )
+
     preamble = _generate_preamble(key_params, arg_params)
     lua = f"{preamble}\n\n{body}" if preamble else body
     sha = hashlib.sha1(lua.encode("utf-8")).hexdigest()

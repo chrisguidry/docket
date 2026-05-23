@@ -18,103 +18,208 @@ from docket._lua import Arg, Args, Key, redis_script
 from docket._redis import RedisClient
 from tests.conftest import skip_memory
 
+# Each test builds its keys off the docket fixture's prefix.  The
+# ``Docket`` factory in conftest already gives that prefix the
+# ACL-permitted shape -- and on Redis Cluster wraps it in a ``{...}``
+# hash tag -- so the keys land in the right slot and pass the ACL
+# allowlist.  The ``@redis_script``-decorated helpers below live at
+# module scope so their decoration happens at import time and is
+# covered even when the test that uses them is skipped on a particular
+# backend.
 
-# All KEYS for a given EVALSHA call must hash to the same Redis Cluster
-# slot, so the test keys all share the ``{lua-test}`` hash tag.
 
-_TAG = "{lua-test}"
+@redis_script
+async def _echo_keys_and_args(
+    redis: RedisClient,
+    *,
+    first_key: Key[str],
+    second_key: Key[str],
+    first_arg: Arg[str],
+    second_arg: Arg[str],
+) -> list[bytes]:
+    """
+    return {KEYS[1], KEYS[2], ARGV[1], ARGV[2]}
+    """
+    ...
+
+
+@redis_script
+async def _echo_bool(
+    redis: RedisClient,
+    *,
+    key: Key[str],
+    flag: Arg[bool],
+) -> bytes:
+    """
+    return ARGV[1]
+    """
+    ...
+
+
+@redis_script
+async def _echo_numbers(
+    redis: RedisClient,
+    *,
+    key: Key[str],
+    count: Arg[int],
+    ratio: Arg[float],
+) -> list[bytes]:
+    """
+    return {ARGV[1], ARGV[2]}
+    """
+    ...
+
+
+@redis_script
+async def _echo_dict(
+    redis: RedisClient,
+    *,
+    key: Key[str],
+    fields: Args[dict[str, str]],
+) -> list[bytes]:
+    """
+    return ARGV
+    """
+    ...
+
+
+@redis_script
+async def _echo_list(
+    redis: RedisClient,
+    *,
+    key: Key[str],
+    items: Args[list[str]],
+) -> list[bytes]:
+    """
+    return ARGV
+    """
+    ...
+
+
+@redis_script
+async def _echo_tuple(
+    redis: RedisClient,
+    *,
+    key: Key[str],
+    items: Args[tuple[str, ...]],
+) -> list[bytes]:
+    """
+    return ARGV
+    """
+    ...
+
+
+@redis_script
+async def _calc(
+    redis: RedisClient,
+    *,
+    key: Key[str],
+    count: Arg[int],
+    ratio: Arg[float],
+    flag: Arg[bool],
+) -> list[int]:
+    """
+    -- Arithmetic / boolean ops on the typed locals the decorator emits
+    -- from Arg[int] / Arg[float] / Arg[bool].
+    local bumped = count + 1
+    local scaled = ratio * 10
+    local picked = 0
+    if flag then picked = 1 end
+    return {bumped, scaled, picked}
+    """
+    ...
+
+
+@redis_script
+async def _join_variadic(
+    redis: RedisClient,
+    *,
+    key: Key[str],
+    leading: Arg[str],
+    also_leading: Arg[str],
+    items: Args[list[str]],
+) -> bytes:
+    """
+    -- items_start should be 3 (after leading + also_leading)
+    local pieces = {}
+    for i = items_start, #ARGV do
+        pieces[#pieces + 1] = ARGV[i]
+    end
+    return table.concat(pieces, '|')
+    """
+    ...
+
+
+@redis_script
+async def _count_argv(
+    redis: RedisClient,
+    *,
+    key: Key[str],
+    leading: Arg[str],
+    rest: Args[dict[str, str]],
+) -> int:
+    """
+    return #ARGV
+    """
+    ...
+
+
+@redis_script
+async def _noscript_echo(
+    redis: RedisClient,
+    *,
+    key: Key[str],
+) -> bytes:
+    """
+    return 'hello'
+    """
+    ...
+
+
+def _k(docket: Docket, suffix: str) -> str:
+    """Build a key off the docket's ACL-permitted, cluster-safe prefix."""
+    return f"{docket.prefix}:lua-test:{suffix}"
 
 
 async def test_keys_and_args_arrive_in_declaration_order(docket: Docket) -> None:
-    @redis_script
-    async def echo(
-        redis: RedisClient,
-        *,
-        first_key: Key[str],
-        second_key: Key[str],
-        first_arg: Arg[str],
-        second_arg: Arg[str],
-    ) -> list[bytes]:
-        """
-        return {KEYS[1], KEYS[2], ARGV[1], ARGV[2]}
-        """
-        ...
-
     async with docket.redis() as redis:
-        result = await echo(
+        result = await _echo_keys_and_args(
             redis,
-            first_key=f"{_TAG}-K-one",
-            second_key=f"{_TAG}-K-two",
+            first_key=_k(docket, "K-one"),
+            second_key=_k(docket, "K-two"),
             first_arg="A-one",
             second_arg="A-two",
         )
 
     assert result == [
-        f"{_TAG}-K-one".encode(),
-        f"{_TAG}-K-two".encode(),
+        _k(docket, "K-one").encode(),
+        _k(docket, "K-two").encode(),
         b"A-one",
         b"A-two",
     ]
 
 
 async def test_bool_encodes_as_one_or_zero(docket: Docket) -> None:
-    @redis_script
-    async def echo_bool(
-        redis: RedisClient,
-        *,
-        key: Key[str],
-        flag: Arg[bool],
-    ) -> bytes:
-        """
-        return ARGV[1]
-        """
-        ...
-
     async with docket.redis() as redis:
-        true_value = await echo_bool(redis, key=f"{_TAG}-k", flag=True)
-        false_value = await echo_bool(redis, key=f"{_TAG}-k", flag=False)
+        true_value = await _echo_bool(redis, key=_k(docket, "k"), flag=True)
+        false_value = await _echo_bool(redis, key=_k(docket, "k"), flag=False)
 
     assert true_value == b"1"
     assert false_value == b"0"
 
 
 async def test_int_and_float_encode_via_str(docket: Docket) -> None:
-    @redis_script
-    async def echo_numbers(
-        redis: RedisClient,
-        *,
-        key: Key[str],
-        count: Arg[int],
-        ratio: Arg[float],
-    ) -> list[bytes]:
-        """
-        return {ARGV[1], ARGV[2]}
-        """
-        ...
-
     async with docket.redis() as redis:
-        result = await echo_numbers(redis, key=f"{_TAG}-k", count=42, ratio=3.14)
+        result = await _echo_numbers(redis, key=_k(docket, "k"), count=42, ratio=3.14)
 
     assert result == [b"42", b"3.14"]
 
 
 async def test_args_dict_flattens_preserving_insertion_order(docket: Docket) -> None:
-    @redis_script
-    async def echo_dict(
-        redis: RedisClient,
-        *,
-        key: Key[str],
-        fields: Args[dict[str, str]],
-    ) -> list[bytes]:
-        """
-        return ARGV
-        """
-        ...
-
     async with docket.redis() as redis:
-        result = await echo_dict(
+        result = await _echo_dict(
             redis,
-            key=f"{_TAG}-k",
+            key=_k(docket, "k"),
             fields={"alpha": "1", "beta": "2", "gamma": "3"},
         )
 
@@ -122,39 +227,15 @@ async def test_args_dict_flattens_preserving_insertion_order(docket: Docket) -> 
 
 
 async def test_args_list_spreads_element_wise(docket: Docket) -> None:
-    @redis_script
-    async def echo_list(
-        redis: RedisClient,
-        *,
-        key: Key[str],
-        items: Args[list[str]],
-    ) -> list[bytes]:
-        """
-        return ARGV
-        """
-        ...
-
     async with docket.redis() as redis:
-        result = await echo_list(redis, key=f"{_TAG}-k", items=["x", "y", "z"])
+        result = await _echo_list(redis, key=_k(docket, "k"), items=["x", "y", "z"])
 
     assert result == [b"x", b"y", b"z"]
 
 
 async def test_args_tuple_spreads_element_wise(docket: Docket) -> None:
-    @redis_script
-    async def echo_tuple(
-        redis: RedisClient,
-        *,
-        key: Key[str],
-        items: Args[tuple[str, ...]],
-    ) -> list[bytes]:
-        """
-        return ARGV
-        """
-        ...
-
     async with docket.redis() as redis:
-        result = await echo_tuple(redis, key=f"{_TAG}-k", items=("a", "b"))
+        result = await _echo_tuple(redis, key=_k(docket, "k"), items=("a", "b"))
 
     assert result == [b"a", b"b"]
 
@@ -168,27 +249,8 @@ async def test_codegen_binds_typed_locals(docket: Docket) -> None:
     error; if it forgot the ``== '1'`` decode, ``if flag then`` would
     always be truthy.
     """
-
-    @redis_script
-    async def calc(
-        redis: RedisClient,
-        *,
-        key: Key[str],
-        count: Arg[int],
-        ratio: Arg[float],
-        flag: Arg[bool],
-    ) -> list[int]:
-        """
-        local bumped = count + 1
-        local scaled = ratio * 10
-        local picked = 0
-        if flag then picked = 1 end
-        return {bumped, scaled, picked}
-        """
-        ...
-
     async with docket.redis() as redis:
-        result = await calc(redis, key=f"{_TAG}-k", count=41, ratio=2.5, flag=True)
+        result = await _calc(redis, key=_k(docket, "k"), count=41, ratio=2.5, flag=True)
 
     assert result == [42, 25, 1]
 
@@ -200,30 +262,10 @@ async def test_codegen_exposes_variadic_start_offset(docket: Docket) -> None:
     1-indexed ARGV position where the variadic begins (after all the
     scalar args).  The constant lets us iterate without that bookkeeping.
     """
-
-    @redis_script
-    async def join_variadic(
-        redis: RedisClient,
-        *,
-        key: Key[str],
-        leading: Arg[str],
-        also_leading: Arg[str],
-        items: Args[list[str]],
-    ) -> bytes:
-        """
-        -- items_start should be 3 (after leading + also_leading)
-        local pieces = {}
-        for i = items_start, #ARGV do
-            pieces[#pieces + 1] = ARGV[i]
-        end
-        return table.concat(pieces, '|')
-        """
-        ...
-
     async with docket.redis() as redis:
-        result = await join_variadic(
+        result = await _join_variadic(
             redis,
-            key=f"{_TAG}-k",
+            key=_k(docket, "k"),
             leading="L1",
             also_leading="L2",
             items=["A", "B", "C"],
@@ -233,49 +275,28 @@ async def test_codegen_exposes_variadic_start_offset(docket: Docket) -> None:
 
 
 async def test_empty_variadic_emits_no_argv_entries(docket: Docket) -> None:
-    @redis_script
-    async def echo_count(
-        redis: RedisClient,
-        *,
-        key: Key[str],
-        leading: Arg[str],
-        rest: Args[dict[str, str]],
-    ) -> int:
-        """
-        return #ARGV
-        """
-        ...
-
     async with docket.redis() as redis:
-        result = await echo_count(redis, key=f"{_TAG}-k", leading="solo", rest={})
+        result = await _count_argv(redis, key=_k(docket, "k"), leading="solo", rest={})
 
     assert result == 1
 
 
 @skip_memory
-async def test_noscript_path_recovers_after_script_flush(docket: Docket) -> None:
+async def test_noscript_path_recovers_after_script_flush(  # pragma: no cover
+    docket: Docket,
+) -> None:
     """Real-Redis NOSCRIPT recovery via SCRIPT FLUSH.
 
     The memory backend's cross-instance NOSCRIPT path is exercised by
     every existing dependency test that creates two ``Docket`` fixtures
     against ``memory://`` (each owning a separate ``BurnerRedis``).
     Here we explicitly drive the real-Redis path that ``SCRIPT FLUSH``
-    enables.
+    enables.  The body is unreachable on memory by design, so it's
+    marked ``no cover`` -- per-job ``--cov-fail-under=100`` is enforced
+    on every backend independently.
     """
-
-    @redis_script
-    async def noscript_echo(
-        redis: RedisClient,
-        *,
-        key: Key[str],
-    ) -> bytes:
-        """
-        return 'hello'
-        """
-        ...
-
     async with docket.redis() as redis:
-        first = await noscript_echo(redis, key=f"{_TAG}-k")
+        first = await _noscript_echo(redis, key=_k(docket, "k"))
         assert first == b"hello"
 
         # Wipe the server's script cache.  The next call's EVALSHA fails
@@ -283,7 +304,7 @@ async def test_noscript_path_recovers_after_script_flush(docket: Docket) -> None
         # SCRIPT LOAD and retry.
         await redis.execute_command("SCRIPT", "FLUSH")  # type: ignore[attr-defined]
 
-        second = await noscript_echo(redis, key=f"{_TAG}-k")
+        second = await _noscript_echo(redis, key=_k(docket, "k"))
         assert second == b"hello"
 
 
@@ -327,6 +348,29 @@ def test_missing_key_parameter_is_rejected_at_decoration_time() -> None:
             redis: RedisClient,
             *,
             something: Arg[str],
+        ) -> bytes:
+            """return 'x'"""
+            ...
+
+
+def test_arg_after_args_is_rejected_at_decoration_time() -> None:
+    """``Args[...]`` must be the trailing parameter.
+
+    A variadic ``Args[...]`` consumes an unknown number of ARGV slots at
+    runtime, so any scalar ``Arg[...]`` declared after it would have an
+    indeterminate index in the generated Lua preamble (codegen would emit
+    the wrong ``ARGV[N]`` and the script would silently read the wrong
+    value).  Reject the signature at decoration time instead.
+    """
+    with pytest.raises(TypeError, match="must be the last parameter"):
+
+        @redis_script
+        async def trailing(  # pyright: ignore[reportUnusedFunction]
+            redis: RedisClient,
+            *,
+            key: Key[str],
+            fields: Args[dict[str, str]],
+            tail: Arg[str],
         ) -> bytes:
             """return 'x'"""
             ...
