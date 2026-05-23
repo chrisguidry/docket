@@ -324,14 +324,19 @@ async def _terminal(
     extra_fields: Args[list[str]],
 ) -> bytes:
     """
-    -- Check supersession (generation 0 = pre-tracking, always write).  Even
-    -- when superseded we still publish the terminal-state event so
-    -- subscribers waiting on completion don't deadlock when a Perpetual
-    -- successor has already taken over the runs hash, and we still clean up
-    -- this execution's progress hash and stream entry.
+    -- Check supersession (generation 0 = pre-tracking, always write).  Two
+    -- supersession shapes, both handled the same way:
+    --   * runs hash missing entirely -- a newer generation already completed
+    --     and its execution_ttl expired (or it was 0).
+    --   * runs hash present but its generation is newer -- a successor is in
+    --     flight or has just finished within its execution_ttl window.
+    -- In both cases we still publish the terminal-state event so subscribers
+    -- waiting on completion don't deadlock, and we still clean up this
+    -- execution's progress hash and stream entry.  We do NOT recreate or
+    -- mutate the runs hash on a supersession -- the successor owns it.
     if generation > 0 then
         local current = redis.call('HGET', runs_key, 'generation')
-        if current and tonumber(current) > generation then
+        if not current or tonumber(current) > generation then
             redis.call('PUBLISH', state_channel, state_payload)
             redis.call('DEL', progress_key)
             if message_id ~= '' then
