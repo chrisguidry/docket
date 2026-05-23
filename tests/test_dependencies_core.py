@@ -1,17 +1,19 @@
 """Tests for core dependency injection and retry strategies."""
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from docket import CurrentDocket, CurrentWorker, Docket, Worker
+from docket import CurrentDocket, CurrentWorker, Disposition, Docket, Worker
 from docket.dependencies import (
     Depends,
     ExponentialRetry,
     Retry,
     TaskArgument,
 )
+from docket.execution import ExecutionState
 
 
 async def test_dependencies_may_be_duplicated(docket: Docket, worker: Worker):
@@ -225,6 +227,52 @@ async def test_user_can_request_a_retry_at_a_specific_time_in_the_past(
 
     delay = second_call_time - first_call_time
     assert delay.total_seconds() > 0 < 1
+
+
+async def test_concurrent_add_during_retry_wait_is_deduplicated(
+    docket: Docket, worker: Worker
+):
+    """A docket.add() for the same key during a retry's wait window is
+    deduplicated: only the original task runs, the intruder is rejected
+    with ALREADY_SCHEDULED."""
+    attempts: list[str] = []
+
+    async def the_task(
+        value: str,
+        retry: Retry = Retry(attempts=2, delay=timedelta(milliseconds=500)),
+    ):
+        attempts.append(value)
+        if len(attempts) == 1:
+            raise RuntimeError("first attempt fails to trigger retry")
+
+    first = await docket.add(the_task, key="dup-key")("original")
+    assert first.disposition is Disposition.SCHEDULED
+
+    # Kick off the worker; it will run the first attempt, fail, and reschedule
+    # the retry ~500ms out.
+    worker_task = asyncio.create_task(worker.run_until_finished())
+
+    # Poll until the retry is parked (state=SCHEDULED) so we hit the dedup
+    # window that exposed the missing 'known' field regression.
+    async def await_retry_parked() -> None:
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while asyncio.get_event_loop().time() < deadline:
+            current = await docket.get_execution("dup-key")
+            if current and current.state is ExecutionState.SCHEDULED:
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError(  # pragma: no cover
+            "retry never reached SCHEDULED state"
+        )
+
+    await await_retry_parked()
+
+    second = await docket.add(the_task, key="dup-key")("intruder")
+    assert second.disposition is Disposition.ALREADY_SCHEDULED
+
+    await worker_task
+
+    assert attempts == ["original", "original"]
 
 
 async def test_dependencies_error_for_missing_task_argument(

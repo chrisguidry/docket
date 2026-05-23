@@ -103,9 +103,13 @@ async def _schedule(
         end
     end
 
-    -- Handle rescheduling from stream: atomically ACK message and reschedule to queue
-    -- This prevents both task loss (ACK before reschedule) and duplicate execution
-    -- (reschedule before ACK with slow reschedule causing redelivery)
+    -- Handle rescheduling from stream: atomically ACK the original message and
+    -- re-route the task.  Prevents both task loss (ACK before reschedule) and
+    -- duplicate execution (reschedule before ACK with slow reschedule causing
+    -- redelivery).  Honors is_immediate so a retry with delay=0 lands in the
+    -- stream right away instead of waiting for the scheduler poll.  Sets
+    -- 'known' so a concurrent docket.add() for the same key dedups against
+    -- this rescheduled task.
     if reschedule_message_id ~= '' then
         -- Acknowledge and delete the message from the stream
         redis.call('XACK', stream_key, worker_group_name, reschedule_message_id)
@@ -117,21 +121,32 @@ async def _schedule(
             message[generation_index] = tostring(new_gen)
         end
 
-        -- Park task data for future execution
-        redis.call('HSET', parked_key, unpack(message))
-
-        -- Add to sorted set queue
-        redis.call('ZADD', queue_key, when_timestamp, task_key)
-
-        -- Update state in runs hash (clear stream_id since task is no longer in stream)
-        redis.call('HSET', runs_key,
-            'state', 'scheduled',
-            'when', when_timestamp,
-            'function', function_name,
-            'args', args_data,
-            'kwargs', kwargs_data
-        )
-        redis.call('HDEL', runs_key, 'stream_id')
+        if is_immediate then
+            -- Add directly to stream for immediate execution
+            local new_message_id = redis.call('XADD', stream_key, '*', unpack(message))
+            redis.call('HSET', runs_key,
+                'state', 'queued',
+                'when', when_timestamp,
+                'known', when_timestamp,
+                'stream_id', new_message_id,
+                'function', function_name,
+                'args', args_data,
+                'kwargs', kwargs_data
+            )
+        else
+            -- Park task data for future execution
+            redis.call('HSET', parked_key, unpack(message))
+            redis.call('ZADD', queue_key, when_timestamp, task_key)
+            redis.call('HSET', runs_key,
+                'state', 'scheduled',
+                'when', when_timestamp,
+                'known', when_timestamp,
+                'function', function_name,
+                'args', args_data,
+                'kwargs', kwargs_data
+            )
+            redis.call('HDEL', runs_key, 'stream_id')
+        end
 
         redis.call('PUBLISH', state_channel, state_payload)
 
@@ -647,10 +662,13 @@ class Execution:
         is_immediate = when <= datetime.now(timezone.utc)
 
         # The Lua takes the payload as a pre-formatted string so it can just
-        # call PUBLISH; cjson isn't available on the in-memory backend.
+        # call PUBLISH; cjson isn't available on the in-memory backend.  State
+        # is QUEUED when the task lands directly on the stream (any
+        # is_immediate path, including immediate retries), SCHEDULED when it's
+        # parked for a future time.
         published_state = (
             ExecutionState.QUEUED.value
-            if is_immediate and not reschedule_message
+            if is_immediate
             else ExecutionState.SCHEDULED.value
         )
         state_payload = json.dumps(
@@ -690,11 +708,10 @@ class Execution:
             self.disposition = Disposition.ALREADY_SCHEDULED
             return self.disposition
 
-        if reschedule_message or not is_immediate:
-            # Rescheduling from stream lands on the queue (never immediate).
-            self.state = ExecutionState.SCHEDULED
-        else:
+        if is_immediate:
             self.state = ExecutionState.QUEUED
+        else:
+            self.state = ExecutionState.SCHEDULED
 
         self.disposition = Disposition.SCHEDULED
         return self.disposition

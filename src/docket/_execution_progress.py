@@ -9,18 +9,38 @@ from typing import (
     AsyncGenerator,
     Generator,
     Literal,
-    Mapping,
     TypedDict,
-    cast,
 )
 
-from ._redis import EncodableT, KeyT
+from ._lua import Arg, Args, Key, redis_script
+from ._redis import RedisClient
 
 from ._telemetry import suppress_instrumentation
 from typing_extensions import Self
 
 if TYPE_CHECKING:
     from .docket import Docket
+
+
+@redis_script
+async def _progress_write(
+    redis: RedisClient,
+    *,
+    progress_key: Key[str],
+    payload: Arg[str],
+    fields: Args[dict[str, str]],
+) -> bytes:
+    """
+    local hset_args = {}
+    for i = fields_start, #ARGV, 2 do
+        hset_args[#hset_args + 1] = ARGV[i]
+        hset_args[#hset_args + 1] = ARGV[i + 1]
+    end
+    redis.call('HSET', progress_key, unpack(hset_args))
+    redis.call('PUBLISH', progress_key, payload)
+    return 'OK'
+    """
+    ...
 
 
 class ProgressEvent(TypedDict):
@@ -113,18 +133,13 @@ class ExecutionProgress:
             "message": self.message,
             "updated_at": updated_at,
         }
-        channel = self.docket.key(f"progress:{self.key}")
         async with self.docket.redis() as redis:
-            async with redis.pipeline() as pipe:
-                pipe.hset(
-                    self._redis_key,
-                    mapping={
-                        "total": str(total),
-                        "updated_at": updated_at,
-                    },
-                )
-                pipe.publish(channel, json.dumps(payload))
-                await pipe.execute()
+            await _progress_write(
+                redis,
+                progress_key=self._redis_key,
+                payload=json.dumps(payload),
+                fields={"total": str(total), "updated_at": updated_at},
+            )
         self.total = total
         self.updated_at = updated_at_dt
 
@@ -166,18 +181,13 @@ class ExecutionProgress:
             "message": message,
             "updated_at": updated_at,
         }
-        channel = self.docket.key(f"progress:{self.key}")
         async with self.docket.redis() as redis:
-            async with redis.pipeline() as pipe:
-                pipe.hset(
-                    self._redis_key,
-                    mapping=cast(
-                        Mapping[KeyT, EncodableT],
-                        {"message": message, "updated_at": updated_at},
-                    ),
-                )
-                pipe.publish(channel, json.dumps(payload))
-                await pipe.execute()
+            await _progress_write(
+                redis,
+                progress_key=self._redis_key,
+                payload=json.dumps(payload),
+                fields={"message": message or "", "updated_at": updated_at},
+            )
         self.message = message
         self.updated_at = updated_at_dt
 
