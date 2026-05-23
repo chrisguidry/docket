@@ -30,4 +30,4 @@ max_lines = 912
 
 [[rules]]
 path = "src/docket/dependencies/_concurrency.py"
-max_lines = 979
+max_lines = 985

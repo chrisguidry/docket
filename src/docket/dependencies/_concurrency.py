@@ -388,9 +388,6 @@ redis.call('HDEL', runs_key, 'waiter_stream', 'waiter_entry_id')
 # (computing the SHA at first call) and reuses it for all subsequent calls,
 # passing ``client=redis`` to stay loop-agnostic.
 _acquire_or_park_script: Script | None = None
-_release_and_wake_script: Script | None = None
-_scavenge_and_wake_script: Script | None = None
-_cancel_cleanup_script: Script | None = None
 
 
 async def _acquire_or_park(
@@ -437,6 +434,9 @@ async def _acquire_or_park(
     )
 
 
+_release_and_wake_script: Script | None = None
+
+
 async def _release_and_wake(
     redis: RedisClient,
     *,
@@ -468,6 +468,9 @@ async def _release_and_wake(
         ],
         client=redis,
     )
+
+
+_scavenge_and_wake_script: Script | None = None
 
 
 async def _scavenge_and_wake(
@@ -502,6 +505,9 @@ async def _scavenge_and_wake(
             client=redis,
         ),
     )
+
+
+_cancel_cleanup_script: Script | None = None
 
 
 async def _cancel_cleanup(
