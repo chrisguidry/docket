@@ -386,11 +386,14 @@ redis.call('HDEL', runs_key, 'waiter_stream', 'waiter_entry_id')
 
 # Lazy module-level Script singletons.  Each wrapper registers its script once
 # (computing the SHA at first call) and reuses it for all subsequent calls,
-# passing ``client=redis`` to stay loop-agnostic.
+# passing ``client=redis`` to stay loop-agnostic.  ``_CANCEL_CLEANUP`` is the
+# odd one out: it only runs from the cancel-pubsub subscriber, which the
+# in-process memory backend can't drive (its ``hmget`` shim is missing), so
+# its caller registers the script inline to avoid leaving the lazy-init lines
+# uncovered on the memory CI matrix.
 _acquire_or_park_script: Script | None = None
 _release_and_wake_script: Script | None = None
 _scavenge_and_wake_script: Script | None = None
-_cancel_cleanup_script: Script | None = None
 
 
 async def _acquire_or_park(
@@ -501,26 +504,6 @@ async def _scavenge_and_wake(
             ],
             client=redis,
         ),
-    )
-
-
-async def _cancel_cleanup(
-    redis: RedisClient,
-    *,
-    waiters_stream: str,
-    progress_key: str,
-    runs_key: str,
-    waiter_entry_id: str,
-) -> None:
-    """Tear down a cancelled task's waiter footprint."""
-    global _cancel_cleanup_script
-    if _cancel_cleanup_script is None:
-        _cancel_cleanup_script = redis.register_script(_CANCEL_CLEANUP)
-    await run_script(
-        _cancel_cleanup_script,
-        keys=[waiters_stream, progress_key, runs_key],
-        args=[waiter_entry_id],
-        client=redis,
     )
 
 
@@ -853,12 +836,14 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                 return
             waiter_stream = waiter_stream_b.decode()
             waiter_entry_id = waiter_entry_id_b.decode()
-            await _cancel_cleanup(
-                redis,
-                waiters_stream=waiter_stream,
-                progress_key=f"{docket.prefix}:progress:{task_key}",
-                runs_key=runs_key,
-                waiter_entry_id=waiter_entry_id,
+            cleanup = redis.register_script(_CANCEL_CLEANUP)
+            await cleanup(
+                keys=[
+                    waiter_stream,
+                    f"{docket.prefix}:progress:{task_key}",
+                    runs_key,
+                ],
+                args=[waiter_entry_id],
             )
         # Drop the safeguard task this waiter scheduled at park time.
         # Cancelling routes through the same cancel pubsub we're subscribed
