@@ -11,85 +11,61 @@ from __future__ import annotations
 import time
 from datetime import timedelta
 from types import TracebackType
-from typing import Any, cast
+from typing import Any
 
-from .._redis import RedisClient, Script, run_script
+from .._lua import Arg, Key, redis_script
+from .._redis import RedisClient
 from ._base import AdmissionBlocked, Dependency, current_docket, current_execution
-
-# Lua script for atomic sliding-window rate limit check.
-#
-# KEYS[1] = sorted set key (one per scope)
-# ARGV[1] = member (execution key + timestamp, unique per attempt)
-# ARGV[2] = current time in milliseconds
-# ARGV[3] = window size in milliseconds
-# ARGV[4] = max allowed count (limit)
-# ARGV[5] = key TTL in milliseconds (window * 2, safety net)
-#
-# Returns: {action, retry_after_ms}
-#   action: 1=PROCEED, 2=BLOCKED
-#   retry_after_ms: ms until the oldest entry expires (only for BLOCKED)
-_RATELIMIT_LUA = """
-local key       = KEYS[1]
-local member    = ARGV[1]
-local now_ms    = tonumber(ARGV[2])
-local window_ms = tonumber(ARGV[3])
-local limit     = tonumber(ARGV[4])
-local ttl_ms    = tonumber(ARGV[5])
-
--- Prune entries older than the window
-local cutoff = now_ms - window_ms
-redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
-
--- Count remaining entries
-local count = redis.call('ZCARD', key)
-
-if count < limit then
-    -- Under limit: record this execution and set safety TTL
-    redis.call('ZADD', key, now_ms, member)
-    redis.call('PEXPIRE', key, ttl_ms)
-    return {1, 0}
-end
-
--- Over limit: compute when the oldest entry will expire
-local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
-local oldest_score = tonumber(oldest[2])
-local retry_after = oldest_score + window_ms - now_ms
-if retry_after < 1 then
-    retry_after = 1
-end
-return {2, retry_after}
-"""
 
 _ACTION_PROCEED = 1
 _ACTION_BLOCKED = 2
 
 
-_ratelimit_script: Script | None = None
-
-
+# Atomic sliding-window rate-limit check.  Returns ``[action, retry_after_ms]``
+# where action is PROCEED (1) or BLOCKED (2).
+@redis_script
 async def _ratelimit(
     redis: RedisClient,
     *,
-    ratelimit_key: str,
-    member: str,
-    now_ms: int,
-    window_ms: int,
-    limit: int,
-    ttl_ms: int,
+    ratelimit_key: Key[str],
+    member: Arg[str],
+    now_ms: Arg[int],
+    window_ms: Arg[int],
+    limit: Arg[int],
+    ttl_ms: Arg[int],
 ) -> list[int]:
-    """Atomically run the sliding-window rate limit script, lazily caching the Script."""
-    global _ratelimit_script
-    if _ratelimit_script is None:
-        _ratelimit_script = redis.register_script(_RATELIMIT_LUA)
-    return cast(
-        list[int],
-        await run_script(
-            _ratelimit_script,
-            keys=[ratelimit_key],
-            args=[member, now_ms, window_ms, limit, ttl_ms],
-            client=redis,
-        ),
-    )
+    """
+    local key       = KEYS[1]
+    local member    = ARGV[1]
+    local now_ms    = tonumber(ARGV[2])
+    local window_ms = tonumber(ARGV[3])
+    local limit     = tonumber(ARGV[4])
+    local ttl_ms    = tonumber(ARGV[5])
+
+    -- Prune entries older than the window
+    local cutoff = now_ms - window_ms
+    redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
+
+    -- Count remaining entries
+    local count = redis.call('ZCARD', key)
+
+    if count < limit then
+        -- Under limit: record this execution and set safety TTL
+        redis.call('ZADD', key, now_ms, member)
+        redis.call('PEXPIRE', key, ttl_ms)
+        return {1, 0}
+    end
+
+    -- Over limit: compute when the oldest entry will expire
+    local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+    local oldest_score = tonumber(oldest[2])
+    local retry_after = oldest_score + window_ms - now_ms
+    if retry_after < 1 then
+        retry_after = 1
+    end
+    return {2, retry_after}
+    """
+    ...
 
 
 class RateLimit(Dependency["RateLimit"]):

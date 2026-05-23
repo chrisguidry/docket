@@ -39,7 +39,6 @@ from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
 from redis.asyncio.connection import Connection, SSLConnection
-from redis.exceptions import NoScriptError
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -171,46 +170,6 @@ class Pipeline(Protocol):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> bool | None: ...
-
-
-class Script(Protocol):
-    """A registered Lua script.  Return type varies by script body, so it is
-    typed as ``Any`` here and annotated locally at each call site (e.g.
-    ``result: list[int] = await my_script(keys=..., args=...)``).
-    """
-
-    sha: str | None
-
-    async def __call__(
-        self,
-        keys: Sequence[KeyT] = ...,
-        args: Sequence[EncodableT] = ...,
-        client: "RedisClient | None" = None,
-    ) -> Any: ...
-
-
-async def run_script(
-    script: Script,
-    *,
-    keys: Sequence[KeyT],
-    args: Sequence[EncodableT],
-    client: "RedisClient",
-) -> Any:
-    """Run a cached ``Script`` against ``client``, reloading on NOSCRIPT.
-
-    A module-scoped ``Script`` is reused across every client a process holds.
-    Redis itself keeps its script cache across connections, so the cached SHA
-    keeps working forever -- but the in-process ``memory://`` backend keeps a
-    script cache per ``BurnerRedis`` instance (which is event-loop-affine),
-    so the SHA cached on the ``Script`` won't exist in a fresh instance.
-    On ``NoScriptError`` we clear the cached SHA and retry; the second pass
-    re-uploads via ``SCRIPT LOAD`` and succeeds.
-    """
-    try:
-        return await script(keys=keys, args=args, client=client)
-    except NoScriptError:
-        script.sha = None
-        return await script(keys=keys, args=args, client=client)
 
 
 class Lock(Protocol):
@@ -532,7 +491,10 @@ class RedisClient(Protocol):
         count: int | None = None,
         _type: str | None = None,
     ) -> AsyncIterator[bytes]: ...
-    def register_script(self, script: str | bytes) -> Script: ...
+    async def evalsha(
+        self, sha: str, numkeys: int, *keys_and_args: KeyT | EncodableT
+    ) -> Any: ...
+    async def script_load(self, script: str | bytes) -> str: ...
     def pipeline(
         self,
         transaction: bool = True,

@@ -34,7 +34,8 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
 from ._cancellation import CANCEL_MSG_CLEANUP, cancel_task
-from ._redis import RedisClient, Script, run_script
+from ._lua import Arg, Key, redis_script
+from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -133,79 +134,64 @@ logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
 
 
-_STREAM_DUE_TASKS_LUA = """
-local total_work = redis.call('ZCARD', KEYS[1])
-local due_work = 0
-
-if total_work > 0 then
-    local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-
-    for i, key in ipairs(tasks) do
-        local hash_key = ARGV[2] .. ":" .. key
-        local task_data = redis.call('HGETALL', hash_key)
-
-        if #task_data > 0 then
-            local task = {}
-            for j = 1, #task_data, 2 do
-                task[task_data[j]] = task_data[j+1]
-            end
-
-            redis.call('XADD', KEYS[2], '*',
-                'key', task['key'],
-                'when', task['when'],
-                'function', task['function'],
-                'args', task['args'],
-                'kwargs', task['kwargs'],
-                'attempt', task['attempt'],
-                'generation', task['generation'] or '0'
-            )
-            redis.call('DEL', hash_key)
-
-            -- Set run state to queued
-            local run_key = ARGV[2] .. ":runs:" .. task['key']
-            redis.call('HSET', run_key, 'state', 'queued')
-
-            -- Publish state change event to pub/sub
-            local channel = ARGV[2] .. ":state:" .. task['key']
-            local payload = '{"type":"state","key":"' .. task['key'] .. '","state":"queued","when":"' .. task['when'] .. '"}'
-            redis.call('PUBLISH', channel, payload)
-
-            due_work = due_work + 1
-        end
-    end
-end
-
-if due_work > 0 then
-    redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-end
-
-return {total_work, due_work}
-"""
-
-_stream_due_tasks_script: Script | None = None
-
-
+@redis_script
 async def _stream_due_tasks(
     redis: RedisClient,
     *,
-    queue_key: str,
-    stream_key: str,
-    now_timestamp: float,
-    docket_prefix: str,
+    queue_key: Key[str],
+    stream_key: Key[str],
+    now_timestamp: Arg[float],
+    docket_prefix: Arg[str],
 ) -> tuple[int, int]:
-    """Atomically move due tasks from the queue to the stream."""
-    global _stream_due_tasks_script
-    if _stream_due_tasks_script is None:
-        _stream_due_tasks_script = redis.register_script(_STREAM_DUE_TASKS_LUA)
-    return cast(
-        tuple[int, int],
-        await run_script(
-            _stream_due_tasks_script,
-            keys=[queue_key, stream_key],
-            args=[now_timestamp, docket_prefix],
-            client=redis,
-        ),
-    )
+    """
+    local total_work = redis.call('ZCARD', KEYS[1])
+    local due_work = 0
+
+    if total_work > 0 then
+        local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+
+        for i, key in ipairs(tasks) do
+            local hash_key = ARGV[2] .. ":" .. key
+            local task_data = redis.call('HGETALL', hash_key)
+
+            if #task_data > 0 then
+                local task = {}
+                for j = 1, #task_data, 2 do
+                    task[task_data[j]] = task_data[j+1]
+                end
+
+                redis.call('XADD', KEYS[2], '*',
+                    'key', task['key'],
+                    'when', task['when'],
+                    'function', task['function'],
+                    'args', task['args'],
+                    'kwargs', task['kwargs'],
+                    'attempt', task['attempt'],
+                    'generation', task['generation'] or '0'
+                )
+                redis.call('DEL', hash_key)
+
+                -- Set run state to queued
+                local run_key = ARGV[2] .. ":runs:" .. task['key']
+                redis.call('HSET', run_key, 'state', 'queued')
+
+                -- Publish state change event to pub/sub
+                local channel = ARGV[2] .. ":state:" .. task['key']
+                local payload = '{"type":"state","key":"' .. task['key'] .. '","state":"queued","when":"' .. task['when'] .. '"}'
+                redis.call('PUBLISH', channel, payload)
+
+                due_work = due_work + 1
+            end
+        end
+    end
+
+    if due_work > 0 then
+        redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+    end
+
+    return {total_work, due_work}
+    """
+    ...
 
 
 class Worker:

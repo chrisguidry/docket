@@ -12,7 +12,6 @@ from typing import (
     Mapping,
     ParamSpec,
     TypeVar,
-    cast,
     overload,
 )
 
@@ -25,6 +24,7 @@ from ._docket_snapshot import DocketSnapshot as DocketSnapshot
 from ._docket_snapshot import DocketSnapshotMixin
 from ._docket_snapshot import RunningExecution as RunningExecution
 from ._docket_snapshot import WorkerInfo as WorkerInfo
+from ._lua import Arg, Key, redis_script
 from ._redis import (
     PubSubClient,
     RedisClient,
@@ -36,8 +36,6 @@ from ._redis import (
     RedisStream as RedisStream,
     RedisStreamID as RedisStreamID,
     RedisStreamPendingMessage as RedisStreamPendingMessage,
-    Script,
-    run_script,
 )
 from ._result_store import ResultStorage
 from ._uuid7 import uuid7
@@ -65,90 +63,67 @@ logger: logging.Logger = logging.getLogger(__name__)
 tracer: trace.Tracer = trace.get_tracer(__name__)
 
 
-_CANCEL_TASK_LUA = """
-local stream_key = KEYS[1]
--- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
-local known_key = KEYS[2]
-local parked_key = KEYS[3]
-local queue_key = KEYS[4]
-local stream_id_key = KEYS[5]
-local runs_key = KEYS[6]
-local progress_key = KEYS[7]
-local task_key = ARGV[1]
-local completed_at = ARGV[2]
-
--- Get stream ID (check new location first, then legacy)
-local message_id = redis.call('HGET', runs_key, 'stream_id')
-
--- TODO: Remove in next breaking release (v0.14.0) - check legacy location
-if not message_id then
-    message_id = redis.call('GET', stream_id_key)
-end
-
--- Delete from stream if message ID exists
-if message_id then
-    redis.call('XDEL', stream_key, message_id)
-end
-
--- Clean up legacy keys and parked data
-redis.call('DEL', known_key, parked_key, stream_id_key)
-redis.call('ZREM', queue_key, task_key)
-
--- Drop the per-task progress hash that ``Execution.claim``
--- creates -- without a TTL of its own, it would otherwise
--- leak when a task is cancelled after being claimed but
--- before it completes (e.g. parked on a side channel).
-redis.call('DEL', progress_key)
-
--- Clear scheduling markers so add() can reschedule this key
-redis.call('HDEL', runs_key, 'known', 'stream_id')
-
--- Only set CANCELLED if not already in a terminal state
-local current_state = redis.call('HGET', runs_key, 'state')
-if current_state ~= 'completed' and current_state ~= 'failed' and current_state ~= 'cancelled' then
-    redis.call('HSET', runs_key, 'state', 'cancelled', 'completed_at', completed_at)
-end
-
-return 'OK'
-"""
-
-_cancel_task_script: Script | None = None
-
-
+@redis_script
 async def _cancel_task(
     redis: RedisClient,
     *,
-    stream_key: str,
-    known_key: str,
-    parked_key: str,
-    queue_key: str,
-    stream_id_key: str,
-    runs_key: str,
-    progress_key: str,
-    task_key: str,
-    completed_at: str,
+    stream_key: Key[str],
+    known_key: Key[str],
+    parked_key: Key[str],
+    queue_key: Key[str],
+    stream_id_key: Key[str],
+    runs_key: Key[str],
+    progress_key: Key[str],
+    task_key: Arg[str],
+    completed_at: Arg[str],
 ) -> bytes:
-    """Atomically cancel a task across all storage locations."""
-    global _cancel_task_script
-    if _cancel_task_script is None:
-        _cancel_task_script = redis.register_script(_CANCEL_TASK_LUA)
-    return cast(
-        bytes,
-        await run_script(
-            _cancel_task_script,
-            keys=[
-                stream_key,
-                known_key,
-                parked_key,
-                queue_key,
-                stream_id_key,
-                runs_key,
-                progress_key,
-            ],
-            args=[task_key, completed_at],
-            client=redis,
-        ),
-    )
+    """
+    local stream_key = KEYS[1]
+    -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
+    local known_key = KEYS[2]
+    local parked_key = KEYS[3]
+    local queue_key = KEYS[4]
+    local stream_id_key = KEYS[5]
+    local runs_key = KEYS[6]
+    local progress_key = KEYS[7]
+    local task_key = ARGV[1]
+    local completed_at = ARGV[2]
+
+    -- Get stream ID (check new location first, then legacy)
+    local message_id = redis.call('HGET', runs_key, 'stream_id')
+
+    -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
+    if not message_id then
+        message_id = redis.call('GET', stream_id_key)
+    end
+
+    -- Delete from stream if message ID exists
+    if message_id then
+        redis.call('XDEL', stream_key, message_id)
+    end
+
+    -- Clean up legacy keys and parked data
+    redis.call('DEL', known_key, parked_key, stream_id_key)
+    redis.call('ZREM', queue_key, task_key)
+
+    -- Drop the per-task progress hash that ``Execution.claim``
+    -- creates -- without a TTL of its own, it would otherwise
+    -- leak when a task is cancelled after being claimed but
+    -- before it completes (e.g. parked on a side channel).
+    redis.call('DEL', progress_key)
+
+    -- Clear scheduling markers so add() can reschedule this key
+    redis.call('HDEL', runs_key, 'known', 'stream_id')
+
+    -- Only set CANCELLED if not already in a terminal state
+    local current_state = redis.call('HGET', runs_key, 'state')
+    if current_state ~= 'completed' and current_state ~= 'failed' and current_state ~= 'cancelled' then
+        redis.call('HSET', runs_key, 'state', 'cancelled', 'completed_at', completed_at)
+    end
+
+    return 'OK'
+    """
+    ...
 
 
 P = ParamSpec("P")
