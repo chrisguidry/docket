@@ -78,16 +78,9 @@ async def _cancel_task(
     completed_at: Arg[str],
 ) -> bytes:
     """
-    local stream_key = KEYS[1]
-    -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
-    local known_key = KEYS[2]
-    local parked_key = KEYS[3]
-    local queue_key = KEYS[4]
-    local stream_id_key = KEYS[5]
-    local runs_key = KEYS[6]
-    local progress_key = KEYS[7]
-    local task_key = ARGV[1]
-    local completed_at = ARGV[2]
+    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
+    -- signature.  TODO: Remove known_key / parked_key / stream_id_key
+    -- handling in v0.14.0 (legacy key locations).
 
     -- Get stream ID (check new location first, then legacy)
     local message_id = redis.call('HGET', runs_key, 'stream_id')

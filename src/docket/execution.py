@@ -73,29 +73,18 @@ async def _schedule(
     message: Args[dict[bytes, bytes]],
 ) -> bytes | str:
     """
-    local stream_key = KEYS[1]
-    -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
-    local known_key = KEYS[2]
-    local parked_key = KEYS[3]
-    local queue_key = KEYS[4]
-    local stream_id_key = KEYS[5]
-    local runs_key = KEYS[6]
+    -- KEYS / scalar ARGV bindings are emitted by @redis_script from the
+    -- Python signature.  TODO: Remove known_key / parked_key / queue_key /
+    -- stream_id_key handling in v0.14.0 (legacy key locations).
 
-    local task_key = ARGV[1]
-    local when_timestamp = ARGV[2]
-    local is_immediate = ARGV[3] == '1'
-    local replace = ARGV[4] == '1'
-    local reschedule_message_id = ARGV[5]
-    local worker_group_name = ARGV[6]
-
-    -- Extract message fields from ARGV[7] onwards
+    -- Extract message fields (variadic starts at ARGV[message_start])
     local message = {}
     local function_name = nil
     local args_data = nil
     local kwargs_data = nil
     local generation_index = nil
 
-    for i = 7, #ARGV, 2 do
+    for i = message_start, #ARGV, 2 do
         local field_name = ARGV[i]
         local field_value = ARGV[i + 1]
         message[#message + 1] = field_name
@@ -240,15 +229,9 @@ async def _claim(
     generation: Arg[int],
 ) -> bytes:
     """
-    local runs_key = KEYS[1]
-    local progress_key = KEYS[2]
-    -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
-    local known_key = KEYS[3]
-    local stream_id_key = KEYS[4]
-
-    local worker = ARGV[1]
-    local started_at = ARGV[2]
-    local generation = tonumber(ARGV[3])
+    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
+    -- signature.  TODO: Remove known_key / stream_id_key handling in
+    -- v0.14.0 (legacy key locations).
 
     -- Check supersession: generation > 0 means tracking is active
     if generation > 0 then
@@ -299,11 +282,8 @@ async def _terminal(
     extra_fields: Args[list[str]],
 ) -> bytes:
     """
-    local runs_key = KEYS[1]
-    local generation = tonumber(ARGV[1])
-    local state = ARGV[2]
-    local completed_at = ARGV[3]
-    local ttl_seconds = tonumber(ARGV[4])
+    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
+    -- signature.  Variadic extra_fields starts at ARGV[extra_fields_start].
 
     -- Check supersession (generation 0 = pre-tracking, always write)
     if generation > 0 then
@@ -315,7 +295,7 @@ async def _terminal(
 
     -- Build HSET args: state + completed_at + any extras
     local hset_args = {'state', state, 'completed_at', completed_at}
-    for i = 5, #ARGV, 2 do
+    for i = extra_fields_start, #ARGV, 2 do
         hset_args[#hset_args + 1] = ARGV[i]
         hset_args[#hset_args + 1] = ARGV[i + 1]
     end

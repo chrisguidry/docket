@@ -144,14 +144,17 @@ async def _stream_due_tasks(
     docket_prefix: Arg[str],
 ) -> tuple[int, int]:
     """
-    local total_work = redis.call('ZCARD', KEYS[1])
+    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
+    -- signature.
+
+    local total_work = redis.call('ZCARD', queue_key)
     local due_work = 0
 
     if total_work > 0 then
-        local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+        local tasks = redis.call('ZRANGEBYSCORE', queue_key, 0, now_timestamp)
 
         for i, key in ipairs(tasks) do
-            local hash_key = ARGV[2] .. ":" .. key
+            local hash_key = docket_prefix .. ":" .. key
             local task_data = redis.call('HGETALL', hash_key)
 
             if #task_data > 0 then
@@ -160,7 +163,7 @@ async def _stream_due_tasks(
                     task[task_data[j]] = task_data[j+1]
                 end
 
-                redis.call('XADD', KEYS[2], '*',
+                redis.call('XADD', stream_key, '*',
                     'key', task['key'],
                     'when', task['when'],
                     'function', task['function'],
@@ -172,11 +175,11 @@ async def _stream_due_tasks(
                 redis.call('DEL', hash_key)
 
                 -- Set run state to queued
-                local run_key = ARGV[2] .. ":runs:" .. task['key']
+                local run_key = docket_prefix .. ":runs:" .. task['key']
                 redis.call('HSET', run_key, 'state', 'queued')
 
                 -- Publish state change event to pub/sub
-                local channel = ARGV[2] .. ":state:" .. task['key']
+                local channel = docket_prefix .. ":state:" .. task['key']
                 local payload = '{"type":"state","key":"' .. task['key'] .. '","state":"queued","when":"' .. task['when'] .. '"}'
                 redis.call('PUBLISH', channel, payload)
 
@@ -186,7 +189,7 @@ async def _stream_due_tasks(
     end
 
     if due_work > 0 then
-        redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+        redis.call('ZREMRANGEBYSCORE', queue_key, 0, now_timestamp)
     end
 
     return {total_work, due_work}

@@ -44,6 +44,7 @@ is needed.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import inspect
 from typing import (
@@ -56,6 +57,7 @@ from typing import (
     TypeAlias,
     TypeVar,
     cast,
+    get_args,
     get_type_hints,
 )
 
@@ -144,17 +146,60 @@ def _expand_args(value: Any) -> list[Any]:
 _Marker: TypeAlias = type[_Key] | type[_Arg] | type[_Args]
 
 
-def _kind_for(hint: Any) -> _Marker | None:
-    """Return the marker class for a parameter, or ``None`` if untagged.
+def _annotation_for(hint: Any) -> tuple[_Marker, Any] | None:
+    """Return ``(marker_class, underlying_type)`` for an ``Annotated`` hint.
 
-    ``Key[str]`` / ``Arg[int]`` / ``Args[dict[...]]`` are ``Annotated``
-    generic aliases; ``get_type_hints(..., include_extras=True)`` resolves
-    them directly to ``Annotated[T, marker]`` and exposes ``__metadata__``.
+    ``Key[str]`` resolves to ``Annotated[str, _Key]``; ``get_args`` returns
+    ``(str, _Key)`` so the first positional is the parameter's underlying
+    Python type and the rest is the ``__metadata__`` tuple.  We use the
+    underlying type to pick a Lua decoder (``tonumber`` for numbers,
+    ``== '1'`` for bools, raw for strings/bytes).
     """
     for meta in getattr(hint, "__metadata__", ()):
         if meta in (_Key, _Arg, _Args):
-            return meta
+            return meta, get_args(hint)[0]
     return None
+
+
+def _decode_for(py_type: Any) -> str:
+    """Lua snippet that decodes ``{}``-placeholder into a typed local.
+
+    Format with the ARGV index, e.g. ``_decode_for(int).format(3)`` gives
+    ``tonumber(ARGV[3])``.  The Python encoder (``_encode_scalar``) and
+    this decoder are paired: bools go over the wire as ``"1"``/``"0"``
+    strings, numbers as decimal strings, str/bytes raw.
+    """
+    if py_type is bool:
+        return "ARGV[{}] == '1'"
+    if py_type in (int, float):
+        return "tonumber(ARGV[{}])"
+    return "ARGV[{}]"
+
+
+def _generate_preamble(
+    key_params: list[str],
+    arg_params: list[tuple[str, _Marker, Any]],
+) -> str:
+    """Emit ``local name = KEYS[i]`` / ``ARGV[j]`` bindings for each slot.
+
+    Scalar params get a typed local (with the right ``tonumber`` /
+    ``== '1'`` wrapper) and consume one ARGV slot.  An ``Args[...]``
+    parameter consumes no fixed slot -- instead, ``<name>_start`` is
+    bound to the 1-indexed position where the variadic begins, so the
+    script can iterate ``for i = <name>_start, #ARGV[, step] do``
+    without hard-coding the offset.
+    """
+    lines: list[str] = []
+    for i, name in enumerate(key_params, 1):
+        lines.append(f"local {name} = KEYS[{i}]")
+    argv_index = 1
+    for name, kind, py_type in arg_params:
+        if kind is _Args:
+            lines.append(f"local {name}_start = {argv_index}")
+            continue
+        lines.append(f"local {name} = {_decode_for(py_type).format(argv_index)}")
+        argv_index += 1
+    return "\n".join(lines)
 
 
 def redis_script(fn: _F) -> _F:
@@ -163,19 +208,17 @@ def redis_script(fn: _F) -> _F:
     See the module docstring for the authoring contract and the encoding
     rules applied to ``Arg`` / ``Args`` parameters.
     """
-    lua = inspect.getdoc(fn)
-    if not lua:
+    body = inspect.getdoc(fn)
+    if not body:
         raise TypeError(
             f"@redis_script function {fn.__qualname__} needs a Lua body in its docstring"
         )
-
-    sha = hashlib.sha1(lua.encode("utf-8")).hexdigest()
 
     sig = inspect.signature(fn)
     hints = get_type_hints(fn, include_extras=True)
 
     key_params: list[str] = []
-    arg_params: list[tuple[str, _Marker]] = []
+    arg_params: list[tuple[str, _Marker, Any]] = []
     redis_param: str | None = None
 
     for name, param in sig.parameters.items():
@@ -183,17 +226,18 @@ def redis_script(fn: _F) -> _F:
         if redis_param is None and hint is RedisClient:
             redis_param = name
             continue
-        kind = _kind_for(hint)
-        if kind is None:
+        annotation = _annotation_for(hint)
+        if annotation is None:
             raise TypeError(
                 f"@redis_script: parameter {fn.__qualname__}.{name} must be "
                 f"annotated as Key[...], Arg[...], or Args[...] "
                 f"(or typed as RedisClient for the first parameter)"
             )
+        kind, py_type = annotation
         if kind is _Key:
             key_params.append(name)
         else:
-            arg_params.append((name, kind))
+            arg_params.append((name, kind, py_type))
 
     if redis_param is None:
         raise TypeError(
@@ -205,14 +249,19 @@ def redis_script(fn: _F) -> _F:
             f"@redis_script: {fn.__qualname__} must declare at least one Key[...] parameter"
         )
 
+    preamble = _generate_preamble(key_params, arg_params)
+    lua = f"{preamble}\n\n{body}" if preamble else body
+    sha = hashlib.sha1(lua.encode("utf-8")).hexdigest()
+
     # Hot-path call: redis is the first positional, everything else is by
     # keyword.  Bypass ``inspect.Signature.bind`` (~20-50 us/call) -- we
     # already parsed the parameter ordering at decoration time and the
     # callers always pass keyword arguments.
+    @functools.wraps(fn)
     async def wrapper(redis: RedisClient, **kwargs: Any) -> Any:
         keys: list[Any] = [kwargs[name] for name in key_params]
         argv: list[Any] = []
-        for name, kind in arg_params:
+        for name, kind, _ in arg_params:
             value = kwargs[name]
             if kind is _Args:
                 argv.extend(_expand_args(value))
@@ -225,10 +274,7 @@ def redis_script(fn: _F) -> _F:
             await redis.script_load(lua)
             return await redis.evalsha(sha, len(keys), *keys, *argv)
 
-    wrapper.__name__ = fn.__name__
-    wrapper.__qualname__ = fn.__qualname__
-    wrapper.__doc__ = fn.__doc__
-    wrapper.__wrapped__ = fn  # type: ignore[attr-defined]
+    wrapper.__lua__ = lua  # type: ignore[attr-defined]
     return cast(_F, wrapper)
 
 

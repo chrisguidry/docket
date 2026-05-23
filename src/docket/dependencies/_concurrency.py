@@ -65,20 +65,8 @@ async def _acquire_or_park(
     message: Args[dict[bytes, bytes]],
 ) -> int:
     """
-    local slots_key = KEYS[1]
-    local waiters_stream = KEYS[2]
-    local stream_key = KEYS[3]
-    local runs_key = KEYS[4]
-
-    local max_concurrent = tonumber(ARGV[1])
-    local task_key = ARGV[2]
-    local current_time = tonumber(ARGV[3])
-    local is_redelivery = tonumber(ARGV[4])
-    local stale_threshold = tonumber(ARGV[5])
-    local key_ttl = tonumber(ARGV[6])
-    local message_id = ARGV[7]
-    local worker_group_name = ARGV[8]
-    local state_channel = ARGV[9]
+    -- KEYS / scalar ARGV bindings are emitted by @redis_script from the
+    -- Python signature.  Variadic message fields start at ARGV[message_start].
 
     -- If this task already has a slot (previous delivery attempt), only a
     -- redelivery with a stale original holder can take it over.  Otherwise we
@@ -86,7 +74,7 @@ async def _acquire_or_park(
     local slot_time = redis.call('ZSCORE', slots_key, task_key)
     if slot_time then
         slot_time = tonumber(slot_time)
-        if is_redelivery == 1 and slot_time <= stale_threshold then
+        if is_redelivery and slot_time <= stale_threshold then
             redis.call('ZADD', slots_key, current_time, task_key)
             redis.call('EXPIRE', slots_key, key_ttl)
             return 1
@@ -120,7 +108,7 @@ async def _acquire_or_park(
     local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
     local message = {}
     local function_name, args_data, kwargs_data
-    for i = 10, #ARGV, 2 do
+    for i = message_start, #ARGV, 2 do
         local field_name = ARGV[i]
         local field_value = ARGV[i + 1]
         if field_name == 'generation' then
@@ -185,17 +173,8 @@ async def _release_and_wake(
     parked_prefix: Arg[str],
 ) -> None:
     """
-    local slots_key = KEYS[1]
-    local waiters_stream = KEYS[2]
-    local stream_key = KEYS[3]
-    local queue_key = KEYS[4]
-
-    local task_key = ARGV[1]
-    local max_concurrent = tonumber(ARGV[2])
-    local stale_threshold = tonumber(ARGV[3])
-    local runs_prefix = ARGV[4]
-    local state_prefix = ARGV[5]
-    local parked_prefix = ARGV[6]
+    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
+    -- signature.
 
     redis.call('ZREM', slots_key, task_key)
 
@@ -298,16 +277,8 @@ async def _scavenge_and_wake(
     parked_prefix: Arg[str],
 ) -> int:
     """
-    local slots_key = KEYS[1]
-    local waiters_stream = KEYS[2]
-    local stream_key = KEYS[3]
-    local queue_key = KEYS[4]
-
-    local max_concurrent = tonumber(ARGV[1])
-    local stale_threshold = tonumber(ARGV[2])
-    local runs_prefix = ARGV[3]
-    local state_prefix = ARGV[4]
-    local parked_prefix = ARGV[5]
+    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
+    -- signature.
 
     local waiters_count = redis.call('XLEN', waiters_stream)
     if waiters_count == 0 then
@@ -401,10 +372,8 @@ async def _cancel_cleanup(
     waiter_entry_id: Arg[str],
 ) -> None:
     """
-    local waiters_stream = KEYS[1]
-    local progress_key = KEYS[2]
-    local runs_key = KEYS[3]
-    local waiter_entry_id = ARGV[1]
+    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
+    -- signature.
 
     redis.call('XDEL', waiters_stream, waiter_entry_id)
     if redis.call('XLEN', waiters_stream) == 0 then

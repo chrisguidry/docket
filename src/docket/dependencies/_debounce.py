@@ -35,23 +35,19 @@ async def _debounce(
     ttl_ms: Arg[int],
 ) -> list[int]:
     """
-    local winner_key  = KEYS[1]
-    local seen_key    = KEYS[2]
-    local my_key      = ARGV[1]
-    local settle_ms   = tonumber(ARGV[2])
-    local now_ms      = tonumber(ARGV[3])
-    local ttl_ms      = tonumber(ARGV[4])
+    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
+    -- signature.
 
     local winner = redis.call('GET', winner_key)
 
     if not winner then
         -- No winner: I become winner, record last_seen = now
-        redis.call('SET', winner_key, my_key, 'PX', ttl_ms)
+        redis.call('SET', winner_key, execution_key, 'PX', ttl_ms)
         redis.call('SET', seen_key, tostring(now_ms), 'PX', ttl_ms)
         return {2, settle_ms}
     end
 
-    if winner == my_key then
+    if winner == execution_key then
         -- I'm the winner, returning from reschedule
         local last_seen_str = redis.call('GET', seen_key)
         local last_seen = tonumber(last_seen_str) or 0
