@@ -64,12 +64,14 @@ async def _schedule(
     queue_key: Key[str],
     stream_id_key: Key[str],
     runs_key: Key[str],
+    state_channel: Key[str],
     task_key: Arg[str],
     when_timestamp: Arg[float],
     is_immediate: Arg[bool],
     replace: Arg[bool],
     reschedule_message_id: Arg[bytes],
     worker_group_name: Arg[str],
+    state_payload: Arg[str],
     message: Args[dict[bytes, bytes]],
 ) -> bytes | str:
     """
@@ -130,6 +132,8 @@ async def _schedule(
             'kwargs', kwargs_data
         )
         redis.call('HDEL', runs_key, 'stream_id')
+
+        redis.call('PUBLISH', state_channel, state_payload)
 
         return 'OK'
     end
@@ -210,6 +214,8 @@ async def _schedule(
         )
     end
 
+    redis.call('PUBLISH', state_channel, state_payload)
+
     return 'OK'
     """
     ...
@@ -223,9 +229,11 @@ async def _claim(
     progress_key: Key[str],
     known_key: Key[str],
     stream_id_key: Key[str],
+    state_channel: Key[str],
     worker: Arg[str],
     started_at: Arg[str],
     generation: Arg[int],
+    state_payload: Arg[str],
 ) -> bytes:
     """
     -- TODO: Remove known_key / stream_id_key handling in v0.14.0
@@ -263,6 +271,8 @@ async def _claim(
     -- TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
     redis.call('DEL', known_key, stream_id_key)
 
+    redis.call('PUBLISH', state_channel, state_payload)
+
     return 'OK'
     """
     ...
@@ -273,17 +283,23 @@ async def _terminal(
     redis: RedisClient,
     *,
     runs_key: Key[str],
+    state_channel: Key[str],
     generation: Arg[int],
     state: Arg[str],
     completed_at: Arg[str],
     ttl_seconds: Arg[int],
+    state_payload: Arg[str],
     extra_fields: Args[list[str]],
 ) -> bytes:
     """
-    -- Check supersession (generation 0 = pre-tracking, always write)
+    -- Check supersession (generation 0 = pre-tracking, always write).  Even
+    -- when superseded we still publish the terminal-state event so
+    -- subscribers waiting on completion don't deadlock when a Perpetual
+    -- successor has already taken over the runs hash.
     if generation > 0 then
         local current = redis.call('HGET', runs_key, 'generation')
         if current and tonumber(current) > generation then
+            redis.call('PUBLISH', state_channel, state_payload)
             return 'SUPERSEDED'
         end
     end
@@ -301,6 +317,8 @@ async def _terminal(
     else
         redis.call('DEL', runs_key)
     end
+
+    redis.call('PUBLISH', state_channel, state_payload)
 
     return 'OK'
     """
@@ -600,6 +618,22 @@ class Execution:
         known_task_key = self.docket.known_task_key(key)
         is_immediate = when <= datetime.now(timezone.utc)
 
+        # The Lua takes the payload as a pre-formatted string so it can just
+        # call PUBLISH; cjson isn't available on the in-memory backend.
+        published_state = (
+            ExecutionState.QUEUED.value
+            if is_immediate and not reschedule_message
+            else ExecutionState.SCHEDULED.value
+        )
+        state_payload = json.dumps(
+            {
+                "type": "state",
+                "key": key,
+                "state": published_state,
+                "when": when.isoformat(),
+            }
+        )
+
         async with self.docket.redis() as redis:
             # Lock per task key to prevent race conditions between concurrent operations
             async with redis.lock(f"{known_task_key}:lock", timeout=10):
@@ -611,38 +645,28 @@ class Execution:
                     queue_key=self.docket.queue_key,
                     stream_id_key=self.docket.stream_id_key(key),
                     runs_key=self._redis_key,
+                    state_channel=self.docket.key(f"state:{key}"),
                     task_key=key,
                     when_timestamp=when.timestamp(),
                     is_immediate=is_immediate,
                     replace=replace,
                     reschedule_message_id=reschedule_message or b"",
                     worker_group_name=self.docket.worker_group_name,
+                    state_payload=state_payload,
                     message=message,
                 )
 
         if reply in (b"EXISTS", "EXISTS"):
-            # The Lua script kept the prior schedule untouched; leave local
+            # An existing schedule for this key remains untouched; leave local
             # state alone and do not publish a misleading state event.
             self.disposition = Disposition.ALREADY_SCHEDULED
             return self.disposition
 
-        # Update local state based on whether task is immediate, scheduled, or being rescheduled
-        if reschedule_message:
-            # When rescheduling from stream, task is always parked and queued (never immediate)
+        if reschedule_message or not is_immediate:
+            # Rescheduling from stream lands on the queue (never immediate).
             self.state = ExecutionState.SCHEDULED
-            await self._publish_state(
-                {"state": ExecutionState.SCHEDULED.value, "when": when.isoformat()}
-            )
-        elif is_immediate:
-            self.state = ExecutionState.QUEUED
-            await self._publish_state(
-                {"state": ExecutionState.QUEUED.value, "when": when.isoformat()}
-            )
         else:
-            self.state = ExecutionState.SCHEDULED
-            await self._publish_state(
-                {"state": ExecutionState.SCHEDULED.value, "when": when.isoformat()}
-            )
+            self.state = ExecutionState.QUEUED
 
         self.disposition = Disposition.SCHEDULED
         return self.disposition
@@ -667,6 +691,18 @@ class Execution:
         started_at = datetime.now(timezone.utc)
         started_at_iso = started_at.isoformat()
 
+        # Pre-build the running-state payload; Lua only publishes it on the
+        # non-SUPERSEDED path.
+        state_payload = json.dumps(
+            {
+                "type": "state",
+                "key": self.key,
+                "state": ExecutionState.RUNNING.value,
+                "worker": worker,
+                "started_at": started_at_iso,
+            }
+        )
+
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
                 result = await _claim(
@@ -675,29 +711,21 @@ class Execution:
                     progress_key=self.progress._redis_key,
                     known_key=self.docket.known_task_key(self.key),
                     stream_id_key=self.docket.stream_id_key(self.key),
+                    state_channel=self.docket.key(f"state:{self.key}"),
                     worker=worker,
                     started_at=started_at_iso,
                     generation=self._generation,
+                    state_payload=state_payload,
                 )
 
         if result == b"SUPERSEDED":
             return False
 
-        # Update local state
         self.state = ExecutionState.RUNNING
         self.worker = worker
         self.started_at = started_at
         self.progress.current = 0
         self.progress.total = 100
-
-        # Publish state change event
-        await self._publish_state(
-            {
-                "state": ExecutionState.RUNNING.value,
-                "worker": worker,
-                "started_at": started_at_iso,
-            }
-        )
 
         return True
 
@@ -738,15 +766,29 @@ class Execution:
             else 0
         )
 
+        # Pre-build the terminal-state payload; the Lua publishes it on both
+        # the success and supersession paths.
+        state_payload_data: dict[str, str] = {
+            "type": "state",
+            "key": self.key,
+            "state": state.value,
+            "completed_at": completed_at,
+        }
+        if error:
+            state_payload_data["error"] = error
+        state_payload = json.dumps(state_payload_data)
+
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
                 await _terminal(
                     redis,
                     runs_key=self._redis_key,
+                    state_channel=self.docket.key(f"state:{self.key}"),
                     generation=self._generation,
                     state=state.value,
                     completed_at=completed_at,
                     ttl_seconds=ttl_seconds,
+                    state_payload=state_payload,
                     extra_fields=extra_fields,
                 )
 
@@ -755,14 +797,6 @@ class Execution:
             self.result_key = result_key
 
         await self.progress.delete()
-
-        state_data: dict[str, str] = {
-            "state": state.value,
-            "completed_at": completed_at,
-        }
-        if error:
-            state_data["error"] = error
-        await self._publish_state(state_data)
 
     async def mark_as_completed(self, result_key: str | None = None) -> None:
         """Mark task as completed successfully.
@@ -953,20 +987,6 @@ class Execution:
                 current = await redis.hget(self._redis_key, "generation")
         current_gen = int(current) if current is not None else 0
         return current_gen > self._generation
-
-    async def _publish_state(self, data: dict) -> None:
-        """Publish state change to Redis pub/sub channel.
-
-        Args:
-            data: State data to publish
-        """
-        channel = self.docket.key(f"state:{self.key}")
-        payload = {
-            "type": "state",
-            "key": self.key,
-            **data,
-        }
-        await self.docket._publish(channel, json.dumps(payload))
 
     async def subscribe(self) -> AsyncGenerator[StateEvent | ProgressEvent, None]:
         """Subscribe to both state and progress updates for this task.
