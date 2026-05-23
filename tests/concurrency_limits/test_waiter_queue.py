@@ -284,6 +284,45 @@ async def test_cancel_of_parked_task_prevents_wake_and_run(
         assert safeguard_key not in queue_keys, queue_keys
 
 
+async def test_cancel_cleanup_script_drains_waiter_entry(docket: Docket):
+    """Directly exercise the ``_cancel_cleanup`` wrapper.
+
+    The wrapper is normally invoked from
+    ``ConcurrencyLimit._cleanup_cancelled_waiter``, which the
+    ``memory://`` backend can't actually drive end-to-end (its in-process
+    Redis shim is missing ``hmget``).  Drive the script directly here to
+    keep the optimisation honestly tested on every backend.
+    """
+    from docket.dependencies._concurrency import _cancel_cleanup  # pyright: ignore[reportPrivateUsage]
+
+    waiter_stream = f"{docket.prefix}:concurrency:cleanup-direct:waiters"
+    task_key = "cleanup-direct"
+    runs_key = f"{docket.prefix}:runs:{task_key}"
+    progress_key = f"{docket.prefix}:progress:{task_key}"
+
+    async with docket.redis() as redis:
+        entry_id = await redis.xadd(waiter_stream, {b"key": task_key.encode()})
+        await redis.hset(runs_key, "waiter_stream", waiter_stream)
+        await redis.hset(runs_key, "waiter_entry_id", entry_id.decode())
+        await redis.hset(progress_key, "current", "0")
+
+        assert await redis.xlen(waiter_stream) == 1
+        assert await redis.exists(progress_key) == 1
+
+        await _cancel_cleanup(
+            redis,
+            waiters_stream=waiter_stream,
+            progress_key=progress_key,
+            runs_key=runs_key,
+            waiter_entry_id=entry_id.decode(),
+        )
+
+        assert await redis.xlen(waiter_stream) == 0
+        assert await redis.exists(progress_key) == 0
+        assert await redis.hget(runs_key, "waiter_stream") is None
+        assert await redis.hget(runs_key, "waiter_entry_id") is None
+
+
 async def test_many_contending_tasks_all_run_exactly_once(docket: Docket):
     """Stress test: N tasks contending for 1 slot all eventually run, each
     exactly once, without duplicates or drops.  The structural correctness
