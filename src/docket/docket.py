@@ -78,9 +78,8 @@ async def _cancel_task(
     completed_at: Arg[str],
 ) -> bytes:
     """
-    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
-    -- signature.  TODO: Remove known_key / parked_key / stream_id_key
-    -- handling in v0.14.0 (legacy key locations).
+    -- TODO: Remove known_key / parked_key / stream_id_key handling in
+    -- v0.14.0 (legacy key locations).
 
     -- Get stream ID (check new location first, then legacy)
     local message_id = redis.call('HGET', runs_key, 'stream_id')

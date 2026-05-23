@@ -21,8 +21,6 @@ _ACTION_PROCEED = 1
 _ACTION_BLOCKED = 2
 
 
-# Atomic sliding-window rate-limit check.  Returns ``[action, retry_after_ms]``
-# where action is PROCEED (1) or BLOCKED (2).
 @redis_script
 async def _ratelimit(
     redis: RedisClient,
@@ -35,8 +33,9 @@ async def _ratelimit(
     ttl_ms: Arg[int],
 ) -> list[int]:
     """
-    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
-    -- signature.
+    -- Atomic sliding-window rate-limit check.  Returns
+    -- ``[action, retry_after_ms]`` where action is PROCEED (1) or
+    -- BLOCKED (2).
 
     -- Prune entries older than the window
     local cutoff = now_ms - window_ms

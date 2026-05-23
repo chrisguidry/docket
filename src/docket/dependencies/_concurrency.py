@@ -40,11 +40,6 @@ LEASE_RENEWAL_FACTOR = 4
 MINIMUM_TTL_SECONDS = 1
 
 
-# Acquire a concurrency slot, or park the task on the waiter stream atomically.
-# Returns 1 if acquired (task should run), 0 if parked (the inflight stream
-# message has been XACK+XDEL'd and re-XADD'd into the waiter stream; caller
-# raises ConcurrencyBlocked(handled=True) so the worker takes no further
-# action).
 @redis_script
 async def _acquire_or_park(
     redis: RedisClient,
@@ -65,8 +60,11 @@ async def _acquire_or_park(
     message: Args[dict[bytes, bytes]],
 ) -> int:
     """
-    -- KEYS / scalar ARGV bindings are emitted by @redis_script from the
-    -- Python signature.  Variadic message fields start at ARGV[message_start].
+    -- Acquire a concurrency slot, or park the task on the waiter stream
+    -- atomically.  Returns 1 if acquired (task should run), 0 if parked
+    -- (the inflight stream message has been XACK+XDEL'd and re-XADD'd
+    -- into the waiter stream; caller raises ConcurrencyBlocked(handled=True)
+    -- so the worker takes no further action).
 
     -- If this task already has a slot (previous delivery attempt), only a
     -- redelivery with a stale original holder can take it over.  Otherwise we
@@ -146,17 +144,6 @@ async def _acquire_or_park(
     ...
 
 
-# Release this task's slot and, if waiters are parked, hand the freed
-# capacity off by re-injecting the oldest waiter(s) into the main stream.
-# Stale peer slots are scavenged opportunistically, but only when waiters
-# exist -- we don't want to prematurely evict slots held by briefly-paused
-# live workers.
-#
-# Waiters whose runs hash has flipped to ``cancelled`` are XDEL'd without
-# being forwarded.  This is the correctness backstop for the cancel-races-
-# with-wake case where the dependency's cancel subscriber might not have
-# pulled the waiter entry off the stream in time (Redis pub/sub is fire-
-# and-forget); cancelled tasks must never run.
 @redis_script
 async def _release_and_wake(
     redis: RedisClient,
@@ -173,8 +160,17 @@ async def _release_and_wake(
     parked_prefix: Arg[str],
 ) -> None:
     """
-    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
-    -- signature.
+    -- Release this task's slot and, if waiters are parked, hand the freed
+    -- capacity off by re-injecting the oldest waiter(s) into the main
+    -- stream.  Stale peer slots are scavenged opportunistically, but only
+    -- when waiters exist -- we don't want to prematurely evict slots held
+    -- by briefly-paused live workers.
+    --
+    -- Waiters whose runs hash has flipped to ``cancelled`` are XDEL'd
+    -- without being forwarded.  This is the correctness backstop for the
+    -- cancel-races-with-wake case where the dependency's cancel subscriber
+    -- might not have pulled the waiter entry off the stream in time (Redis
+    -- pub/sub is fire-and-forget); cancelled tasks must never run.
 
     redis.call('ZREM', slots_key, task_key)
 
@@ -254,14 +250,6 @@ async def _release_and_wake(
     ...
 
 
-# Scavenge any stale slot holders and hand freed capacity to parked waiters.
-# Called by the worker's concurrency-sweep loop to recover the degenerate
-# case where every slot holder crashed without releasing AND no new tasks
-# are arriving to trigger the normal acquire-path scavenge.  Structurally
-# identical to _release_and_wake's post-release body, minus the self-ZREM.
-#
-# Returns the number of waiters woken (zero means either no waiters were
-# parked, or no capacity was free to give them).
 @redis_script
 async def _scavenge_and_wake(
     redis: RedisClient,
@@ -277,8 +265,15 @@ async def _scavenge_and_wake(
     parked_prefix: Arg[str],
 ) -> int:
     """
-    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
-    -- signature.
+    -- Scavenge any stale slot holders and hand freed capacity to parked
+    -- waiters.  Called by the worker's concurrency-sweep loop to recover
+    -- the degenerate case where every slot holder crashed without
+    -- releasing AND no new tasks are arriving to trigger the normal
+    -- acquire-path scavenge.  Structurally identical to
+    -- _release_and_wake's post-release body, minus the self-ZREM.
+    --
+    -- Returns the number of waiters woken (zero means either no waiters
+    -- were parked, or no capacity was free to give them).
 
     local waiters_count = redis.call('XLEN', waiters_stream)
     if waiters_count == 0 then
@@ -359,9 +354,6 @@ async def _scavenge_and_wake(
     ...
 
 
-# Atomically tear down a cancelled task's waiter footprint.  Invoked by
-# ConcurrencyLimit's pubsub-driven cancel subscriber after Docket.cancel
-# flips the task to 'cancelled'.
 @redis_script
 async def _cancel_cleanup(
     redis: RedisClient,
@@ -372,8 +364,9 @@ async def _cancel_cleanup(
     waiter_entry_id: Arg[str],
 ) -> None:
     """
-    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
-    -- signature.
+    -- Atomically tear down a cancelled task's waiter footprint.  Invoked
+    -- by ConcurrencyLimit's pubsub-driven cancel subscriber after
+    -- Docket.cancel flips the task to 'cancelled'.
 
     redis.call('XDEL', waiters_stream, waiter_entry_id)
     if redis.call('XLEN', waiters_stream) == 0 then

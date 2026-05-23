@@ -21,8 +21,6 @@ _ACTION_RESCHEDULE = 2
 _ACTION_DROP = 3
 
 
-# Atomic debounce decision.  Returns ``[action, remaining_ms]`` where
-# action is one of PROCEED/RESCHEDULE/DROP (see constants above).
 @redis_script
 async def _debounce(
     redis: RedisClient,
@@ -35,8 +33,8 @@ async def _debounce(
     ttl_ms: Arg[int],
 ) -> list[int]:
     """
-    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
-    -- signature.
+    -- Atomic debounce decision.  Returns ``[action, remaining_ms]`` where
+    -- action is one of PROCEED/RESCHEDULE/DROP (see constants above).
 
     local winner = redis.call('GET', winner_key)
 

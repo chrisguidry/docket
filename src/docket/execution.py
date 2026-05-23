@@ -73,11 +73,10 @@ async def _schedule(
     message: Args[dict[bytes, bytes]],
 ) -> bytes | str:
     """
-    -- KEYS / scalar ARGV bindings are emitted by @redis_script from the
-    -- Python signature.  TODO: Remove known_key / parked_key / queue_key /
-    -- stream_id_key handling in v0.14.0 (legacy key locations).
+    -- TODO: Remove known_key / parked_key / queue_key / stream_id_key
+    -- handling in v0.14.0 (legacy key locations).
 
-    -- Extract message fields (variadic starts at ARGV[message_start])
+    -- Extract message fields
     local message = {}
     local function_name = nil
     local args_data = nil
@@ -229,9 +228,8 @@ async def _claim(
     generation: Arg[int],
 ) -> bytes:
     """
-    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
-    -- signature.  TODO: Remove known_key / stream_id_key handling in
-    -- v0.14.0 (legacy key locations).
+    -- TODO: Remove known_key / stream_id_key handling in v0.14.0
+    -- (legacy key locations).
 
     -- Check supersession: generation > 0 means tracking is active
     if generation > 0 then
@@ -282,9 +280,6 @@ async def _terminal(
     extra_fields: Args[list[str]],
 ) -> bytes:
     """
-    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
-    -- signature.  Variadic extra_fields starts at ARGV[extra_fields_start].
-
     -- Check supersession (generation 0 = pre-tracking, always write)
     if generation > 0 then
         local current = redis.call('HGET', runs_key, 'generation')

@@ -144,9 +144,6 @@ async def _stream_due_tasks(
     docket_prefix: Arg[str],
 ) -> tuple[int, int]:
     """
-    -- KEYS / ARGV bindings are emitted by @redis_script from the Python
-    -- signature.
-
     local total_work = redis.call('ZCARD', queue_key)
     local due_work = 0
 
