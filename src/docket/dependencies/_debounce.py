@@ -12,65 +12,64 @@ from datetime import timedelta
 from types import TracebackType
 from typing import Any
 
+from .._lua import Arg, Key, redis_script
+from .._redis import RedisClient
 from ._base import AdmissionBlocked, Dependency, current_docket, current_execution
-
-# Lua script for atomic debounce logic.
-#
-# KEYS[1] = winner key    (holds the execution key of the chosen task)
-# KEYS[2] = last_seen key (holds ms timestamp of most recent submission)
-# ARGV[1] = my execution key
-# ARGV[2] = settle window in milliseconds
-# ARGV[3] = current time in milliseconds
-# ARGV[4] = key TTL in milliseconds (settle * 10)
-#
-# Returns: {action, remaining_ms}
-#   action: 1=PROCEED, 2=RESCHEDULE, 3=DROP
-#   remaining_ms: ms until settle window expires (only for RESCHEDULE)
-_DEBOUNCE_LUA = """
-local winner_key  = KEYS[1]
-local seen_key    = KEYS[2]
-local my_key      = ARGV[1]
-local settle_ms   = tonumber(ARGV[2])
-local now_ms      = tonumber(ARGV[3])
-local ttl_ms      = tonumber(ARGV[4])
-
-local winner = redis.call('GET', winner_key)
-
-if not winner then
-    -- No winner: I become winner, record last_seen = now
-    redis.call('SET', winner_key, my_key, 'PX', ttl_ms)
-    redis.call('SET', seen_key, tostring(now_ms), 'PX', ttl_ms)
-    return {2, settle_ms}
-end
-
-if winner == my_key then
-    -- I'm the winner, returning from reschedule
-    local last_seen_str = redis.call('GET', seen_key)
-    local last_seen = tonumber(last_seen_str) or 0
-    local elapsed = now_ms - last_seen
-
-    if elapsed >= settle_ms then
-        -- Settled: clean up and proceed
-        redis.call('DEL', winner_key, seen_key)
-        return {1, 0}
-    else
-        -- Not settled yet: refresh TTLs and reschedule for remaining time
-        local remaining = settle_ms - elapsed
-        redis.call('PEXPIRE', winner_key, ttl_ms)
-        redis.call('PEXPIRE', seen_key, ttl_ms)
-        return {2, remaining}
-    end
-end
-
--- Someone else is the winner: update last_seen and refresh TTLs
-redis.call('SET', seen_key, tostring(now_ms), 'PX', ttl_ms)
-redis.call('PEXPIRE', winner_key, ttl_ms)
-return {3, 0}
-"""
 
 _ACTION_PROCEED = 1
 _ACTION_RESCHEDULE = 2
 _ACTION_DROP = 3
+
+
+@redis_script
+async def _debounce(
+    redis: RedisClient,
+    *,
+    winner_key: Key[str],
+    seen_key: Key[str],
+    execution_key: Arg[str],
+    settle_ms: Arg[int],
+    now_ms: Arg[int],
+    ttl_ms: Arg[int],
+) -> list[int]:
+    """
+    -- Atomic debounce decision.  Returns ``[action, remaining_ms]`` where
+    -- action is one of PROCEED/RESCHEDULE/DROP (see constants above).
+
+    local winner = redis.call('GET', winner_key)
+
+    if not winner then
+        -- No winner: I become winner, record last_seen = now
+        redis.call('SET', winner_key, execution_key, 'PX', ttl_ms)
+        redis.call('SET', seen_key, tostring(now_ms), 'PX', ttl_ms)
+        return {2, settle_ms}
+    end
+
+    if winner == execution_key then
+        -- I'm the winner, returning from reschedule
+        local last_seen_str = redis.call('GET', seen_key)
+        local last_seen = tonumber(last_seen_str) or 0
+        local elapsed = now_ms - last_seen
+
+        if elapsed >= settle_ms then
+            -- Settled: clean up and proceed
+            redis.call('DEL', winner_key, seen_key)
+            return {1, 0}
+        else
+            -- Not settled yet: refresh TTLs and reschedule for remaining time
+            local remaining = settle_ms - elapsed
+            redis.call('PEXPIRE', winner_key, ttl_ms)
+            redis.call('PEXPIRE', seen_key, ttl_ms)
+            return {2, remaining}
+        end
+    end
+
+    -- Someone else is the winner: update last_seen and refresh TTLs
+    redis.call('SET', seen_key, tostring(now_ms), 'PX', ttl_ms)
+    redis.call('PEXPIRE', winner_key, ttl_ms)
+    return {3, 0}
+    """
+    ...
 
 
 class Debounce(Dependency["Debounce"]):
@@ -128,10 +127,14 @@ class Debounce(Dependency["Debounce"]):
         ttl_ms = settle_ms * 10
 
         async with docket.redis() as redis:
-            script = redis.register_script(_DEBOUNCE_LUA)
-            result: list[int] = await script(
-                keys=[winner_key, seen_key],
-                args=[execution.key, settle_ms, now_ms, ttl_ms],
+            result = await _debounce(
+                redis,
+                winner_key=winner_key,
+                seen_key=seen_key,
+                execution_key=execution.key,
+                settle_ms=settle_ms,
+                now_ms=now_ms,
+                ttl_ms=ttl_ms,
             )
 
         action = result[0]

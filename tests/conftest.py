@@ -29,6 +29,15 @@ skip_memory = pytest.mark.skipif(
     reason="requires real Redis (keys/scan_iter/ttl not available in memory backend)",
 )
 
+# Skip condition for tests whose mechanics don't translate to a clustered
+# topology (e.g. server-wide admin commands that need explicit target_nodes,
+# or assumptions about a single shared script cache).  The broader suite
+# still exercises clustered behaviour end-to-end.
+skip_cluster = pytest.mark.skipif(
+    CLUSTER_ENABLED,
+    reason="requires a non-clustered Redis (test bypasses cluster routing)",
+)
+
 if sys.platform != "win32" or TYPE_CHECKING:
     from docker import DockerClient
     from docker.models.containers import Container

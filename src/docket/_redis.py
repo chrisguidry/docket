@@ -172,20 +172,6 @@ class Pipeline(Protocol):
     ) -> bool | None: ...
 
 
-class Script(Protocol):
-    """A registered Lua script.  Return type varies by script body, so it is
-    typed as ``Any`` here and annotated locally at each call site (e.g.
-    ``result: list[int] = await my_script(keys=..., args=...)``).
-    """
-
-    async def __call__(
-        self,
-        keys: Sequence[KeyT] = ...,
-        args: Sequence[EncodableT] = ...,
-        client: "RedisClient | None" = None,
-    ) -> Any: ...
-
-
 class Lock(Protocol):
     """A distributed lock acquired via ``async with redis.lock(name):``."""
 
@@ -505,7 +491,10 @@ class RedisClient(Protocol):
         count: int | None = None,
         _type: str | None = None,
     ) -> AsyncIterator[bytes]: ...
-    def register_script(self, script: str | bytes) -> Script: ...
+    async def evalsha(
+        self, sha: str, numkeys: int, *keys_and_args: KeyT | EncodableT
+    ) -> Any: ...
+    async def script_load(self, script: str | bytes) -> str: ...
     def pipeline(
         self,
         transaction: bool = True,

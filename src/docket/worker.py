@@ -16,7 +16,6 @@ from typing import (
     Any,
     Generator,
     Mapping,
-    Protocol,
     Sequence,
     TypeAlias,
     TypedDict,
@@ -35,6 +34,8 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
 from ._cancellation import CANCEL_MSG_CLEANUP, cancel_task
+from ._lua import Arg, Key, redis_script
+from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -133,10 +134,64 @@ logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
 
 
-class _stream_due_tasks(Protocol):
-    async def __call__(
-        self, keys: list[str], args: list[str | float]
-    ) -> tuple[int, int]: ...  # pragma: no cover
+@redis_script
+async def _stream_due_tasks(
+    redis: RedisClient,
+    *,
+    queue_key: Key[str],
+    stream_key: Key[str],
+    now_timestamp: Arg[float],
+    docket_prefix: Arg[str],
+) -> tuple[int, int]:
+    """
+    local total_work = redis.call('ZCARD', queue_key)
+    local due_work = 0
+
+    if total_work > 0 then
+        local tasks = redis.call('ZRANGEBYSCORE', queue_key, 0, now_timestamp)
+
+        for i, key in ipairs(tasks) do
+            local hash_key = docket_prefix .. ":" .. key
+            local task_data = redis.call('HGETALL', hash_key)
+
+            if #task_data > 0 then
+                local task = {}
+                for j = 1, #task_data, 2 do
+                    task[task_data[j]] = task_data[j+1]
+                end
+
+                redis.call('XADD', stream_key, '*',
+                    'key', task['key'],
+                    'when', task['when'],
+                    'function', task['function'],
+                    'args', task['args'],
+                    'kwargs', task['kwargs'],
+                    'attempt', task['attempt'],
+                    'generation', task['generation'] or '0'
+                )
+                redis.call('DEL', hash_key)
+
+                -- Set run state to queued
+                local run_key = docket_prefix .. ":runs:" .. task['key']
+                redis.call('HSET', run_key, 'state', 'queued')
+
+                -- Publish state change event to pub/sub
+                local channel = docket_prefix .. ":state:" .. task['key']
+                local payload = '{"type":"state","key":"' .. task['key'] .. '","state":"queued","when":"' .. task['when'] .. '"}'
+                redis.call('PUBLISH', channel, payload)
+
+                due_work = due_work + 1
+            end
+        end
+    end
+
+    if due_work > 0 then
+        redis.call('ZREMRANGEBYSCORE', queue_key, 0, now_timestamp)
+    end
+
+    return {total_work, due_work}
+    """
+    ...
 
 
 class Worker:
@@ -721,78 +776,18 @@ class Worker:
 
     async def _scheduler_loop(self, redis: Redis) -> None:
         """Loop that moves due tasks from the queue to the stream."""
-
-        stream_due_tasks: _stream_due_tasks = cast(
-            _stream_due_tasks,
-            redis.register_script(
-                # Lua script to atomically move scheduled tasks to the stream
-                # KEYS[1]: queue key (sorted set)
-                # KEYS[2]: stream key
-                # ARGV[1]: current timestamp
-                # ARGV[2]: docket name prefix
-                """
-            local total_work = redis.call('ZCARD', KEYS[1])
-            local due_work = 0
-
-            if total_work > 0 then
-                local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-
-                for i, key in ipairs(tasks) do
-                    local hash_key = ARGV[2] .. ":" .. key
-                    local task_data = redis.call('HGETALL', hash_key)
-
-                    if #task_data > 0 then
-                        local task = {}
-                        for j = 1, #task_data, 2 do
-                            task[task_data[j]] = task_data[j+1]
-                        end
-
-                        redis.call('XADD', KEYS[2], '*',
-                            'key', task['key'],
-                            'when', task['when'],
-                            'function', task['function'],
-                            'args', task['args'],
-                            'kwargs', task['kwargs'],
-                            'attempt', task['attempt'],
-                            'generation', task['generation'] or '0'
-                        )
-                        redis.call('DEL', hash_key)
-
-                        -- Set run state to queued
-                        local run_key = ARGV[2] .. ":runs:" .. task['key']
-                        redis.call('HSET', run_key, 'state', 'queued')
-
-                        -- Publish state change event to pub/sub
-                        local channel = ARGV[2] .. ":state:" .. task['key']
-                        local payload = '{"type":"state","key":"' .. task['key'] .. '","state":"queued","when":"' .. task['when'] .. '"}'
-                        redis.call('PUBLISH', channel, payload)
-
-                        due_work = due_work + 1
-                    end
-                end
-            end
-
-            if due_work > 0 then
-                redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-            end
-
-            return {total_work, due_work}
-            """
-            ),
-        )
-
         log_context = self._log_context()
 
         while not self._worker_stopping.is_set():  # pragma: no branch
             try:
                 logger.debug("Scheduling due tasks", extra=log_context)
                 with self._maybe_suppress_instrumentation():
-                    total_work, due_work = await stream_due_tasks(
-                        keys=[self.docket.queue_key, self.docket.stream_key],
-                        args=[
-                            datetime.now(timezone.utc).timestamp(),
-                            self.docket.prefix,
-                        ],
+                    total_work, due_work = await _stream_due_tasks(
+                        cast(RedisClient, redis),
+                        queue_key=self.docket.queue_key,
+                        stream_key=self.docket.stream_key,
+                        now_timestamp=datetime.now(timezone.utc).timestamp(),
+                        docket_prefix=self.docket.prefix,
                     )
 
                 if due_work > 0:

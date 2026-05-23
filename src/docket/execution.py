@@ -14,8 +14,6 @@ from typing import (
     Callable,
     Generator,
     Mapping,
-    Protocol,
-    cast,
 )
 
 import cloudpickle
@@ -35,6 +33,8 @@ from uncalled_for.introspection import (
 )
 
 from ._execution_progress import ExecutionProgress, ProgressEvent, StateEvent
+from ._lua import Arg, Args, Key, redis_script
+from ._redis import RedisClient
 from .annotations import Logged
 from .instrumentation import CACHE_SIZE, message_getter, message_setter
 
@@ -54,10 +54,257 @@ TaskFunction = Callable[..., Awaitable[Any]]
 Message = dict[bytes, bytes]
 
 
-class _schedule_task(Protocol):
-    async def __call__(
-        self, keys: list[str], args: list[str | float | bytes]
-    ) -> bytes | str: ...  # pragma: no cover
+@redis_script
+async def _schedule(
+    redis: RedisClient,
+    *,
+    stream_key: Key[str],
+    known_key: Key[str],
+    parked_key: Key[str],
+    queue_key: Key[str],
+    stream_id_key: Key[str],
+    runs_key: Key[str],
+    task_key: Arg[str],
+    when_timestamp: Arg[float],
+    is_immediate: Arg[bool],
+    replace: Arg[bool],
+    reschedule_message_id: Arg[bytes],
+    worker_group_name: Arg[str],
+    message: Args[dict[bytes, bytes]],
+) -> bytes | str:
+    """
+    -- TODO: Remove known_key / parked_key / queue_key / stream_id_key
+    -- handling in v0.14.0 (legacy key locations).
+
+    -- Extract message fields
+    local message = {}
+    local function_name = nil
+    local args_data = nil
+    local kwargs_data = nil
+    local generation_index = nil
+
+    for i = message_start, #ARGV, 2 do
+        local field_name = ARGV[i]
+        local field_value = ARGV[i + 1]
+        message[#message + 1] = field_name
+        message[#message + 1] = field_value
+
+        -- Extract task data fields for runs hash
+        if field_name == 'function' then
+            function_name = field_value
+        elseif field_name == 'args' then
+            args_data = field_value
+        elseif field_name == 'kwargs' then
+            kwargs_data = field_value
+        elseif field_name == 'generation' then
+            generation_index = #message
+        end
+    end
+
+    -- Handle rescheduling from stream: atomically ACK message and reschedule to queue
+    -- This prevents both task loss (ACK before reschedule) and duplicate execution
+    -- (reschedule before ACK with slow reschedule causing redelivery)
+    if reschedule_message_id ~= '' then
+        -- Acknowledge and delete the message from the stream
+        redis.call('XACK', stream_key, worker_group_name, reschedule_message_id)
+        redis.call('XDEL', stream_key, reschedule_message_id)
+
+        -- Increment generation counter
+        local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
+        if generation_index then
+            message[generation_index] = tostring(new_gen)
+        end
+
+        -- Park task data for future execution
+        redis.call('HSET', parked_key, unpack(message))
+
+        -- Add to sorted set queue
+        redis.call('ZADD', queue_key, when_timestamp, task_key)
+
+        -- Update state in runs hash (clear stream_id since task is no longer in stream)
+        redis.call('HSET', runs_key,
+            'state', 'scheduled',
+            'when', when_timestamp,
+            'function', function_name,
+            'args', args_data,
+            'kwargs', kwargs_data
+        )
+        redis.call('HDEL', runs_key, 'stream_id')
+
+        return 'OK'
+    end
+
+    -- Handle replacement: cancel existing task if needed
+    if replace then
+        -- Get stream ID from runs hash (check new location first)
+        local existing_message_id = redis.call('HGET', runs_key, 'stream_id')
+
+        -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
+        if not existing_message_id then
+            existing_message_id = redis.call('GET', stream_id_key)
+        end
+
+        if existing_message_id then
+            redis.call('XDEL', stream_key, existing_message_id)
+        end
+
+        redis.call('ZREM', queue_key, task_key)
+        redis.call('DEL', parked_key)
+
+        -- TODO: Remove in next breaking release (v0.14.0) - clean up legacy keys
+        redis.call('DEL', known_key, stream_id_key)
+
+        -- Note: runs_key is updated below, not deleted
+    else
+        -- Check if task already exists (check new location first, then legacy)
+        local known_exists = redis.call('HEXISTS', runs_key, 'known') == 1
+        if not known_exists then
+            -- Check if task is currently running (known field deleted at claim time)
+            local state = redis.call('HGET', runs_key, 'state')
+            if state == 'running' then
+                return 'EXISTS'
+            end
+            -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
+            known_exists = redis.call('EXISTS', known_key) == 1
+        end
+        if known_exists then
+            return 'EXISTS'
+        end
+    end
+
+    -- Increment generation counter
+    local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
+    if generation_index then
+        message[generation_index] = tostring(new_gen)
+    end
+
+    if is_immediate then
+        -- Add to stream for immediate execution
+        local message_id = redis.call('XADD', stream_key, '*', unpack(message))
+
+        -- Store state and metadata in runs hash
+        redis.call('HSET', runs_key,
+            'state', 'queued',
+            'when', when_timestamp,
+            'known', when_timestamp,
+            'stream_id', message_id,
+            'function', function_name,
+            'args', args_data,
+            'kwargs', kwargs_data
+        )
+    else
+        -- Park task data for future execution
+        redis.call('HSET', parked_key, unpack(message))
+
+        -- Add to sorted set queue
+        redis.call('ZADD', queue_key, when_timestamp, task_key)
+
+        -- Store state and metadata in runs hash
+        redis.call('HSET', runs_key,
+            'state', 'scheduled',
+            'when', when_timestamp,
+            'known', when_timestamp,
+            'function', function_name,
+            'args', args_data,
+            'kwargs', kwargs_data
+        )
+    end
+
+    return 'OK'
+    """
+    ...
+
+
+@redis_script
+async def _claim(
+    redis: RedisClient,
+    *,
+    runs_key: Key[str],
+    progress_key: Key[str],
+    known_key: Key[str],
+    stream_id_key: Key[str],
+    worker: Arg[str],
+    started_at: Arg[str],
+    generation: Arg[int],
+) -> bytes:
+    """
+    -- TODO: Remove known_key / stream_id_key handling in v0.14.0
+    -- (legacy key locations).
+
+    -- Check supersession: generation > 0 means tracking is active
+    if generation > 0 then
+        local current = redis.call('HGET', runs_key, 'generation')
+        if not current then
+            -- Runs hash was cleaned up (execution_ttl=0 after
+            -- a newer generation completed).  This message is stale.
+            return 'SUPERSEDED'
+        end
+        if tonumber(current) > generation then
+            return 'SUPERSEDED'
+        end
+    end
+
+    -- Update execution state to running
+    redis.call('HSET', runs_key,
+        'state', 'running',
+        'worker', worker,
+        'started_at', started_at
+    )
+
+    -- Initialize progress tracking
+    redis.call('HSET', progress_key,
+        'current', '0',
+        'total', '100'
+    )
+
+    -- Delete known/stream_id fields to allow task rescheduling
+    redis.call('HDEL', runs_key, 'known', 'stream_id')
+
+    -- TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
+    redis.call('DEL', known_key, stream_id_key)
+
+    return 'OK'
+    """
+    ...
+
+
+@redis_script
+async def _terminal(
+    redis: RedisClient,
+    *,
+    runs_key: Key[str],
+    generation: Arg[int],
+    state: Arg[str],
+    completed_at: Arg[str],
+    ttl_seconds: Arg[int],
+    extra_fields: Args[list[str]],
+) -> bytes:
+    """
+    -- Check supersession (generation 0 = pre-tracking, always write)
+    if generation > 0 then
+        local current = redis.call('HGET', runs_key, 'generation')
+        if current and tonumber(current) > generation then
+            return 'SUPERSEDED'
+        end
+    end
+
+    -- Build HSET args: state + completed_at + any extras
+    local hset_args = {'state', state, 'completed_at', completed_at}
+    for i = extra_fields_start, #ARGV, 2 do
+        hset_args[#hset_args + 1] = ARGV[i]
+        hset_args[#hset_args + 1] = ARGV[i + 1]
+    end
+    redis.call('HSET', runs_key, unpack(hset_args))
+
+    if ttl_seconds > 0 then
+        redis.call('EXPIRE', runs_key, ttl_seconds)
+    else
+        redis.call('DEL', runs_key)
+    end
+
+    return 'OK'
+    """
+    ...
 
 
 def get_signature(function: Callable[..., Any]) -> inspect.Signature:
@@ -356,189 +603,21 @@ class Execution:
         async with self.docket.redis() as redis:
             # Lock per task key to prevent race conditions between concurrent operations
             async with redis.lock(f"{known_task_key}:lock", timeout=10):
-                # Register script for this connection (not cached to avoid event loop issues)
-                schedule_script = cast(
-                    _schedule_task,
-                    redis.register_script(
-                        # KEYS: stream_key, known_key, parked_key, queue_key, stream_id_key, runs_key
-                        # ARGV: task_key, when_timestamp, is_immediate, replace, reschedule_message_id, worker_group_name, ...message_fields
-                        """
-                            local stream_key = KEYS[1]
-                            -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
-                            local known_key = KEYS[2]
-                            local parked_key = KEYS[3]
-                            local queue_key = KEYS[4]
-                            local stream_id_key = KEYS[5]
-                            local runs_key = KEYS[6]
-
-                            local task_key = ARGV[1]
-                            local when_timestamp = ARGV[2]
-                            local is_immediate = ARGV[3] == '1'
-                            local replace = ARGV[4] == '1'
-                            local reschedule_message_id = ARGV[5]
-                            local worker_group_name = ARGV[6]
-
-                            -- Extract message fields from ARGV[7] onwards
-                            local message = {}
-                            local function_name = nil
-                            local args_data = nil
-                            local kwargs_data = nil
-                            local generation_index = nil
-
-                            for i = 7, #ARGV, 2 do
-                                local field_name = ARGV[i]
-                                local field_value = ARGV[i + 1]
-                                message[#message + 1] = field_name
-                                message[#message + 1] = field_value
-
-                                -- Extract task data fields for runs hash
-                                if field_name == 'function' then
-                                    function_name = field_value
-                                elseif field_name == 'args' then
-                                    args_data = field_value
-                                elseif field_name == 'kwargs' then
-                                    kwargs_data = field_value
-                                elseif field_name == 'generation' then
-                                    generation_index = #message
-                                end
-                            end
-
-                            -- Handle rescheduling from stream: atomically ACK message and reschedule to queue
-                            -- This prevents both task loss (ACK before reschedule) and duplicate execution
-                            -- (reschedule before ACK with slow reschedule causing redelivery)
-                            if reschedule_message_id ~= '' then
-                                -- Acknowledge and delete the message from the stream
-                                redis.call('XACK', stream_key, worker_group_name, reschedule_message_id)
-                                redis.call('XDEL', stream_key, reschedule_message_id)
-
-                                -- Increment generation counter
-                                local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
-                                if generation_index then
-                                    message[generation_index] = tostring(new_gen)
-                                end
-
-                                -- Park task data for future execution
-                                redis.call('HSET', parked_key, unpack(message))
-
-                                -- Add to sorted set queue
-                                redis.call('ZADD', queue_key, when_timestamp, task_key)
-
-                                -- Update state in runs hash (clear stream_id since task is no longer in stream)
-                                redis.call('HSET', runs_key,
-                                    'state', 'scheduled',
-                                    'when', when_timestamp,
-                                    'function', function_name,
-                                    'args', args_data,
-                                    'kwargs', kwargs_data
-                                )
-                                redis.call('HDEL', runs_key, 'stream_id')
-
-                                return 'OK'
-                            end
-
-                            -- Handle replacement: cancel existing task if needed
-                            if replace then
-                                -- Get stream ID from runs hash (check new location first)
-                                local existing_message_id = redis.call('HGET', runs_key, 'stream_id')
-
-                                -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
-                                if not existing_message_id then
-                                    existing_message_id = redis.call('GET', stream_id_key)
-                                end
-
-                                if existing_message_id then
-                                    redis.call('XDEL', stream_key, existing_message_id)
-                                end
-
-                                redis.call('ZREM', queue_key, task_key)
-                                redis.call('DEL', parked_key)
-
-                                -- TODO: Remove in next breaking release (v0.14.0) - clean up legacy keys
-                                redis.call('DEL', known_key, stream_id_key)
-
-                                -- Note: runs_key is updated below, not deleted
-                            else
-                                -- Check if task already exists (check new location first, then legacy)
-                                local known_exists = redis.call('HEXISTS', runs_key, 'known') == 1
-                                if not known_exists then
-                                    -- Check if task is currently running (known field deleted at claim time)
-                                    local state = redis.call('HGET', runs_key, 'state')
-                                    if state == 'running' then
-                                        return 'EXISTS'
-                                    end
-                                    -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
-                                    known_exists = redis.call('EXISTS', known_key) == 1
-                                end
-                                if known_exists then
-                                    return 'EXISTS'
-                                end
-                            end
-
-                            -- Increment generation counter
-                            local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
-                            if generation_index then
-                                message[generation_index] = tostring(new_gen)
-                            end
-
-                            if is_immediate then
-                                -- Add to stream for immediate execution
-                                local message_id = redis.call('XADD', stream_key, '*', unpack(message))
-
-                                -- Store state and metadata in runs hash
-                                redis.call('HSET', runs_key,
-                                    'state', 'queued',
-                                    'when', when_timestamp,
-                                    'known', when_timestamp,
-                                    'stream_id', message_id,
-                                    'function', function_name,
-                                    'args', args_data,
-                                    'kwargs', kwargs_data
-                                )
-                            else
-                                -- Park task data for future execution
-                                redis.call('HSET', parked_key, unpack(message))
-
-                                -- Add to sorted set queue
-                                redis.call('ZADD', queue_key, when_timestamp, task_key)
-
-                                -- Store state and metadata in runs hash
-                                redis.call('HSET', runs_key,
-                                    'state', 'scheduled',
-                                    'when', when_timestamp,
-                                    'known', when_timestamp,
-                                    'function', function_name,
-                                    'args', args_data,
-                                    'kwargs', kwargs_data
-                                )
-                            end
-
-                            return 'OK'
-                            """
-                    ),
-                )
-
-                reply = await schedule_script(
-                    keys=[
-                        self.docket.stream_key,
-                        known_task_key,
-                        self.docket.parked_task_key(key),
-                        self.docket.queue_key,
-                        self.docket.stream_id_key(key),
-                        self._redis_key,
-                    ],
-                    args=[
-                        key,
-                        str(when.timestamp()),
-                        "1" if is_immediate else "0",
-                        "1" if replace else "0",
-                        reschedule_message or b"",
-                        self.docket.worker_group_name,
-                        *[
-                            item
-                            for field, value in message.items()
-                            for item in (field, value)
-                        ],
-                    ],
+                reply = await _schedule(
+                    redis,
+                    stream_key=self.docket.stream_key,
+                    known_key=known_task_key,
+                    parked_key=self.docket.parked_task_key(key),
+                    queue_key=self.docket.queue_key,
+                    stream_id_key=self.docket.stream_id_key(key),
+                    runs_key=self._redis_key,
+                    task_key=key,
+                    when_timestamp=when.timestamp(),
+                    is_immediate=is_immediate,
+                    replace=replace,
+                    reschedule_message_id=reschedule_message or b"",
+                    worker_group_name=self.docket.worker_group_name,
+                    message=message,
                 )
 
         if reply in (b"EXISTS", "EXISTS"):
@@ -590,64 +669,15 @@ class Execution:
 
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
-                claim_script = redis.register_script(
-                    # KEYS: runs_key, progress_key, known_key, stream_id_key
-                    # ARGV: worker, started_at_iso, generation
-                    """
-                    local runs_key = KEYS[1]
-                    local progress_key = KEYS[2]
-                    -- TODO: Remove in next breaking release (v0.14.0) - legacy key locations
-                    local known_key = KEYS[3]
-                    local stream_id_key = KEYS[4]
-
-                    local worker = ARGV[1]
-                    local started_at = ARGV[2]
-                    local generation = tonumber(ARGV[3])
-
-                    -- Check supersession: generation > 0 means tracking is active
-                    if generation > 0 then
-                        local current = redis.call('HGET', runs_key, 'generation')
-                        if not current then
-                            -- Runs hash was cleaned up (execution_ttl=0 after
-                            -- a newer generation completed).  This message is stale.
-                            return 'SUPERSEDED'
-                        end
-                        if tonumber(current) > generation then
-                            return 'SUPERSEDED'
-                        end
-                    end
-
-                    -- Update execution state to running
-                    redis.call('HSET', runs_key,
-                        'state', 'running',
-                        'worker', worker,
-                        'started_at', started_at
-                    )
-
-                    -- Initialize progress tracking
-                    redis.call('HSET', progress_key,
-                        'current', '0',
-                        'total', '100'
-                    )
-
-                    -- Delete known/stream_id fields to allow task rescheduling
-                    redis.call('HDEL', runs_key, 'known', 'stream_id')
-
-                    -- TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
-                    redis.call('DEL', known_key, stream_id_key)
-
-                    return 'OK'
-                    """
-                )
-
-                result = await claim_script(
-                    keys=[
-                        self._redis_key,  # runs_key
-                        self.progress._redis_key,  # progress_key
-                        self.docket.known_task_key(self.key),  # legacy known_key
-                        self.docket.stream_id_key(self.key),  # legacy stream_id_key
-                    ],
-                    args=[worker, started_at_iso, str(self._generation)],
+                result = await _claim(
+                    redis,
+                    runs_key=self._redis_key,
+                    progress_key=self.progress._redis_key,
+                    known_key=self.docket.known_task_key(self.key),
+                    stream_id_key=self.docket.stream_id_key(self.key),
+                    worker=worker,
+                    started_at=started_at_iso,
+                    generation=self._generation,
                 )
 
         if result == b"SUPERSEDED":
@@ -710,52 +740,14 @@ class Execution:
 
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
-                terminal_script = redis.register_script(
-                    # KEYS[1]: runs_key
-                    # ARGV[1]: generation, ARGV[2]: state, ARGV[3]: completed_at
-                    # ARGV[4]: ttl_seconds, ARGV[5..]: extra field pairs
-                    """
-                    local runs_key = KEYS[1]
-                    local generation = tonumber(ARGV[1])
-                    local state = ARGV[2]
-                    local completed_at = ARGV[3]
-                    local ttl_seconds = tonumber(ARGV[4])
-
-                    -- Check supersession (generation 0 = pre-tracking, always write)
-                    if generation > 0 then
-                        local current = redis.call('HGET', runs_key, 'generation')
-                        if current and tonumber(current) > generation then
-                            return 'SUPERSEDED'
-                        end
-                    end
-
-                    -- Build HSET args: state + completed_at + any extras
-                    local hset_args = {'state', state, 'completed_at', completed_at}
-                    for i = 5, #ARGV, 2 do
-                        hset_args[#hset_args + 1] = ARGV[i]
-                        hset_args[#hset_args + 1] = ARGV[i + 1]
-                    end
-                    redis.call('HSET', runs_key, unpack(hset_args))
-
-                    if ttl_seconds > 0 then
-                        redis.call('EXPIRE', runs_key, ttl_seconds)
-                    else
-                        redis.call('DEL', runs_key)
-                    end
-
-                    return 'OK'
-                    """
-                )
-
-                await terminal_script(
-                    keys=[self._redis_key],
-                    args=[
-                        str(self._generation),
-                        state.value,
-                        completed_at,
-                        str(ttl_seconds),
-                        *extra_fields,
-                    ],
+                await _terminal(
+                    redis,
+                    runs_key=self._redis_key,
+                    generation=self._generation,
+                    state=state.value,
+                    completed_at=completed_at,
+                    ttl_seconds=ttl_seconds,
+                    extra_fields=extra_fields,
                 )
 
         self.state = state
