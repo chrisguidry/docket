@@ -230,24 +230,37 @@ async def _claim(
     known_key: Key[str],
     stream_id_key: Key[str],
     state_channel: Key[str],
+    stream_key: Key[str],
     worker: Arg[str],
     started_at: Arg[str],
     generation: Arg[int],
     state_payload: Arg[str],
+    worker_group_name: Arg[str],
+    message_id: Arg[bytes],
 ) -> bytes:
     """
     -- TODO: Remove known_key / stream_id_key handling in v0.14.0
     -- (legacy key locations).
 
-    -- Check supersession: generation > 0 means tracking is active
+    -- Check supersession: generation > 0 means tracking is active.  When the
+    -- claim is for a stale message we still ACK and XDEL it so the stream
+    -- entry doesn't linger -- nothing else will clean it up.
     if generation > 0 then
         local current = redis.call('HGET', runs_key, 'generation')
         if not current then
             -- Runs hash was cleaned up (execution_ttl=0 after
             -- a newer generation completed).  This message is stale.
+            if message_id ~= '' then
+                redis.call('XACK', stream_key, worker_group_name, message_id)
+                redis.call('XDEL', stream_key, message_id)
+            end
             return 'SUPERSEDED'
         end
         if tonumber(current) > generation then
+            if message_id ~= '' then
+                redis.call('XACK', stream_key, worker_group_name, message_id)
+                redis.call('XDEL', stream_key, message_id)
+            end
             return 'SUPERSEDED'
         end
     end
@@ -284,22 +297,32 @@ async def _terminal(
     *,
     runs_key: Key[str],
     state_channel: Key[str],
+    progress_key: Key[str],
+    stream_key: Key[str],
     generation: Arg[int],
     state: Arg[str],
     completed_at: Arg[str],
     ttl_seconds: Arg[int],
     state_payload: Arg[str],
+    worker_group_name: Arg[str],
+    message_id: Arg[bytes],
     extra_fields: Args[list[str]],
 ) -> bytes:
     """
     -- Check supersession (generation 0 = pre-tracking, always write).  Even
     -- when superseded we still publish the terminal-state event so
     -- subscribers waiting on completion don't deadlock when a Perpetual
-    -- successor has already taken over the runs hash.
+    -- successor has already taken over the runs hash, and we still clean up
+    -- this execution's progress hash and stream entry.
     if generation > 0 then
         local current = redis.call('HGET', runs_key, 'generation')
         if current and tonumber(current) > generation then
             redis.call('PUBLISH', state_channel, state_payload)
+            redis.call('DEL', progress_key)
+            if message_id ~= '' then
+                redis.call('XACK', stream_key, worker_group_name, message_id)
+                redis.call('XDEL', stream_key, message_id)
+            end
             return 'SUPERSEDED'
         end
     end
@@ -319,6 +342,11 @@ async def _terminal(
     end
 
     redis.call('PUBLISH', state_channel, state_payload)
+    redis.call('DEL', progress_key)
+    if message_id ~= '' then
+        redis.call('XACK', stream_key, worker_group_name, message_id)
+        redis.call('XDEL', stream_key, message_id)
+    end
 
     return 'OK'
     """
@@ -712,10 +740,13 @@ class Execution:
                     known_key=self.docket.known_task_key(self.key),
                     stream_id_key=self.docket.stream_id_key(self.key),
                     state_channel=self.docket.key(f"state:{self.key}"),
+                    stream_key=self.docket.stream_key,
                     worker=worker,
                     started_at=started_at_iso,
                     generation=self._generation,
                     state_payload=state_payload,
+                    worker_group_name=self.docket.worker_group_name,
+                    message_id=self.message_id or b"",
                 )
 
         if result == b"SUPERSEDED":
@@ -743,13 +774,13 @@ class Execution:
             error: Optional error message (for FAILED state)
             result_key: Optional key where the result/exception is stored
 
-        Uses a Lua script to atomically check supersession and write the
-        terminal state in a single round-trip.  If the runs hash has been
-        claimed by a successor (e.g. a Perpetual on_complete already called
-        docket.replace()), the hash is left untouched.
-
-        Progress data and the pub/sub completion event are always handled
-        regardless of supersession.
+        Uses a Lua script to atomically check supersession, write the
+        terminal state, publish the completion event, delete the progress
+        hash, and ACK/XDEL the stream message in a single round-trip.  If
+        the runs hash has been claimed by a successor (e.g. a Perpetual
+        on_complete already called docket.replace()), the hash is left
+        untouched, but progress cleanup, the completion event, and the
+        stream ACK/XDEL still happen.
         """
         completed_at = datetime.now(timezone.utc).isoformat()
 
@@ -784,11 +815,15 @@ class Execution:
                     redis,
                     runs_key=self._redis_key,
                     state_channel=self.docket.key(f"state:{self.key}"),
+                    progress_key=self.progress._redis_key,
+                    stream_key=self.docket.stream_key,
                     generation=self._generation,
                     state=state.value,
                     completed_at=completed_at,
                     ttl_seconds=ttl_seconds,
                     state_payload=state_payload,
+                    worker_group_name=self.docket.worker_group_name,
+                    message_id=self.message_id or b"",
                     extra_fields=extra_fields,
                 )
 
@@ -796,7 +831,10 @@ class Execution:
         if result_key is not None:
             self.result_key = result_key
 
-        await self.progress.delete()
+        self.progress.current = None
+        self.progress.total = 100
+        self.progress.message = None
+        self.progress.updated_at = None
 
     async def mark_as_completed(self, result_key: str | None = None) -> None:
         """Mark task as completed successfully.

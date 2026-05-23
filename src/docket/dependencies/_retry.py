@@ -105,7 +105,7 @@ class Retry(FailureHandler["Retry"]):
 
         execution.when = datetime.now(timezone.utc) + self.delay
         execution.attempt += 1
-        await execution.schedule(replace=True)
+        await execution.schedule(reschedule_message=execution.message_id)
 
         worker = current_worker.get()
         TASKS_RETRIED.add(1, {**worker.labels(), **execution.general_labels()})

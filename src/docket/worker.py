@@ -657,7 +657,6 @@ class Worker:
                 self._tasks_by_key.pop(execution.key, None)
                 try:
                     await task
-                    await ack_message(redis, message_id)
                 except AdmissionBlocked as e:
                     if e.handled:
                         # The admission gate already handled the task,
@@ -679,21 +678,6 @@ class Worker:
                             extra=log_context,
                         )
                         await e.execution.mark_as_cancelled()
-                        await ack_message(redis, message_id)
-
-        async def ack_message(redis: Redis, message_id: RedisMessageID) -> None:
-            logger.debug("Acknowledging message", extra=log_context)
-            async with redis.pipeline() as pipeline:
-                pipeline.xack(
-                    self.docket.stream_key,
-                    self.docket.worker_group_name,
-                    message_id,
-                )
-                pipeline.xdel(
-                    self.docket.stream_key,
-                    message_id,
-                )
-                await pipeline.execute()
 
         try:
             async with AsyncExitStack() as dependency_stack:

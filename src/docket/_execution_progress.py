@@ -105,19 +105,28 @@ class ExecutionProgress:
 
         updated_at_dt = datetime.now(timezone.utc)
         updated_at = updated_at_dt.isoformat()
+        payload: ProgressEvent = {
+            "type": "progress",
+            "key": self.key,
+            "current": self.current if self.current is not None else 0,
+            "total": total,
+            "message": self.message,
+            "updated_at": updated_at,
+        }
+        channel = self.docket.key(f"progress:{self.key}")
         async with self.docket.redis() as redis:
-            await redis.hset(
-                self._redis_key,
-                mapping={
-                    "total": str(total),
-                    "updated_at": updated_at,
-                },
-            )
-        # Update instance attributes
+            async with redis.pipeline() as pipe:
+                pipe.hset(
+                    self._redis_key,
+                    mapping={
+                        "total": str(total),
+                        "updated_at": updated_at,
+                    },
+                )
+                pipe.publish(channel, json.dumps(payload))
+                await pipe.execute()
         self.total = total
         self.updated_at = updated_at_dt
-        # Publish update event
-        await self._publish({"total": total, "updated_at": updated_at})
 
     async def increment(self, amount: int = 1) -> None:
         """Atomically increment the current progress value.
@@ -149,19 +158,28 @@ class ExecutionProgress:
         """
         updated_at_dt = datetime.now(timezone.utc)
         updated_at = updated_at_dt.isoformat()
+        payload: ProgressEvent = {
+            "type": "progress",
+            "key": self.key,
+            "current": self.current if self.current is not None else 0,
+            "total": self.total,
+            "message": message,
+            "updated_at": updated_at,
+        }
+        channel = self.docket.key(f"progress:{self.key}")
         async with self.docket.redis() as redis:
-            await redis.hset(
-                self._redis_key,
-                mapping=cast(
-                    Mapping[KeyT, EncodableT],
-                    {"message": message, "updated_at": updated_at},
-                ),
-            )
-        # Update instance attributes
+            async with redis.pipeline() as pipe:
+                pipe.hset(
+                    self._redis_key,
+                    mapping=cast(
+                        Mapping[KeyT, EncodableT],
+                        {"message": message, "updated_at": updated_at},
+                    ),
+                )
+                pipe.publish(channel, json.dumps(payload))
+                await pipe.execute()
         self.message = message
         self.updated_at = updated_at_dt
-        # Publish update event
-        await self._publish({"message": message, "updated_at": updated_at})
 
     async def sync(self) -> None:
         """Synchronize instance attributes with current progress data from Redis.
@@ -188,20 +206,6 @@ class ExecutionProgress:
                     self.total = 100
                     self.message = None
                     self.updated_at = None
-
-    async def delete(self) -> None:
-        """Delete the progress data from Redis.
-
-        Called internally when task execution completes.
-        """
-        with self._maybe_suppress_instrumentation():
-            async with self.docket.redis() as redis:
-                await redis.delete(self._redis_key)
-        # Reset instance attributes
-        self.current = None
-        self.total = 100
-        self.message = None
-        self.updated_at = None
 
     async def _publish(self, data: dict[str, Any]) -> None:
         """Publish progress update to Redis pub/sub channel.
