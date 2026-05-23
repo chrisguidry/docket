@@ -39,6 +39,11 @@ LEASE_RENEWAL_FACTOR = 4
 MINIMUM_TTL_SECONDS = 1
 
 
+# Lazy module-level Script singletons.  Each wrapper registers its script once
+# (computing the SHA at first call) and reuses it for all subsequent calls,
+# passing ``client=redis`` to stay loop-agnostic.
+
+
 # Acquire a concurrency slot, or park the task on the waiter stream atomically.
 # Returns 1 if acquired (task should run), 0 if parked (the inflight stream
 # message has been XACK+XDEL'd and re-XADD'd into the waiter stream; caller
@@ -143,6 +148,53 @@ redis.call('PUBLISH', state_channel, payload)
 
 return 0
 """
+
+
+_acquire_or_park_script: Script | None = None
+
+
+async def _acquire_or_park(
+    redis: RedisClient,
+    *,
+    slots_key: str,
+    waiters_stream: str,
+    stream_key: str,
+    runs_key: str,
+    max_concurrent: int,
+    task_key: str,
+    current_time: float,
+    is_redelivery: bool,
+    stale_threshold: float,
+    key_ttl: int,
+    message_id: bytes | str,
+    worker_group_name: str,
+    state_channel: str,
+    message: dict[bytes, bytes],
+) -> int:
+    """Atomically acquire a concurrency slot or park onto the waiter stream."""
+    global _acquire_or_park_script
+    if _acquire_or_park_script is None:
+        _acquire_or_park_script = redis.register_script(_ACQUIRE_OR_PARK)
+    return cast(
+        int,
+        await run_script(
+            _acquire_or_park_script,
+            keys=[slots_key, waiters_stream, stream_key, runs_key],
+            args=[
+                max_concurrent,
+                task_key,
+                current_time,
+                1 if is_redelivery else 0,
+                stale_threshold,
+                key_ttl,
+                message_id,
+                worker_group_name,
+                state_channel,
+                *(item for field, value in message.items() for item in (field, value)),
+            ],
+            client=redis,
+        ),
+    )
 
 
 # Release this task's slot and, if waiters are parked, hand the freed
@@ -253,6 +305,42 @@ end
 """
 
 
+_release_and_wake_script: Script | None = None
+
+
+async def _release_and_wake(
+    redis: RedisClient,
+    *,
+    slots_key: str,
+    waiters_stream: str,
+    stream_key: str,
+    queue_key: str,
+    task_key: str,
+    max_concurrent: int,
+    stale_threshold: float,
+    runs_prefix: str,
+    state_prefix: str,
+    parked_prefix: str,
+) -> None:
+    """Release this task's slot and hand freed capacity to waiters."""
+    global _release_and_wake_script
+    if _release_and_wake_script is None:
+        _release_and_wake_script = redis.register_script(_RELEASE_AND_WAKE)
+    await run_script(
+        _release_and_wake_script,
+        keys=[slots_key, waiters_stream, stream_key, queue_key],
+        args=[
+            task_key,
+            max_concurrent,
+            stale_threshold,
+            runs_prefix,
+            state_prefix,
+            parked_prefix,
+        ],
+        client=redis,
+    )
+
+
 # Scavenge any stale slot holders and hand freed capacity to parked waiters.
 # Called by the worker's concurrency-sweep loop to recover the degenerate
 # case where every slot holder crashed without releasing AND no new tasks
@@ -358,118 +446,6 @@ return woken
 """
 
 
-# Atomically tear down a cancelled task's waiter footprint.  Invoked by
-# ConcurrencyLimit's pubsub-driven cancel subscriber after Docket.cancel
-# flips the task to 'cancelled'.
-#
-# KEYS[1]: waiters_stream, KEYS[2]: progress_key, KEYS[3]: runs_key
-# ARGV[1]: waiter_entry_id
-_CANCEL_CLEANUP = """
-local waiters_stream = KEYS[1]
-local progress_key = KEYS[2]
-local runs_key = KEYS[3]
-local waiter_entry_id = ARGV[1]
-
-redis.call('XDEL', waiters_stream, waiter_entry_id)
-if redis.call('XLEN', waiters_stream) == 0 then
-    redis.call('DEL', waiters_stream)
-end
-
--- claim() creates a per-task progress hash before the concurrency gate
--- runs, so a task that's cancelled while parked leaks one of these
--- without an explicit DEL.
-redis.call('DEL', progress_key)
-
-redis.call('HDEL', runs_key, 'waiter_stream', 'waiter_entry_id')
-"""
-
-
-# Lazy module-level Script singletons.  Each wrapper registers its script once
-# (computing the SHA at first call) and reuses it for all subsequent calls,
-# passing ``client=redis`` to stay loop-agnostic.
-_acquire_or_park_script: Script | None = None
-
-
-async def _acquire_or_park(
-    redis: RedisClient,
-    *,
-    slots_key: str,
-    waiters_stream: str,
-    stream_key: str,
-    runs_key: str,
-    max_concurrent: int,
-    task_key: str,
-    current_time: float,
-    is_redelivery: bool,
-    stale_threshold: float,
-    key_ttl: int,
-    message_id: bytes | str,
-    worker_group_name: str,
-    state_channel: str,
-    message: dict[bytes, bytes],
-) -> int:
-    """Atomically acquire a concurrency slot or park onto the waiter stream."""
-    global _acquire_or_park_script
-    if _acquire_or_park_script is None:
-        _acquire_or_park_script = redis.register_script(_ACQUIRE_OR_PARK)
-    return cast(
-        int,
-        await run_script(
-            _acquire_or_park_script,
-            keys=[slots_key, waiters_stream, stream_key, runs_key],
-            args=[
-                max_concurrent,
-                task_key,
-                current_time,
-                1 if is_redelivery else 0,
-                stale_threshold,
-                key_ttl,
-                message_id,
-                worker_group_name,
-                state_channel,
-                *(item for field, value in message.items() for item in (field, value)),
-            ],
-            client=redis,
-        ),
-    )
-
-
-_release_and_wake_script: Script | None = None
-
-
-async def _release_and_wake(
-    redis: RedisClient,
-    *,
-    slots_key: str,
-    waiters_stream: str,
-    stream_key: str,
-    queue_key: str,
-    task_key: str,
-    max_concurrent: int,
-    stale_threshold: float,
-    runs_prefix: str,
-    state_prefix: str,
-    parked_prefix: str,
-) -> None:
-    """Release this task's slot and hand freed capacity to waiters."""
-    global _release_and_wake_script
-    if _release_and_wake_script is None:
-        _release_and_wake_script = redis.register_script(_RELEASE_AND_WAKE)
-    await run_script(
-        _release_and_wake_script,
-        keys=[slots_key, waiters_stream, stream_key, queue_key],
-        args=[
-            task_key,
-            max_concurrent,
-            stale_threshold,
-            runs_prefix,
-            state_prefix,
-            parked_prefix,
-        ],
-        client=redis,
-    )
-
-
 _scavenge_and_wake_script: Script | None = None
 
 
@@ -505,6 +481,32 @@ async def _scavenge_and_wake(
             client=redis,
         ),
     )
+
+
+# Atomically tear down a cancelled task's waiter footprint.  Invoked by
+# ConcurrencyLimit's pubsub-driven cancel subscriber after Docket.cancel
+# flips the task to 'cancelled'.
+#
+# KEYS[1]: waiters_stream, KEYS[2]: progress_key, KEYS[3]: runs_key
+# ARGV[1]: waiter_entry_id
+_CANCEL_CLEANUP = """
+local waiters_stream = KEYS[1]
+local progress_key = KEYS[2]
+local runs_key = KEYS[3]
+local waiter_entry_id = ARGV[1]
+
+redis.call('XDEL', waiters_stream, waiter_entry_id)
+if redis.call('XLEN', waiters_stream) == 0 then
+    redis.call('DEL', waiters_stream)
+end
+
+-- claim() creates a per-task progress hash before the concurrency gate
+-- runs, so a task that's cancelled while parked leaks one of these
+-- without an explicit DEL.
+redis.call('DEL', progress_key)
+
+redis.call('HDEL', runs_key, 'waiter_stream', 'waiter_entry_id')
+"""
 
 
 _cancel_cleanup_script: Script | None = None
