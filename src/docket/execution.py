@@ -1094,11 +1094,20 @@ class Execution:
         current_gen = int(current) if current is not None else 0
         return current_gen > self._generation
 
-    async def subscribe(self) -> AsyncGenerator[StateEvent | ProgressEvent, None]:
+    async def subscribe(
+        self, *, ready: asyncio.Event | None = None
+    ) -> AsyncGenerator[StateEvent | ProgressEvent, None]:
         """Subscribe to both state and progress updates for this task.
 
         Emits the current state as the first event, then subscribes to real-time
         state and progress updates via Redis pub/sub.
+
+        Args:
+            ready: Optional ``asyncio.Event`` that is ``set()`` once the
+                Redis ``SUBSCRIBE`` has been acknowledged.  Lets callers
+                deterministically wait until the subscription is live
+                before publishing -- avoids the race where early events
+                are dropped because the subscriber hadn't connected yet.
 
         Yields:
             Dict containing state or progress update events with a 'type' field:
@@ -1142,6 +1151,8 @@ class Execution:
         progress_channel = self.docket.key(f"progress:{self.key}")
         async with self.docket._pubsub() as pubsub:
             await pubsub.subscribe(state_channel, progress_channel)
+            if ready is not None:
+                ready.set()
             async for message in pubsub.listen():  # pragma: no cover
                 if message["type"] == "message":
                     message_data = json.loads(message["data"])
