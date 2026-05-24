@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import socket
 import sys
 from datetime import datetime, timedelta, timezone
 from functools import partial
-from typing import TYPE_CHECKING, AsyncGenerator, Callable, Generator
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Generator
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -37,6 +38,40 @@ skip_cluster = pytest.mark.skipif(
     CLUSTER_ENABLED,
     reason="requires a non-clustered Redis (test bypasses cluster routing)",
 )
+
+
+async def wait_for_event(
+    messages: list[dict[str, Any]],
+    predicate: Callable[[dict[str, Any]], bool],
+    *,
+    timeout: float = 5.0,
+    description: str = "matching event",
+) -> dict[str, Any]:
+    """Poll ``messages`` until one satisfies ``predicate``, or raise.
+
+    The pubsub-collector pattern in the test suite appends each received
+    event to a list as it arrives.  Tests that need to assert on those
+    events shouldn't depend on a fixed-duration ``asyncio.sleep`` to
+    "let the subscriber drain" -- that race-tunes the test to whoever's
+    runner is fastest.  Use this helper instead: it short-circuits as
+    soon as the expected event appears (no wasted wall-clock on fast
+    runners) and fails with the full ``messages`` snapshot on slow
+    runners (no silent flakes).
+
+    The 10 ms yield is bounded by ``timeout`` and serves only to give
+    the collector task a chance to run; the same shape as
+    ``await_retry_parked`` and other polling helpers in the suite.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        for msg in messages:
+            if predicate(msg):
+                return msg
+        await asyncio.sleep(0.01)
+    raise AssertionError(
+        f"no {description} arrived within {timeout}s; saw: {messages!r}"
+    )
+
 
 if sys.platform != "win32" or TYPE_CHECKING:
     from docker import DockerClient

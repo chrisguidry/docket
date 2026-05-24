@@ -364,6 +364,8 @@ async def test_safety_net_publishes_failed_state_event_with_no_error(
     import contextlib
     import json
 
+    from tests.conftest import wait_for_event
+
     class JustLog(FailureHandler["JustLog"]):
         async def __aenter__(self) -> "JustLog":
             return self
@@ -396,7 +398,13 @@ async def test_safety_net_publishes_failed_state_event_with_no_error(
 
     await docket.add(the_task, key=task_key)("once")
     await worker.run_until_finished()
-    await asyncio.sleep(0.05)
+    # Wait for the safety net's failed event itself, instead of guessing
+    # how long the subscriber needs to drain.
+    await wait_for_event(
+        state_events,
+        lambda m: m.get("state") == "failed",
+        description="safety-net failed event",
+    )
 
     collector_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):

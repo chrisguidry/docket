@@ -22,6 +22,8 @@ from typing import AsyncGenerator, Callable
 import pytest
 from docket import Docket
 
+from tests.conftest import wait_for_event
+
 
 @pytest.fixture
 async def other_docket(
@@ -88,36 +90,62 @@ async def test_state_pubsub_does_not_cross_dockets(
     """A state event published on ``docket``'s channel must not be
     delivered to a subscriber on ``other_docket``'s channel for the
     same task key.  Pub/sub channels are prefix-scoped just like
-    Redis keys."""
-    task_key = "shared-name"
-    other_events: list[dict[str, object]] = []
-    ready = asyncio.Event()
+    Redis keys.
 
-    async def collector() -> None:
-        async with other_docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
-            await pubsub.subscribe(other_docket.key(f"state:{task_key}"))
+    Subscribes to BOTH channels.  When the event arrives on docket's
+    own channel, we know Redis has already dispatched it -- so if a
+    leak to other_docket's channel was going to happen, it would
+    already be in ``other_events`` too.  That makes this negative
+    assertion deterministic instead of a fixed-duration wait.
+    """
+    task_key = "shared-name"
+    same_events: list[dict[str, object]] = []
+    other_events: list[dict[str, object]] = []
+    same_ready = asyncio.Event()
+    other_ready = asyncio.Event()
+
+    async def collect(
+        target_docket: Docket,
+        bucket: list[dict[str, object]],
+        ready: asyncio.Event,
+    ) -> None:
+        async with target_docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
+            await pubsub.subscribe(target_docket.key(f"state:{task_key}"))
             ready.set()
             async for message in pubsub.listen():
                 if message["type"] != "message":
                     continue  # pragma: no cover
                 data = message["data"]
                 payload = data.decode() if isinstance(data, bytes) else data
-                other_events.append(json.loads(payload))
+                bucket.append(json.loads(payload))
 
-    collector_task = asyncio.create_task(collector())
-    await ready.wait()
+    same_collector = asyncio.create_task(collect(docket, same_events, same_ready))
+    other_collector = asyncio.create_task(
+        collect(other_docket, other_events, other_ready)
+    )
+    await same_ready.wait()
+    await other_ready.wait()
 
     async def the_task() -> None: ...
 
     docket.register(the_task)
-    # Trigger state-event publishing on docket's channel.
     await docket.add(the_task, key=task_key)()
-    # Give the publish a moment to land.
-    await asyncio.sleep(0.05)
 
-    collector_task.cancel()
+    # Handshake: wait for the event on docket's own channel.  Once
+    # we've seen it, Redis has already done its dispatch and any
+    # cross-docket leak would already be in other_events.
+    await wait_for_event(
+        same_events,
+        lambda m: m.get("key") == task_key,
+        description="same-docket state event",
+    )
+
+    same_collector.cancel()
+    other_collector.cancel()
     with contextlib.suppress(asyncio.CancelledError):
-        await collector_task
+        await same_collector
+    with contextlib.suppress(asyncio.CancelledError):
+        await other_collector
 
     assert other_events == [], (
         f"other_docket subscribers must not receive state events from "

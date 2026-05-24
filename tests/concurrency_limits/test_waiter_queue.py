@@ -341,6 +341,8 @@ async def test_admission_blocked_handled_does_not_publish_failed_event(
     import contextlib
     import json
 
+    from tests.conftest import wait_for_event
+
     holder_started = asyncio.Event()
     holder_may_finish = asyncio.Event()
     contender_key = "admission-blocked-no-fail"
@@ -382,8 +384,14 @@ async def test_admission_blocked_handled_does_not_publish_failed_event(
     # Park the contender while the holder owns the only slot.
     await docket.add(the_task, key=contender_key)("contender")
 
-    # Give parking + any (regression) safety-net path time to run.
-    await asyncio.sleep(0.2)
+    # Wait for ``_acquire_or_park``'s scheduled event -- that's how we
+    # know the contender has actually parked and the runs hash is
+    # settled.  No magic-number wait.
+    await wait_for_event(
+        state_events,
+        lambda m: m.get("state") == "scheduled",
+        description="contender's park scheduled event",
+    )
 
     # While parked, the runs hash must say ``scheduled`` -- not ``failed``.
     # This is the at-rest truth a regression would corrupt by overwriting
@@ -398,7 +406,14 @@ async def test_admission_blocked_handled_does_not_publish_failed_event(
 
     holder_may_finish.set()
     await asyncio.wait_for(worker_task, timeout=10)
-    await asyncio.sleep(0.05)
+    # Wait for the contender's terminal completed event -- proves the
+    # full wake-and-run path executed, which means ``process_completed_tasks``
+    # would already have fired the safety net by now if it was going to.
+    await wait_for_event(
+        state_events,
+        lambda m: m.get("state") == "completed",
+        description="contender's terminal completed event",
+    )
     collector_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await collector_task

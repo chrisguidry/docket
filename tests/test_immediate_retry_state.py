@@ -25,6 +25,8 @@ import pytest
 from docket import Docket, Worker
 from docket.dependencies import Retry
 
+from tests.conftest import wait_for_event
+
 TASK_KEY = "immediate-retry"
 
 
@@ -81,8 +83,14 @@ async def test_immediate_retry_publishes_queued_state_event(
     await docket.add(the_task, key=TASK_KEY)()
 
     await worker.run_until_finished()
-    # Let the subscriber drain.
-    await asyncio.sleep(0.05)
+    # Wait for the terminal completed event before asserting.  Once it's
+    # in the subscriber's list, every prior state event for this run
+    # (including the retry's queued event) is too.
+    await wait_for_event(
+        state_messages,
+        lambda m: m.get("state") == "completed",
+        description="terminal completed event",
+    )
 
     # Sanity: the task ran twice (original + immediate retry).
     assert len(attempts) == 2
@@ -135,7 +143,11 @@ async def test_delayed_retry_still_publishes_scheduled_state_event(
     await docket.add(the_task, key=TASK_KEY)()
 
     await worker.run_until_finished()
-    await asyncio.sleep(0.05)
+    await wait_for_event(
+        state_messages,
+        lambda m: m.get("state") == "completed",
+        description="terminal completed event",
+    )
 
     assert len(attempts) == 2
 

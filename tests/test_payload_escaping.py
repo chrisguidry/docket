@@ -26,6 +26,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from docket import ConcurrencyLimit, Docket, Worker
 
+from tests.conftest import wait_for_event
+
 # Weird key that exercises the five escapes the Lua side handles:
 # - `"` would close the JSON string mid-value.
 # - `\` plus the following char would form an invalid JSON escape.
@@ -197,8 +199,15 @@ async def test_concurrency_wake_payload_is_parseable_with_weird_key(
     await asyncio.wait_for(holder_started.wait(), timeout=5)
 
     await docket.add(the_task, key=WEIRD_KEY)("contender")
-    # Give the parking script time to publish its scheduled event first.
-    await asyncio.sleep(0.1)
+    # Wait for _acquire_or_park's scheduled event before releasing the
+    # holder.  Confirms the contender has actually parked, and pins the
+    # ordering so the queued event we assert on can only come from the
+    # wake path that follows.
+    await wait_for_event(
+        messages,
+        lambda m: m.get("state") == "scheduled",
+        description="park's scheduled event",
+    )
 
     # Release the holder.  _release_and_wake forwards the weird-key
     # waiter back into the main stream and PUBLISHes the queued event
@@ -206,7 +215,14 @@ async def test_concurrency_wake_payload_is_parseable_with_weird_key(
     holder_may_finish.set()
     await asyncio.wait_for(weird_task_started.wait(), timeout=5)
     await asyncio.wait_for(worker_task, timeout=10)
-    await asyncio.sleep(0.05)
+
+    # Wait for the wake's queued event itself (the assertion below
+    # would otherwise race against the subscriber task).
+    await wait_for_event(
+        messages,
+        lambda m: m.get("state") == "queued",
+        description="wake's queued event",
+    )
 
     assert any(msg.get("state") == "queued" for msg in messages), (
         f"subscriber should have seen a queued state event from "
