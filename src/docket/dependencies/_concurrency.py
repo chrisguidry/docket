@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -57,6 +58,7 @@ async def _acquire_or_park(
     message_id: Arg[bytes],
     worker_group_name: Arg[str],
     state_channel: Arg[str],
+    state_payload: Arg[str],
     message: Args[dict[bytes, bytes]],
 ) -> int:
     """
@@ -136,8 +138,7 @@ async def _acquire_or_park(
     )
     redis.call('HDEL', runs_key, 'stream_id')
 
-    local payload = '{"type":"state","key":"' .. task_key .. '","state":"scheduled"}'
-    redis.call('PUBLISH', state_channel, payload)
+    redis.call('PUBLISH', state_channel, state_payload)
 
     return 0
     """
@@ -171,6 +172,20 @@ async def _release_and_wake(
     -- cancel-races-with-wake case where the dependency's cancel subscriber
     -- might not have pulled the waiter entry off the stream in time (Redis
     -- pub/sub is fire-and-forget); cancelled tasks must never run.
+
+    -- Inline JSON-string escaper for the common cases (`\\`, `"`, and the
+    -- three named whitespace controls).  Task keys are user-supplied: if a
+    -- caller passes a key containing other control characters (NUL, BEL,
+    -- VT, FF, ESC, etc.) the published payload will not parse as strict
+    -- JSON.  GIGO -- callers should give us readable keys.
+    local function json_escape(s)
+        s = s:gsub('\\\\', '\\\\\\\\')
+        s = s:gsub('"', '\\\\"')
+        s = s:gsub('\\n', '\\\\n')
+        s = s:gsub('\\r', '\\\\r')
+        s = s:gsub('\\t', '\\\\t')
+        return s
+    end
 
     redis.call('ZREM', slots_key, task_key)
 
@@ -234,7 +249,7 @@ async def _release_and_wake(
                 redis.call('DEL', parked_prefix .. safeguard_key)
                 redis.call('DEL', runs_prefix .. safeguard_key)
 
-                local payload = '{"type":"state","key":"' .. waiter_task_key .. '","state":"queued"}'
+                local payload = '{"type":"state","key":"' .. json_escape(waiter_task_key) .. '","state":"queued"}'
                 redis.call('PUBLISH', state_prefix .. waiter_task_key, payload)
             end
         end
@@ -274,6 +289,16 @@ async def _scavenge_and_wake(
     --
     -- Returns the number of waiters woken (zero means either no waiters
     -- were parked, or no capacity was free to give them).
+
+    -- Inline JSON-string escaper (see _release_and_wake for the rationale).
+    local function json_escape(s)
+        s = s:gsub('\\\\', '\\\\\\\\')
+        s = s:gsub('"', '\\\\"')
+        s = s:gsub('\\n', '\\\\n')
+        s = s:gsub('\\r', '\\\\r')
+        s = s:gsub('\\t', '\\\\t')
+        return s
+    end
 
     local waiters_count = redis.call('XLEN', waiters_stream)
     if waiters_count == 0 then
@@ -336,7 +361,7 @@ async def _scavenge_and_wake(
             redis.call('DEL', parked_prefix .. safeguard_key)
             redis.call('DEL', runs_prefix .. safeguard_key)
 
-            local payload = '{"type":"state","key":"' .. waiter_task_key .. '","state":"queued"}'
+            local payload = '{"type":"state","key":"' .. json_escape(waiter_task_key) .. '","state":"queued"}'
             redis.call('PUBLISH', state_prefix .. waiter_task_key, payload)
             woken = woken + 1
         end
@@ -544,6 +569,9 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         # Folding acquire-and-park together closes a race where a slot holder
         # releases in the gap between an acquire failure and a Python-side
         # park, leaving the blocked task with nothing to wake it.
+        park_state_payload = json.dumps(
+            {"type": "state", "key": execution.key, "state": "scheduled"}
+        )
         async with docket.redis() as redis:
             result = await _acquire_or_park(
                 redis,
@@ -560,6 +588,7 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                 message_id=execution.message_id,
                 worker_group_name=docket.worker_group_name,
                 state_channel=f"{docket.prefix}:state:{execution.key}",
+                state_payload=park_state_payload,
                 message=message,
             )
 

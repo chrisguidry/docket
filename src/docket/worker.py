@@ -144,6 +144,20 @@ async def _stream_due_tasks(
     docket_prefix: Arg[str],
 ) -> tuple[int, int]:
     """
+    -- Inline JSON-string escaper for the common cases (`\\`, `"`, and the
+    -- three named whitespace controls).  Task keys are user-supplied: if a
+    -- caller passes a key containing other control characters (NUL, BEL,
+    -- VT, FF, ESC, etc.) the published payload will not parse as strict
+    -- JSON.  GIGO -- callers should give us readable keys.
+    local function json_escape(s)
+        s = s:gsub('\\\\', '\\\\\\\\')
+        s = s:gsub('"', '\\\\"')
+        s = s:gsub('\\n', '\\\\n')
+        s = s:gsub('\\r', '\\\\r')
+        s = s:gsub('\\t', '\\\\t')
+        return s
+    end
+
     local total_work = redis.call('ZCARD', queue_key)
     local due_work = 0
 
@@ -177,7 +191,7 @@ async def _stream_due_tasks(
 
                 -- Publish state change event to pub/sub
                 local channel = docket_prefix .. ":state:" .. task['key']
-                local payload = '{"type":"state","key":"' .. task['key'] .. '","state":"queued","when":"' .. task['when'] .. '"}'
+                local payload = '{"type":"state","key":"' .. json_escape(task['key']) .. '","state":"queued","when":"' .. task['when'] .. '"}'
                 redis.call('PUBLISH', channel, payload)
 
                 due_work = due_work + 1

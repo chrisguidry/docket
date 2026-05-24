@@ -28,6 +28,7 @@ async def _progress_write(
     *,
     progress_key: Key[str],
     payload: Arg[str],
+    clear_message: Arg[bool],
     fields: Args[dict[str, str]],
 ) -> bytes:
     """
@@ -36,7 +37,12 @@ async def _progress_write(
         hset_args[#hset_args + 1] = ARGV[i]
         hset_args[#hset_args + 1] = ARGV[i + 1]
     end
-    redis.call('HSET', progress_key, unpack(hset_args))
+    if #hset_args > 0 then
+        redis.call('HSET', progress_key, unpack(hset_args))
+    end
+    if clear_message then
+        redis.call('HDEL', progress_key, 'message')
+    end
     redis.call('PUBLISH', progress_key, payload)
     return 'OK'
     """
@@ -138,6 +144,7 @@ class ExecutionProgress:
                 redis,
                 progress_key=self._redis_key,
                 payload=json.dumps(payload),
+                clear_message=False,
                 fields={"total": str(total), "updated_at": updated_at},
             )
         self.total = total
@@ -169,7 +176,8 @@ class ExecutionProgress:
         """Update the progress status message.
 
         Args:
-            message: Status message describing current progress
+            message: Status message describing current progress, or
+                ``None`` to clear any previously-set message.
         """
         updated_at_dt = datetime.now(timezone.utc)
         updated_at = updated_at_dt.isoformat()
@@ -181,12 +189,16 @@ class ExecutionProgress:
             "message": message,
             "updated_at": updated_at,
         }
+        fields: dict[str, str] = {"updated_at": updated_at}
+        if message is not None:
+            fields["message"] = message
         async with self.docket.redis() as redis:
             await _progress_write(
                 redis,
                 progress_key=self._redis_key,
                 payload=json.dumps(payload),
-                fields={"message": message or "", "updated_at": updated_at},
+                clear_message=message is None,
+                fields=fields,
             )
         self.message = message
         self.updated_at = updated_at_dt
