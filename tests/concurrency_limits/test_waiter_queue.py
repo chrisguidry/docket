@@ -323,6 +323,94 @@ async def test_cancel_cleanup_script_drains_waiter_entry(docket: Docket):
         assert await redis.hget(runs_key, "waiter_entry_id") is None
 
 
+async def test_admission_blocked_handled_does_not_publish_failed_event(
+    docket: Docket, worker: Worker
+) -> None:
+    """A task parked by ``ConcurrencyLimit`` (``AdmissionBlocked(handled=True)``)
+    must NOT trigger the worker's safety-net ``mark_as_failed`` path.
+
+    The safety-net check at the end of ``process_completed_tasks`` only
+    fires when ``execution._acked`` is False, and the ``handled=True``
+    branch ``continue``s past it.  If anyone ever refactors that branch
+    away or stops short-circuiting, a parked task would observably emit
+    ``state=failed`` on its state channel even though the runs hash still
+    says ``scheduled``.  This test locks in the implicit invariant:
+    no ``failed`` event is ever published for a parked-but-not-yet-run
+    task whose ``handle_failure`` was a no-op admission denial.
+    """
+    import contextlib
+    import json
+
+    holder_started = asyncio.Event()
+    holder_may_finish = asyncio.Event()
+    contender_key = "admission-blocked-no-fail"
+
+    # Subscribe to the contender's state channel BEFORE we add it, so the
+    # park-time ``scheduled`` event and any (regression) ``failed`` event
+    # are both captured.
+    state_events: list[dict[str, object]] = []
+    ready = asyncio.Event()
+
+    async def collector() -> None:
+        async with docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
+            await pubsub.subscribe(docket.key(f"state:{contender_key}"))
+            ready.set()
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue  # pragma: no cover
+                data = message["data"]
+                payload = data.decode() if isinstance(data, bytes) else data
+                state_events.append(json.loads(payload))
+
+    collector_task = asyncio.create_task(collector())
+    await ready.wait()
+
+    async def the_task(
+        marker: str,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(max_concurrent=1),
+    ) -> None:
+        if marker == "holder":
+            holder_started.set()
+            await holder_may_finish.wait()
+
+    docket.register(the_task)
+
+    await docket.add(the_task, key="holder")("holder")
+    worker_task = asyncio.create_task(worker.run_until_finished())
+    await asyncio.wait_for(holder_started.wait(), timeout=5)
+
+    # Park the contender while the holder owns the only slot.
+    await docket.add(the_task, key=contender_key)("contender")
+
+    # Give parking + any (regression) safety-net path time to run.
+    await asyncio.sleep(0.2)
+
+    # While parked, the runs hash must say ``scheduled`` -- not ``failed``.
+    # This is the at-rest truth a regression would corrupt by overwriting
+    # via mark_as_failed.
+    async with docket.redis() as redis:
+        runs_state = await redis.hget(docket.key(f"runs:{contender_key}"), "state")
+    assert runs_state == b"scheduled", (
+        f"parked task's runs hash state must be 'scheduled' (the "
+        f"AdmissionBlocked.handled=True path must not have triggered "
+        f"the worker's safety-net mark_as_failed); got: {runs_state!r}"
+    )
+
+    holder_may_finish.set()
+    await asyncio.wait_for(worker_task, timeout=10)
+    await asyncio.sleep(0.05)
+    collector_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await collector_task
+
+    # No failed event should ever have hit the contender's state channel.
+    failed_events = [e for e in state_events if e.get("state") == "failed"]
+    assert not failed_events, (
+        f"AdmissionBlocked(handled=True) must not produce any state=failed "
+        f"events on the parked task's channel; got: {failed_events!r}"
+    )
+
+
 async def test_many_contending_tasks_all_run_exactly_once(docket: Docket):
     """Stress test: N tasks contending for 1 slot all eventually run, each
     exactly once, without duplicates or drops.  The structural correctness

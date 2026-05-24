@@ -309,6 +309,116 @@ async def test_custom_failure_handler_returning_true_still_acks_message(
         assert pending["pending"] == 0
 
 
+async def test_retry_path_marks_execution_acked(docket: Docket):
+    """A reschedule whose ``reschedule_message`` matches the execution's own
+    ``message_id`` (the Retry path) must flip ``_acked`` to True locally.
+
+    This is what stops the worker's safety net from firing a second
+    ``mark_as_failed`` on a task that ``Retry`` has just re-scheduled --
+    the safety net only checks ``execution._acked`` and the ``_schedule``
+    Lua's reschedule branch is responsible for the actual XACK+XDEL.
+
+    Pre-fix, ``schedule`` didn't touch ``_acked``, so the safety net
+    would observe ``False`` and overwrite the just-scheduled retry with
+    a terminal ``failed`` state.  Locking in this assignment guards
+    against accidentally dropping the ``if reschedule_message and
+    reschedule_message == self.message_id`` branch.
+    """
+
+    async def the_task() -> None: ...
+
+    docket.register(the_task)
+    await docket.add(the_task, key="retry-acked")()
+
+    async with docket.redis() as redis:
+        entries = await redis.xrange(docket.stream_key, count=10)
+    msg_id, message = next(
+        (mid, msg) for mid, msg in entries if msg[b"key"] == b"retry-acked"
+    )
+    execution = await Execution.from_message(docket, message, message_id=msg_id)
+    assert execution._acked is False  # pyright: ignore[reportPrivateUsage]
+
+    # Drive the same call shape Retry.handle_failure uses: replace=True,
+    # reschedule_message=execution.message_id.
+    await execution.schedule(replace=True, reschedule_message=execution.message_id)
+
+    assert execution._acked is True, (  # pyright: ignore[reportPrivateUsage]
+        "schedule() with reschedule_message == self.message_id must set "
+        "_acked=True so the worker safety net does not double-fire "
+        "mark_as_failed on a successfully-rescheduled retry"
+    )
+
+
+async def test_safety_net_publishes_failed_state_event_with_no_error(
+    docket: Docket, worker: Worker
+):
+    """Lock in the observable shape of the safety-net's published event.
+
+    When a custom ``FailureHandler`` returns True without taking action,
+    the worker's safety net fires ``mark_as_failed(error=None)``.  The
+    resulting state-channel event reports ``state=failed`` and carries
+    NO ``error`` field (since none was supplied).  Anyone alerting on
+    ``state=failed && !error`` needs to know this is the safety-net
+    signature -- not a regression where error reporting got lost.
+    """
+    import contextlib
+    import json
+
+    class JustLog(FailureHandler["JustLog"]):
+        async def __aenter__(self) -> "JustLog":
+            return self
+
+        async def handle_failure(
+            self, execution: Execution, outcome: TaskOutcome
+        ) -> bool:
+            return True
+
+    async def the_task(value: str, handler: JustLog = JustLog()):
+        raise RuntimeError(f"boom: {value}")
+
+    task_key = "safety-net-event"
+    state_events: list[dict[str, object]] = []
+    ready = asyncio.Event()
+
+    async def collector() -> None:
+        async with docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
+            await pubsub.subscribe(docket.key(f"state:{task_key}"))
+            ready.set()
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue  # pragma: no cover
+                data = message["data"]
+                payload = data.decode() if isinstance(data, bytes) else data
+                state_events.append(json.loads(payload))
+
+    collector_task = asyncio.create_task(collector())
+    await ready.wait()
+
+    await docket.add(the_task, key=task_key)("once")
+    await worker.run_until_finished()
+    await asyncio.sleep(0.05)
+
+    collector_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await collector_task
+
+    failed_events = [e for e in state_events if e.get("state") == "failed"]
+    assert len(failed_events) == 1, (
+        f"safety net should have published exactly one state=failed event; "
+        f"got: {state_events!r}"
+    )
+    failed = failed_events[0]
+    assert "error" not in failed, (
+        f"safety-net mark_as_failed(error=None) must NOT include an "
+        f"'error' field in the state event payload; got: {failed!r}"
+    )
+    assert "completed_at" in failed, (
+        f"safety-net failed event must include 'completed_at'; got: {failed!r}"
+    )
+    assert failed.get("key") == task_key
+    assert failed.get("type") == "state"
+
+
 async def test_dependencies_error_for_missing_task_argument(
     docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
 ):

@@ -154,3 +154,65 @@ async def test_concurrency_park_payload_is_parseable_with_weird_key(
         assert msg.get("key") == WEIRD_KEY, (
             f"key round-trip failed in state event: {msg!r}"
         )
+
+
+async def test_concurrency_wake_payload_is_parseable_with_weird_key(
+    docket: Docket,
+    worker: Worker,
+    state_messages: list[dict[str, object]],
+) -> None:
+    """``_release_and_wake`` Lua publishes a ``queued`` state event when
+    moving a parked waiter back into the main stream.  The payload is built
+    inside Lua with the partial JSON escaper, so a weird task key must
+    still round-trip as parseable JSON when the wake fires.
+
+    Pairs with ``test_concurrency_park_payload_is_parseable_with_weird_key``:
+    that test covers the ``scheduled`` event from the park path; this one
+    covers the ``queued`` event from the wake path, which uses a different
+    Lua escape site.
+    """
+    messages = state_messages
+
+    holder_started = asyncio.Event()
+    holder_may_finish = asyncio.Event()
+    weird_task_started = asyncio.Event()
+
+    async def the_task(
+        marker: str,
+        limit: ConcurrencyLimit = ConcurrencyLimit(max_concurrent=1),
+    ) -> None:
+        if marker == "holder":
+            holder_started.set()
+            await holder_may_finish.wait()
+        else:
+            weird_task_started.set()
+
+    docket.register(the_task)
+
+    # Holder grabs the only slot first, so the weird-key task is forced
+    # to park.  Once the holder finishes, ``_release_and_wake`` runs and
+    # publishes the wake's ``queued`` event for the weird key.
+    await docket.add(the_task, key="holder")("holder")
+    worker_task = asyncio.create_task(worker.run_until_finished())
+    await asyncio.wait_for(holder_started.wait(), timeout=5)
+
+    await docket.add(the_task, key=WEIRD_KEY)("contender")
+    # Give the parking script time to publish its scheduled event first.
+    await asyncio.sleep(0.1)
+
+    # Release the holder.  _release_and_wake forwards the weird-key
+    # waiter back into the main stream and PUBLISHes the queued event
+    # we care about here.
+    holder_may_finish.set()
+    await asyncio.wait_for(weird_task_started.wait(), timeout=5)
+    await asyncio.wait_for(worker_task, timeout=10)
+    await asyncio.sleep(0.05)
+
+    assert any(msg.get("state") == "queued" for msg in messages), (
+        f"subscriber should have seen a queued state event from "
+        f"_release_and_wake; got: {messages!r}"
+    )
+    for msg in messages:
+        assert msg.get("key") == WEIRD_KEY, (
+            f"key round-trip failed in state event: {msg!r}"
+        )
