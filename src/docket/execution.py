@@ -294,12 +294,16 @@ async def _claim(
 
     -- Initialize progress tracking, tagged with the claimer's generation so
     -- a stale predecessor finishing later can tell whether the progress hash
-    -- is still ours to clean up (see _terminal SUPERSEDED branch).
+    -- is still ours to clean up (see _terminal SUPERSEDED branch).  Also
+    -- drop any ``message``/``updated_at`` left behind by the previous
+    -- generation -- HSET doesn't remove optional fields, so without this
+    -- HDEL the successor's progress view would surface stale metadata.
     redis.call('HSET', progress_key,
         'current', '0',
         'total', '100',
         'generation', generation
     )
+    redis.call('HDEL', progress_key, 'message', 'updated_at')
 
     -- Delete known/stream_id fields to allow task rescheduling
     redis.call('HDEL', runs_key, 'known', 'stream_id')

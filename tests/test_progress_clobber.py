@@ -118,6 +118,71 @@ async def test_superseded_terminal_preserves_successor_progress(
     )
 
 
+async def test_successor_claim_clears_stale_message_and_updated_at(
+    docket: Docket,
+    cleanup_executions: list[Execution],
+) -> None:
+    """A successor's ``_claim`` must wipe ``message``/``updated_at`` left
+    behind by the previous generation's progress reports.
+
+    ``_claim`` only ``HSET``s ``current``/``total``/``generation`` on the
+    shared progress hash.  Without an explicit ``HDEL`` of the optional
+    fields, a stale ``message`` and ``updated_at`` from the predecessor's
+    last ``set_message`` call survive into the successor's view, and
+    ``sync()``/state subscribers report metadata that doesn't belong to
+    the new attempt.
+    """
+
+    async def noop() -> None: ...
+
+    docket.register(noop)
+
+    key = "claim-clears-stale"
+    await docket.add(noop, key=key)()
+    async with docket.redis() as redis:
+        messages = await redis.xrange(docket.stream_key, count=10)
+    msg_id, message = next(
+        (mid, msg) for mid, msg in messages if msg[b"key"] == key.encode()
+    )
+    stale = await Execution.from_message(docket, message, message_id=msg_id)
+    assert await stale.claim("worker-A")
+
+    # Predecessor reports a message and bumps progress.
+    await stale.progress.set_total(10)
+    await stale.progress.increment(4)
+    await stale.progress.set_message("from the old attempt")
+
+    # Successor takes over.  Bump generation directly so we can re-claim
+    # against the same runs hash without going through the worker.
+    async with docket.redis() as redis:
+        await redis.hincrby(stale._redis_key, "generation", 1)  # pyright: ignore[reportPrivateUsage]
+    successor = Execution(
+        docket=docket,
+        function=noop,
+        args=(),
+        kwargs={},
+        key=key,
+        when=datetime.now(timezone.utc),
+        attempt=1,
+        generation=2,
+    )
+    assert await successor.claim("worker-B")
+    cleanup_executions.append(successor)
+
+    # The successor's view should report a clean slate -- no leftover
+    # ``message`` or ``updated_at`` from the predecessor.
+    await successor.progress.sync()
+    assert successor.progress.current == 0
+    assert successor.progress.total == 100
+    assert successor.progress.message is None, (
+        f"successor saw stale message from predecessor: {successor.progress.message!r}"
+    )
+    assert successor.progress.updated_at is None, (
+        f"successor saw stale updated_at from predecessor: "
+        f"{successor.progress.updated_at!r}"
+    )
+
+
 async def test_superseded_terminal_dels_progress_when_no_generation_tag(
     docket: Docket,
     cleanup_executions: list[Execution],
