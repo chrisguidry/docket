@@ -71,6 +71,56 @@ async def test_docket_schedule_is_idempotent_per_key(
     assert len(snapshot.future) == 1
 
 
+async def test_already_scheduled_preserves_first_calls_args_and_when(
+    docket: Docket, the_task: AsyncMock
+):
+    """``add()`` with a duplicate key is a no-op: the persisted task in
+    Redis still reflects the FIRST call's ``when`` / args / function, not
+    the intruder's.  The disposition alone (``ALREADY_SCHEDULED``) doesn't
+    prove this -- a regression could silently overwrite args while still
+    returning the correct disposition.
+
+    Locks in the ``_schedule`` Lua's ``'EXISTS'`` early-return branch
+    against a future change that, for example, decided to "merge" or
+    "upgrade" duplicate adds.
+    """
+    from docket import Disposition
+
+    docket.register(the_task)
+    first_when = datetime.now(timezone.utc) + timedelta(seconds=60)
+
+    first = await docket.add(the_task, when=first_when, key="dup-args")(
+        "first-arg", kwarg1="first-kwarg"
+    )
+    assert first.disposition is Disposition.SCHEDULED
+
+    # Intruder: different args, different when, same key.
+    intruder_when = first_when + timedelta(seconds=120)
+    second = await docket.add(the_task, when=intruder_when, key="dup-args")(
+        "intruder-arg", kwarg1="intruder-kwarg"
+    )
+    assert second.disposition is Disposition.ALREADY_SCHEDULED
+
+    # The persisted task in Redis must still describe the FIRST call.
+    persisted = await docket.get_execution("dup-args")
+    assert persisted is not None
+    assert persisted.args == ("first-arg",), (
+        f"intruder add() must not have rewritten the persisted args; "
+        f"got: {persisted.args!r}"
+    )
+    assert persisted.kwargs == {"kwarg1": "first-kwarg"}, (
+        f"intruder add() must not have rewritten the persisted kwargs; "
+        f"got: {persisted.kwargs!r}"
+    )
+    # The persisted ``when`` should match the first call's, not the intruder's.
+    # Allow a tiny tolerance for serialization round-trip (timestamps are
+    # stored as floats then re-parsed via fromisoformat).
+    assert abs((persisted.when - first_when).total_seconds()) < 0.001, (
+        f"intruder add() must not have rewritten the persisted when; "
+        f"expected {first_when.isoformat()}, got: {persisted.when.isoformat()}"
+    )
+
+
 async def test_get_execution_nonexistent_key(docket: Docket):
     """get_execution should return None for non-existent key."""
     execution = await docket.get_execution("nonexistent-key")

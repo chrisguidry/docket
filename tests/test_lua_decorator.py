@@ -358,6 +358,53 @@ def test_missing_key_parameter_is_rejected_at_decoration_time() -> None:
             ...
 
 
+async def test_encode_scalar_rejects_none(docket: Docket) -> None:
+    """Passing ``None`` for an ``Arg[str]`` raises ``TypeError`` immediately.
+
+    The TypeVar bound on ``Arg[T]`` catches obvious mistakes at decoration
+    time, but a payload dict built dynamically (the ``extra_fields`` list
+    in ``_terminal`` is the canonical example) can still smuggle ``None``
+    through.  We want the failure to surface here -- with a precise local
+    message naming the bad value -- instead of as an opaque DataError from
+    redis-py three frames down.
+    """
+    async with docket.redis() as redis:
+        with pytest.raises(TypeError, match="must be str/bytes/int/float/bool"):
+            await _echo_keys_and_args(
+                redis,
+                first_key=_k(docket, "k1"),
+                second_key=_k(docket, "k2"),
+                first_arg="ok",
+                second_arg=None,  # type: ignore[arg-type]
+            )
+
+
+async def test_encode_scalar_rejects_variadic_with_unsupported_element(
+    docket: Docket,
+) -> None:
+    """Variadic ``Args[list[str]]`` elements go through the same encoder,
+    so a ``None`` (or any non-scalar) hiding inside the list also raises."""
+    async with docket.redis() as redis:
+        with pytest.raises(TypeError, match="must be str/bytes/int/float/bool"):
+            await _echo_list(
+                redis,
+                key=_k(docket, "k"),
+                items=["ok", None, "also-ok"],
+            )
+
+
+async def test_encode_scalar_rejects_dict_value(docket: Docket) -> None:
+    """Variadic ``Args[dict[str, str]]`` values flow through the encoder too,
+    so a ``None`` value raises just like a None list element."""
+    async with docket.redis() as redis:
+        with pytest.raises(TypeError, match="must be str/bytes/int/float/bool"):
+            await _echo_dict(
+                redis,
+                key=_k(docket, "k"),
+                fields={"good": "ok", "bad": None},
+            )
+
+
 def test_arg_after_args_is_rejected_at_decoration_time() -> None:
     """``Args[...]`` must be the trailing parameter.
 

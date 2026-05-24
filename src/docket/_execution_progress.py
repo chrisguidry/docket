@@ -1,5 +1,6 @@
 """Progress tracking for task executions."""
 
+import asyncio
 import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -246,8 +247,17 @@ class ExecutionProgress:
         }
         await self.docket._publish(channel, json.dumps(payload))
 
-    async def subscribe(self) -> AsyncGenerator[ProgressEvent, None]:
+    async def subscribe(
+        self, *, ready: asyncio.Event | None = None
+    ) -> AsyncGenerator[ProgressEvent, None]:
         """Subscribe to progress updates for this task.
+
+        Args:
+            ready: Optional ``asyncio.Event`` that is ``set()`` once the
+                Redis ``SUBSCRIBE`` has been acknowledged.  Lets callers
+                deterministically wait until the subscription is live
+                before publishing -- avoids the race where early events
+                are dropped because the subscriber hadn't connected yet.
 
         Yields:
             Dict containing progress update events with fields:
@@ -261,6 +271,8 @@ class ExecutionProgress:
         channel = self.docket.key(f"progress:{self.key}")
         async with self.docket._pubsub() as pubsub:
             await pubsub.subscribe(channel)
+            if ready is not None:
+                ready.set()
             async for message in pubsub.listen():  # pragma: no cover
                 if message["type"] == "message":
                     yield json.loads(message["data"])

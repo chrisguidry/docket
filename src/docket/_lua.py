@@ -122,7 +122,18 @@ def _encode_scalar(value: Any) -> str | bytes | int | float:
         return "1" if value else "0"
     if isinstance(value, (int, float)):
         return str(value)
-    return value
+    if isinstance(value, (str, bytes)):
+        return value
+    # The ``Arg[T]`` / ``Args[T]`` TypeVar bounds catch unsupported types
+    # at decoration time, but a payload dict built dynamically (e.g. the
+    # ``extra_fields`` list in ``_terminal``) can still smuggle a ``None``
+    # or other unsupported value through at call time.  Reject it here
+    # so the failure surfaces with a precise local message instead of an
+    # opaque ``DataError`` from redis-py several frames down.
+    raise TypeError(
+        f"@redis_script value must be str/bytes/int/float/bool, "
+        f"got {type(value).__name__}: {value!r}"
+    )
 
 
 def _expand_args(value: Any) -> list[Any]:

@@ -1,4 +1,3 @@
-import asyncio
 import decimal
 from datetime import timedelta
 import os
@@ -10,6 +9,7 @@ import pytest
 from docket.cli import interpret_python_value
 from docket.docket import Docket
 from tests.cli.run import run_cli
+from tests.conftest import wait_until
 
 # Skip CLI tests when using memory backend since CLI rejects memory:// URLs
 pytestmark = pytest.mark.skipif(
@@ -36,9 +36,10 @@ async def test_strike(docket: Docket):
 
     assert "Striking example_task some_parameter == 'some_value'" in result.output
 
-    await asyncio.sleep(0.25)
-
-    assert "example_task" in docket.strike_list.task_strikes
+    await wait_until(
+        lambda: "example_task" in docket.strike_list.task_strikes,
+        description="example_task strike to propagate via CLI",
+    )
 
 
 async def test_restore(docket: Docket):
@@ -62,9 +63,10 @@ async def test_restore(docket: Docket):
 
     assert "Restoring example_task some_parameter == 'some_value'" in result.output
 
-    await asyncio.sleep(0.25)
-
-    assert "example_task" not in docket.strike_list.task_strikes
+    await wait_until(
+        lambda: "example_task" not in docket.strike_list.task_strikes,
+        description="example_task restore to propagate via CLI",
+    )
 
 
 async def test_task_only_strike(docket: Docket):
@@ -81,9 +83,10 @@ async def test_task_only_strike(docket: Docket):
     assert result.exit_code == 0, result.output
     assert "Striking example_task" in result.output
 
-    await asyncio.sleep(0.25)
-
-    assert "example_task" in docket.strike_list.task_strikes
+    await wait_until(
+        lambda: "example_task" in docket.strike_list.task_strikes,
+        description="example_task strike to propagate via CLI",
+    )
 
 
 async def test_task_only_restore(docket: Docket):
@@ -102,9 +105,10 @@ async def test_task_only_restore(docket: Docket):
     assert result.exit_code == 0, result.output
     assert "Restoring example_task" in result.output
 
-    await asyncio.sleep(0.25)
-
-    assert "example_task" not in docket.strike_list.task_strikes
+    await wait_until(
+        lambda: "example_task" not in docket.strike_list.task_strikes,
+        description="example_task restore to propagate via CLI",
+    )
 
 
 async def test_parameter_only_strike(docket: Docket):
@@ -124,9 +128,11 @@ async def test_parameter_only_strike(docket: Docket):
     assert result.exit_code == 0, result.output
     assert "Striking (all tasks) some_parameter == 'some_value'" in result.output
 
-    await asyncio.sleep(0.25)
+    await wait_until(
+        lambda: "some_parameter" in docket.strike_list.parameter_strikes,
+        description="some_parameter strike to propagate via CLI",
+    )
 
-    assert "some_parameter" in docket.strike_list.parameter_strikes
     parameter_strikes = docket.strike_list.parameter_strikes["some_parameter"]
     assert ("==", "some_value") in parameter_strikes
 
@@ -151,9 +157,10 @@ async def test_parameter_only_restore(docket: Docket):
     assert result.exit_code == 0, result.output
     assert "Restoring (all tasks) some_parameter == 'some_value'" in result.output
 
-    await asyncio.sleep(0.25)
-
-    assert "some_parameter" not in docket.strike_list.parameter_strikes
+    await wait_until(
+        lambda: "some_parameter" not in docket.strike_list.parameter_strikes,
+        description="some_parameter restore to propagate via CLI",
+    )
 
 
 @pytest.mark.parametrize("operation", ["strike", "restore"])
