@@ -24,8 +24,7 @@ from docket.execution import Execution
 
 
 async def _make_execution(docket: Docket) -> Execution:
-    async def the_task() -> None:
-        pass
+    async def the_task() -> None: ...
 
     docket.register(the_task)
     return await docket.add(the_task)()

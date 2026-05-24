@@ -19,6 +19,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -36,9 +37,14 @@ WEIRD_KEY = 'weird"key\nwith\\backslash\tand\r\nctrl'
 
 @pytest.fixture
 async def state_messages(docket: Docket):
-    """Collect state events for WEIRD_KEY in the background."""
+    """Collect state events for WEIRD_KEY in the background.
+
+    Payloads are run through ``json.loads`` directly -- if escape ever
+    regresses and emits invalid JSON the collector raises here and the
+    awaiting test sees the failure (rather than us silently dropping
+    bad payloads on the floor).
+    """
     messages: list[dict[str, object]] = []
-    errors: list[str] = []
     ready = asyncio.Event()
 
     async def collector() -> None:
@@ -47,34 +53,29 @@ async def state_messages(docket: Docket):
             ready.set()
             async for message in pubsub.listen():
                 if message["type"] != "message":
-                    continue
+                    continue  # pragma: no cover
                 data = message["data"]
                 payload = data.decode() if isinstance(data, bytes) else data
-                try:
-                    messages.append(json.loads(payload))
-                except json.JSONDecodeError as e:
-                    errors.append(f"{e}: {payload!r}")
+                messages.append(json.loads(payload))
 
     task = asyncio.create_task(collector())
     await ready.wait()
     try:
-        yield messages, errors
+        yield messages
     finally:
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError, json.JSONDecodeError):
             await task
-        except asyncio.CancelledError:
-            pass
 
 
 async def test_stream_due_tasks_payload_is_parseable_with_weird_key(
     docket: Docket,
     worker: Worker,
-    state_messages: tuple[list[dict[str, object]], list[str]],
+    state_messages: list[dict[str, object]],
 ) -> None:
     """``_stream_due_tasks`` Lua must emit JSON-parseable state events even
     when the task key contains ``"`` / ``\\n`` / control chars."""
-    messages, errors = state_messages
+    messages = state_messages
 
     async def the_task() -> None:
         pass
@@ -94,7 +95,6 @@ async def test_stream_due_tasks_payload_is_parseable_with_weird_key(
     # Drain a beat to let subscriber events flush.
     await asyncio.sleep(0.05)
 
-    assert not errors, f"subscribers saw unparsable JSON: {errors}"
     assert any(msg.get("state") == "queued" for msg in messages), (
         f"subscriber should have seen a queued state event from "
         f"_stream_due_tasks; got: {messages!r}"
@@ -109,12 +109,12 @@ async def test_stream_due_tasks_payload_is_parseable_with_weird_key(
 async def test_concurrency_park_payload_is_parseable_with_weird_key(
     docket: Docket,
     worker: Worker,
-    state_messages: tuple[list[dict[str, object]], list[str]],
+    state_messages: list[dict[str, object]],
 ) -> None:
     """``_acquire_or_park`` Lua publishes a ``scheduled`` state event when
     parking a task on the waiter stream.  The payload must remain parseable
     when the task key contains awkward characters."""
-    messages, errors = state_messages
+    messages = state_messages
 
     started_first = asyncio.Event()
     let_first_finish = asyncio.Event()
@@ -128,21 +128,25 @@ async def test_concurrency_park_payload_is_parseable_with_weird_key(
 
     docket.register(the_task)
 
-    # First task holds the only slot.
+    # Schedule the holder and start the worker so it grabs the slot
+    # before the weird-key task is even added.  Without this ordering,
+    # both tasks land in the stream and the worker may claim the
+    # weird-key one first, in which case it never parks (it just gets
+    # the slot) and the ``scheduled`` state event we are testing for
+    # is never emitted.
     await docket.add(the_task, key="holder")()
-    # Second task with the weird key parks on the waiter stream.
-    await docket.add(the_task, key=WEIRD_KEY)()
-
     worker_task = asyncio.create_task(worker.run_until_finished())
-
     await asyncio.wait_for(started_first.wait(), timeout=5)
+
+    # Holder is running and holding the only slot.  Now add the
+    # weird-key task -- it must park on the waiter stream.
+    await docket.add(the_task, key=WEIRD_KEY)()
     # Give the parking script a moment to publish.
     await asyncio.sleep(0.1)
     let_first_finish.set()
     await asyncio.wait_for(worker_task, timeout=10)
     await asyncio.sleep(0.05)
 
-    assert not errors, f"subscribers saw unparsable JSON: {errors}"
     assert any(msg.get("state") == "scheduled" for msg in messages), (
         f"subscriber should have seen a scheduled (parked) state event "
         f"from _acquire_or_park; got: {messages!r}"

@@ -12,13 +12,33 @@ The fix is to HDEL both fields inside the reschedule branch of
 
 from __future__ import annotations
 
+import contextlib
+from typing import AsyncGenerator
+
+import pytest
+
 from docket import Docket
 from docket.execution import Execution
 
 
-async def test_reschedule_clears_worker_and_started_at(docket: Docket) -> None:
-    async def the_task() -> None:
-        pass
+@pytest.fixture
+async def cleanup_executions() -> AsyncGenerator[list[Execution], None]:
+    """Executions whose runs+progress hashes should be closed out at
+    teardown.  Ensures the key-leak checker sees TTLs on every key the
+    test touched even when an assertion mid-test raises.
+    """
+    pending: list[Execution] = []
+    yield pending
+    for execution in pending:
+        with contextlib.suppress(Exception):
+            await execution.mark_as_completed()
+
+
+async def test_reschedule_clears_worker_and_started_at(
+    docket: Docket,
+    cleanup_executions: list[Execution],
+) -> None:
+    async def the_task() -> None: ...
 
     docket.register(the_task)
 
@@ -52,6 +72,7 @@ async def test_reschedule_clears_worker_and_started_at(docket: Docket) -> None:
         when=execution.when,
         attempt=1,
     )
+    cleanup_executions.append(rehydrated)
     await rehydrated.sync()
 
     assert rehydrated.worker is None, (

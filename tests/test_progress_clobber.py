@@ -15,19 +15,38 @@ behavior: always DEL.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timezone
+from typing import AsyncGenerator
+
+import pytest
 
 from docket import Docket
 from docket.execution import Execution
 
 
+@pytest.fixture
+async def cleanup_executions() -> AsyncGenerator[list[Execution], None]:
+    """Executions whose runs+progress hashes should be closed out at
+    teardown.  The tests below race generations directly through Redis
+    without going through the worker, so nothing else completes these
+    executions for us; running the cleanup as a fixture ensures it fires
+    even if an assertion mid-test raises.
+    """
+    pending: list[Execution] = []
+    yield pending
+    for execution in pending:
+        with contextlib.suppress(Exception):
+            await execution.mark_as_completed()
+
+
 async def test_superseded_terminal_preserves_successor_progress(
     docket: Docket,
+    cleanup_executions: list[Execution],
 ) -> None:
     """A stale gen=1's ``_terminal`` must not clobber gen=2's progress hash."""
 
-    async def noop() -> None:
-        pass  # pragma: no cover
+    async def noop() -> None: ...
 
     docket.register(noop)
 
@@ -63,6 +82,7 @@ async def test_superseded_terminal_preserves_successor_progress(
         generation=2,
     )
     assert await successor.claim("worker-B")
+    cleanup_executions.append(successor)
     # Successor reports some progress.
     await successor.progress.set_total(7)
     await successor.progress.increment(3)
@@ -100,13 +120,13 @@ async def test_superseded_terminal_preserves_successor_progress(
 
 async def test_superseded_terminal_dels_progress_when_no_generation_tag(
     docket: Docket,
+    cleanup_executions: list[Execution],
 ) -> None:
     """Pre-fix progress hashes (no generation tag) keep being DELed on
     SUPERSEDED, preserving backwards-compat during a mixed-version upgrade.
     """
 
-    async def noop() -> None:
-        pass  # pragma: no cover
+    async def noop() -> None: ...
 
     docket.register(noop)
 
@@ -138,4 +158,19 @@ async def test_superseded_terminal_dels_progress_when_no_generation_tag(
     assert after == {}, (
         f"untagged progress hash should be DELed on SUPERSEDED for "
         f"backwards-compat, got: {after!r}"
+    )
+
+    # Register a synthetic gen=2 successor for cleanup so the key-leak
+    # checker doesn't flag the runs hash this test left behind.
+    cleanup_executions.append(
+        Execution(
+            docket=docket,
+            function=noop,
+            args=(),
+            kwargs={},
+            key=key,
+            when=datetime.now(timezone.utc),
+            attempt=1,
+            generation=2,
+        )
     )
