@@ -77,8 +77,7 @@ async def test_stream_due_tasks_payload_is_parseable_with_weird_key(
     when the task key contains ``"`` / ``\\n`` / control chars."""
     messages = state_messages
 
-    async def the_task() -> None:
-        pass
+    async def the_task() -> None: ...
 
     docket.register(the_task)
 
