@@ -387,3 +387,41 @@ async def test_perpetual_successor_survives_mark_as_terminal(
         f"Successor when={when}, expected ~1h after {before.timestamp()} "
         f"(execution_ttl={docket.execution_ttl})"
     )
+
+
+async def test_mark_as_terminal_when_runs_hash_already_cleaned_up(docket: Docket):
+    """When a stale execution finishes after its successor's runs hash has
+    already been TTL-expired (or DELed via execution_ttl=0), _terminal must
+    treat it as superseded and NOT recreate the runs hash with malformed
+    fields.  Mirrors the `not current` arm that _claim already has.
+    """
+
+    async def noop():
+        pass  # pragma: no cover
+
+    # Schedule once to produce a real Execution with generation=1.
+    await docket.add(noop, key="stale-after-cleanup")()
+
+    async with docket.redis() as redis:
+        messages = await redis.xrange(docket.stream_key, count=1)
+    _, message = messages[0]
+    stale = await Execution.from_message(docket, message)
+    assert stale.generation == 1
+
+    # Simulate the successor having completed and its runs hash having been
+    # cleaned up (either execution_ttl=0 or TTL expiry).
+    runs_key = docket.key("runs:stale-after-cleanup")
+    async with docket.redis() as redis:
+        await redis.delete(runs_key)
+
+    # Now the stale execution finishes.  Before the fix, this would HSET
+    # `{state, completed_at}` onto the empty key (and either EXPIRE or DEL).
+    await stale.mark_as_completed()
+
+    async with docket.redis() as redis:
+        runs_data: dict[bytes, bytes] = await redis.hgetall(runs_key)
+
+    assert runs_data == {}, (
+        f"runs hash was resurrected with malformed fields after supersession: "
+        f"{runs_data!r}"
+    )

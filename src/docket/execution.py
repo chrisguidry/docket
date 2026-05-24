@@ -103,9 +103,13 @@ async def _schedule(
         end
     end
 
-    -- Handle rescheduling from stream: atomically ACK message and reschedule to queue
-    -- This prevents both task loss (ACK before reschedule) and duplicate execution
-    -- (reschedule before ACK with slow reschedule causing redelivery)
+    -- Handle rescheduling from stream: atomically ACK the original message and
+    -- re-route the task.  Prevents both task loss (ACK before reschedule) and
+    -- duplicate execution (reschedule before ACK with slow reschedule causing
+    -- redelivery).  Honors is_immediate so a retry with delay=0 lands in the
+    -- stream right away instead of waiting for the scheduler poll.  Sets
+    -- 'known' so a concurrent docket.add() for the same key dedups against
+    -- this rescheduled task.
     if reschedule_message_id ~= '' then
         -- Acknowledge and delete the message from the stream
         redis.call('XACK', stream_key, worker_group_name, reschedule_message_id)
@@ -117,21 +121,32 @@ async def _schedule(
             message[generation_index] = tostring(new_gen)
         end
 
-        -- Park task data for future execution
-        redis.call('HSET', parked_key, unpack(message))
-
-        -- Add to sorted set queue
-        redis.call('ZADD', queue_key, when_timestamp, task_key)
-
-        -- Update state in runs hash (clear stream_id since task is no longer in stream)
-        redis.call('HSET', runs_key,
-            'state', 'scheduled',
-            'when', when_timestamp,
-            'function', function_name,
-            'args', args_data,
-            'kwargs', kwargs_data
-        )
-        redis.call('HDEL', runs_key, 'stream_id')
+        if is_immediate then
+            -- Add directly to stream for immediate execution
+            local new_message_id = redis.call('XADD', stream_key, '*', unpack(message))
+            redis.call('HSET', runs_key,
+                'state', 'queued',
+                'when', when_timestamp,
+                'known', when_timestamp,
+                'stream_id', new_message_id,
+                'function', function_name,
+                'args', args_data,
+                'kwargs', kwargs_data
+            )
+        else
+            -- Park task data for future execution
+            redis.call('HSET', parked_key, unpack(message))
+            redis.call('ZADD', queue_key, when_timestamp, task_key)
+            redis.call('HSET', runs_key,
+                'state', 'scheduled',
+                'when', when_timestamp,
+                'known', when_timestamp,
+                'function', function_name,
+                'args', args_data,
+                'kwargs', kwargs_data
+            )
+            redis.call('HDEL', runs_key, 'stream_id')
+        end
 
         redis.call('PUBLISH', state_channel, state_payload)
 
@@ -230,24 +245,37 @@ async def _claim(
     known_key: Key[str],
     stream_id_key: Key[str],
     state_channel: Key[str],
+    stream_key: Key[str],
     worker: Arg[str],
     started_at: Arg[str],
     generation: Arg[int],
     state_payload: Arg[str],
+    worker_group_name: Arg[str],
+    message_id: Arg[bytes],
 ) -> bytes:
     """
     -- TODO: Remove known_key / stream_id_key handling in v0.14.0
     -- (legacy key locations).
 
-    -- Check supersession: generation > 0 means tracking is active
+    -- Check supersession: generation > 0 means tracking is active.  When the
+    -- claim is for a stale message we still ACK and XDEL it so the stream
+    -- entry doesn't linger -- nothing else will clean it up.
     if generation > 0 then
         local current = redis.call('HGET', runs_key, 'generation')
         if not current then
             -- Runs hash was cleaned up (execution_ttl=0 after
             -- a newer generation completed).  This message is stale.
+            if message_id ~= '' then
+                redis.call('XACK', stream_key, worker_group_name, message_id)
+                redis.call('XDEL', stream_key, message_id)
+            end
             return 'SUPERSEDED'
         end
         if tonumber(current) > generation then
+            if message_id ~= '' then
+                redis.call('XACK', stream_key, worker_group_name, message_id)
+                redis.call('XDEL', stream_key, message_id)
+            end
             return 'SUPERSEDED'
         end
     end
@@ -284,22 +312,37 @@ async def _terminal(
     *,
     runs_key: Key[str],
     state_channel: Key[str],
+    progress_key: Key[str],
+    stream_key: Key[str],
     generation: Arg[int],
     state: Arg[str],
     completed_at: Arg[str],
     ttl_seconds: Arg[int],
     state_payload: Arg[str],
+    worker_group_name: Arg[str],
+    message_id: Arg[bytes],
     extra_fields: Args[list[str]],
 ) -> bytes:
     """
-    -- Check supersession (generation 0 = pre-tracking, always write).  Even
-    -- when superseded we still publish the terminal-state event so
-    -- subscribers waiting on completion don't deadlock when a Perpetual
-    -- successor has already taken over the runs hash.
+    -- Check supersession (generation 0 = pre-tracking, always write).  Two
+    -- supersession shapes, both handled the same way:
+    --   * runs hash missing entirely -- a newer generation already completed
+    --     and its execution_ttl expired (or it was 0).
+    --   * runs hash present but its generation is newer -- a successor is in
+    --     flight or has just finished within its execution_ttl window.
+    -- In both cases we still publish the terminal-state event so subscribers
+    -- waiting on completion don't deadlock, and we still clean up this
+    -- execution's progress hash and stream entry.  We do NOT recreate or
+    -- mutate the runs hash on a supersession -- the successor owns it.
     if generation > 0 then
         local current = redis.call('HGET', runs_key, 'generation')
-        if current and tonumber(current) > generation then
+        if not current or tonumber(current) > generation then
             redis.call('PUBLISH', state_channel, state_payload)
+            redis.call('DEL', progress_key)
+            if message_id ~= '' then
+                redis.call('XACK', stream_key, worker_group_name, message_id)
+                redis.call('XDEL', stream_key, message_id)
+            end
             return 'SUPERSEDED'
         end
     end
@@ -319,6 +362,11 @@ async def _terminal(
     end
 
     redis.call('PUBLISH', state_channel, state_payload)
+    redis.call('DEL', progress_key)
+    if message_id ~= '' then
+        redis.call('XACK', stream_key, worker_group_name, message_id)
+        redis.call('XDEL', stream_key, message_id)
+    end
 
     return 'OK'
     """
@@ -416,6 +464,14 @@ class Execution:
         self._redelivered = redelivered
         self._generation = generation
         self.message_id = message_id
+
+        # True once the stream message identified by ``message_id`` has been
+        # XACKed (by ``_terminal``, ``_claim`` on SUPERSEDED, or ``_schedule``
+        # when re-routing this same message).  The worker uses this as a
+        # safety-net signal: anything that calls a ``FailureHandler`` whose
+        # ``handle_failure`` returns True without rescheduling will leave this
+        # False, and the worker can ack defensively.
+        self._acked: bool = False
 
         # Lifecycle state (mutable)
         self.state: ExecutionState = ExecutionState.SCHEDULED
@@ -619,10 +675,13 @@ class Execution:
         is_immediate = when <= datetime.now(timezone.utc)
 
         # The Lua takes the payload as a pre-formatted string so it can just
-        # call PUBLISH; cjson isn't available on the in-memory backend.
+        # call PUBLISH; cjson isn't available on the in-memory backend.  State
+        # is QUEUED when the task lands directly on the stream (any
+        # is_immediate path, including immediate retries), SCHEDULED when it's
+        # parked for a future time.
         published_state = (
             ExecutionState.QUEUED.value
-            if is_immediate and not reschedule_message
+            if is_immediate
             else ExecutionState.SCHEDULED.value
         )
         state_payload = json.dumps(
@@ -662,11 +721,16 @@ class Execution:
             self.disposition = Disposition.ALREADY_SCHEDULED
             return self.disposition
 
-        if reschedule_message or not is_immediate:
-            # Rescheduling from stream lands on the queue (never immediate).
-            self.state = ExecutionState.SCHEDULED
-        else:
+        if is_immediate:
             self.state = ExecutionState.QUEUED
+        else:
+            self.state = ExecutionState.SCHEDULED
+
+        # The reschedule branch in `_schedule` XACKed and XDELed the original
+        # stream message, so any caller passing in our own message_id has
+        # implicitly retired this Execution's pending entry.
+        if reschedule_message and reschedule_message == self.message_id:
+            self._acked = True
 
         self.disposition = Disposition.SCHEDULED
         return self.disposition
@@ -712,13 +776,20 @@ class Execution:
                     known_key=self.docket.known_task_key(self.key),
                     stream_id_key=self.docket.stream_id_key(self.key),
                     state_channel=self.docket.key(f"state:{self.key}"),
+                    stream_key=self.docket.stream_key,
                     worker=worker,
                     started_at=started_at_iso,
                     generation=self._generation,
                     state_payload=state_payload,
+                    worker_group_name=self.docket.worker_group_name,
+                    message_id=self.message_id or b"",
                 )
 
         if result == b"SUPERSEDED":
+            # The `_claim` Lua XACKed and XDELed the stale stream message
+            # before returning SUPERSEDED (skipping the ack when message_id
+            # is empty -- harmless either way).
+            self._acked = True
             return False
 
         self.state = ExecutionState.RUNNING
@@ -743,13 +814,13 @@ class Execution:
             error: Optional error message (for FAILED state)
             result_key: Optional key where the result/exception is stored
 
-        Uses a Lua script to atomically check supersession and write the
-        terminal state in a single round-trip.  If the runs hash has been
-        claimed by a successor (e.g. a Perpetual on_complete already called
-        docket.replace()), the hash is left untouched.
-
-        Progress data and the pub/sub completion event are always handled
-        regardless of supersession.
+        Uses a Lua script to atomically check supersession, write the
+        terminal state, publish the completion event, delete the progress
+        hash, and ACK/XDEL the stream message in a single round-trip.  If
+        the runs hash has been claimed by a successor (e.g. a Perpetual
+        on_complete already called docket.replace()), the hash is left
+        untouched, but progress cleanup, the completion event, and the
+        stream ACK/XDEL still happen.
         """
         completed_at = datetime.now(timezone.utc).isoformat()
 
@@ -784,11 +855,15 @@ class Execution:
                     redis,
                     runs_key=self._redis_key,
                     state_channel=self.docket.key(f"state:{self.key}"),
+                    progress_key=self.progress._redis_key,
+                    stream_key=self.docket.stream_key,
                     generation=self._generation,
                     state=state.value,
                     completed_at=completed_at,
                     ttl_seconds=ttl_seconds,
                     state_payload=state_payload,
+                    worker_group_name=self.docket.worker_group_name,
+                    message_id=self.message_id or b"",
                     extra_fields=extra_fields,
                 )
 
@@ -796,7 +871,16 @@ class Execution:
         if result_key is not None:
             self.result_key = result_key
 
-        await self.progress.delete()
+        self.progress.current = None
+        self.progress.total = 100
+        self.progress.message = None
+        self.progress.updated_at = None
+
+        # ``_terminal`` XACKs and XDELs the stream message inline on both
+        # the success and SUPERSEDED branches when message_id is set, and
+        # is a no-op for the XACK when it isn't.  Either way this Execution
+        # no longer needs the worker's safety-net ack.
+        self._acked = True
 
     async def mark_as_completed(self, result_key: str | None = None) -> None:
         """Mark task as completed successfully.
