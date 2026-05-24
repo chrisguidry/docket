@@ -10,6 +10,7 @@ from docket import Docket, ExecutionState, Worker
 from docket._execution_progress import StateEvent
 from docket.dependencies import CurrentExecution, Perpetual
 from docket.execution import Execution
+from tests.conftest import wait_until
 
 
 async def test_perpetual_task_with_ttl_zero(zero_ttl_docket: Docket) -> None:
@@ -78,14 +79,17 @@ async def test_perpetual_task_no_state_accumulation_with_ttl_zero(
 
         assert len(executions) == 5
 
-        # Small delay for Redis to process expirations
-        await asyncio.sleep(0.2)
+        # With execution_ttl=0, state records should be DELed by the
+        # final _terminal Lua.  Poll for the keys to clear instead of
+        # racing a fixed 200 ms sleep -- the deletion is in-band with
+        # the call we just awaited, so this almost always returns on
+        # the first poll.
+        async def no_state_records() -> bool:
+            async with zero_ttl_docket.redis() as redis:
+                keys = await redis.keys(f"{zero_ttl_docket.name}:runs:*")
+                return len(keys) == 0
 
-        # Check that we're not accumulating state records
-        # With TTL=0, state records should be deleted immediately
-        async with zero_ttl_docket.redis() as redis:  # pragma: no branch
-            keys = await redis.keys(f"{zero_ttl_docket.name}:runs:*")
-            assert len(keys) == 0, f"Should have no state records, found {len(keys)}"
+        await wait_until(no_state_records, description="all state records DELed")
 
 
 async def test_rapid_perpetual_tasks_no_conflicts(
@@ -134,21 +138,22 @@ async def test_perpetual_same_key_no_state_accumulation(
     # All should use the same key
     assert len(set(executions)) == 1
 
-    # Small delay for state TTL to take effect
-    await asyncio.sleep(0.5)
+    # Check state records - with default 15min TTL, the last completed state
+    # should exist.  The HSET in _terminal is in-band with run_at_most's
+    # last cycle, so this should be immediate -- poll instead of sleeping.
+    async def exactly_one_state_record() -> bool:
+        async with docket.redis() as redis:
+            # SCAN, not KEYS, since hash-tagged patterns break in cluster mode.
+            pattern = f"{docket.prefix}:runs:*"
+            count = 0
+            async for _ in redis.scan_iter(match=pattern):
+                count += 1
+            return count == 1
 
-    # Check state records - with default 15min TTL, the last completed state should exist
-    async with docket.redis() as redis:
-        # Since all executions share the same key, there should be exactly 1 state record
-        # Use SCAN instead of KEYS because KEYS with hash-tagged patterns doesn't work
-        # reliably in cluster mode (curly braces confuse pattern matching)
-        pattern = f"{docket.prefix}:runs:*"
-        keys: list[bytes] = []
-        async for key in redis.scan_iter(match=pattern):
-            keys.append(key)
-        assert len(keys) == 1, (
-            f"Should have exactly one state record, found {len(keys)}"
-        )
+    await wait_until(
+        exactly_one_state_record,
+        description="exactly one runs:* state record",
+    )
 
 
 async def test_perpetual_task_state_transitions_with_same_key(

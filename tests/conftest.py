@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import socket
 import sys
 from datetime import datetime, timedelta, timezone
 from functools import partial
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Generator
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, Generator
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -38,6 +39,36 @@ skip_cluster = pytest.mark.skipif(
     CLUSTER_ENABLED,
     reason="requires a non-clustered Redis (test bypasses cluster routing)",
 )
+
+
+async def wait_until(
+    predicate: Callable[[], bool | Awaitable[bool]],
+    *,
+    timeout: float = 5.0,
+    description: str = "condition",
+) -> None:
+    """Poll ``predicate()`` until it returns truthy, or fail with a timeout.
+
+    Accepts either a sync or async predicate.  Async predicates are useful
+    for "wait until the docket snapshot shows the expected running count"
+    style checks that need to round-trip to Redis on each poll.
+
+    Replaces fixed-duration ``asyncio.sleep`` waits for "let some
+    out-of-band background work catch up before I assert on it" -- a
+    monitor task draining a Redis stream, a heartbeat firing, a worker
+    picking up the next message, etc.  Short-circuits the moment the
+    condition holds (no wasted wall-clock on fast runners) and fails
+    with a descriptive message on slow ones (no silent flakes).
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        result = predicate()
+        if inspect.isawaitable(result):
+            result = await result
+        if result:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{description} never became truthy within {timeout}s")
 
 
 async def wait_for_event(

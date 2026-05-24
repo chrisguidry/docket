@@ -34,17 +34,19 @@ async def test_progress_publish_events(progress: ExecutionProgress):
     """Progress updates should publish events to pub/sub channel."""
     # Set up subscriber in background
     events: list[ProgressEvent] = []
+    subscribed = asyncio.Event()
 
     async def collect_events():
-        async for event in progress.subscribe():  # pragma: no cover
+        async for event in progress.subscribe(ready=subscribed):  # pragma: no cover
             events.append(event)
             if len(events) >= 3:  # Collect 3 events then stop
                 break
 
     subscriber_task = asyncio.create_task(collect_events())
 
-    # Give subscriber time to connect
-    await asyncio.sleep(0.1)
+    # Wait for the SUBSCRIBE to be acknowledged so the publishes below
+    # are guaranteed to be delivered.
+    await subscribed.wait()
 
     # Publish updates
     await progress.set_total(100)
@@ -94,9 +96,10 @@ async def test_run_subscribe_both_state_and_progress(execution: Execution):
     """Run.subscribe() should yield both state and progress events."""
     # Set up subscriber in background
     all_events: list[StateEvent | ProgressEvent] = []
+    subscribed = asyncio.Event()
 
     async def collect_events():
-        async for event in execution.subscribe():  # pragma: no cover
+        async for event in execution.subscribe(ready=subscribed):  # pragma: no cover
             all_events.append(event)
             # Stop after we get a running state and some progress
             if (
@@ -114,8 +117,8 @@ async def test_run_subscribe_both_state_and_progress(execution: Execution):
 
     subscriber_task = asyncio.create_task(collect_events())
 
-    # Give subscriber time to connect
-    await asyncio.sleep(0.1)
+    # Wait for the SUBSCRIBE to be acknowledged.
+    await subscribed.wait()
 
     # Publish mixed state and progress events
     await execution.claim("worker-1")
@@ -150,16 +153,17 @@ async def test_completed_state_publishes_event(execution: Execution):
     """Completed state should publish event with completed_at timestamp."""
     # Set up subscriber
     events: list[StateEvent] = []
+    subscribed = asyncio.Event()
 
     async def collect_events():
-        async for event in execution.subscribe():  # pragma: no cover
+        async for event in execution.subscribe(ready=subscribed):  # pragma: no cover
             if event["type"] == "state":
                 events.append(event)
             if any(e["state"] == ExecutionState.COMPLETED for e in events):
                 break
 
     subscriber_task = asyncio.create_task(collect_events())
-    await asyncio.sleep(0.1)
+    await subscribed.wait()
 
     await execution.claim("worker-1")
     await execution.mark_as_completed()
@@ -176,16 +180,17 @@ async def test_failed_state_publishes_event_with_error(execution: Execution):
     """Failed state should publish event with error message."""
     # Set up subscriber
     events: list[StateEvent] = []
+    subscribed = asyncio.Event()
 
     async def collect_events():
-        async for event in execution.subscribe():  # pragma: no cover
+        async for event in execution.subscribe(ready=subscribed):  # pragma: no cover
             if event["type"] == "state":
                 events.append(event)
             if any(e["state"] == ExecutionState.FAILED for e in events):
                 break
 
     subscriber_task = asyncio.create_task(collect_events())
-    await asyncio.sleep(0.1)
+    await subscribed.wait()
 
     await execution.claim("worker-1")
     await execution.mark_as_failed("Something went wrong!")
@@ -221,8 +226,10 @@ async def test_end_to_end_progress_monitoring_with_worker(
     execution = await docket.add(task_with_progress)()
 
     # Start subscriber to collect events
+    subscribed = asyncio.Event()
+
     async def collect_events():
-        async for event in execution.subscribe():  # pragma: no cover
+        async for event in execution.subscribe(ready=subscribed):  # pragma: no cover
             collected_events.append(event)
             # Stop when we reach completed state
             if event["type"] == "state" and event["state"] == ExecutionState.COMPLETED:
@@ -230,8 +237,8 @@ async def test_end_to_end_progress_monitoring_with_worker(
 
     subscriber_task = asyncio.create_task(collect_events())
 
-    # Give subscriber time to connect
-    await asyncio.sleep(0.1)
+    # Wait for the SUBSCRIBE to be acknowledged before starting the worker.
+    await subscribed.wait()
 
     # Run the worker
     await worker.run_until_finished()
@@ -300,15 +307,17 @@ async def test_end_to_end_failed_task_monitoring(docket: Docket, worker: Worker)
     execution = await docket.add(failing_task)()
 
     # Start subscriber
+    subscribed = asyncio.Event()
+
     async def collect_events():
-        async for event in execution.subscribe():  # pragma: no cover
+        async for event in execution.subscribe(ready=subscribed):  # pragma: no cover
             collected_events.append(event)
             # Stop when we reach failed state
             if event["type"] == "state" and event["state"] == ExecutionState.FAILED:
                 break
 
     subscriber_task = asyncio.create_task(collect_events())
-    await asyncio.sleep(0.1)
+    await subscribed.wait()
 
     # Run the worker
     await worker.run_until_finished()
