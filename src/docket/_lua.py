@@ -45,7 +45,6 @@ is needed.
 from __future__ import annotations
 
 import functools
-import hashlib
 import inspect
 from typing import (
     Annotated,
@@ -61,7 +60,7 @@ from typing import (
     get_type_hints,
 )
 
-from redis.exceptions import NoScriptError
+from redis.commands.core import AsyncScript
 
 from ._redis import RedisClient
 
@@ -266,7 +265,13 @@ def redis_script(fn: _F) -> _F:
 
     preamble = _generate_preamble(key_params, arg_params)
     lua = f"{preamble}\n\n{body}" if preamble else body
-    sha = hashlib.sha1(lua.encode("utf-8")).hexdigest()
+
+    # Pre-encode to bytes so ``AsyncScript.__init__`` skips its
+    # client-encoder lookup; then put the ``str`` back on ``.script``
+    # because burner's ``script_load`` (used on the NOSCRIPT path)
+    # rejects bytes.
+    script: AsyncScript = AsyncScript(None, lua.encode("utf-8"))  # type: ignore[arg-type]
+    script.script = lua
 
     # Hot-path call: redis is the first positional, everything else is by
     # keyword.  Bypass ``inspect.Signature.bind`` (~20-50 us/call) -- we
@@ -282,12 +287,7 @@ def redis_script(fn: _F) -> _F:
                 argv.extend(_expand_args(value))
             else:
                 argv.append(_encode_scalar(value))
-
-        try:
-            return await redis.evalsha(sha, len(keys), *keys, *argv)
-        except NoScriptError:
-            await redis.script_load(lua)
-            return await redis.evalsha(sha, len(keys), *keys, *argv)
+        return await script(keys=keys, args=argv, client=redis)  # type: ignore[arg-type]
 
     wrapper.__lua__ = lua  # type: ignore[attr-defined]
     return cast(_F, wrapper)

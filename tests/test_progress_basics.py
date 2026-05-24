@@ -91,6 +91,31 @@ async def test_progress_set_message(progress: ExecutionProgress):
     assert progress.updated_at is not None
 
 
+async def test_progress_set_message_none_clears_field(progress: ExecutionProgress):
+    """``set_message(None)`` deletes the message field rather than storing "".
+
+    Pre-fix the new Lua-backed path coerced None to "" and HSET it.  A
+    subsequent ``sync()`` from another process would surface ``""`` instead
+    of ``None``, inconsistent with the typed contract ``str | None`` and
+    with the surrounding "no message reported" semantics.
+    """
+    await progress.set_message("Processing items...")
+    await progress.set_message(None)
+
+    assert progress.message is None
+    async with progress.docket.redis() as redis:
+        data = await redis.hgetall(progress._redis_key)  # pyright: ignore[reportPrivateUsage]
+    assert b"message" not in data, (
+        f"set_message(None) should HDEL the field, not store an empty string; "
+        f"redis hash currently: {data!r}"
+    )
+
+    # A fresh sync from another process should also see no message.
+    other = ExecutionProgress(progress.docket, progress.key)
+    await other.sync()
+    assert other.message is None
+
+
 async def test_progress_dependency_injection(docket: Docket, worker: Worker):
     """Progress dependency should be injected into task functions."""
     progress_values: list[int] = []

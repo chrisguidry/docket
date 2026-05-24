@@ -148,6 +148,11 @@ async def _schedule(
             redis.call('HDEL', runs_key, 'stream_id')
         end
 
+        -- Clear fields written by the previous attempt's ``_claim`` so the
+        -- runs hash describes the rescheduled (queued/scheduled) attempt,
+        -- not the worker and start-time of the attempt that just failed.
+        redis.call('HDEL', runs_key, 'worker', 'started_at')
+
         redis.call('PUBLISH', state_channel, state_payload)
 
         return 'OK'
@@ -287,11 +292,18 @@ async def _claim(
         'started_at', started_at
     )
 
-    -- Initialize progress tracking
+    -- Initialize progress tracking, tagged with the claimer's generation so
+    -- a stale predecessor finishing later can tell whether the progress hash
+    -- is still ours to clean up (see _terminal SUPERSEDED branch).  Also
+    -- drop any ``message``/``updated_at`` left behind by the previous
+    -- generation -- HSET doesn't remove optional fields, so without this
+    -- HDEL the successor's progress view would surface stale metadata.
     redis.call('HSET', progress_key,
         'current', '0',
-        'total', '100'
+        'total', '100',
+        'generation', generation
     )
+    redis.call('HDEL', progress_key, 'message', 'updated_at')
 
     -- Delete known/stream_id fields to allow task rescheduling
     redis.call('HDEL', runs_key, 'known', 'stream_id')
@@ -338,7 +350,15 @@ async def _terminal(
         local current = redis.call('HGET', runs_key, 'generation')
         if not current or tonumber(current) > generation then
             redis.call('PUBLISH', state_channel, state_payload)
-            redis.call('DEL', progress_key)
+            -- Only DEL the progress hash if it belongs to us (matching
+            -- generation tag) or is untagged (pre-fix / pre-tracking data,
+            -- preserve the prior unconditional-DEL behaviour).  A newer
+            -- generation's tag means the successor is actively reporting
+            -- against the hash and we must not clobber its state.
+            local progress_gen = redis.call('HGET', progress_key, 'generation')
+            if not progress_gen or tonumber(progress_gen) <= generation then
+                redis.call('DEL', progress_key)
+            end
             if message_id ~= '' then
                 redis.call('XACK', stream_key, worker_group_name, message_id)
                 redis.call('XDEL', stream_key, message_id)
@@ -849,6 +869,14 @@ class Execution:
             state_payload_data["error"] = error
         state_payload = json.dumps(state_payload_data)
 
+        # Set ``_acked = True`` *before* the awaited Lua call: the server
+        # commit is the source of truth, so once we hand the call off we own
+        # the ack semantically.  A network blip on the response path (server
+        # committed, client raised) would otherwise leave us looking unacked
+        # and let the worker safety net overwrite the committed terminal
+        # state with FAILED/None.
+        self._acked = True
+
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
                 await _terminal(
@@ -875,12 +903,6 @@ class Execution:
         self.progress.total = 100
         self.progress.message = None
         self.progress.updated_at = None
-
-        # ``_terminal`` XACKs and XDELs the stream message inline on both
-        # the success and SUPERSEDED branches when message_id is set, and
-        # is a no-op for the XACK when it isn't.  Either way this Execution
-        # no longer needs the worker's safety-net ack.
-        self._acked = True
 
     async def mark_as_completed(self, result_key: str | None = None) -> None:
         """Mark task as completed successfully.
