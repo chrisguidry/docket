@@ -746,7 +746,7 @@ class RedisConnection:
         Returns:
             An initialized RedisCluster client ready for use
         """
-        client: RedisCluster = RedisCluster.from_url(self._normalized_url())
+        client = RedisCluster.from_url(self._normalized_url(), socket_timeout=None)
         await client.initialize()
         return client
 
@@ -774,6 +774,7 @@ class RedisConnection:
             if self._parsed.scheme == "rediss+cluster"
             else Connection,
             decode_responses=False,
+            socket_timeout=None,
         )
 
     async def _connection_pool_from_url(
@@ -791,7 +792,7 @@ class RedisConnection:
             A ConnectionPool ready for use with Redis clients
         """
         return ConnectionPool.from_url(  # pyright: ignore[reportUnknownMemberType]
-            self.url, decode_responses=decode_responses
+            self.url, decode_responses=decode_responses, socket_timeout=None
         )
 
     async def _get_or_create_memory_client(self) -> MemoryRedisClient:

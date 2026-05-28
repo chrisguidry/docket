@@ -2,6 +2,8 @@
 
 # pyright: reportPrivateUsage=false
 
+from typing import cast
+
 import pytest
 import redis.exceptions
 
@@ -227,3 +229,27 @@ def test_redis_connection_normalized_url_returns_original_for_non_cluster():
 
     connection2 = RedisConnection("memory://")
     assert connection2._normalized_url() == "memory://"
+
+
+async def test_redis_connection_pool_disables_socket_timeout():
+    """Redis blocking reads should not be cut short by client socket timeout."""
+    connection = RedisConnection("redis://localhost:6379/0")
+    pool = await connection._connection_pool_from_url()
+
+    try:
+        connection_kwargs = cast(dict[str, object], getattr(pool, "connection_kwargs"))
+        assert connection_kwargs["socket_timeout"] is None
+    finally:
+        await pool.aclose()
+
+
+async def test_redis_connection_pool_respects_url_socket_timeout():
+    """Explicit Redis URL socket_timeout should override Docket's default."""
+    connection = RedisConnection("redis://localhost:6379/0?socket_timeout=15")
+    pool = await connection._connection_pool_from_url()
+
+    try:
+        connection_kwargs = cast(dict[str, object], getattr(pool, "connection_kwargs"))
+        assert connection_kwargs["socket_timeout"] == 15.0
+    finally:
+        await pool.aclose()
