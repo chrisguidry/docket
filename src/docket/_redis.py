@@ -850,12 +850,12 @@ class RedisConnection:
         """Publish a message to a pub/sub channel."""
         if self._cluster_client is not None:  # pragma: no cover
             async with Redis(connection_pool=self._node_pool) as r:
-                return cast(int, await r.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
+                return await r.publish(channel, message)  # pyright: ignore[reportUnknownMemberType]
         elif self._memory_client is not None:
             return await self._memory_client.publish(channel, message)
         else:
             async with Redis(connection_pool=self._connection_pool) as r:
-                return cast(int, await r.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
+                return await r.publish(channel, message)  # pyright: ignore[reportUnknownMemberType]
 
     @asynccontextmanager
     async def _cluster_pubsub(self) -> AsyncGenerator[PubSub, None]:  # pragma: no cover

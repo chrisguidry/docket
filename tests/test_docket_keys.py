@@ -2,13 +2,15 @@
 
 # pyright: reportPrivateUsage=false
 
-from typing import cast
+import time
 
 import pytest
 import redis.exceptions
+from redis.asyncio import Redis
 
 from docket._redis import RedisConnection
 from docket.docket import Docket
+from tests.conftest import skip_cluster, skip_memory
 
 
 # Tests for prefix property and key() method
@@ -236,10 +238,11 @@ async def test_redis_connection_pool_disables_socket_timeout():
     connection = RedisConnection("redis://localhost:6379/0")
     pool = await connection._connection_pool_from_url()
 
+    redis_connection = pool.make_connection()
     try:
-        connection_kwargs = cast(dict[str, object], getattr(pool, "connection_kwargs"))
-        assert connection_kwargs["socket_timeout"] is None
+        assert redis_connection.socket_timeout is None
     finally:
+        await redis_connection.disconnect()
         await pool.aclose()
 
 
@@ -248,8 +251,30 @@ async def test_redis_connection_pool_respects_url_socket_timeout():
     connection = RedisConnection("redis://localhost:6379/0?socket_timeout=15")
     pool = await connection._connection_pool_from_url()
 
+    redis_connection = pool.make_connection()
     try:
-        connection_kwargs = cast(dict[str, object], getattr(pool, "connection_kwargs"))
-        assert connection_kwargs["socket_timeout"] == 15.0
+        assert redis_connection.socket_timeout == 15.0
+    finally:
+        await redis_connection.disconnect()
+        await pool.aclose()
+
+
+@skip_memory
+@skip_cluster
+async def test_redis_blocking_read_outlasts_redis_py_default_socket_timeout(
+    redis_url: str,
+):
+    """Docket Redis connections should allow blocking reads longer than 5s."""
+    connection = RedisConnection(redis_url)
+    pool = await connection._connection_pool_from_url()
+
+    try:
+        async with Redis(connection_pool=pool) as redis:
+            started = time.monotonic()
+            result = await redis.xread({"docket-test-missing-stream": "$"}, block=6000)
+            elapsed = time.monotonic() - started
     finally:
         await pool.aclose()
+
+    assert result == []
+    assert elapsed >= 5.0

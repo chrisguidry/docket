@@ -236,7 +236,7 @@ def wait_for_cluster(port: int) -> None:
         try:
             # Try to connect and verify cluster state
             r: RedisCluster = RedisCluster.from_url(f"redis://localhost:{port}")
-            info: dict[str, str] = r.cluster_info()  # type: ignore[reportUnknownMemberType]
+            info: dict[str, str] = r.cluster_info()
             if info.get("cluster_state") != "ok":
                 r.close()
                 time.sleep(0.1)
