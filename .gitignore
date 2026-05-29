@@ -13,3 +13,4 @@ wheels/
 
 .coverage.*
 .loq_cache
+.claude/scheduled_tasks.lock

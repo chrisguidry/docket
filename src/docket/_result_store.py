@@ -103,7 +103,7 @@ class ClusterKeyValueStore:
         data = json.dumps(value)
         if ttl is not None:
             ttl_seconds = int(float(ttl))
-            await self._client.setex(redis_key, ttl_seconds, data)
+            await self._client.set(redis_key, data, ex=ttl_seconds)
         else:
             await self._client.set(redis_key, data)
 

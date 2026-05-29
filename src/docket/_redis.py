@@ -43,6 +43,15 @@ from redis.asyncio.connection import Connection, SSLConnection
 logger: logging.Logger = logging.getLogger(__name__)
 
 
+# Docket performs long and unbounded blocking reads: the 60s strike-stream
+# xread and the indefinite execution state/progress pubsub.listen.  redis-py
+# 8.0.0 changed the client socket_timeout default to 5s, which aborts those
+# reads mid-flight with a TimeoutError.  We disable the client read timeout so
+# blocking reads wait for the server as intended; redis-py's default-on TCP
+# keepalive still detects genuinely dead peers.
+BLOCKING_READ_SOCKET_TIMEOUT: float | None = None
+
+
 # ---------------------------------------------------------------------------
 # Input type aliases (mirror redis-py's type domain)
 # ---------------------------------------------------------------------------
@@ -746,7 +755,9 @@ class RedisConnection:
         Returns:
             An initialized RedisCluster client ready for use
         """
-        client: RedisCluster = RedisCluster.from_url(self._normalized_url())
+        client: RedisCluster = RedisCluster.from_url(
+            self._normalized_url(), socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT
+        )
         await client.initialize()
         return client
 
@@ -774,6 +785,7 @@ class RedisConnection:
             if self._parsed.scheme == "rediss+cluster"
             else Connection,
             decode_responses=False,
+            socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
         )
 
     async def _connection_pool_from_url(
@@ -791,7 +803,9 @@ class RedisConnection:
             A ConnectionPool ready for use with Redis clients
         """
         return ConnectionPool.from_url(  # pyright: ignore[reportUnknownMemberType]
-            self.url, decode_responses=decode_responses
+            self.url,
+            decode_responses=decode_responses,
+            socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
         )
 
     async def _get_or_create_memory_client(self) -> MemoryRedisClient:
