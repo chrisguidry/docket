@@ -92,7 +92,7 @@ jobs:
       - name: Run tests
         env:
           REDIS_VERSION: ${{ matrix.backend.redis-version }}
-        run: uv run pytest --ignore=tests/cli --ignore=tests/redis_py --cov-branch --cov-config=.coveragerc-core --cov-fail-under=100 --cov-report=xml --cov-report=term-missing:skip-covered --junitxml=junit.xml -o junit_family=legacy ${{ matrix.pytest-args }}
+        run: uv run pytest --ignore=tests/cli --cov-branch --cov-config=.coveragerc-core --cov-fail-under=100 --cov-report=xml --cov-report=term-missing:skip-covered --junitxml=junit.xml -o junit_family=legacy ${{ matrix.pytest-args }}
 
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
@@ -182,7 +182,7 @@ jobs:
         env:
           REDIS_VERSION: memory
         run: >
-          uv run pytest --ignore=tests/cli --ignore=tests/redis_py
+          uv run pytest --ignore=tests/cli
           --cov-branch --cov-config=.coveragerc-core
           --cov-fail-under=100
           --cov-report=xml --cov-report=term-missing:skip-covered
@@ -210,10 +210,9 @@ jobs:
       fail-fast: false
       matrix:
         # The client is what varies, so we pin one Python and one real Redis
-        # and run the full suite against each redis-py major we support.  This
-        # is where the client-version-sensitive tests/redis_py module runs (the
-        # main matrix ignores it); a real, standalone Redis is required since
-        # the bug this guards (#425) is a client socket timeout.
+        # and run the full suite against each redis-py major we support.  A
+        # real, standalone Redis is required since the bug this guards (#425)
+        # is a client socket timeout.
         redis-py:
           - { name: "5", spec: ">=5,<6" }
           - { name: "6", spec: ">=6,<7" }

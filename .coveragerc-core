@@ -12,7 +12,6 @@ omit =
     tests/_container.py
     tests/sitecustomize.py
     tests/cli/*.py
-    tests/redis_py/*.py
 
 [report]
 exclude_also = ["\\.\\.\\.$"]

@@ -1,10 +1,8 @@
 """Regression tests for redis-py client socket-timeout behavior (issue #425).
 
-These exercise client-version-specific behavior, so they live in their own
-module that the main test matrix ignores and the dedicated ``test-redis-py``
-CI job runs across the redis-py majors we support.  They need a real,
-standalone Redis: the memory backend has no socket, and cluster mode uses a
-different connection path.
+These need a real, standalone Redis: the memory backend has no socket, and
+cluster mode uses a different connection path.  They run on the real-Redis legs
+of the main matrix and across every redis-py major in the test-redis-py job.
 """
 
 # pyright: reportPrivateUsage=false

@@ -92,11 +92,13 @@ async with Docket(
     pass
 ```
 
-Docket pins the connection read timeout (`socket_timeout`) to `None` so its
+Docket defaults the connection read timeout (`socket_timeout`) to `None` so its
 blocking reads — worker polling, the strike-stream monitor, and execution
-state/progress streams — aren't cut short, regardless of redis-py's own
-default. (redis-py 8 defaults it to 5 seconds.) A `socket_timeout` in the URL
-is therefore ignored; redis-py's TCP keepalive still detects dead connections.
+state/progress streams — aren't cut short by redis-py 8's 5-second default. If
+you set `socket_timeout` in the URL it takes precedence, so keep it comfortably
+above your longest blocking read (the strike monitor blocks for 60 seconds) or
+leave it unset; redis-py's TCP keepalive still detects dead connections either
+way.
 
 ### Redis Cluster Support
 
