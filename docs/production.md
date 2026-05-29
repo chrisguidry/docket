@@ -80,20 +80,25 @@ Workers catch `SIGTERM` and `SIGINT` and shut down gracefully — they stop acce
 
 ### Redis Connection Pools
 
-Docket automatically manages Redis connection pools. To use a custom pool:
+Docket builds and manages its own Redis connection pool from the `url`. Tune the
+pool with standard redis-py options in the URL's query string — for example,
+setting `max_connections` to match or exceed your worker concurrency:
 
 ```python
-from redis.asyncio import ConnectionPool
-
-pool = ConnectionPool.from_url(
-    "redis://redis.prod.com:6379/0",
-    max_connections=50,  # Match or exceed worker concurrency
-    retry_on_timeout=True
-)
-
-async with Docket(name="orders", connection_pool=pool) as docket:
+async with Docket(
+    name="orders",
+    url="redis://redis.prod.com:6379/0?max_connections=50&health_check_interval=30",
+) as docket:
     pass
 ```
+
+Docket defaults the connection read timeout (`socket_timeout`) to `None` so its
+blocking reads — worker polling, the strike-stream monitor, and execution
+state/progress streams — aren't cut short by redis-py 8's 5-second default. If
+you set `socket_timeout` in the URL it takes precedence, so keep it comfortably
+above your longest blocking read (the strike monitor blocks for 60 seconds) or
+leave it unset; redis-py's TCP keepalive still detects dead connections either
+way.
 
 ### Redis Cluster Support
 

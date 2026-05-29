@@ -125,6 +125,9 @@ filterwarnings = [
     # redis-py 7.2.0 deprecated lib_name/lib_version on Connection.__init__,
     # but RedisCluster still passes lib_name="redis-py" internally (#341)
     "ignore:Call to.*lib_name.*:DeprecationWarning",
+    # redis-py 8.0.0 deprecated setex; py-key-value-aio's RedisStore still
+    # calls it internally for standalone result storage (#425)
+    "ignore:Call to deprecated setex.*:DeprecationWarning:key_value.aio.stores.redis.store",
 ]
 
 [tool.coverage.run]

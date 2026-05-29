@@ -29,7 +29,7 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --upgrade-package redis
 
       - name: Run chaos tests
         run: uv run python -m chaos.driver
@@ -50,7 +50,7 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --upgrade-package redis
 
       - name: Run signal handling tests
         run: uv run python -m chaos.signals
