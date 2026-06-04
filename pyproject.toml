@@ -128,6 +128,11 @@ filterwarnings = [
     # redis-py 8.0.0 deprecated setex; py-key-value-aio's RedisStore still
     # calls it internally for standalone result storage (#425)
     "ignore:Call to deprecated setex.*:DeprecationWarning:key_value.aio.stores.redis.store",
+    # On Python 3.10/3.11, importlib.metadata.entry_points() returns a
+    # SelectableGroups, and OpenTelemetry's _importlib_metadata shim consumes
+    # it via the deprecated dict interface during import. The shim is theirs
+    # to fix, so we scope the ignore to that module (#428).
+    "ignore:SelectableGroups dict interface is deprecated.*:DeprecationWarning:opentelemetry.util._importlib_metadata",
 ]
 
 [tool.coverage.run]
