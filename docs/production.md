@@ -135,6 +135,41 @@ When using cluster mode, Docket automatically:
 
 **Note:** All Docket data for a single docket name will be stored on the same cluster shard. This ensures atomicity for Lua scripts and simplifies data management, but means individual dockets don't benefit from cluster data distribution.
 
+### Redis Sentinel Support
+
+Docket supports [Redis Sentinel](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/)
+master discovery using the `redis+sentinel://` URL scheme. The URL lists the
+Sentinel daemons (defaulting to port 26379) and names the monitored master
+group; Docket resolves the current master through the Sentinels and follows
+failover automatically:
+
+```python
+# Discover the master named "mymaster" through two Sentinels
+async with Docket(
+    name="orders",
+    url="redis+sentinel://sentinel-a:26379,sentinel-b:26379/mymaster/0"
+) as docket:
+    pass
+
+# With authentication: the URL credentials apply to the data nodes, and the
+# sentinel_username/sentinel_password query parameters to the Sentinels
+async with Docket(
+    name="orders",
+    url=(
+        "redis+sentinel://user:password@sentinel-a:26379,sentinel-b:26379"
+        "/mymaster/0?sentinel_password=sentinelsecret"
+    ),
+) as docket:
+    pass
+
+# TLS for both the data nodes and the Sentinels
+async with Docket(
+    name="orders",
+    url="rediss+sentinel://sentinel-a:26379,sentinel-b:26379/mymaster/0"
+) as docket:
+    pass
+```
+
 ### Authentication
 
 Docket supports Redis authentication via URL credentials:
