@@ -170,6 +170,11 @@ async with Docket(
     pass
 ```
 
+Standard redis-py connection options in the query string (see
+[Redis Connection Pools](#redis-connection-pools) above) apply to the data-node
+pool just as they do for standalone URLs — for example
+`redis+sentinel://sentinel-a:26379/mymaster/0?max_connections=50`.
+
 ### Authentication
 
 Docket supports Redis authentication via URL credentials:

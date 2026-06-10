@@ -34,12 +34,12 @@ from typing import (
     overload,
     runtime_checkable,
 )
-from urllib.parse import ParseResult, parse_qs, unquote, urlparse, urlunparse
+from urllib.parse import ParseResult, parse_qs, unquote, urlencode, urlparse, urlunparse
 
 from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
-from redis.asyncio.connection import Connection, SSLConnection
+from redis.asyncio.connection import Connection, SSLConnection, parse_url
 from redis.asyncio.sentinel import Sentinel, SentinelConnectionPool
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -619,8 +619,9 @@ class SentinelConfiguration:
 
     ``connection_kwargs`` applies to the data-node (master) connections and
     ``sentinel_kwargs`` to the connections to the Sentinel daemons themselves;
-    both hold redis-py-native keys (``username``, ``password``, ``ssl``) so a
-    caller can splat them directly.
+    both hold redis-py-native keys (``username``, ``password``, ``ssl``, plus
+    any standard connection options from the URL query string) so a caller can
+    splat them directly.
     """
 
     sentinels: list[tuple[str, int]]
@@ -642,9 +643,14 @@ def parse_sentinel_url(url: str) -> SentinelConfiguration:
     authentication to the Sentinel daemons separately. A ``rediss`` prefix
     turns on TLS for both the data nodes and the Sentinel daemons.
 
+    All other query parameters are standard redis-py connection options
+    (``max_connections``, ``socket_timeout``, ``health_check_interval``, ...)
+    and apply to the data-node connections with exactly the same parsing as a
+    standalone ``redis://`` URL.
+
     Raises:
         ValueError: for a missing host, malformed port, missing service name,
-            or malformed database index
+            malformed database index, or malformed connection option
     """
     parsed = urlparse(url)
 
@@ -683,10 +689,10 @@ def parse_sentinel_url(url: str) -> SentinelConfiguration:
             "e.g. redis+sentinel://localhost:26379/mymaster"
         )
     service_name = segments[0]
-    db = 0
+    path_db = 0
     if len(segments) > 1:
         try:
-            db = int(segments[1])
+            path_db = int(segments[1])
         except ValueError:
             raise ValueError(
                 f"Invalid database index {segments[1]!r} in sentinel URL"
@@ -694,24 +700,37 @@ def parse_sentinel_url(url: str) -> SentinelConfiguration:
 
     tls = parsed.scheme == "rediss+sentinel"
 
-    connection_kwargs: dict[str, Any] = {}
-    if parsed.username:
-        connection_kwargs["username"] = unquote(parsed.username)
-    if parsed.password:
-        connection_kwargs["password"] = unquote(parsed.password)
-    if tls:
-        connection_kwargs["ssl"] = True
-
     query = parse_qs(parsed.query, keep_blank_values=True)
     sentinel_kwargs: dict[str, Any] = {}
-    sentinel_username = query.get("sentinel_username", [""])[0]
-    sentinel_password = query.get("sentinel_password", [""])[0]
+    sentinel_username = query.pop("sentinel_username", [""])[0]
+    sentinel_password = query.pop("sentinel_password", [""])[0]
     if sentinel_username:
         sentinel_kwargs["username"] = sentinel_username
     if sentinel_password:
         sentinel_kwargs["password"] = sentinel_password
     if tls:
         sentinel_kwargs["ssl"] = True
+
+    # The remaining query parameters are standard redis-py connection options
+    # (max_connections, socket_timeout, health_check_interval, ...).  Funnel
+    # them through redis-py's parse_url on a synthetic standalone URL so they
+    # get exactly the same type conversion and validation as redis:// URLs.
+    connection_kwargs: dict[str, Any] = {}
+    if query:
+        remaining_query = urlencode(
+            [(name, value) for name, values in query.items() for value in values]
+        )
+        connection_kwargs.update(parse_url(f"redis:///?{remaining_query}"))
+
+    # Mirror redis-py's precedence: a db query parameter wins over the path,
+    # and userinfo credentials win over username/password query parameters.
+    db = connection_kwargs.pop("db", path_db)
+    if parsed.username:
+        connection_kwargs["username"] = unquote(parsed.username)
+    if parsed.password:
+        connection_kwargs["password"] = unquote(parsed.password)
+    if tls:
+        connection_kwargs["ssl"] = True
 
     return SentinelConfiguration(
         sentinels=sentinels,
@@ -978,14 +997,15 @@ class RedisConnection:
         """
         config = parse_sentinel_url(self.url)
         sentinel = Sentinel(config.sentinels, sentinel_kwargs=config.sentinel_kwargs)
-        return OwnedSentinelConnectionPool(
-            config.service_name,
-            sentinel,
-            db=config.db,
-            decode_responses=decode_responses,
-            socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
+        # URL query options override the defaults, just as ConnectionPool.from_url
+        # lets a socket_timeout in a standalone URL take precedence.
+        pool_kwargs: dict[str, Any] = {
+            "db": config.db,
+            "decode_responses": decode_responses,
+            "socket_timeout": BLOCKING_READ_SOCKET_TIMEOUT,
             **config.connection_kwargs,
-        )
+        }
+        return OwnedSentinelConnectionPool(config.service_name, sentinel, **pool_kwargs)
 
     async def _get_or_create_memory_client(self) -> MemoryRedisClient:
         """Get or create a BurnerRedis instance for a memory:// URL."""
