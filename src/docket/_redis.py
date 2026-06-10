@@ -613,6 +613,27 @@ def get_memory_server(url: str) -> MemoryRedisClient | None:
 DEFAULT_SENTINEL_PORT = 26379
 
 
+def _parse_connection_url(url: str) -> ParseResult:
+    """urlparse that tolerates multi-host netlocs with bracketed IPv6 members.
+
+    Recent CPython releases reject netlocs like ``s1:26379,[::1]:26379`` with
+    ValueError("Invalid IPv6 URL") because data precedes a bracket, so the
+    netloc is carved off by hand, the rest of the URL is parsed with a
+    placeholder host, and the real netloc is restored on the result.
+    """
+    scheme, separator, remainder = url.partition("://")
+    if not separator:
+        return urlparse(url)
+    end = len(remainder)
+    for terminator in "/?#":
+        index = remainder.find(terminator)
+        if index != -1:
+            end = min(end, index)
+    netloc, tail = remainder[:end], remainder[end:]
+    parsed = urlparse(f"{scheme}://netloc-placeholder{tail}")
+    return parsed._replace(netloc=netloc)
+
+
 @dataclass(frozen=True)
 class SentinelConfiguration:
     """A Redis Sentinel topology parsed from a redis+sentinel:// URL.
@@ -652,7 +673,7 @@ def parse_sentinel_url(url: str) -> SentinelConfiguration:
         ValueError: for a missing host, malformed port, missing service name,
             malformed database index, or malformed connection option
     """
-    parsed = urlparse(url)
+    parsed = _parse_connection_url(url)
 
     # urlparse only exposes the segment before the first comma through
     # .hostname/.port, so the multi-host netloc is split by hand.
@@ -805,7 +826,7 @@ class RedisConnection:
                 redis+cluster://, or memory://)
         """
         self.url = url
-        self._parsed = urlparse(url)
+        self._parsed = _parse_connection_url(url)
         self._connection_pool = None
         self._cluster_client = None
         self._node_pool = None
