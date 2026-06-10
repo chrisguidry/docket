@@ -78,9 +78,30 @@ def test_parse_sentinel_url_tls():
 
 
 def test_parse_sentinel_url_ipv6_member():
-    """Bracketed IPv6 members parse with and without an explicit port."""
-    config = parse_sentinel_url("redis+sentinel://[::1]:26380,[fe80::2]/mymaster")
-    assert config.sentinels == [("::1", 26380), ("fe80::2", DEFAULT_SENTINEL_PORT)]
+    """Bracketed IPv6 members parse with and without an explicit port, in any
+    position — recent CPython urlsplit rejects netlocs with data before a
+    bracket, so the netloc never goes through urlsplit verbatim."""
+    config = parse_sentinel_url("redis+sentinel://s1,[::1]:26380,[fe80::2]/mymaster")
+    assert config.sentinels == [
+        ("s1", DEFAULT_SENTINEL_PORT),
+        ("::1", 26380),
+        ("fe80::2", DEFAULT_SENTINEL_PORT),
+    ]
+
+
+def test_redis_connection_accepts_ipv6_member_after_hostname():
+    """RedisConnection construction itself must tolerate IPv6 members that
+    follow another member in the netloc."""
+    connection = RedisConnection("redis+sentinel://s1:26379,[::1]:26380/mymaster")
+    assert connection.is_sentinel
+
+
+def test_redis_connection_tolerates_scheme_less_url():
+    """A URL without :// falls back to plain urlparse."""
+    connection = RedisConnection("localhost:6379")
+    assert not connection.is_sentinel
+    assert not connection.is_cluster
+    assert not connection.is_memory
 
 
 def test_parse_sentinel_url_skips_empty_members():
