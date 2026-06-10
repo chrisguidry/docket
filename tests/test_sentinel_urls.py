@@ -92,6 +92,42 @@ def test_parse_sentinel_url_skips_empty_members():
     ]
 
 
+def test_parse_sentinel_url_passes_through_pool_options():
+    """Standard redis-py options in the query string apply to the data nodes,
+    with the same type conversion as a standalone redis:// URL."""
+    config = parse_sentinel_url(
+        "redis+sentinel://sentinel-a/mymaster"
+        "?max_connections=50&socket_timeout=7.5&health_check_interval=30"
+    )
+    assert config.connection_kwargs == {
+        "max_connections": 50,
+        "socket_timeout": 7.5,
+        "health_check_interval": 30,
+    }
+    assert config.sentinel_kwargs == {}
+
+
+def test_parse_sentinel_url_db_query_parameter_wins_over_path():
+    """Like redis-py's parse_url, a db query parameter beats the path db."""
+    config = parse_sentinel_url("redis+sentinel://sentinel-a/mymaster/2?db=5")
+    assert config.db == 5
+    assert "db" not in config.connection_kwargs
+
+
+def test_parse_sentinel_url_userinfo_wins_over_query_credentials():
+    """Like redis-py's parse_url, URL userinfo beats credential query params."""
+    config = parse_sentinel_url(
+        "redis+sentinel://user:pass@sentinel-a/mymaster?username=qu&password=qp"
+    )
+    assert config.connection_kwargs["username"] == "user"
+    assert config.connection_kwargs["password"] == "pass"
+
+
+def test_parse_sentinel_url_rejects_invalid_option_value():
+    with pytest.raises(ValueError, match="Invalid value for 'max_connections'"):
+        parse_sentinel_url("redis+sentinel://sentinel-a/mymaster?max_connections=lots")
+
+
 def test_parse_sentinel_url_rejects_missing_host():
     with pytest.raises(ValueError, match="Missing host"):
         parse_sentinel_url("redis+sentinel://:26379/mymaster")
@@ -151,6 +187,19 @@ async def test_sentinel_pool_close_also_closes_sentinel_clients():
         await pool.aclose()
 
     assert closed == expected
+
+
+async def test_sentinel_pool_honors_url_pool_options():
+    """URL query options reach the pool, overriding docket's defaults the way
+    ConnectionPool.from_url lets a standalone URL's socket_timeout win."""
+    connection = RedisConnection(
+        "redis+sentinel://sentinel-a/mymaster?max_connections=50&socket_timeout=7.5"
+    )
+    pool = await connection._connection_pool_from_url()  # pyright: ignore[reportPrivateUsage]
+    assert isinstance(pool, OwnedSentinelConnectionPool)
+    assert pool.max_connections == 50
+    assert pool.connection_kwargs["socket_timeout"] == 7.5
+    await pool.aclose()
 
 
 async def test_result_storage_pool_decodes_responses_for_sentinel():
