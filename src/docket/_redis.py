@@ -14,6 +14,7 @@ import asyncio
 import importlib
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import Lock as _ThreadLock
 from types import TracebackType
@@ -33,12 +34,13 @@ from typing import (
     overload,
     runtime_checkable,
 )
-from urllib.parse import ParseResult, urlparse, urlunparse
+from urllib.parse import ParseResult, parse_qs, unquote, urlencode, urlparse, urlunparse
 
 from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
-from redis.asyncio.connection import Connection, SSLConnection
+from redis.asyncio.connection import Connection, SSLConnection, parse_url
+from redis.asyncio.sentinel import Sentinel, SentinelConnectionPool
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -606,13 +608,197 @@ def get_memory_server(url: str) -> MemoryRedisClient | None:
     return entry[1]
 
 
+# Redis Sentinel daemons listen on 26379 by default, so sentinel members
+# without an explicit port assume that rather than the data-node port 6379.
+DEFAULT_SENTINEL_PORT = 26379
+
+
+def _parse_connection_url(url: str) -> ParseResult:
+    """urlparse that tolerates multi-host netlocs with bracketed IPv6 members.
+
+    Recent CPython releases reject netlocs like ``s1:26379,[::1]:26379`` with
+    ValueError("Invalid IPv6 URL") because data precedes a bracket, so the
+    netloc is carved off by hand, the rest of the URL is parsed with a
+    placeholder host, and the real netloc is restored on the result.
+    """
+    scheme, separator, remainder = url.partition("://")
+    if not separator:
+        return urlparse(url)
+    end = len(remainder)
+    for terminator in "/?#":
+        index = remainder.find(terminator)
+        if index != -1:
+            end = min(end, index)
+    netloc, tail = remainder[:end], remainder[end:]
+    parsed = urlparse(f"{scheme}://netloc-placeholder{tail}")
+    return parsed._replace(netloc=netloc)
+
+
+@dataclass(frozen=True)
+class SentinelConfiguration:
+    """A Redis Sentinel topology parsed from a redis+sentinel:// URL.
+
+    ``connection_kwargs`` applies to the data-node (master) connections and
+    ``sentinel_kwargs`` to the connections to the Sentinel daemons themselves;
+    both hold redis-py-native keys (``username``, ``password``, ``ssl``, plus
+    any standard connection options from the URL query string) so a caller can
+    splat them directly.
+    """
+
+    sentinels: list[tuple[str, int]]
+    service_name: str
+    db: int
+    connection_kwargs: dict[str, Any]
+    sentinel_kwargs: dict[str, Any]
+
+
+def parse_sentinel_url(url: str) -> SentinelConfiguration:
+    """Parse a redis+sentinel:// or rediss+sentinel:// URL.
+
+    The grammar follows the redis-sentinel-url convention:
+
+        redis+sentinel://[user:pass@]host[:port][,host2[:port2],...]/service_name[/db]
+
+    The userinfo applies to the data-node (master) connections; the
+    ``sentinel_username`` and ``sentinel_password`` query parameters configure
+    authentication to the Sentinel daemons separately. A ``rediss`` prefix
+    turns on TLS for both the data nodes and the Sentinel daemons.
+
+    All other query parameters are standard redis-py connection options
+    (``max_connections``, ``socket_timeout``, ``health_check_interval``, ...)
+    and apply to the data-node connections with exactly the same parsing as a
+    standalone ``redis://`` URL.
+
+    Raises:
+        ValueError: for a missing host, malformed port, missing service name,
+            malformed database index, or malformed connection option
+    """
+    parsed = _parse_connection_url(url)
+
+    # urlparse only exposes the segment before the first comma through
+    # .hostname/.port, so the multi-host netloc is split by hand.
+    hostpart = parsed.netloc.rpartition("@")[2]
+    sentinels: list[tuple[str, int]] = []
+    for member in hostpart.split(","):
+        member = member.strip()
+        if not member:
+            continue
+        if member.startswith("["):
+            # Bracketed IPv6 member, e.g. [::1] or [::1]:26380
+            host, _, rest = member[1:].partition("]")
+            port_text = rest.removeprefix(":")
+        else:
+            host, separator, port_text = member.rpartition(":")
+            if not separator:
+                host, port_text = member, ""
+        if not host:
+            raise ValueError(f"Missing host in sentinel member {member!r}")
+        try:
+            port = int(port_text) if port_text else DEFAULT_SENTINEL_PORT
+        except ValueError:
+            raise ValueError(
+                f"Invalid port {port_text!r} in sentinel member {member!r}"
+            ) from None
+        sentinels.append((host, port))
+    if not sentinels:
+        raise ValueError("A sentinel URL requires at least one sentinel host")
+
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if not segments:
+        raise ValueError(
+            "A sentinel URL requires a service name, "
+            "e.g. redis+sentinel://localhost:26379/mymaster"
+        )
+    service_name = segments[0]
+    path_db = 0
+    if len(segments) > 1:
+        try:
+            path_db = int(segments[1])
+        except ValueError:
+            raise ValueError(
+                f"Invalid database index {segments[1]!r} in sentinel URL"
+            ) from None
+
+    tls = parsed.scheme == "rediss+sentinel"
+
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    sentinel_kwargs: dict[str, Any] = {}
+    sentinel_username = query.pop("sentinel_username", [""])[0]
+    sentinel_password = query.pop("sentinel_password", [""])[0]
+    if sentinel_username:
+        sentinel_kwargs["username"] = sentinel_username
+    if sentinel_password:
+        sentinel_kwargs["password"] = sentinel_password
+    if tls:
+        sentinel_kwargs["ssl"] = True
+
+    # The remaining query parameters are standard redis-py connection options
+    # (max_connections, socket_timeout, health_check_interval, ...).  Funnel
+    # them through redis-py's parse_url on a synthetic standalone URL so they
+    # get exactly the same type conversion and validation as redis:// URLs.
+    connection_kwargs: dict[str, Any] = {}
+    if query:
+        remaining_query = urlencode(
+            [(name, value) for name, values in query.items() for value in values]
+        )
+        connection_kwargs.update(parse_url(f"redis:///?{remaining_query}"))
+
+    # Mirror redis-py's precedence: a db query parameter wins over the path,
+    # and userinfo credentials win over username/password query parameters.
+    db = connection_kwargs.pop("db", path_db)
+    if parsed.username:
+        connection_kwargs["username"] = unquote(parsed.username)
+    if parsed.password:
+        connection_kwargs["password"] = unquote(parsed.password)
+    if tls:
+        connection_kwargs["ssl"] = True
+
+    return SentinelConfiguration(
+        sentinels=sentinels,
+        service_name=service_name,
+        db=db,
+        connection_kwargs=connection_kwargs,
+        sentinel_kwargs=sentinel_kwargs,
+    )
+
+
+class OwnedSentinelConnectionPool(SentinelConnectionPool):
+    """A SentinelConnectionPool that owns its Sentinel manager.
+
+    redis-py's Sentinel manager keeps one Redis client per Sentinel daemon and
+    has no aclose() of its own, so closing the pool also closes those clients.
+
+    The class-level annotations refine attributes that redis-py assigns in
+    untyped __init__ code, so callers get typed access.
+    """
+
+    service_name: str
+    is_master: bool
+    connection_kwargs: dict[str, Any]
+    sentinel_manager: Sentinel
+
+    @property
+    def sentinel_clients(self) -> Sequence[Redis]:
+        """The Redis clients connected to the Sentinel daemons."""
+        return cast(
+            "Sequence[Redis]",
+            self.sentinel_manager.sentinels,  # pyright: ignore[reportUnknownMemberType]
+        )
+
+    async def aclose(self) -> None:
+        await super().aclose()
+        for sentinel_client in self.sentinel_clients:
+            await close_resource(sentinel_client, "sentinel client")
+
+
 class RedisConnection:
-    """Manages Redis connections for both standalone and cluster modes.
+    """Manages Redis connections for standalone, Sentinel, and cluster modes.
 
     This class encapsulates the lifecycle management of Redis connections,
-    hiding whether the underlying connection is to a standalone Redis server
-    or a Redis Cluster. It provides a unified interface for getting Redis
-    clients, pub/sub connections, and publishing messages.
+    hiding whether the underlying connection is to a standalone Redis server,
+    a Sentinel-monitored master, or a Redis Cluster. It provides a unified
+    interface for getting Redis clients, pub/sub connections, and publishing
+    messages.
 
     Example:
         async with RedisConnection("redis://localhost:6379/0") as connection:
@@ -636,10 +822,11 @@ class RedisConnection:
         """Initialize a Redis connection manager.
 
         Args:
-            url: Redis URL (redis://, rediss://, redis+cluster://, or memory://)
+            url: Redis URL (redis://, rediss://, redis+sentinel://,
+                redis+cluster://, or memory://)
         """
         self.url = url
-        self._parsed = urlparse(url)
+        self._parsed = _parse_connection_url(url)
         self._connection_pool = None
         self._cluster_client = None
         self._node_pool = None
@@ -701,6 +888,11 @@ class RedisConnection:
     def is_cluster(self) -> bool:
         """Check if this connection is to a Redis Cluster."""
         return self._parsed.scheme in ("redis+cluster", "rediss+cluster")
+
+    @property
+    def is_sentinel(self) -> bool:
+        """Check if this connection discovers its master through Redis Sentinel."""
+        return self._parsed.scheme in ("redis+sentinel", "rediss+sentinel")
 
     @property
     def is_memory(self) -> bool:
@@ -793,8 +985,9 @@ class RedisConnection:
     ) -> ConnectionPool:
         """Create a Redis connection pool from the URL.
 
-        This is only for real Redis connections (redis://, rediss://).
-        Memory backend uses BurnerRedis directly, not connection pools.
+        This is only for real Redis connections (redis://, rediss://, and the
+        +sentinel variants).  Memory backend uses BurnerRedis directly, not
+        connection pools.
 
         Args:
             decode_responses: If True, decode Redis responses from bytes to strings
@@ -802,11 +995,38 @@ class RedisConnection:
         Returns:
             A ConnectionPool ready for use with Redis clients
         """
+        if self.is_sentinel:
+            return self._sentinel_connection_pool(decode_responses=decode_responses)
         return ConnectionPool.from_url(  # pyright: ignore[reportUnknownMemberType]
             self.url,
             decode_responses=decode_responses,
             socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
         )
+
+    def _sentinel_connection_pool(self, decode_responses: bool) -> ConnectionPool:
+        """Create a connection pool that resolves the master through Sentinel.
+
+        The pool asks the listed Sentinel daemons for the current master and
+        follows failover automatically, so the rest of the standalone code
+        path (client, pub/sub, publish, result storage) works unchanged.
+
+        Args:
+            decode_responses: If True, decode Redis responses from bytes to strings
+
+        Returns:
+            A ConnectionPool ready for use with Redis clients
+        """
+        config = parse_sentinel_url(self.url)
+        sentinel = Sentinel(config.sentinels, sentinel_kwargs=config.sentinel_kwargs)
+        # URL query options override the defaults, just as ConnectionPool.from_url
+        # lets a socket_timeout in a standalone URL take precedence.
+        pool_kwargs: dict[str, Any] = {
+            "db": config.db,
+            "decode_responses": decode_responses,
+            "socket_timeout": BLOCKING_READ_SOCKET_TIMEOUT,
+            **config.connection_kwargs,
+        }
+        return OwnedSentinelConnectionPool(config.service_name, sentinel, **pool_kwargs)
 
     async def _get_or_create_memory_client(self) -> MemoryRedisClient:
         """Get or create a BurnerRedis instance for a memory:// URL."""
