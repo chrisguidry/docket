@@ -706,6 +706,7 @@ class Worker:
                 if not execution._acked:
                     await execution.mark_as_failed(error=None)
 
+        disconnect: ConnectionError | None = None
         try:
             async with AsyncExitStack() as dependency_stack:
                 # Each Dependency class used by a registered task may declare
@@ -752,23 +753,43 @@ class Worker:
                             )
                             continue
 
-                        for source in [get_redeliveries, get_new_deliveries]:
-                            for stream_key, messages in await source(redis):
-                                is_redelivery = stream_key == b"__redelivery__"
-                                for message_id, message in messages:
-                                    if not message:  # pragma: no cover
-                                        continue
+                        try:
+                            for source in [get_redeliveries, get_new_deliveries]:
+                                for stream_key, messages in await source(redis):
+                                    is_redelivery = stream_key == b"__redelivery__"
+                                    for message_id, message in messages:
+                                        if not message:  # pragma: no cover
+                                            continue
 
-                                    await start_task(message_id, message, is_redelivery)
+                                        await start_task(
+                                            message_id, message, is_redelivery
+                                        )
 
-                            if available_slots <= 0:
-                                break
+                                if available_slots <= 0:
+                                    break
 
-                        if not forever and not active_tasks:
-                            has_work = await check_for_work()
+                            if not forever and not active_tasks:
+                                has_work = await check_for_work()
+                        except ConnectionError as error:
+                            # The worker's own polling read lost its connection --
+                            # a failover or a server restart drops a blocked
+                            # XREADGROUP this way.  Stop the loop and let _run
+                            # reconnect; in-flight tasks still drain in the finally
+                            # below.  A ConnectionError raised by a task body
+                            # surfaces through process_completed_tasks instead,
+                            # which stays outside this guard so it keeps its
+                            # die-and-redeliver behavior.
+                            disconnect = error
+                            break
 
                     # Signal internal tasks to stop before exiting TaskGroup
                     self._worker_stopping.set()
+
+            # A disconnection in the poll loop above leaves the TaskGroup intact
+            # (no exception escaped it), so re-raise it here as a bare
+            # ConnectionError for _run to catch and reconnect on.
+            if disconnect is not None:
+                raise disconnect
 
         except asyncio.CancelledError:
             if active_tasks:  # pragma: no cover
