@@ -164,6 +164,8 @@ class Docket(DocketSnapshotMixin):
                 - "redis://user:password@localhost:6379/0"
                 - "redis://user:password@localhost:6379/0?ssl=true"
                 - "rediss://localhost:6379/0"
+                - "redis+sentinel://sentinel-a:26379,sentinel-b:26379/mymaster/0"
+                  (Redis Sentinel master discovery)
                 - "unix:///path/to/redis.sock"
                 - "memory://" (in-memory backend for testing)
             heartbeat_interval: How often workers send heartbeat messages to the docket.

@@ -135,6 +135,54 @@ When using cluster mode, Docket automatically:
 
 **Note:** All Docket data for a single docket name will be stored on the same cluster shard. This ensures atomicity for Lua scripts and simplifies data management, but means individual dockets don't benefit from cluster data distribution.
 
+### Redis Sentinel Support
+
+Docket supports [Redis Sentinel](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/)
+master discovery using the `redis+sentinel://` URL scheme. The URL lists the
+Sentinel daemons (defaulting to port 26379) and names the monitored master
+group; Docket resolves the current master through the Sentinels and follows
+failover automatically:
+
+```python
+# Discover the master named "mymaster" through two Sentinels
+async with Docket(
+    name="orders",
+    url="redis+sentinel://sentinel-a:26379,sentinel-b:26379/mymaster/0"
+) as docket:
+    pass
+
+# With authentication: the URL credentials apply to the data nodes, and the
+# sentinel_username/sentinel_password query parameters to the Sentinels
+async with Docket(
+    name="orders",
+    url=(
+        "redis+sentinel://user:password@sentinel-a:26379,sentinel-b:26379"
+        "/mymaster/0?sentinel_password=sentinelsecret"
+    ),
+) as docket:
+    pass
+
+# TLS for both the data nodes and the Sentinels
+async with Docket(
+    name="orders",
+    url="rediss+sentinel://sentinel-a:26379,sentinel-b:26379/mymaster/0"
+) as docket:
+    pass
+```
+
+Standard redis-py connection options in the query string (see
+[Redis Connection Pools](#redis-connection-pools) above) apply to the data-node
+pool just as they do for standalone URLs — for example
+`redis+sentinel://sentinel-a:26379/mymaster/0?max_connections=50`. The database
+index comes from the path (`/mymaster/0`) and the data-node credentials from the
+URL userinfo.
+
+Because Docket disables the read timeout for its long blocking reads, the
+Sentinel data-node pool defaults to tight TCP keepalive so that a master which
+dies *silently* — a network partition or frozen host that never closes the
+connection — is noticed within seconds rather than waiting on the OS-default
+keepalive, letting the worker follow the Sentinel failover promptly.
+
 ### Authentication
 
 Docket supports Redis authentication via URL credentials:

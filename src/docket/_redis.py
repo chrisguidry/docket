@@ -6,6 +6,9 @@ the burner-redis backend used for memory:// URLs.
 This module is designed to be the single point of cluster-awareness, so that
 other modules can remain simple. When Redis Cluster support is added, only
 this module will need to change.
+
+Redis Sentinel support lives in the companion ``_redis_sentinel.py`` module;
+this module only detects the ``redis+sentinel://`` scheme and dispatches there.
 """
 
 from __future__ import annotations
@@ -607,12 +610,13 @@ def get_memory_server(url: str) -> MemoryRedisClient | None:
 
 
 class RedisConnection:
-    """Manages Redis connections for both standalone and cluster modes.
+    """Manages Redis connections for standalone, Sentinel, and cluster modes.
 
     This class encapsulates the lifecycle management of Redis connections,
-    hiding whether the underlying connection is to a standalone Redis server
-    or a Redis Cluster. It provides a unified interface for getting Redis
-    clients, pub/sub connections, and publishing messages.
+    hiding whether the underlying connection is to a standalone Redis server,
+    a Sentinel-monitored master, or a Redis Cluster. It provides a unified
+    interface for getting Redis clients, pub/sub connections, and publishing
+    messages.
 
     Example:
         async with RedisConnection("redis://localhost:6379/0") as connection:
@@ -636,10 +640,18 @@ class RedisConnection:
         """Initialize a Redis connection manager.
 
         Args:
-            url: Redis URL (redis://, rediss://, redis+cluster://, or memory://)
+            url: Redis URL (redis://, rediss://, redis+sentinel://,
+                redis+cluster://, or memory://)
         """
+        from ._redis_sentinel import is_sentinel_url, urlparse_multihost
+
         self.url = url
-        self._parsed = urlparse(url)
+        # Sentinel URLs list several daemons in the netloc, which urlparse can't
+        # handle when a bracketed IPv6 member follows another; carve those by
+        # hand and leave standalone, cluster, and memory URLs to urlparse.
+        self._parsed = (
+            urlparse_multihost(url) if is_sentinel_url(url) else urlparse(url)
+        )
         self._connection_pool = None
         self._cluster_client = None
         self._node_pool = None
@@ -701,6 +713,11 @@ class RedisConnection:
     def is_cluster(self) -> bool:
         """Check if this connection is to a Redis Cluster."""
         return self._parsed.scheme in ("redis+cluster", "rediss+cluster")
+
+    @property
+    def is_sentinel(self) -> bool:
+        """Check if this connection discovers its master through Redis Sentinel."""
+        return self._parsed.scheme in ("redis+sentinel", "rediss+sentinel")
 
     @property
     def is_memory(self) -> bool:
@@ -793,8 +810,9 @@ class RedisConnection:
     ) -> ConnectionPool:
         """Create a Redis connection pool from the URL.
 
-        This is only for real Redis connections (redis://, rediss://).
-        Memory backend uses BurnerRedis directly, not connection pools.
+        This is only for real Redis connections (redis://, rediss://, and the
+        +sentinel variants).  Memory backend uses BurnerRedis directly, not
+        connection pools.
 
         Args:
             decode_responses: If True, decode Redis responses from bytes to strings
@@ -802,6 +820,14 @@ class RedisConnection:
         Returns:
             A ConnectionPool ready for use with Redis clients
         """
+        if self.is_sentinel:
+            from ._redis_sentinel import sentinel_connection_pool
+
+            return sentinel_connection_pool(
+                self.url,
+                decode_responses=decode_responses,
+                socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
+            )
         return ConnectionPool.from_url(  # pyright: ignore[reportUnknownMemberType]
             self.url,
             decode_responses=decode_responses,
