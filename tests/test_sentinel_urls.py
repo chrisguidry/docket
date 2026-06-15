@@ -11,10 +11,11 @@ import pytest
 from redis.asyncio import Redis
 
 from docket import Docket
-from docket._redis import (
+from docket._redis import RedisConnection
+from docket._redis_sentinel import (
     DEFAULT_SENTINEL_PORT,
+    SENTINEL_SOCKET_KEEPALIVE_OPTIONS,
     OwnedSentinelConnectionPool,
-    RedisConnection,
     parse_sentinel_url,
 )
 
@@ -79,8 +80,8 @@ def test_parse_sentinel_url_tls():
 
 def test_parse_sentinel_url_ipv6_member():
     """Bracketed IPv6 members parse with and without an explicit port, in any
-    position — recent CPython urlsplit rejects netlocs with data before a
-    bracket, so the netloc never goes through urlsplit verbatim."""
+    position — every currently-supported CPython rejects netlocs with data
+    before a bracket, so the netloc never goes through urlsplit verbatim."""
     config = parse_sentinel_url("redis+sentinel://s1,[::1]:26380,[fe80::2]/mymaster")
     assert config.sentinels == [
         ("s1", DEFAULT_SENTINEL_PORT),
@@ -128,15 +129,17 @@ def test_parse_sentinel_url_passes_through_pool_options():
     assert config.sentinel_kwargs == {}
 
 
-def test_parse_sentinel_url_db_query_parameter_wins_over_path():
-    """Like redis-py's parse_url, a db query parameter beats the path db."""
+def test_parse_sentinel_url_db_comes_from_path_only():
+    """The database is taken from the path; a stray ?db= is not an alternate
+    source, and credentials stay sourced from the URL userinfo."""
     config = parse_sentinel_url("redis+sentinel://sentinel-a/mymaster/2?db=5")
-    assert config.db == 5
+    assert config.db == 2
     assert "db" not in config.connection_kwargs
 
 
-def test_parse_sentinel_url_userinfo_wins_over_query_credentials():
-    """Like redis-py's parse_url, URL userinfo beats credential query params."""
+def test_parse_sentinel_url_credentials_come_from_userinfo_only():
+    """Master credentials come from the URL userinfo; stray ?username=/?password=
+    query parameters are not honored as an alternate source."""
     config = parse_sentinel_url(
         "redis+sentinel://user:pass@sentinel-a/mymaster?username=qu&password=qp"
     )
@@ -220,6 +223,36 @@ async def test_sentinel_pool_honors_url_pool_options():
     assert isinstance(pool, OwnedSentinelConnectionPool)
     assert pool.max_connections == 50
     assert pool.connection_kwargs["socket_timeout"] == 7.5
+    await pool.aclose()
+
+
+async def test_sentinel_pool_defaults_tight_keepalive():
+    """docket disables the read timeout, so the Sentinel pool must default tight
+    TCP keepalive to notice a silently-dead master rather than waiting on the
+    OS-default keepalive (hours), which Sentinel outpaces by failing over in
+    seconds."""
+    connection = RedisConnection(SENTINEL_URL)
+    pool = await connection._connection_pool_from_url()  # pyright: ignore[reportPrivateUsage]
+    assert isinstance(pool, OwnedSentinelConnectionPool)
+    assert pool.connection_kwargs["socket_keepalive"] is True
+    assert (
+        pool.connection_kwargs["socket_keepalive_options"]
+        == SENTINEL_SOCKET_KEEPALIVE_OPTIONS
+    )
+    # The probe timers are populated from the platform's TCP keepalive constants.
+    assert SENTINEL_SOCKET_KEEPALIVE_OPTIONS
+    await pool.aclose()
+
+
+async def test_sentinel_pool_keepalive_is_overridable_from_url():
+    """A socket_keepalive in the URL still wins over docket's default, the way
+    any URL pool option overrides the defaults."""
+    connection = RedisConnection(
+        "redis+sentinel://sentinel-a/mymaster?socket_keepalive=false"
+    )
+    pool = await connection._connection_pool_from_url()  # pyright: ignore[reportPrivateUsage]
+    assert isinstance(pool, OwnedSentinelConnectionPool)
+    assert pool.connection_kwargs["socket_keepalive"] is False
     await pool.aclose()
 
 

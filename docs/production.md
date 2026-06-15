@@ -173,7 +173,15 @@ async with Docket(
 Standard redis-py connection options in the query string (see
 [Redis Connection Pools](#redis-connection-pools) above) apply to the data-node
 pool just as they do for standalone URLs — for example
-`redis+sentinel://sentinel-a:26379/mymaster/0?max_connections=50`.
+`redis+sentinel://sentinel-a:26379/mymaster/0?max_connections=50`. The database
+index comes from the path (`/mymaster/0`) and the data-node credentials from the
+URL userinfo.
+
+Because Docket disables the read timeout for its long blocking reads, the
+Sentinel data-node pool defaults to tight TCP keepalive so that a master which
+dies *silently* — a network partition or frozen host that never closes the
+connection — is noticed within seconds rather than waiting on the OS-default
+keepalive, letting the worker follow the Sentinel failover promptly.
 
 ### Authentication
 
