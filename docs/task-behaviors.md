@@ -50,7 +50,7 @@ docket.register(background_cleanup)
 # The task key will be the function name: "background_cleanup"
 ```
 
-Workers keep automatic tasks scheduled throughout their lifetime, not just at startup. If an automatic task's schedule is ever lost — for example, an old worker draining during a rolling deploy consumes one execution before it has the task registered — a running worker re-establishes it on its next check, so it keeps running without a restart.
+Workers don't only schedule automatic tasks at startup. They keep them scheduled the whole time they're running, so if one ever falls off the schedule a worker quietly puts it back. This matters most during a rolling deploy, where an older worker that doesn't know about a newly-added task can pick up one of its runs and drop it. Without this, the task would sit stranded until the next restart.
 
 ### Self-Canceling Tasks
 
