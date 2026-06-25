@@ -50,6 +50,8 @@ docket.register(background_cleanup)
 # The task key will be the function name: "background_cleanup"
 ```
 
+Workers keep automatic tasks scheduled throughout their lifetime, not just at startup. If an automatic task's schedule is ever lost — for example, an old worker draining during a rolling deploy consumes one execution before it has the task registered — a running worker re-establishes it on its next check, so it keeps running without a restart.
+
 ### Self-Canceling Tasks
 
 Perpetual tasks can stop themselves when their work is done:

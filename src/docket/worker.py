@@ -99,6 +99,7 @@ ADMISSION_BLOCKED_RETRY_DELAY = timedelta(milliseconds=100)
 # Lock timeout for coordinating automatic perpetual task scheduling at startup.
 # If a worker crashes while holding this lock, it expires after this many seconds.
 AUTOMATIC_PERPETUAL_LOCK_TIMEOUT_SECONDS = 10
+AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS = 60
 
 # Minimum TTL in seconds for Redis keys to avoid immediate expiration when
 # redelivery_timeout is very small (e.g., in tests with 200ms timeouts).
@@ -730,6 +731,10 @@ class Worker:
 
                     if self.schedule_automatic_tasks:
                         await self._schedule_all_automatic_perpetual_tasks()
+                        infra.create_task(
+                            self._reseed_automatic_perpetual_tasks_loop(),
+                            name=f"{self.docket.name} - automatic perpetual reseed",
+                        )
 
                     infra.create_task(
                         self._scheduler_loop(redis),
@@ -889,6 +894,37 @@ class Worker:
                     )
             except Exception:
                 logger.warning("Failed to renew leases", exc_info=True)
+
+    async def _reseed_automatic_perpetual_tasks_loop(self) -> None:
+        """Periodically re-sow automatic perpetuals so a chain severed after
+        startup is recovered without a full restart.
+
+        A perpetual reschedules itself from its own completion handler, but an
+        execution consumed through the unknown-task fallback (e.g. by an old
+        worker mid-deploy that hasn't registered the task yet) completes without
+        that handler, leaving nothing scheduled.  Re-seeding heals it: a
+        ``docket.add`` under the deterministic key dedups against a live
+        perpetual and only takes effect once the chain has actually been lost.
+        """
+        log_context = self._log_context()
+
+        while not self._worker_stopping.is_set():  # pragma: no branch
+            try:
+                await asyncio.wait_for(
+                    self._worker_stopping.wait(),
+                    timeout=AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS,
+                )
+                return  # Event was set, exit the loop
+            except asyncio.TimeoutError:
+                pass  # Normal timeout, re-seed and continue
+
+            try:
+                await self._schedule_all_automatic_perpetual_tasks()
+            except Exception:  # pragma: no cover
+                logger.exception(
+                    "Error re-seeding automatic perpetual tasks",
+                    extra=log_context,
+                )
 
     async def _schedule_all_automatic_perpetual_tasks(self) -> None:
         # Wait for strikes to be fully loaded before scheduling to avoid
