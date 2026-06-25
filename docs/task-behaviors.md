@@ -50,6 +50,10 @@ docket.register(background_cleanup)
 # The task key will be the function name: "background_cleanup"
 ```
 
+Workers don't only schedule automatic tasks at startup. They keep them scheduled the whole time they're running, so if one ever falls off the schedule a worker quietly puts it back. This matters most during a rolling deploy, where an older worker that doesn't know about a newly-added task can pick up one of its runs and drop it. Without this, the task would sit stranded until the next restart.
+
+Because a running worker keeps putting automatic tasks back, cancelling one only pauses it until the next reseed. To stop an automatic task for good, strike it with `docket.strike("task_name")`.
+
 ### Self-Canceling Tasks
 
 Perpetual tasks can stop themselves when their work is done:
