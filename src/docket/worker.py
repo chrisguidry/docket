@@ -945,11 +945,30 @@ class Worker:
 
                         if perpetual is not None and perpetual.automatic:
                             key = task_function.__name__
+                            # Skip tasks that already have a live schedule entry.
+                            # add() would dedup them, but evaluating
+                            # ``initial_when`` first has side effects: a Cron's
+                            # iterator advances on every call, so reseeding a
+                            # healthy cron would drift its schedule into the
+                            # future.  Only touch a task once its chain is gone.
+                            if await self._automatic_perpetual_is_live(redis, key):
+                                continue
                             await self.docket.add(
                                 task_function, when=perpetual.initial_when, key=key
                             )()
             except LockError:  # pragma: no cover
                 return
+
+    async def _automatic_perpetual_is_live(self, redis: RedisClient, key: str) -> bool:
+        """Whether an automatic perpetual already has a live schedule entry.
+
+        Mirrors the dedup in the scheduling script: a task is live when it's
+        parked or queued (``known`` is set) or currently running.
+        """
+        runs_key = self.docket.runs_key(key)
+        if (await redis.hget(runs_key, "known")) is not None:
+            return True
+        return (await redis.hget(runs_key, "state")) == b"running"
 
     async def _delete_known_task(self, redis: Redis, execution: Execution) -> None:
         logger.debug("Deleting known task", extra=self._log_context())

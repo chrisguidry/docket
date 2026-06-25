@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 
-from docket import Docket, Perpetual, Worker
+from docket import Cron, Docket, Perpetual, Worker
 from tests.conftest import wait_until
 
 
@@ -163,6 +164,42 @@ async def test_reseed_is_idempotent_for_live_perpetual(
     assert generation_before == generation_after
 
     await docket.cancel("perpetual_task")
+
+
+async def test_reseed_does_not_advance_cron_iterator_while_live(
+    docket: Docket,
+    worker: Worker,
+):
+    """Reseeding a healthy automatic cron must not consume its schedule iterator.
+
+    ``Cron.initial_when`` advances the iterator each time it's read, so reseeding
+    a cron that's already scheduled would march its next run further into the
+    future on every tick. Live tasks should be left untouched.
+    """
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    next_time_calls = 0
+
+    def advancing() -> datetime:
+        nonlocal next_time_calls
+        next_time_calls += 1
+        return base + timedelta(hours=next_time_calls)
+
+    async def cron_task(cron: Cron = Cron("0 * * * *", automatic=True)):
+        pass  # pragma: no cover
+
+    docket.register(cron_task)
+
+    with patch.object(Cron, "next_time", side_effect=advancing):
+        # The first seed schedules the cron, consuming one occurrence.
+        await worker._schedule_all_automatic_perpetual_tasks()  # type: ignore[protected-access]
+        assert next_time_calls == 1
+
+        # The cron is now live; further reseeds must leave the iterator alone.
+        await worker._schedule_all_automatic_perpetual_tasks()  # type: ignore[protected-access]
+        await worker._schedule_all_automatic_perpetual_tasks()  # type: ignore[protected-access]
+        assert next_time_calls == 1
+
+    await docket.cancel("cron_task")
 
 
 async def test_restoring_struck_automatic_perpetual_resumes_without_restart(
