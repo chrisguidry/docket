@@ -676,13 +676,13 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
             pubsub = redis.pubsub()
             try:
                 await pubsub.psubscribe(pattern)
-                async for message in pubsub.listen():
+                async for message in pubsub.listen():  # pragma: no branch
                     if message.get("type") != "pmessage":
                         continue
                     data = message.get("data")
                     if isinstance(data, bytes):
                         task_key = data.decode()
-                    elif isinstance(data, str):
+                    elif isinstance(data, str):  # pragma: no cover
                         task_key = data
                     else:  # pragma: no cover
                         continue

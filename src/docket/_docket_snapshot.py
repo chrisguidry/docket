@@ -65,8 +65,8 @@ class DocketSnapshotMixin:
 
     This mixin extracts the observability-related methods from Docket:
     - snapshot(): Get current state of all tasks
-    - workers(): List all active workers
-    - task_workers(): List workers capable of a specific task
+    - workers(): List workers with active processing loops
+    - task_workers(): List active workers capable of a specific task
 
     Note: This mixin expects to be used with a Docket class that provides:
     - name, url, heartbeat_interval, missed_heartbeats, worker_group_name
@@ -196,10 +196,10 @@ class DocketSnapshotMixin:
         return DocketSnapshot(now, total_tasks, future, running, workers)
 
     async def workers(self) -> Collection[WorkerInfo]:
-        """Get a list of all workers that have sent heartbeats to the Docket.
+        """Get a list of workers whose processing loops have sent heartbeats.
 
         Returns:
-            A list of all workers that have sent heartbeats to the Docket.
+            A list of workers with active processing loops.
         """
         workers: list[WorkerInfo] = []
 
@@ -231,13 +231,13 @@ class DocketSnapshotMixin:
         return workers
 
     async def task_workers(self, task_name: str) -> Collection[WorkerInfo]:
-        """Get a list of all workers that are able to execute a given task.
+        """Get active workers that are able to execute a given task.
 
         Args:
             task_name: The name of the task.
 
         Returns:
-            A list of all workers that are able to execute the given task.
+            A list of active workers that are able to execute the given task.
         """
         workers: list[WorkerInfo] = []
         oldest = datetime.now(timezone.utc).timestamp() - (

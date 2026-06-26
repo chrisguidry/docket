@@ -34,7 +34,6 @@ else:
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
-from ._cancellation import CANCEL_MSG_CLEANUP, cancel_task
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -133,6 +132,21 @@ logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
 
 
+class _WorkerInfrastructureConnectionError(ConnectionError):
+    pass
+
+
+def _is_worker_infrastructure_connection_error_group(exc: ExceptionGroup) -> bool:
+    return all(
+        isinstance(child, _WorkerInfrastructureConnectionError)
+        or (
+            isinstance(child, ExceptionGroup)
+            and _is_worker_infrastructure_connection_error_group(child)
+        )
+        for child in exc.exceptions
+    )
+
+
 class _stream_due_tasks(Protocol):
     async def __call__(
         self, keys: list[str], args: list[str | float]
@@ -228,13 +242,8 @@ class Worker:
         self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
         self._stack.callback(lambda: delattr(self, "_tasks_by_key"))
 
-        self._heartbeat_task = asyncio.create_task(
-            self._heartbeat(), name=f"{self.docket.name} - heartbeat"
-        )
+        self._heartbeat_task: asyncio.Task[None] | None = None
         self._stack.callback(lambda: delattr(self, "_heartbeat_task"))
-        self._stack.push_async_callback(
-            cancel_task, self._heartbeat_task, CANCEL_MSG_CLEANUP
-        )
 
         # Worker-scoped ContextVars for ambient access to docket/worker
         self._docket_token = current_docket.set(self.docket)
@@ -259,7 +268,7 @@ class Worker:
         self._worker_stopping.set()
         await self._worker_done.wait()
 
-        # Stack handles LIFO cleanup: shared_context first, then heartbeat
+        # Stack handles LIFO cleanup: shared_context first, then worker state
         try:
             await self._stack.__aexit__(exc_type, exc_value, traceback)
         finally:
@@ -459,19 +468,39 @@ class Worker:
 
     async def _run(self, forever: bool = False) -> None:
         self._startup_log()
+        self._worker_stopping.clear()
+        self._worker_done.clear()
 
-        while True:
-            try:
-                async with self.docket.redis() as redis:
-                    return await self._worker_loop(redis, forever=forever)
-            except ConnectionError:
-                REDIS_DISRUPTIONS.add(1, self.labels())
-                logger.warning(
-                    "Error connecting to redis, retrying in %s...",
-                    self.reconnection_delay,
-                    exc_info=True,
-                )
-                await asyncio.sleep(self.reconnection_delay.total_seconds())
+        try:
+            while True:
+                try:
+                    async with self.docket.redis() as redis:
+                        return await self._worker_loop(redis, forever=forever)
+                except (ConnectionError, ExceptionGroup) as exc:
+                    if isinstance(
+                        exc, ExceptionGroup
+                    ) and not _is_worker_infrastructure_connection_error_group(exc):
+                        raise
+
+                    if self._worker_stopping.is_set():
+                        return
+
+                    REDIS_DISRUPTIONS.add(1, self.labels())
+                    logger.warning(
+                        "Error connecting to redis, retrying in %s...",
+                        self.reconnection_delay,
+                        exc_info=True,
+                    )
+                    try:
+                        await asyncio.wait_for(
+                            self._worker_stopping.wait(),
+                            timeout=self.reconnection_delay.total_seconds(),
+                        )
+                        return
+                    except asyncio.TimeoutError:
+                        pass
+        finally:
+            self._worker_done.set()
 
     def _dependency_lifecycle_classes(self) -> list[type[Dependency[Any]]]:
         """Discover Dependency subclasses (used by registered tasks or worker
@@ -512,8 +541,9 @@ class Worker:
         return ordered
 
     async def _worker_loop(self, redis: Redis, forever: bool = False):
-        self._worker_stopping.clear()
-        self._worker_done.clear()
+        if self._worker_stopping.is_set():
+            return
+
         self._cancellation_ready.clear()  # Reset for reconnection scenarios
 
         active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
@@ -523,13 +553,19 @@ class Worker:
 
         async def check_for_work() -> bool:
             logger.debug("Checking for work", extra=log_context)
-            async with redis.pipeline() as pipeline:
-                pipeline.xlen(self.docket.stream_key)
-                pipeline.zcard(self.docket.queue_key)
-                results: list[int] = await pipeline.execute()
-                stream_len = results[0]
-                queue_len = results[1]
-                return stream_len > 0 or queue_len > 0
+            try:
+                async with redis.pipeline() as pipeline:
+                    pipeline.xlen(self.docket.stream_key)
+                    pipeline.zcard(self.docket.queue_key)
+                    results: list[int] = await pipeline.execute()
+            except ConnectionError as exc:  # pragma: no cover
+                raise _WorkerInfrastructureConnectionError(
+                    "Redis connection error while checking for work"
+                ) from exc
+
+            stream_len = results[0]
+            queue_len = results[1]
+            return stream_len > 0 or queue_len > 0
 
         async def get_redeliveries(redis: Redis) -> RedisReadGroupResponse:
             logger.debug("Getting redeliveries", extra=log_context)
@@ -550,6 +586,10 @@ class Worker:
                     await self.docket._ensure_stream_and_group()
                     return await get_redeliveries(redis)
                 raise  # pragma: no cover
+            except ConnectionError as exc:  # pragma: no cover
+                raise _WorkerInfrastructureConnectionError(
+                    "Redis connection error while getting redeliveries"
+                ) from exc
             return [(b"__redelivery__", redeliveries)]
 
         async def get_new_deliveries(redis: Redis) -> RedisReadGroupResponse:
@@ -568,6 +608,10 @@ class Worker:
                     await self.docket._ensure_stream_and_group()
                     return await get_new_deliveries(redis)
                 raise  # pragma: no cover
+            except ConnectionError as exc:
+                raise _WorkerInfrastructureConnectionError(
+                    "Redis connection error while getting new deliveries"
+                ) from exc
             return result
 
         async def start_task(
@@ -602,7 +646,12 @@ class Worker:
                 self._tasks_by_key.pop(execution.key, None)
                 try:
                     await task
-                    await ack_message(redis, message_id)
+                    try:
+                        await ack_message(redis, message_id)
+                    except ConnectionError as exc:  # pragma: no cover
+                        raise _WorkerInfrastructureConnectionError(
+                            "Redis connection error while acknowledging work"
+                        ) from exc
                 except AdmissionBlocked as e:
                     if e.handled:
                         # The admission gate already handled the task,
@@ -650,19 +699,34 @@ class Worker:
                 # lockstep with the worker.  Worker stays dependency-agnostic.
                 for dep_cls in self._dependency_lifecycle_classes():
                     cm = dep_cls.worker_lifecycle(self.docket, self)
-                    if cm is not None:
+                    if cm is not None:  # pragma: no branch
                         await dependency_stack.enter_async_context(cm)
 
                 async with TaskGroup() as infra:
                     # Start cancellation listener and wait for it to be ready
-                    infra.create_task(
+                    cancellation_listener_task = infra.create_task(
                         self._cancellation_listener(),
                         name=f"{self.docket.name} - cancellation listener",
                     )
-                    await self._cancellation_ready.wait()
+                    while not self._cancellation_ready.is_set():
+                        if self._worker_stopping.is_set():
+                            cancellation_listener_task.cancel()
+                            return
+                        try:
+                            await asyncio.wait_for(
+                                self._cancellation_ready.wait(),
+                                timeout=0.1,
+                            )
+                        except asyncio.TimeoutError:
+                            pass
 
                     if self.schedule_automatic_tasks:
-                        await self._schedule_all_automatic_perpetual_tasks()
+                        try:
+                            await self._schedule_all_automatic_perpetual_tasks()
+                        except ConnectionError as exc:  # pragma: no cover
+                            raise _WorkerInfrastructureConnectionError(
+                                "Redis connection error while scheduling automatic tasks"
+                            ) from exc
 
                     infra.create_task(
                         self._scheduler_loop(redis),
@@ -671,6 +735,9 @@ class Worker:
                     infra.create_task(
                         self._renew_leases(redis, active_tasks),
                         name=f"{self.docket.name} - lease renewal",
+                    )
+                    self._heartbeat_task = infra.create_task(
+                        self._heartbeat(), name=f"{self.docket.name} - heartbeat"
                     )
 
                     has_work: bool = True
@@ -717,7 +784,7 @@ class Worker:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
                 await process_completed_tasks()
 
-            self._worker_done.set()
+            self._heartbeat_task = None
 
     async def _scheduler_loop(self, redis: Redis) -> None:
         """Loop that moves due tasks from the queue to the stream."""
@@ -1141,68 +1208,112 @@ class Worker:
         return self.docket.task_workers_set(task_name)
 
     async def _heartbeat(self) -> None:
-        while True:
-            try:
-                now = datetime.now(timezone.utc).timestamp()
-                maximum_age = (
-                    self.docket.heartbeat_interval * self.docket.missed_heartbeats
-                )
-                oldest = now - maximum_age.total_seconds()
+        try:
+            while not self._worker_stopping.is_set():  # pragma: no branch
+                try:
+                    now = datetime.now(timezone.utc).timestamp()
+                    maximum_age = (
+                        self.docket.heartbeat_interval * self.docket.missed_heartbeats
+                    )
+                    oldest = now - maximum_age.total_seconds()
 
+                    task_names = list(self.docket.tasks)
+
+                    async with self.docket.redis() as r:
+                        with self._maybe_suppress_instrumentation():
+                            async with r.pipeline() as pipeline:
+                                pipeline.zremrangebyscore(self.workers_set, 0, oldest)
+                                pipeline.zadd(self.workers_set, {self.name: now})
+
+                                for task_name in task_names:
+                                    task_workers_set = self.task_workers_set(task_name)
+                                    pipeline.zremrangebyscore(
+                                        task_workers_set, 0, oldest
+                                    )
+                                    pipeline.zadd(task_workers_set, {self.name: now})
+
+                                pipeline.sadd(
+                                    self.worker_tasks_set(self.name), *task_names
+                                )
+                                pipeline.expire(
+                                    self.worker_tasks_set(self.name),
+                                    max(
+                                        maximum_age,
+                                        timedelta(seconds=MINIMUM_TTL_SECONDS),
+                                    ),
+                                )
+
+                                await pipeline.execute()
+
+                            async with r.pipeline() as pipeline:
+                                pipeline.xlen(self.docket.stream_key)
+                                pipeline.zcount(self.docket.queue_key, 0, now)
+                                pipeline.zcount(self.docket.queue_key, now, "+inf")
+
+                                results: list[int] = await pipeline.execute()
+
+                        stream_depth = results[0]
+                        overdue_depth = results[1]
+                        schedule_depth = results[2]
+
+                        QUEUE_DEPTH.set(
+                            stream_depth + overdue_depth, self.docket.labels()
+                        )
+                        SCHEDULE_DEPTH.set(schedule_depth, self.docket.labels())
+
+                except asyncio.CancelledError:
+                    return
+                except ConnectionError:
+                    REDIS_DISRUPTIONS.add(1, self.labels())
+                    logger.exception(
+                        "Error sending worker heartbeat",
+                        exc_info=True,
+                        extra=self._log_context(),
+                    )
+                except Exception:  # pragma: no cover
+                    logger.exception(
+                        "Error sending worker heartbeat",
+                        exc_info=True,
+                        extra=self._log_context(),
+                    )
+
+                try:
+                    await asyncio.wait_for(
+                        self._worker_stopping.wait(),
+                        timeout=self.docket.heartbeat_interval.total_seconds(),
+                    )
+                    return
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            await self._remove_heartbeat()
+
+    async def _remove_heartbeat(self) -> None:
+        try:
+            async with self.docket.redis() as r:
                 task_names = list(self.docket.tasks)
+                async with r.pipeline() as pipeline:
+                    pipeline.zrem(self.workers_set, self.name)
 
-                async with self.docket.redis() as r:
-                    with self._maybe_suppress_instrumentation():
-                        async with r.pipeline() as pipeline:
-                            pipeline.zremrangebyscore(self.workers_set, 0, oldest)
-                            pipeline.zadd(self.workers_set, {self.name: now})
+                    for task_name in task_names:
+                        pipeline.zrem(self.task_workers_set(task_name), self.name)
 
-                            for task_name in task_names:
-                                task_workers_set = self.task_workers_set(task_name)
-                                pipeline.zremrangebyscore(task_workers_set, 0, oldest)
-                                pipeline.zadd(task_workers_set, {self.name: now})
+                    pipeline.delete(self.worker_tasks_set(self.name))
 
-                            pipeline.sadd(self.worker_tasks_set(self.name), *task_names)
-                            pipeline.expire(
-                                self.worker_tasks_set(self.name),
-                                max(
-                                    maximum_age, timedelta(seconds=MINIMUM_TTL_SECONDS)
-                                ),
-                            )
-
-                            await pipeline.execute()
-
-                        async with r.pipeline() as pipeline:
-                            pipeline.xlen(self.docket.stream_key)
-                            pipeline.zcount(self.docket.queue_key, 0, now)
-                            pipeline.zcount(self.docket.queue_key, now, "+inf")
-
-                            results: list[int] = await pipeline.execute()
-
-                    stream_depth = results[0]
-                    overdue_depth = results[1]
-                    schedule_depth = results[2]
-
-                    QUEUE_DEPTH.set(stream_depth + overdue_depth, self.docket.labels())
-                    SCHEDULE_DEPTH.set(schedule_depth, self.docket.labels())
-
-            except asyncio.CancelledError:  # pragma: no cover
-                return
-            except ConnectionError:
-                REDIS_DISRUPTIONS.add(1, self.labels())
-                logger.exception(
-                    "Error sending worker heartbeat",
-                    exc_info=True,
-                    extra=self._log_context(),
-                )
-            except Exception:  # pragma: no cover
-                logger.exception(
-                    "Error sending worker heartbeat",
-                    exc_info=True,
-                    extra=self._log_context(),
-                )
-
-            await asyncio.sleep(self.docket.heartbeat_interval.total_seconds())
+                    await pipeline.execute()
+        except ConnectionError:  # pragma: no cover
+            REDIS_DISRUPTIONS.add(1, self.labels())
+            logger.exception(
+                "Error clearing worker heartbeat",
+                exc_info=True,
+                extra=self._log_context(),
+            )
+        except Exception:  # pragma: no cover
+            logger.exception(
+                "Error clearing worker heartbeat",
+                exc_info=True,
+                extra=self._log_context(),
+            )
 
     async def _cancellation_listener(self) -> None:
         """Listen for cancellation signals and cancel matching tasks."""

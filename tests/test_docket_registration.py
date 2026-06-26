@@ -1,6 +1,8 @@
 """Tests for Docket task registration."""
 
 import asyncio
+from contextlib import suppress
+
 from docket.docket import Docket
 from docket.worker import Worker
 
@@ -165,7 +167,13 @@ async def test_alias_appears_in_worker_announcements(docket: Docket):
     docket.register(my_task, names=["custom_alias"])
 
     async with Worker(docket) as w:
-        await asyncio.sleep(0.1)  # Let heartbeat fire
-        workers = await docket.task_workers("custom_alias")
-        assert len(workers) == 1
-        assert w.name in {worker.name for worker in workers}
+        worker_task = asyncio.create_task(w.run_forever())
+        try:
+            await asyncio.sleep(0.1)  # Let heartbeat fire
+            workers = await docket.task_workers("custom_alias")
+            assert len(workers) == 1
+            assert w.name in {worker.name for worker in workers}
+        finally:
+            worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker_task
