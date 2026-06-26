@@ -250,7 +250,7 @@ async def test_worker_recovers_from_transient_scheduler_connection_error(
 
 @skip_memory
 @skip_cluster
-async def test_worker_drains_due_work_after_real_redis_connection_drop(
+async def test_worker_drains_due_work_after_real_redis_connection_drop(  # pragma: no cover
     docket: Docket,
     redis_url: str,
 ):
