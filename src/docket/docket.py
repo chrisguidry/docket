@@ -168,9 +168,9 @@ class Docket(DocketSnapshotMixin):
                   (Redis Sentinel master discovery)
                 - "unix:///path/to/redis.sock"
                 - "memory://" (in-memory backend for testing)
-            heartbeat_interval: How often workers send heartbeat messages to the docket.
-            missed_heartbeats: How many heartbeats a worker can miss before it is
-                considered dead.
+            heartbeat_interval: How often running workers send heartbeats.
+            missed_heartbeats: How many heartbeats a running worker can miss before it
+                is considered dead.
             execution_ttl: How long to keep completed or failed execution state records
                 in Redis before they expire. Defaults to 15 minutes.
             enable_internal_instrumentation: Whether to enable OpenTelemetry spans

@@ -5,6 +5,7 @@ import http.client
 import socket
 import sys
 import time
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 from unittest.mock import AsyncMock, Mock
@@ -202,6 +203,12 @@ async def test_worker_publishes_depth_gauges(
     SCHEDULE_DEPTH: Mock,
 ):
     """Should publish depth gauges for due and scheduled tasks."""
+
+    async def slow_task() -> None:
+        await asyncio.sleep(0.5)
+
+    the_task.side_effect = slow_task
+
     await docket.add(the_task)()
     await docket.add(the_task)()
 
@@ -211,8 +218,14 @@ async def test_worker_publishes_depth_gauges(
     await docket.add(the_task, when=future)()
 
     docket.heartbeat_interval = timedelta(seconds=0.1)
-    async with Worker(docket):
-        await asyncio.sleep(0.2)  # enough for a heartbeat to be published
+    async with Worker(docket) as worker:
+        worker_task = asyncio.create_task(worker.run_forever())
+        try:
+            await asyncio.sleep(0.2)  # enough for a heartbeat to be published
+        finally:
+            worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker_task
 
     QUEUE_DEPTH.assert_called_with(2, docket_labels)
     SCHEDULE_DEPTH.assert_called_with(3, docket_labels)

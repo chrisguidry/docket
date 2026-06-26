@@ -47,6 +47,11 @@ async def test_get_memory_server_returns_none_when_uncached():
     assert get_memory_server("memory://uncached") is None
 
 
+async def test_memory_connection_publish_uses_memory_client():
+    async with RedisConnection("memory://publish") as connection:
+        assert await connection.publish("channel", "message") == 0
+
+
 async def test_docket_memory_backend():
     """Test using in-memory backend via memory:// URL."""
     async with Docket(name="test-memory-docket", url="memory://") as docket:

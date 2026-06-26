@@ -11,6 +11,8 @@ production wrapper relies on.
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import pytest
 
 from docket import Docket
@@ -340,6 +342,20 @@ def test_untagged_parameter_is_rejected_at_decoration_time() -> None:
             *,
             key: Key[str],
             mystery: str,
+        ) -> bytes:
+            """return 'x'"""
+            ...
+
+
+def test_foreign_annotated_parameter_is_rejected_at_decoration_time() -> None:
+    with pytest.raises(TypeError, match="must be annotated as Key"):
+
+        @redis_script
+        async def untagged_annotated(  # pyright: ignore[reportUnusedFunction]
+            redis: RedisClient,
+            *,
+            key: Key[str],
+            mystery: Annotated[str, "foreign"],
         ) -> bytes:
             """return 'x'"""
             ...

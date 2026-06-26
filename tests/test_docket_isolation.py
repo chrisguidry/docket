@@ -78,7 +78,7 @@ async def test_cancel_in_one_docket_does_not_touch_another(
     assert other is not None, "other_docket's task must still exist after docket.cancel"
     # And the original docket's task should now be tombstoned/cancelled.
     primary = await docket.get_execution("shared-name")
-    if primary is not None:
+    if primary is not None:  # pragma: no branch
         # With non-zero execution_ttl the tombstone hangs around with
         # state=cancelled; with execution_ttl=0 it would be gone.
         assert primary.state.value == "cancelled"
