@@ -903,6 +903,10 @@ class Worker:
                         self.docket.stream_key,
                         extra=log_context,
                     )
+            except ConnectionError as exc:
+                raise _WorkerInfrastructureConnectionError(
+                    "Redis connection error while scheduling due work"
+                ) from exc
             except Exception:  # pragma: no cover
                 logger.exception(
                     "Error in scheduler loop",

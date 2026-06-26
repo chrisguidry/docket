@@ -2,15 +2,17 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from redis.asyncio import Redis
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Worker
 from docket._redis import RedisClient
+from tests.conftest import skip_cluster, skip_memory, wait_until
 
 
 async def test_worker_context_without_processing_loop_is_not_announced(
@@ -179,6 +181,158 @@ async def test_worker_recovers_from_transient_claim_connection_error(
 
     assert failed_once
     assert task_complete
+    assert snapshot.total_tasks == 0
+    assert snapshot.running == []
+
+
+async def test_worker_recovers_from_transient_scheduler_connection_error(
+    docket: Docket,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A scheduler Redis outage should reconnect instead of advertising liveness."""
+
+    heartbeat = timedelta(milliseconds=20)
+    docket.heartbeat_interval = heartbeat
+    docket.missed_heartbeats = 3
+
+    task_complete = False
+
+    async def scheduled_task() -> None:
+        nonlocal task_complete
+        task_complete = True
+
+    await docket.add(
+        scheduled_task, when=datetime.now(timezone.utc) + timedelta(milliseconds=25)
+    )()
+
+    original_redis = docket.redis
+    redis_calls = 0
+    scheduler_failed = False
+
+    @asynccontextmanager
+    async def mock_redis() -> AsyncGenerator[RedisClient, None]:
+        nonlocal redis_calls, scheduler_failed
+        redis_calls += 1
+
+        async with original_redis() as r:
+            if redis_calls == 1:
+
+                class BrokenSchedulerRedis:
+                    def __getattr__(self, name: str) -> Any:
+                        return getattr(r, name)
+
+                    async def evalsha(self, *args: Any, **kwargs: Any) -> Any:
+                        nonlocal scheduler_failed
+                        scheduler_failed = True
+                        raise ConnectionError("transient scheduler outage")
+
+                yield cast(RedisClient, BrokenSchedulerRedis())
+            else:
+                yield r
+
+    monkeypatch.setattr(docket, "redis", mock_redis)
+
+    async with Worker(
+        docket,
+        reconnection_delay=heartbeat,
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as worker:
+        await asyncio.wait_for(worker.run_until_finished(), timeout=5.0)
+
+    snapshot = await docket.snapshot()
+
+    assert scheduler_failed
+    assert task_complete
+    assert snapshot.total_tasks == 0
+    assert snapshot.running == []
+
+
+@skip_memory
+@skip_cluster
+async def test_worker_drains_due_work_after_real_redis_connection_drop(
+    docket: Docket,
+    redis_url: str,
+):
+    """A real Redis socket drop should not strand scheduled work."""
+
+    heartbeat = timedelta(milliseconds=20)
+    docket.heartbeat_interval = heartbeat
+    docket.missed_heartbeats = 3
+    task_complete = asyncio.Event()
+
+    async def scheduled_task() -> None:
+        task_complete.set()
+
+    await docket.add(
+        scheduled_task, when=datetime.now(timezone.utc) + timedelta(milliseconds=500)
+    )()
+
+    disruptor_client = cast(Any, Redis).from_url(
+        redis_url,
+        decode_responses=True,
+        single_connection_client=True,
+        client_name=f"{docket.name}-disruptor",
+    )
+
+    async with (
+        disruptor_client as disruptor,
+        Worker(
+            docket,
+            name="real-redis-recovery-worker",
+            reconnection_delay=heartbeat,
+            minimum_check_interval=timedelta(milliseconds=5),
+            scheduling_resolution=timedelta(milliseconds=5),
+        ) as worker,
+    ):
+        disruptor_id = str(await disruptor.client_id())
+
+        async def client_ids() -> set[str]:
+            clients: list[dict[str, Any]] = await disruptor.client_list()
+            return {
+                str(client["id"])
+                for client in clients
+                if str(client["id"]) != disruptor_id
+            }
+
+        worker_task = asyncio.create_task(worker.run_until_finished())
+        redis_client_ids: set[str] = set()
+
+        async def worker_is_announced() -> bool:
+            return worker.name in {w.name for w in await docket.workers()}
+
+        async def redis_clients_are_visible() -> bool:
+            nonlocal redis_client_ids
+            redis_client_ids = await client_ids()
+            return bool(redis_client_ids)
+
+        try:
+            await wait_until(
+                worker_is_announced,
+                timeout=2.0,
+                description="worker announcement",
+            )
+            await wait_until(
+                redis_clients_are_visible,
+                timeout=2.0,
+                description="Redis clients to disrupt",
+            )
+
+            killed_connections = 0
+            for client_id in redis_client_ids:
+                killed_connections += int(
+                    await disruptor.execute_command("CLIENT", "KILL", "ID", client_id)
+                )
+
+            assert killed_connections > 0
+            await asyncio.wait_for(worker_task, timeout=5.0)
+        finally:
+            worker_task.cancel()
+            await asyncio.gather(worker_task, return_exceptions=True)
+
+    snapshot = await docket.snapshot()
+
+    assert task_complete.is_set()
     assert snapshot.total_tasks == 0
     assert snapshot.running == []
 
