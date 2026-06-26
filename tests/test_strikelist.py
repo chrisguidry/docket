@@ -4,16 +4,42 @@ from __future__ import annotations
 
 # pyright: reportPrivateUsage=false
 
-import asyncio
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 import pytest
 
 from docket import StrikeList
 from docket.strikelist import Operator, Restore, Strike
+from tests.conftest import wait_until
 
 if TYPE_CHECKING:
     from docket.execution import Execution
+
+
+async def wait_until_stricken(
+    strikes: StrikeList, target: Mapping[str, Any], *, timeout: float = 5.0
+) -> None:
+    """Wait for the StrikeList's monitor task to have processed enough
+    stream entries to make ``target`` match a strike.  Replaces a fixed
+    ``asyncio.sleep`` after ``send_strike()`` / ``strikes.strike()``."""
+    await wait_until(
+        lambda: strikes.is_stricken(target),
+        timeout=timeout,
+        description=f"is_stricken({target!r})",
+    )
+
+
+async def wait_until_restored(
+    strikes: StrikeList, target: Mapping[str, Any], *, timeout: float = 5.0
+) -> None:
+    """Wait for the monitor task to have processed a restore so ``target``
+    no longer matches any strike.  Replaces a fixed ``asyncio.sleep``
+    after ``send_restore()`` / ``strikes.restore()``."""
+    await wait_until(
+        lambda: not strikes.is_stricken(target),
+        timeout=timeout,
+        description=f"not is_stricken({target!r})",
+    )
 
 
 @pytest.fixture
@@ -206,9 +232,8 @@ async def test_receives_strikes(redis_url: str, strike_name: str):
     """Test that StrikeList receives strikes from the stream."""
     async with StrikeList(url=redis_url, name=strike_name) as strikes:
         await send_strike(strikes, "customer_id", "==", "blocked")
-        await asyncio.sleep(0.1)
+        await wait_until_stricken(strikes, {"customer_id": "blocked"})
 
-        assert strikes.is_stricken({"customer_id": "blocked"})
         assert not strikes.is_stricken({"customer_id": "allowed"})
 
 
@@ -216,12 +241,10 @@ async def test_receives_restore(redis_url: str, strike_name: str):
     """Test that StrikeList receives restores from the stream."""
     async with StrikeList(url=redis_url, name=strike_name) as strikes:
         await send_strike(strikes, "customer_id", "==", "blocked")
-        await asyncio.sleep(0.1)
-        assert strikes.is_stricken({"customer_id": "blocked"})
+        await wait_until_stricken(strikes, {"customer_id": "blocked"})
 
         await send_restore(strikes, "customer_id", "==", "blocked")
-        await asyncio.sleep(0.1)
-        assert not strikes.is_stricken({"customer_id": "blocked"})
+        await wait_until_restored(strikes, {"customer_id": "blocked"})
 
 
 async def test_receives_multiple_strikes(redis_url: str, strike_name: str):
@@ -229,11 +252,12 @@ async def test_receives_multiple_strikes(redis_url: str, strike_name: str):
     async with StrikeList(url=redis_url, name=strike_name) as strikes:
         await send_strike(strikes, "region", "==", "us-west")
         await send_strike(strikes, "priority", ">=", 5)
-        await asyncio.sleep(0.1)
+        # Wait for the second strike to be in effect (monitor task processes
+        # stream entries in order, so this implies the first one too).
+        await wait_until_stricken(strikes, {"region": "us-east", "priority": 10})
 
         # Either condition triggers strike
         assert strikes.is_stricken({"region": "us-west", "priority": 1})
-        assert strikes.is_stricken({"region": "us-east", "priority": 10})
         assert not strikes.is_stricken({"region": "us-east", "priority": 1})
 
 
@@ -242,7 +266,7 @@ async def test_new_instance_receives_existing_strikes(redis_url: str, strike_nam
     # Create first instance and send a strike
     async with StrikeList(url=redis_url, name=strike_name) as strikes1:
         await send_strike(strikes1, "customer_id", "==", "blocked")
-        await asyncio.sleep(0.1)
+        await wait_until_stricken(strikes1, {"customer_id": "blocked"})
 
     # Start a new StrikeList instance - should read existing strikes
     async with StrikeList(url=redis_url, name=strike_name) as strikes2:
@@ -264,7 +288,9 @@ async def test_all_operators(redis_url: str, strike_name: str):
         await send_strike(strikes, "lt_param", "<", 10)
         await send_strike(strikes, "lte_param", "<=", 10)
         await send_strike(strikes, "between_param", "between", (20, 30))
-        await asyncio.sleep(0.1)
+        # Wait for the last strike to land -- the monitor processes the
+        # stream in order, so once we see this one, all prior ones are in.
+        await wait_until_stricken(strikes, {"between_param": 25})
 
         # ==
         assert strikes.is_stricken({"eq_param": 42})
@@ -299,7 +325,7 @@ async def test_empty_dict_not_stricken(redis_url: str, strike_name: str):
     """Test that an empty dict is never stricken."""
     async with StrikeList(url=redis_url, name=strike_name) as strikes:
         await send_strike(strikes, "customer_id", "==", "blocked")
-        await asyncio.sleep(0.1)
+        await wait_until_stricken(strikes, {"customer_id": "blocked"})
 
         assert not strikes.is_stricken({})
 
@@ -310,7 +336,7 @@ async def test_type_mismatch_handled_gracefully(
     """Test that type mismatches don't raise exceptions."""
     async with StrikeList(url=redis_url, name=strike_name) as strikes:
         await send_strike(strikes, "amount", ">", 100)
-        await asyncio.sleep(0.1)
+        await wait_until_stricken(strikes, {"amount": 200})
 
         # Comparing string to int should not raise
         result = strikes.is_stricken({"amount": "not a number"})
@@ -353,21 +379,21 @@ async def test_invariant_no_empty_dicts_in_task_strikes_after_restore(
         await strikes.strike(
             function="my_task", parameter="user_id", operator="==", value=123
         )
-        await asyncio.sleep(0.1)
+        await wait_until(
+            lambda: "my_task" in strikes.task_strikes,
+            description="my_task strike to register",
+        )
 
         # Verify structure exists
-        assert "my_task" in strikes.task_strikes
         assert "user_id" in strikes.task_strikes["my_task"]
 
         # Restore the strike
         await strikes.restore(
             function="my_task", parameter="user_id", operator="==", value=123
         )
-        await asyncio.sleep(0.1)
-
-        # After restore, no empty dict entries should remain
-        assert "my_task" not in strikes.task_strikes, (
-            "task_strikes should not contain empty task entries"
+        await wait_until(
+            lambda: "my_task" not in strikes.task_strikes,
+            description="my_task strike to be restored",
         )
 
 
@@ -378,19 +404,19 @@ async def test_invariant_no_empty_dicts_in_parameter_strikes_after_restore(
     async with StrikeList(url=redis_url, name=strike_name) as strikes:
         # Strike a parameter (applies to all tasks)
         await strikes.strike(parameter="region", operator="==", value="us-west")
-        await asyncio.sleep(0.1)
+        await wait_until(
+            lambda: "region" in strikes.parameter_strikes,
+            description="region parameter strike to register",
+        )
 
         # Verify structure exists
-        assert "region" in strikes.parameter_strikes
         assert len(strikes.parameter_strikes["region"]) == 1
 
         # Restore the strike
         await strikes.restore(parameter="region", operator="==", value="us-west")
-        await asyncio.sleep(0.1)
-
-        # After restore, no empty set entries should remain
-        assert "region" not in strikes.parameter_strikes, (
-            "parameter_strikes should not contain empty parameter entries"
+        await wait_until(
+            lambda: "region" not in strikes.parameter_strikes,
+            description="region parameter strike to be restored",
         )
 
 
@@ -410,11 +436,13 @@ async def test_invariant_multiple_strike_restore_cycles(
             await strikes.strike(
                 parameter="global_param", operator=">=", value=100 + cycle
             )
-            await asyncio.sleep(0.05)
-
-            # Verify strikes are in effect
-            assert "task_a" in strikes.task_strikes
-            assert "global_param" in strikes.parameter_strikes
+            await wait_until(
+                lambda: (
+                    "task_a" in strikes.task_strikes
+                    and "global_param" in strikes.parameter_strikes
+                ),
+                description=f"both strikes registered in cycle {cycle}",
+            )
 
             # Restore
             await strikes.restore(
@@ -426,14 +454,12 @@ async def test_invariant_multiple_strike_restore_cycles(
             await strikes.restore(
                 parameter="global_param", operator=">=", value=100 + cycle
             )
-            await asyncio.sleep(0.05)
-
-            # After each cycle, both dicts should be clean
-            assert "task_a" not in strikes.task_strikes, (
-                f"Orphan in task_strikes after cycle {cycle}"
-            )
-            assert "global_param" not in strikes.parameter_strikes, (
-                f"Orphan in parameter_strikes after cycle {cycle}"
+            await wait_until(
+                lambda: (
+                    "task_a" not in strikes.task_strikes
+                    and "global_param" not in strikes.parameter_strikes
+                ),
+                description=f"both restores cleaned up in cycle {cycle}",
             )
 
 
@@ -452,7 +478,10 @@ async def test_invariant_strikelist_state_persists_through_context(
 
     # Add some data
     await strikes.strike(parameter="test_param", operator="==", value="test_value")
-    await asyncio.sleep(0.1)
+    await wait_until(
+        lambda: "test_param" in strikes.parameter_strikes,
+        description="test_param strike to register",
+    )
 
     await strikes.__aexit__(None, None, None)
 

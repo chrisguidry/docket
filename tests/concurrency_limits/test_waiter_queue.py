@@ -284,6 +284,148 @@ async def test_cancel_of_parked_task_prevents_wake_and_run(
         assert safeguard_key not in queue_keys, queue_keys
 
 
+async def test_cancel_cleanup_script_drains_waiter_entry(docket: Docket):
+    """Directly exercise the ``_cancel_cleanup`` wrapper.
+
+    The wrapper is normally invoked from
+    ``ConcurrencyLimit._cleanup_cancelled_waiter``, which the
+    ``memory://`` backend can't actually drive end-to-end (its in-process
+    Redis shim is missing ``hmget``).  Drive the script directly here to
+    keep the optimisation honestly tested on every backend.
+    """
+    from docket.dependencies._concurrency import _cancel_cleanup  # pyright: ignore[reportPrivateUsage]
+
+    waiter_stream = f"{docket.prefix}:concurrency:cleanup-direct:waiters"
+    task_key = "cleanup-direct"
+    runs_key = f"{docket.prefix}:runs:{task_key}"
+    progress_key = f"{docket.prefix}:progress:{task_key}"
+
+    async with docket.redis() as redis:
+        entry_id = await redis.xadd(waiter_stream, {b"key": task_key.encode()})
+        await redis.hset(runs_key, "waiter_stream", waiter_stream)
+        await redis.hset(runs_key, "waiter_entry_id", entry_id.decode())
+        await redis.hset(progress_key, "current", "0")
+
+        assert await redis.xlen(waiter_stream) == 1
+        assert await redis.exists(progress_key) == 1
+
+        await _cancel_cleanup(
+            redis,
+            waiters_stream=waiter_stream,
+            progress_key=progress_key,
+            runs_key=runs_key,
+            waiter_entry_id=entry_id.decode(),
+        )
+
+        assert await redis.xlen(waiter_stream) == 0
+        assert await redis.exists(progress_key) == 0
+        assert await redis.hget(runs_key, "waiter_stream") is None
+        assert await redis.hget(runs_key, "waiter_entry_id") is None
+
+
+async def test_admission_blocked_handled_does_not_publish_failed_event(
+    docket: Docket, worker: Worker
+) -> None:
+    """A task parked by ``ConcurrencyLimit`` (``AdmissionBlocked(handled=True)``)
+    must NOT trigger the worker's safety-net ``mark_as_failed`` path.
+
+    The safety-net check at the end of ``process_completed_tasks`` only
+    fires when ``execution._acked`` is False, and the ``handled=True``
+    branch ``continue``s past it.  If anyone ever refactors that branch
+    away or stops short-circuiting, a parked task would observably emit
+    ``state=failed`` on its state channel even though the runs hash still
+    says ``scheduled``.  This test locks in the implicit invariant:
+    no ``failed`` event is ever published for a parked-but-not-yet-run
+    task whose ``handle_failure`` was a no-op admission denial.
+    """
+    import contextlib
+    import json
+
+    from tests.conftest import wait_for_event
+
+    holder_started = asyncio.Event()
+    holder_may_finish = asyncio.Event()
+    contender_key = "admission-blocked-no-fail"
+
+    # Subscribe to the contender's state channel BEFORE we add it, so the
+    # park-time ``scheduled`` event and any (regression) ``failed`` event
+    # are both captured.
+    state_events: list[dict[str, object]] = []
+    ready = asyncio.Event()
+
+    async def collector() -> None:
+        async with docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
+            await pubsub.subscribe(docket.key(f"state:{contender_key}"))
+            ready.set()
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue  # pragma: no cover
+                data = message["data"]
+                payload = data.decode() if isinstance(data, bytes) else data
+                state_events.append(json.loads(payload))
+
+    collector_task = asyncio.create_task(collector())
+    await ready.wait()
+
+    async def the_task(
+        marker: str,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(max_concurrent=1),
+    ) -> None:
+        if marker == "holder":
+            holder_started.set()
+            await holder_may_finish.wait()
+
+    docket.register(the_task)
+
+    await docket.add(the_task, key="holder")("holder")
+    worker_task = asyncio.create_task(worker.run_until_finished())
+    await asyncio.wait_for(holder_started.wait(), timeout=5)
+
+    # Park the contender while the holder owns the only slot.
+    await docket.add(the_task, key=contender_key)("contender")
+
+    # Wait for ``_acquire_or_park``'s scheduled event -- that's how we
+    # know the contender has actually parked and the runs hash is
+    # settled.  No magic-number wait.
+    await wait_for_event(
+        state_events,
+        lambda m: m.get("state") == "scheduled",
+        description="contender's park scheduled event",
+    )
+
+    # While parked, the runs hash must say ``scheduled`` -- not ``failed``.
+    # This is the at-rest truth a regression would corrupt by overwriting
+    # via mark_as_failed.
+    async with docket.redis() as redis:
+        runs_state = await redis.hget(docket.key(f"runs:{contender_key}"), "state")
+    assert runs_state == b"scheduled", (
+        f"parked task's runs hash state must be 'scheduled' (the "
+        f"AdmissionBlocked.handled=True path must not have triggered "
+        f"the worker's safety-net mark_as_failed); got: {runs_state!r}"
+    )
+
+    holder_may_finish.set()
+    await asyncio.wait_for(worker_task, timeout=10)
+    # Wait for the contender's terminal completed event -- proves the
+    # full wake-and-run path executed, which means ``process_completed_tasks``
+    # would already have fired the safety net by now if it was going to.
+    await wait_for_event(
+        state_events,
+        lambda m: m.get("state") == "completed",
+        description="contender's terminal completed event",
+    )
+    collector_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await collector_task
+
+    # No failed event should ever have hit the contender's state channel.
+    failed_events = [e for e in state_events if e.get("state") == "failed"]
+    assert not failed_events, (
+        f"AdmissionBlocked(handled=True) must not produce any state=failed "
+        f"events on the parked task's channel; got: {failed_events!r}"
+    )
+
+
 async def test_many_contending_tasks_all_run_exactly_once(docket: Docket):
     """Stress test: N tasks contending for 1 slot all eventually run, each
     exactly once, without duplicates or drops.  The structural correctness

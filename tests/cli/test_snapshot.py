@@ -14,6 +14,24 @@ from docket.docket import Docket, DocketSnapshot
 from docket.worker import Worker
 from tests._key_leak_checker import KeyCountChecker
 from tests.cli.run import run_cli
+from tests.conftest import wait_until
+
+
+async def _running_count_at_least(docket: Docket, expected: int) -> None:
+    """Block until ``docket.snapshot().running`` has at least ``expected``
+    entries.  Used in place of "let worker pick up task" sleeps so the
+    CLI assertion that follows doesn't race the worker on slow runners.
+    """
+
+    async def has_enough() -> bool:
+        snap = await docket.snapshot()
+        return len(snap.running) >= expected
+
+    await wait_until(
+        has_enough,
+        description=f"at least {expected} running task(s) in the snapshot",
+    )
+
 
 # Skip CLI tests when using memory backend since CLI rejects memory:// URLs
 pytestmark = pytest.mark.skipif(
@@ -78,7 +96,7 @@ async def test_snapshot_with_running_tasks(
     async with Worker(docket, name="test-worker") as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
 
-        await asyncio.sleep(0.05)  # Let worker pick up task
+        await _running_count_at_least(docket, 1)
 
         result = await run_cli(
             "snapshot",
@@ -120,7 +138,7 @@ async def test_snapshot_with_mixed_tasks(
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
 
-        await asyncio.sleep(0.1)  # Let worker pick up tasks
+        await _running_count_at_least(docket, 2)
 
         result = await run_cli(
             "snapshot",
@@ -223,7 +241,7 @@ async def test_snapshot_with_stats_flag_mixed_tasks(
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
 
-        await asyncio.sleep(0.1)  # Let worker pick up tasks
+        await _running_count_at_least(docket, 2)
 
         result = await run_cli(
             "snapshot",
@@ -299,7 +317,7 @@ async def test_snapshot_stats_with_running_tasks_only(docket: Docket):
     async with Worker(docket, name="test-worker", concurrency=2) as worker:
         worker_running = asyncio.create_task(worker.run_until_finished())
 
-        await asyncio.sleep(0.1)  # Let worker pick up tasks
+        await _running_count_at_least(docket, 2)
 
         result = await run_cli(
             "snapshot",

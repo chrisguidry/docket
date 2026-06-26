@@ -41,6 +41,79 @@ async def test_cancel_running_task(docket: Docket, worker: Worker):
     await asyncio.wait_for(worker_task, timeout=5.0)
 
 
+async def test_double_cancel_does_not_overwrite_runs_hash(
+    docket: Docket, worker: Worker
+):
+    """A second ``docket.cancel()`` after the task has fully settled into
+    ``state=cancelled`` must not modify the runs hash -- ``state`` stays
+    ``cancelled``, and ``completed_at`` stays at the first cancel's
+    timestamp.
+
+    The Lua's terminal-state guard at the bottom of ``_cancel_task``
+    (``if current_state ~= 'completed' and current_state ~= 'failed'
+    and current_state ~= 'cancelled' then ...``) is what enforces this.
+    Locks it in so a future refactor that drops the guard would be
+    caught here rather than at someone's audit log noticing two
+    different ``completed_at`` timestamps for the same cancellation.
+
+    NB: the snapshot baseline is taken AFTER the worker has finished
+    processing the cancellation -- otherwise we'd race against the
+    worker's own ``mark_as_cancelled`` (via ``_terminal``), which
+    legitimately rewrites ``completed_at`` from the CancelledError
+    handler in ``_execute``.  The test is purely about ``_cancel_task``
+    Lua's idempotency, not about any worker-side cancel handling.
+    """
+    started = asyncio.Event()
+
+    async def slow_task():
+        started.set()
+        await asyncio.sleep(60)
+
+    docket.register(slow_task)
+    execution = await docket.add(slow_task)()
+
+    worker_task = asyncio.create_task(worker.run_until_finished())
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+
+    # First cancel: triggers both the Lua tombstone AND the worker's
+    # CancelledError → mark_as_cancelled path.  Wait for the worker to
+    # finish so both paths have run and the runs hash is fully settled.
+    await docket.cancel(execution.key)
+    await asyncio.wait_for(worker_task, timeout=5.0)
+
+    # Snapshot the settled state.  This is the baseline the second cancel
+    # must not perturb.
+    async with docket.redis() as redis:
+        runs_key = docket.runs_key(execution.key)
+        baseline_state = await redis.hget(runs_key, "state")
+        baseline_completed_at = await redis.hget(runs_key, "completed_at")
+
+    assert baseline_state == b"cancelled", (
+        f"setup: runs hash should be 'cancelled' after first cancel + "
+        f"worker drain; got: {baseline_state!r}"
+    )
+    assert baseline_completed_at is not None
+
+    # Second cancel against a fully-settled CANCELLED task.  The
+    # ``_cancel_task`` Lua's terminal-state guard should short-circuit
+    # the HSET and leave the runs hash untouched.
+    await docket.cancel(execution.key)
+
+    async with docket.redis() as redis:
+        state_after = await redis.hget(runs_key, "state")
+        completed_at_after = await redis.hget(runs_key, "completed_at")
+
+    assert state_after == baseline_state, (
+        f"second cancel must not change state; "
+        f"baseline={baseline_state!r}, after={state_after!r}"
+    )
+    assert completed_at_after == baseline_completed_at, (
+        f"second cancel must not overwrite the first cancel's "
+        f"completed_at; baseline={baseline_completed_at!r}, "
+        f"after={completed_at_after!r}"
+    )
+
+
 async def test_cancel_running_task_state(docket: Docket, worker: Worker):
     """A cancelled running task transitions to CANCELLED state."""
     started = asyncio.Event()

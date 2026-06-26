@@ -6,6 +6,9 @@ the burner-redis backend used for memory:// URLs.
 This module is designed to be the single point of cluster-awareness, so that
 other modules can remain simple. When Redis Cluster support is added, only
 this module will need to change.
+
+Redis Sentinel support lives in the companion ``_redis_sentinel.py`` module;
+this module only detects the ``redis+sentinel://`` scheme and dispatches there.
 """
 
 from __future__ import annotations
@@ -41,6 +44,15 @@ from redis.asyncio.cluster import RedisCluster
 from redis.asyncio.connection import Connection, SSLConnection
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+
+# Docket performs long and unbounded blocking reads: the 60s strike-stream
+# xread and the indefinite execution state/progress pubsub.listen.  redis-py
+# 8.0.0 changed the client socket_timeout default to 5s, which aborts those
+# reads mid-flight with a TimeoutError.  We disable the client read timeout so
+# blocking reads wait for the server as intended; redis-py's default-on TCP
+# keepalive still detects genuinely dead peers.
+BLOCKING_READ_SOCKET_TIMEOUT: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +116,14 @@ class Pipeline(Protocol):
     def delete(self, *names: KeyT) -> "Pipeline": ...
     def expire(self, name: KeyT, time: ExpiryT) -> "Pipeline": ...
     def hgetall(self, name: KeyT) -> "Pipeline": ...
+    def hincrby(self, name: KeyT, key: KeyT, amount: int = 1) -> "Pipeline": ...
+    def hset(
+        self,
+        name: KeyT,
+        key: KeyT | None = None,
+        value: EncodableT | None = None,
+        mapping: Mapping[KeyT, EncodableT] | None = None,
+    ) -> "Pipeline": ...
     def sadd(self, name: KeyT, *values: EncodableT) -> "Pipeline": ...
     def xack(self, name: KeyT, groupname: KeyT, *ids: StreamIDT) -> "Pipeline": ...
     def xdel(self, name: KeyT, *ids: StreamIDT) -> "Pipeline": ...
@@ -170,20 +190,6 @@ class Pipeline(Protocol):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> bool | None: ...
-
-
-class Script(Protocol):
-    """A registered Lua script.  Return type varies by script body, so it is
-    typed as ``Any`` here and annotated locally at each call site (e.g.
-    ``result: list[int] = await my_script(keys=..., args=...)``).
-    """
-
-    async def __call__(
-        self,
-        keys: Sequence[KeyT] = ...,
-        args: Sequence[EncodableT] = ...,
-        client: "RedisClient | None" = None,
-    ) -> Any: ...
 
 
 class Lock(Protocol):
@@ -505,7 +511,10 @@ class RedisClient(Protocol):
         count: int | None = None,
         _type: str | None = None,
     ) -> AsyncIterator[bytes]: ...
-    def register_script(self, script: str | bytes) -> Script: ...
+    async def evalsha(
+        self, sha: str, numkeys: int, *keys_and_args: KeyT | EncodableT
+    ) -> Any: ...
+    async def script_load(self, script: str | bytes) -> str: ...
     def pipeline(
         self,
         transaction: bool = True,
@@ -601,12 +610,13 @@ def get_memory_server(url: str) -> MemoryRedisClient | None:
 
 
 class RedisConnection:
-    """Manages Redis connections for both standalone and cluster modes.
+    """Manages Redis connections for standalone, Sentinel, and cluster modes.
 
     This class encapsulates the lifecycle management of Redis connections,
-    hiding whether the underlying connection is to a standalone Redis server
-    or a Redis Cluster. It provides a unified interface for getting Redis
-    clients, pub/sub connections, and publishing messages.
+    hiding whether the underlying connection is to a standalone Redis server,
+    a Sentinel-monitored master, or a Redis Cluster. It provides a unified
+    interface for getting Redis clients, pub/sub connections, and publishing
+    messages.
 
     Example:
         async with RedisConnection("redis://localhost:6379/0") as connection:
@@ -630,10 +640,18 @@ class RedisConnection:
         """Initialize a Redis connection manager.
 
         Args:
-            url: Redis URL (redis://, rediss://, redis+cluster://, or memory://)
+            url: Redis URL (redis://, rediss://, redis+sentinel://,
+                redis+cluster://, or memory://)
         """
+        from ._redis_sentinel import is_sentinel_url, urlparse_multihost
+
         self.url = url
-        self._parsed = urlparse(url)
+        # Sentinel URLs list several daemons in the netloc, which urlparse can't
+        # handle when a bracketed IPv6 member follows another; carve those by
+        # hand and leave standalone, cluster, and memory URLs to urlparse.
+        self._parsed = (
+            urlparse_multihost(url) if is_sentinel_url(url) else urlparse(url)
+        )
         self._connection_pool = None
         self._cluster_client = None
         self._node_pool = None
@@ -697,6 +715,11 @@ class RedisConnection:
         return self._parsed.scheme in ("redis+cluster", "rediss+cluster")
 
     @property
+    def is_sentinel(self) -> bool:
+        """Check if this connection discovers its master through Redis Sentinel."""
+        return self._parsed.scheme in ("redis+sentinel", "rediss+sentinel")
+
+    @property
     def is_memory(self) -> bool:
         """Check if this connection is to an in-memory backend."""
         return self._parsed.scheme == "memory"
@@ -749,7 +772,9 @@ class RedisConnection:
         Returns:
             An initialized RedisCluster client ready for use
         """
-        client: RedisCluster = RedisCluster.from_url(self._normalized_url())
+        client: RedisCluster = RedisCluster.from_url(
+            self._normalized_url(), socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT
+        )
         await client.initialize()
         return client
 
@@ -777,6 +802,7 @@ class RedisConnection:
             if self._parsed.scheme == "rediss+cluster"
             else Connection,
             decode_responses=False,
+            socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
         )
 
     async def _connection_pool_from_url(
@@ -784,8 +810,9 @@ class RedisConnection:
     ) -> ConnectionPool:
         """Create a Redis connection pool from the URL.
 
-        This is only for real Redis connections (redis://, rediss://).
-        Memory backend uses BurnerRedis directly, not connection pools.
+        This is only for real Redis connections (redis://, rediss://, and the
+        +sentinel variants).  Memory backend uses BurnerRedis directly, not
+        connection pools.
 
         Args:
             decode_responses: If True, decode Redis responses from bytes to strings
@@ -793,8 +820,18 @@ class RedisConnection:
         Returns:
             A ConnectionPool ready for use with Redis clients
         """
+        if self.is_sentinel:
+            from ._redis_sentinel import sentinel_connection_pool
+
+            return sentinel_connection_pool(
+                self.url,
+                decode_responses=decode_responses,
+                socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
+            )
         return ConnectionPool.from_url(  # pyright: ignore[reportUnknownMemberType]
-            self.url, decode_responses=decode_responses
+            self.url,
+            decode_responses=decode_responses,
+            socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
         )
 
     async def _get_or_create_memory_client(self) -> MemoryRedisClient:

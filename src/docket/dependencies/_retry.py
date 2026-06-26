@@ -105,7 +105,11 @@ class Retry(FailureHandler["Retry"]):
 
         execution.when = datetime.now(timezone.utc) + self.delay
         execution.attempt += 1
-        await execution.schedule(replace=True)
+        # Pass both replace=True and the original message_id.  The reschedule
+        # branch handles the ACK+XDEL of the failed message when message_id is
+        # set; replace=True keeps correct behavior in the (otherwise
+        # impossible) case where message_id is None.
+        await execution.schedule(replace=True, reschedule_message=execution.message_id)
 
         worker = current_worker.get()
         TASKS_RETRIED.add(1, {**worker.labels(), **execution.general_labels()})

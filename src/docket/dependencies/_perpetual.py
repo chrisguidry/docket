@@ -62,6 +62,9 @@ class Perpetual(CompletionHandler["Perpetual"]):
                 startup and continually through the worker's lifespan.  This ensures
                 that the task will always be scheduled despite crashes and other
                 adverse conditions.  Automatic tasks must not require any arguments.
+                Because a running worker keeps re-establishing them, cancelling an
+                automatic task only pauses it until the next reseed; use
+                `Docket.strike` to stop one durably.
         """
         self.every = every
         self.automatic = automatic

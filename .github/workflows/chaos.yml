@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -29,7 +29,7 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --upgrade-package redis
 
       - name: Run chaos tests
         run: uv run python -m chaos.driver
@@ -40,7 +40,7 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv and set Python version
         uses: astral-sh/setup-uv@v7
@@ -50,7 +50,7 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --upgrade-package redis
 
       - name: Run signal handling tests
         run: uv run python -m chaos.signals

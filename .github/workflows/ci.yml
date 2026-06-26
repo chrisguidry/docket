@@ -18,32 +18,28 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        # Every backend runs against the latest redis-py.  Client-version
+        # coverage (the older majors we support) lives in the test-redis-py
+        # job below, the same way test-windows owns the Windows leg.
         backend:
           - name: "Memory"
             redis-version: "memory"
-            redis-py-version: ">=5"
           - name: "Redis 6"
             redis-version: "6.2"
-            redis-py-version: ">=5,<6"
           - name: "Redis 7"
             redis-version: "7.4"
-            redis-py-version: ">=5"
           - name: "Redis 8"
             redis-version: "8.6"
-            redis-py-version: ">=5"
           - name: "Redis 8 Cluster"
             redis-version: "8.6-cluster"
-            redis-py-version: ">=5"
           - name: "Valkey 8"
             redis-version: "valkey-8.1"
-            redis-py-version: ">=5"
         include:
           # Debug hanging tests in 3.12 cluster mode
           - python-version: "3.12"
             backend:
               name: "Redis 8 Cluster"
               redis-version: "8.6-cluster"
-              redis-py-version: ">=5"
             pytest-args: "-v -s -W ignore::ResourceWarning"
           # Cluster mode emits ResourceWarning about unclosed sockets during
           # test teardown. The warnings appear related to redis-py's cluster
@@ -52,42 +48,36 @@ jobs:
             backend:
               name: "Redis 8 Cluster"
               redis-version: "8.6-cluster"
-              redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.11"
             backend:
               name: "Redis 8 Cluster"
               redis-version: "8.6-cluster"
-              redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.13"
             backend:
               name: "Redis 8 Cluster"
               redis-version: "8.6-cluster"
-              redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.14"
             backend:
               name: "Redis 8 Cluster"
               redis-version: "8.6-cluster"
-              redis-py-version: ">=5"
             pytest-args: "-W ignore::ResourceWarning"
           # ACL variants only run on latest Python to save CI time
           - python-version: "3.14"
             backend:
               name: "Redis 8 with ACL"
               redis-version: "8.6-acl"
-              redis-py-version: ">=5"
             pytest-args: ""
           - python-version: "3.14"
             backend:
               name: "Valkey 8 with ACL"
               redis-version: "valkey-8.1-acl"
-              redis-py-version: ">=5"
             pytest-args: ""
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv and set Python version
         uses: astral-sh/setup-uv@v7
@@ -97,7 +87,7 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: uv sync --upgrade-package 'redis${{ matrix.backend.redis-py-version }}'
+        run: uv sync --upgrade-package redis
 
       - name: Run tests
         env:
@@ -106,14 +96,14 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: python-${{ matrix.python-version }}
 
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           report_type: test_results
@@ -127,7 +117,7 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv and set Python version
         uses: astral-sh/setup-uv@v7
@@ -155,14 +145,14 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: cli-python-${{ matrix.python-version }}
 
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           report_type: test_results
@@ -176,7 +166,7 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv and set Python version
         uses: astral-sh/setup-uv@v7
@@ -200,14 +190,67 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: windows-python-${{ matrix.python-version }}
 
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+
+  test-redis-py:
+    name: redis-py ${{ matrix.redis-py.name }}, Python 3.14, Redis 8.6
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    strategy:
+      fail-fast: false
+      matrix:
+        # The client is what varies, so we pin one Python and one real Redis
+        # and run the full suite against each redis-py major we support.  A
+        # real, standalone Redis is required since the bug this guards (#425)
+        # is a client socket timeout.
+        redis-py:
+          - { name: "5", spec: ">=5,<6" }
+          - { name: "6", spec: ">=6,<7" }
+          - { name: "7", spec: ">=7,<8" }
+          - { name: "8", spec: ">=8" }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv and set Python version
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync --upgrade-package 'redis${{ matrix.redis-py.spec }}'
+
+      - name: Run tests
+        env:
+          REDIS_VERSION: "8.6"
+        run: >
+          uv run pytest --ignore=tests/cli
+          --cov-branch --cov-config=.coveragerc-core
+          --cov-fail-under=100
+          --cov-report=xml --cov-report=term-missing:skip-covered
+          --junitxml=junit.xml -o junit_family=legacy
+
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: redis-py-${{ matrix.redis-py.name }}
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           report_type: test_results
@@ -217,7 +260,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv and set Python version
         uses: astral-sh/setup-uv@v7

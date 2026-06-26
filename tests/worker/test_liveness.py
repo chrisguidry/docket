@@ -151,6 +151,7 @@ async def test_worker_recovers_from_transient_claim_connection_error(
         nonlocal failed_once
 
         async with original_redis() as r:
+
             class FlakyClaimRedis:
                 def __getattr__(self, name: str) -> Any:
                     return getattr(r, name)
@@ -200,6 +201,7 @@ async def test_worker_context_exit_stops_reconnect_retry(
     @asynccontextmanager
     async def mock_redis() -> AsyncGenerator[RedisClient, None]:
         async with original_redis() as r:
+
             class BrokenClaimRedis:
                 def __getattr__(self, name: str) -> Any:
                     return getattr(r, name)
@@ -292,6 +294,7 @@ async def test_worker_context_exit_stops_readiness_wait(docket: Docket):
         minimum_check_interval=timedelta(milliseconds=5),
         scheduling_resolution=timedelta(milliseconds=5),
     ) as worker:
+
         async def never_ready_listener() -> None:
             await asyncio.Event().wait()
 

@@ -16,7 +16,6 @@ from typing import (
     Any,
     Generator,
     Mapping,
-    Protocol,
     Sequence,
     TypeAlias,
     TypedDict,
@@ -34,6 +33,8 @@ else:
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
+from ._lua import Arg, Key, redis_script
+from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -97,6 +98,7 @@ ADMISSION_BLOCKED_RETRY_DELAY = timedelta(milliseconds=100)
 # Lock timeout for coordinating automatic perpetual task scheduling at startup.
 # If a worker crashes while holding this lock, it expires after this many seconds.
 AUTOMATIC_PERPETUAL_LOCK_TIMEOUT_SECONDS = 10
+AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS = 60
 
 # Minimum TTL in seconds for Redis keys to avoid immediate expiration when
 # redelivery_timeout is very small (e.g., in tests with 200ms timeouts).
@@ -147,10 +149,78 @@ def _is_worker_infrastructure_connection_error_group(exc: ExceptionGroup) -> boo
     )
 
 
-class _stream_due_tasks(Protocol):
-    async def __call__(
-        self, keys: list[str], args: list[str | float]
-    ) -> tuple[int, int]: ...  # pragma: no cover
+@redis_script
+async def _stream_due_tasks(
+    redis: RedisClient,
+    *,
+    queue_key: Key[str],
+    stream_key: Key[str],
+    now_timestamp: Arg[float],
+    docket_prefix: Arg[str],
+) -> tuple[int, int]:
+    """
+    -- Inline JSON-string escaper for the common cases (`\\`, `"`, and the
+    -- three named whitespace controls).  Task keys are user-supplied: if a
+    -- caller passes a key containing other control characters (NUL, BEL,
+    -- VT, FF, ESC, etc.) the published payload will not parse as strict
+    -- JSON.  GIGO -- callers should give us readable keys.
+    local function json_escape(s)
+        s = s:gsub('\\\\', '\\\\\\\\')
+        s = s:gsub('"', '\\\\"')
+        s = s:gsub('\\n', '\\\\n')
+        s = s:gsub('\\r', '\\\\r')
+        s = s:gsub('\\t', '\\\\t')
+        return s
+    end
+
+    local total_work = redis.call('ZCARD', queue_key)
+    local due_work = 0
+
+    if total_work > 0 then
+        local tasks = redis.call('ZRANGEBYSCORE', queue_key, 0, now_timestamp)
+
+        for i, key in ipairs(tasks) do
+            local hash_key = docket_prefix .. ":" .. key
+            local task_data = redis.call('HGETALL', hash_key)
+
+            if #task_data > 0 then
+                local task = {}
+                for j = 1, #task_data, 2 do
+                    task[task_data[j]] = task_data[j+1]
+                end
+
+                redis.call('XADD', stream_key, '*',
+                    'key', task['key'],
+                    'when', task['when'],
+                    'function', task['function'],
+                    'args', task['args'],
+                    'kwargs', task['kwargs'],
+                    'attempt', task['attempt'],
+                    'generation', task['generation'] or '0'
+                )
+                redis.call('DEL', hash_key)
+
+                -- Set run state to queued
+                local run_key = docket_prefix .. ":runs:" .. task['key']
+                redis.call('HSET', run_key, 'state', 'queued')
+
+                -- Publish state change event to pub/sub
+                local channel = docket_prefix .. ":state:" .. task['key']
+                local payload = '{"type":"state","key":"' .. json_escape(task['key']) .. '","state":"queued","when":"' .. task['when'] .. '"}'
+                redis.call('PUBLISH', channel, payload)
+
+                due_work = due_work + 1
+            end
+        end
+    end
+
+    if due_work > 0 then
+        redis.call('ZREMRANGEBYSCORE', queue_key, 0, now_timestamp)
+    end
+
+    return {total_work, due_work}
+    """
+    ...
 
 
 class Worker:
@@ -231,6 +301,8 @@ class Worker:
         # Events for coordinating worker loop shutdown (cleaned up last)
         self._worker_stopping = asyncio.Event()
         self._stack.callback(lambda: delattr(self, "_worker_stopping"))
+        self._worker_stop_requested = asyncio.Event()
+        self._stack.callback(lambda: delattr(self, "_worker_stop_requested"))
         self._worker_done = asyncio.Event()
         self._stack.callback(lambda: delattr(self, "_worker_done"))
         self._worker_done.set()  # Initially done (not running)
@@ -265,6 +337,7 @@ class Worker:
         traceback: TracebackType | None,
     ) -> None:
         # Signal worker loop to stop and wait for it to drain
+        self._worker_stop_requested.set()
         self._worker_stopping.set()
         await self._worker_done.wait()
 
@@ -468,12 +541,14 @@ class Worker:
 
     async def _run(self, forever: bool = False) -> None:
         self._startup_log()
+        self._worker_stop_requested.clear()
         self._worker_stopping.clear()
         self._worker_done.clear()
 
         try:
             while True:
                 try:
+                    self._worker_stopping.clear()
                     async with self.docket.redis() as redis:
                         return await self._worker_loop(redis, forever=forever)
                 except (ConnectionError, ExceptionGroup) as exc:
@@ -482,7 +557,7 @@ class Worker:
                     ) and not _is_worker_infrastructure_connection_error_group(exc):
                         raise
 
-                    if self._worker_stopping.is_set():
+                    if self._worker_stop_requested.is_set():
                         return
 
                     REDIS_DISRUPTIONS.add(1, self.labels())
@@ -493,10 +568,10 @@ class Worker:
                     )
                     try:
                         await asyncio.wait_for(
-                            self._worker_stopping.wait(),
+                            self._worker_stop_requested.wait(),
                             timeout=self.reconnection_delay.total_seconds(),
                         )
-                        return
+                        return  # pragma: no cover
                     except asyncio.TimeoutError:
                         pass
         finally:
@@ -646,16 +721,11 @@ class Worker:
                 self._tasks_by_key.pop(execution.key, None)
                 try:
                     await task
-                    try:
-                        await ack_message(redis, message_id)
-                    except ConnectionError as exc:  # pragma: no cover
-                        raise _WorkerInfrastructureConnectionError(
-                            "Redis connection error while acknowledging work"
-                        ) from exc
                 except AdmissionBlocked as e:
                     if e.handled:
-                        # The admission gate already handled the task,
-                        # so there is nothing more to do here.
+                        # The admission gate already handled the task --
+                        # including acking the stream message -- so there is
+                        # nothing more to do here.
                         continue
                     elif e.reschedule:
                         delay = e.retry_delay or ADMISSION_BLOCKED_RETRY_DELAY
@@ -673,22 +743,20 @@ class Worker:
                             extra=log_context,
                         )
                         await e.execution.mark_as_cancelled()
-                        await ack_message(redis, message_id)
 
-        async def ack_message(redis: Redis, message_id: RedisMessageID) -> None:
-            logger.debug("Acknowledging message", extra=log_context)
-            async with redis.pipeline() as pipeline:
-                pipeline.xack(
-                    self.docket.stream_key,
-                    self.docket.worker_group_name,
-                    message_id,
-                )
-                pipeline.xdel(
-                    self.docket.stream_key,
-                    message_id,
-                )
-                await pipeline.execute()
+                # Safety net: if nothing inside _execute or these except
+                # handlers acked the stream message (e.g. a custom
+                # FailureHandler that returned True without rescheduling or
+                # calling a mark_as_* method), drive the terminal-state Lua
+                # ourselves.  That atomically acks the stream entry, cleans
+                # up progress, and either expires or deletes the runs hash --
+                # everything a handler would have had to remember to do.
+                # ``_terminal``'s supersession check makes this safe even
+                # when a successor is already in flight.
+                if not execution._acked:
+                    await execution.mark_as_failed(error=None)
 
+        disconnect: ConnectionError | None = None
         try:
             async with AsyncExitStack() as dependency_stack:
                 # Each Dependency class used by a registered task may declare
@@ -727,6 +795,10 @@ class Worker:
                             raise _WorkerInfrastructureConnectionError(
                                 "Redis connection error while scheduling automatic tasks"
                             ) from exc
+                        infra.create_task(
+                            self._reseed_automatic_perpetual_tasks_loop(),
+                            name=f"{self.docket.name} - automatic perpetual reseed",
+                        )
 
                     infra.create_task(
                         self._scheduler_loop(redis),
@@ -753,23 +825,43 @@ class Worker:
                             )
                             continue
 
-                        for source in [get_redeliveries, get_new_deliveries]:
-                            for stream_key, messages in await source(redis):
-                                is_redelivery = stream_key == b"__redelivery__"
-                                for message_id, message in messages:
-                                    if not message:  # pragma: no cover
-                                        continue
+                        try:
+                            for source in [get_redeliveries, get_new_deliveries]:
+                                for stream_key, messages in await source(redis):
+                                    is_redelivery = stream_key == b"__redelivery__"
+                                    for message_id, message in messages:
+                                        if not message:  # pragma: no cover
+                                            continue
 
-                                    await start_task(message_id, message, is_redelivery)
+                                        await start_task(
+                                            message_id, message, is_redelivery
+                                        )
 
-                            if available_slots <= 0:
-                                break
+                                if available_slots <= 0:
+                                    break
 
-                        if not forever and not active_tasks:
-                            has_work = await check_for_work()
+                            if not forever and not active_tasks:
+                                has_work = await check_for_work()
+                        except ConnectionError as error:
+                            # The worker's own polling read lost its connection --
+                            # a failover or a server restart drops a blocked
+                            # XREADGROUP this way.  Stop the loop and let _run
+                            # reconnect; in-flight tasks still drain in the finally
+                            # below.  A ConnectionError raised by a task body
+                            # surfaces through process_completed_tasks instead,
+                            # which stays outside this guard so it keeps its
+                            # die-and-redeliver behavior.
+                            disconnect = error
+                            break
 
                     # Signal internal tasks to stop before exiting TaskGroup
                     self._worker_stopping.set()
+
+            # A disconnection in the poll loop above leaves the TaskGroup intact
+            # (no exception escaped it), so re-raise it here as a bare
+            # ConnectionError for _run to catch and reconnect on.
+            if disconnect is not None:
+                raise disconnect
 
         except asyncio.CancelledError:
             if active_tasks:  # pragma: no cover
@@ -788,78 +880,18 @@ class Worker:
 
     async def _scheduler_loop(self, redis: Redis) -> None:
         """Loop that moves due tasks from the queue to the stream."""
-
-        stream_due_tasks: _stream_due_tasks = cast(
-            _stream_due_tasks,
-            redis.register_script(
-                # Lua script to atomically move scheduled tasks to the stream
-                # KEYS[1]: queue key (sorted set)
-                # KEYS[2]: stream key
-                # ARGV[1]: current timestamp
-                # ARGV[2]: docket name prefix
-                """
-            local total_work = redis.call('ZCARD', KEYS[1])
-            local due_work = 0
-
-            if total_work > 0 then
-                local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-
-                for i, key in ipairs(tasks) do
-                    local hash_key = ARGV[2] .. ":" .. key
-                    local task_data = redis.call('HGETALL', hash_key)
-
-                    if #task_data > 0 then
-                        local task = {}
-                        for j = 1, #task_data, 2 do
-                            task[task_data[j]] = task_data[j+1]
-                        end
-
-                        redis.call('XADD', KEYS[2], '*',
-                            'key', task['key'],
-                            'when', task['when'],
-                            'function', task['function'],
-                            'args', task['args'],
-                            'kwargs', task['kwargs'],
-                            'attempt', task['attempt'],
-                            'generation', task['generation'] or '0'
-                        )
-                        redis.call('DEL', hash_key)
-
-                        -- Set run state to queued
-                        local run_key = ARGV[2] .. ":runs:" .. task['key']
-                        redis.call('HSET', run_key, 'state', 'queued')
-
-                        -- Publish state change event to pub/sub
-                        local channel = ARGV[2] .. ":state:" .. task['key']
-                        local payload = '{"type":"state","key":"' .. task['key'] .. '","state":"queued","when":"' .. task['when'] .. '"}'
-                        redis.call('PUBLISH', channel, payload)
-
-                        due_work = due_work + 1
-                    end
-                end
-            end
-
-            if due_work > 0 then
-                redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-            end
-
-            return {total_work, due_work}
-            """
-            ),
-        )
-
         log_context = self._log_context()
 
         while not self._worker_stopping.is_set():  # pragma: no branch
             try:
                 logger.debug("Scheduling due tasks", extra=log_context)
                 with self._maybe_suppress_instrumentation():
-                    total_work, due_work = await stream_due_tasks(
-                        keys=[self.docket.queue_key, self.docket.stream_key],
-                        args=[
-                            datetime.now(timezone.utc).timestamp(),
-                            self.docket.prefix,
-                        ],
+                    total_work, due_work = await _stream_due_tasks(
+                        cast(RedisClient, redis),
+                        queue_key=self.docket.queue_key,
+                        stream_key=self.docket.stream_key,
+                        now_timestamp=datetime.now(timezone.utc).timestamp(),
+                        docket_prefix=self.docket.prefix,
                     )
 
                 if due_work > 0:
@@ -930,6 +962,37 @@ class Worker:
             except Exception:
                 logger.warning("Failed to renew leases", exc_info=True)
 
+    async def _reseed_automatic_perpetual_tasks_loop(self) -> None:
+        """Periodically re-sow automatic perpetuals so a chain severed after
+        startup is recovered without a full restart.
+
+        A perpetual reschedules itself from its own completion handler, but an
+        execution consumed through the unknown-task fallback (e.g. by an old
+        worker mid-deploy that hasn't registered the task yet) completes without
+        that handler, leaving nothing scheduled.  Re-seeding heals it: a
+        ``docket.add`` under the deterministic key dedups against a live
+        perpetual and only takes effect once the chain has actually been lost.
+        """
+        log_context = self._log_context()
+
+        while not self._worker_stopping.is_set():  # pragma: no branch
+            try:
+                await asyncio.wait_for(
+                    self._worker_stopping.wait(),
+                    timeout=AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS,
+                )
+                return  # Event was set, exit the loop
+            except asyncio.TimeoutError:
+                pass  # Normal timeout, re-seed and continue
+
+            try:
+                await self._schedule_all_automatic_perpetual_tasks()
+            except Exception:  # pragma: no cover
+                logger.exception(
+                    "Error re-seeding automatic perpetual tasks",
+                    extra=log_context,
+                )
+
     async def _schedule_all_automatic_perpetual_tasks(self) -> None:
         # Wait for strikes to be fully loaded before scheduling to avoid
         # scheduling struck tasks or missing restored tasks
@@ -949,11 +1012,30 @@ class Worker:
 
                         if perpetual is not None and perpetual.automatic:
                             key = task_function.__name__
+                            # Skip tasks that already have a live schedule entry.
+                            # add() would dedup them, but evaluating
+                            # ``initial_when`` first has side effects: a Cron's
+                            # iterator advances on every call, so reseeding a
+                            # healthy cron would drift its schedule into the
+                            # future.  Only touch a task once its chain is gone.
+                            if await self._automatic_perpetual_is_live(redis, key):
+                                continue
                             await self.docket.add(
                                 task_function, when=perpetual.initial_when, key=key
                             )()
             except LockError:  # pragma: no cover
                 return
+
+    async def _automatic_perpetual_is_live(self, redis: RedisClient, key: str) -> bool:
+        """Whether an automatic perpetual already has a live schedule entry.
+
+        Mirrors the dedup in the scheduling script: a task is live when it's
+        parked or queued (``known`` is set) or currently running.
+        """
+        runs_key = self.docket.runs_key(key)
+        if (await redis.hget(runs_key, "known")) is not None:
+            return True
+        return (await redis.hget(runs_key, "state")) == b"running"
 
     async def _delete_known_task(self, redis: Redis, execution: Execution) -> None:
         logger.debug("Deleting known task", extra=self._log_context())
@@ -1262,7 +1344,7 @@ class Worker:
                         SCHEDULE_DEPTH.set(schedule_depth, self.docket.labels())
 
                 except asyncio.CancelledError:
-                    return
+                    return  # pragma: no cover
                 except ConnectionError:
                     REDIS_DISRUPTIONS.add(1, self.labels())
                     logger.exception(

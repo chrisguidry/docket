@@ -1,5 +1,6 @@
 """Progress tracking for task executions."""
 
+import asyncio
 import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -9,18 +10,44 @@ from typing import (
     AsyncGenerator,
     Generator,
     Literal,
-    Mapping,
     TypedDict,
-    cast,
 )
 
-from ._redis import EncodableT, KeyT
+from ._lua import Arg, Args, Key, redis_script
+from ._redis import RedisClient
 
 from ._telemetry import suppress_instrumentation
 from typing_extensions import Self
 
 if TYPE_CHECKING:
     from .docket import Docket
+
+
+@redis_script
+async def _progress_write(
+    redis: RedisClient,
+    *,
+    progress_key: Key[str],
+    payload: Arg[str],
+    clear_message: Arg[bool],
+    fields: Args[dict[str, str]],
+) -> bytes:
+    """
+    local hset_args = {}
+    for i = fields_start, #ARGV, 2 do
+        hset_args[#hset_args + 1] = ARGV[i]
+        hset_args[#hset_args + 1] = ARGV[i + 1]
+    end
+    if #hset_args > 0 then
+        redis.call('HSET', progress_key, unpack(hset_args))
+    end
+    if clear_message then
+        redis.call('HDEL', progress_key, 'message')
+    end
+    redis.call('PUBLISH', progress_key, payload)
+    return 'OK'
+    """
+    ...
 
 
 class ProgressEvent(TypedDict):
@@ -105,19 +132,24 @@ class ExecutionProgress:
 
         updated_at_dt = datetime.now(timezone.utc)
         updated_at = updated_at_dt.isoformat()
+        payload: ProgressEvent = {
+            "type": "progress",
+            "key": self.key,
+            "current": self.current if self.current is not None else 0,
+            "total": total,
+            "message": self.message,
+            "updated_at": updated_at,
+        }
         async with self.docket.redis() as redis:
-            await redis.hset(
-                self._redis_key,
-                mapping={
-                    "total": str(total),
-                    "updated_at": updated_at,
-                },
+            await _progress_write(
+                redis,
+                progress_key=self._redis_key,
+                payload=json.dumps(payload),
+                clear_message=False,
+                fields={"total": str(total), "updated_at": updated_at},
             )
-        # Update instance attributes
         self.total = total
         self.updated_at = updated_at_dt
-        # Publish update event
-        await self._publish({"total": total, "updated_at": updated_at})
 
     async def increment(self, amount: int = 1) -> None:
         """Atomically increment the current progress value.
@@ -131,12 +163,10 @@ class ExecutionProgress:
         updated_at_dt = datetime.now(timezone.utc)
         updated_at = updated_at_dt.isoformat()
         async with self.docket.redis() as redis:
-            new_current = await redis.hincrby(self._redis_key, "current", amount)
-            await redis.hset(
-                self._redis_key,
-                "updated_at",
-                updated_at,
-            )
+            async with redis.pipeline() as pipe:
+                pipe.hincrby(self._redis_key, "current", amount)
+                pipe.hset(self._redis_key, "updated_at", updated_at)
+                new_current, _ = await pipe.execute()
         # Update instance attributes using Redis return value
         self.current = new_current
         self.updated_at = updated_at_dt
@@ -147,23 +177,32 @@ class ExecutionProgress:
         """Update the progress status message.
 
         Args:
-            message: Status message describing current progress
+            message: Status message describing current progress, or
+                ``None`` to clear any previously-set message.
         """
         updated_at_dt = datetime.now(timezone.utc)
         updated_at = updated_at_dt.isoformat()
+        payload: ProgressEvent = {
+            "type": "progress",
+            "key": self.key,
+            "current": self.current if self.current is not None else 0,
+            "total": self.total,
+            "message": message,
+            "updated_at": updated_at,
+        }
+        fields: dict[str, str] = {"updated_at": updated_at}
+        if message is not None:
+            fields["message"] = message
         async with self.docket.redis() as redis:
-            await redis.hset(
-                self._redis_key,
-                mapping=cast(
-                    Mapping[KeyT, EncodableT],
-                    {"message": message, "updated_at": updated_at},
-                ),
+            await _progress_write(
+                redis,
+                progress_key=self._redis_key,
+                payload=json.dumps(payload),
+                clear_message=message is None,
+                fields=fields,
             )
-        # Update instance attributes
         self.message = message
         self.updated_at = updated_at_dt
-        # Publish update event
-        await self._publish({"message": message, "updated_at": updated_at})
 
     async def sync(self) -> None:
         """Synchronize instance attributes with current progress data from Redis.
@@ -191,20 +230,6 @@ class ExecutionProgress:
                     self.message = None
                     self.updated_at = None
 
-    async def delete(self) -> None:
-        """Delete the progress data from Redis.
-
-        Called internally when task execution completes.
-        """
-        with self._maybe_suppress_instrumentation():
-            async with self.docket.redis() as redis:
-                await redis.delete(self._redis_key)
-        # Reset instance attributes
-        self.current = None
-        self.total = 100
-        self.message = None
-        self.updated_at = None
-
     async def _publish(self, data: dict[str, Any]) -> None:
         """Publish progress update to Redis pub/sub channel.
 
@@ -222,8 +247,17 @@ class ExecutionProgress:
         }
         await self.docket._publish(channel, json.dumps(payload))
 
-    async def subscribe(self) -> AsyncGenerator[ProgressEvent, None]:
+    async def subscribe(
+        self, *, ready: asyncio.Event | None = None
+    ) -> AsyncGenerator[ProgressEvent, None]:
         """Subscribe to progress updates for this task.
+
+        Args:
+            ready: Optional ``asyncio.Event`` that is ``set()`` once the
+                Redis ``SUBSCRIBE`` has been acknowledged.  Lets callers
+                deterministically wait until the subscription is live
+                before publishing -- avoids the race where early events
+                are dropped because the subscriber hadn't connected yet.
 
         Yields:
             Dict containing progress update events with fields:
@@ -237,6 +271,8 @@ class ExecutionProgress:
         channel = self.docket.key(f"progress:{self.key}")
         async with self.docket._pubsub() as pubsub:
             await pubsub.subscribe(channel)
+            if ready is not None:
+                ready.set()
             async for message in pubsub.listen():  # pragma: no cover
                 if message["type"] == "message":
                     yield json.loads(message["data"])

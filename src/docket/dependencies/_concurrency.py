@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,8 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, overload
 from opentelemetry import propagate
 
 from .._cancellation import CANCEL_MSG_CLEANUP, cancel_task
+from .._lua import Arg, Args, Key, redis_script
+from .._redis import RedisClient
 from ..instrumentation import message_setter
 from ._base import (
     AdmissionBlocked,
@@ -38,162 +41,290 @@ LEASE_RENEWAL_FACTOR = 4
 MINIMUM_TTL_SECONDS = 1
 
 
-# Acquire a concurrency slot, or park the task on the waiter stream atomically.
-# Returns 1 if acquired (task should run), 0 if parked (the inflight stream
-# message has been XACK+XDEL'd and re-XADD'd into the waiter stream; caller
-# raises ConcurrencyBlocked(handled=True) so the worker takes no further
-# action).
-#
-# KEYS[1]: slots (concurrency_key)
-# KEYS[2]: waiters stream (concurrency_key:waiters)
-# KEYS[3]: main stream_key
-# KEYS[4]: runs_key for this task
-# ARGV: max_concurrent, task_key, current_time, is_redelivery, stale_threshold,
-#       key_ttl, message_id, worker_group_name, state_channel,
-#       field1, value1, field2, value2, ... (task message payload)
-_ACQUIRE_OR_PARK = """
-local slots_key = KEYS[1]
-local waiters_stream = KEYS[2]
-local stream_key = KEYS[3]
-local runs_key = KEYS[4]
+@redis_script
+async def _acquire_or_park(
+    redis: RedisClient,
+    *,
+    slots_key: Key[str],
+    waiters_stream: Key[str],
+    stream_key: Key[str],
+    runs_key: Key[str],
+    max_concurrent: Arg[int],
+    task_key: Arg[str],
+    current_time: Arg[float],
+    is_redelivery: Arg[bool],
+    stale_threshold: Arg[float],
+    key_ttl: Arg[int],
+    message_id: Arg[bytes],
+    worker_group_name: Arg[str],
+    state_channel: Arg[str],
+    state_payload: Arg[str],
+    message: Args[dict[bytes, bytes]],
+) -> int:
+    """
+    -- Acquire a concurrency slot, or park the task on the waiter stream
+    -- atomically.  Returns 1 if acquired (task should run), 0 if parked
+    -- (the inflight stream message has been XACK+XDEL'd and re-XADD'd
+    -- into the waiter stream; caller raises ConcurrencyBlocked(handled=True)
+    -- so the worker takes no further action).
 
-local max_concurrent = tonumber(ARGV[1])
-local task_key = ARGV[2]
-local current_time = tonumber(ARGV[3])
-local is_redelivery = tonumber(ARGV[4])
-local stale_threshold = tonumber(ARGV[5])
-local key_ttl = tonumber(ARGV[6])
-local message_id = ARGV[7]
-local worker_group_name = ARGV[8]
-local state_channel = ARGV[9]
+    -- If this task already has a slot (previous delivery attempt), only a
+    -- redelivery with a stale original holder can take it over.  Otherwise we
+    -- must not run a second time alongside a still-live peer.
+    local slot_time = redis.call('ZSCORE', slots_key, task_key)
+    if slot_time then
+        slot_time = tonumber(slot_time)
+        if is_redelivery and slot_time <= stale_threshold then
+            redis.call('ZADD', slots_key, current_time, task_key)
+            redis.call('EXPIRE', slots_key, key_ttl)
+            return 1
+        end
+    else
+        if redis.call('ZCARD', slots_key) < max_concurrent then
+            redis.call('ZADD', slots_key, current_time, task_key)
+            redis.call('EXPIRE', slots_key, key_ttl)
+            return 1
+        end
 
--- If this task already has a slot (previous delivery attempt), only a
--- redelivery with a stale original holder can take it over.  Otherwise we
--- must not run a second time alongside a still-live peer.
-local slot_time = redis.call('ZSCORE', slots_key, task_key)
-if slot_time then
-    slot_time = tonumber(slot_time)
-    if is_redelivery == 1 and slot_time <= stale_threshold then
-        redis.call('ZADD', slots_key, current_time, task_key)
-        redis.call('EXPIRE', slots_key, key_ttl)
-        return 1
+        -- All slots full.  Scavenge any that have gone stale (holder is dead).
+        local stale_slots = redis.call('ZRANGEBYSCORE', slots_key, 0, stale_threshold, 'LIMIT', 0, 1)
+        if #stale_slots > 0 then
+            redis.call('ZREM', slots_key, stale_slots[1])
+            redis.call('ZADD', slots_key, current_time, task_key)
+            redis.call('EXPIRE', slots_key, key_ttl)
+            return 1
+        end
     end
-else
-    if redis.call('ZCARD', slots_key) < max_concurrent then
-        redis.call('ZADD', slots_key, current_time, task_key)
-        redis.call('EXPIRE', slots_key, key_ttl)
-        return 1
+
+    -- Park: ACK the main-stream message, re-XADD the payload into the waiter
+    -- stream.  Doing this here, atomically with the acquire check, keeps a
+    -- concurrent slot release from missing us in the gap between "blocked" and
+    -- "parked".
+    redis.call('XACK', stream_key, worker_group_name, message_id)
+    redis.call('XDEL', stream_key, message_id)
+
+    -- Bump generation so stale redeliveries of this task are superseded on wake,
+    -- and splice the new value into the message as we forward it.
+    local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
+    local message = {}
+    local function_name, args_data, kwargs_data
+    for i = message_start, #ARGV, 2 do
+        local field_name = ARGV[i]
+        local field_value = ARGV[i + 1]
+        if field_name == 'generation' then
+            field_value = tostring(new_gen)
+        elseif field_name == 'function' then
+            function_name = field_value
+        elseif field_name == 'args' then
+            args_data = field_value
+        elseif field_name == 'kwargs' then
+            kwargs_data = field_value
+        end
+        message[#message + 1] = field_name
+        message[#message + 1] = field_value
     end
 
-    -- All slots full.  Scavenge any that have gone stale (holder is dead).
-    local stale_slots = redis.call('ZRANGEBYSCORE', slots_key, 0, stale_threshold, 'LIMIT', 0, 1)
-    if #stale_slots > 0 then
-        redis.call('ZREM', slots_key, stale_slots[1])
-        redis.call('ZADD', slots_key, current_time, task_key)
-        redis.call('EXPIRE', slots_key, key_ttl)
-        return 1
+    local waiter_entry_id = redis.call('XADD', waiters_stream, '*', unpack(message))
+
+    -- Record the waiter's location so the dependency's cancel subscriber can
+    -- find and XDEL the waiter entry when the task transitions to 'cancelled'.
+    redis.call('HSET', runs_key,
+        'state', 'scheduled',
+        'waiter_stream', waiters_stream,
+        'waiter_entry_id', waiter_entry_id,
+        'function', function_name,
+        'args', args_data,
+        'kwargs', kwargs_data
+    )
+    redis.call('HDEL', runs_key, 'stream_id')
+
+    redis.call('PUBLISH', state_channel, state_payload)
+
+    return 0
+    """
+    ...
+
+
+@redis_script
+async def _release_and_wake(
+    redis: RedisClient,
+    *,
+    slots_key: Key[str],
+    waiters_stream: Key[str],
+    stream_key: Key[str],
+    queue_key: Key[str],
+    task_key: Arg[str],
+    max_concurrent: Arg[int],
+    stale_threshold: Arg[float],
+    runs_prefix: Arg[str],
+    state_prefix: Arg[str],
+    parked_prefix: Arg[str],
+) -> None:
+    """
+    -- Release this task's slot and, if waiters are parked, hand the freed
+    -- capacity off by re-injecting the oldest waiter(s) into the main
+    -- stream.  Stale peer slots are scavenged opportunistically, but only
+    -- when waiters exist -- we don't want to prematurely evict slots held
+    -- by briefly-paused live workers.
+    --
+    -- Waiters whose runs hash has flipped to ``cancelled`` are XDEL'd
+    -- without being forwarded.  This is the correctness backstop for the
+    -- cancel-races-with-wake case where the dependency's cancel subscriber
+    -- might not have pulled the waiter entry off the stream in time (Redis
+    -- pub/sub is fire-and-forget); cancelled tasks must never run.
+
+    -- Inline JSON-string escaper for the common cases (`\\`, `"`, and the
+    -- three named whitespace controls).  Task keys are user-supplied: if a
+    -- caller passes a key containing other control characters (NUL, BEL,
+    -- VT, FF, ESC, etc.) the published payload will not parse as strict
+    -- JSON.  GIGO -- callers should give us readable keys.
+    local function json_escape(s)
+        s = s:gsub('\\\\', '\\\\\\\\')
+        s = s:gsub('"', '\\\\"')
+        s = s:gsub('\\n', '\\\\n')
+        s = s:gsub('\\r', '\\\\r')
+        s = s:gsub('\\t', '\\\\t')
+        return s
     end
-end
 
--- Park: ACK the main-stream message, re-XADD the payload into the waiter
--- stream.  Doing this here, atomically with the acquire check, keeps a
--- concurrent slot release from missing us in the gap between "blocked" and
--- "parked".
-redis.call('XACK', stream_key, worker_group_name, message_id)
-redis.call('XDEL', stream_key, message_id)
+    redis.call('ZREM', slots_key, task_key)
 
--- Bump generation so stale redeliveries of this task are superseded on wake,
--- and splice the new value into the message as we forward it.
-local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
-local message = {}
-local function_name, args_data, kwargs_data
-for i = 10, #ARGV, 2 do
-    local field_name = ARGV[i]
-    local field_value = ARGV[i + 1]
-    if field_name == 'generation' then
-        field_value = tostring(new_gen)
-    elseif field_name == 'function' then
-        function_name = field_value
-    elseif field_name == 'args' then
-        args_data = field_value
-    elseif field_name == 'kwargs' then
-        kwargs_data = field_value
+    local waiters_count = redis.call('XLEN', waiters_stream)
+    if waiters_count > 0 then
+        local stale = redis.call('ZRANGEBYSCORE', slots_key, 0, stale_threshold)
+        for _, s in ipairs(stale) do
+            redis.call('ZREM', slots_key, s)
+        end
     end
-    message[#message + 1] = field_name
-    message[#message + 1] = field_value
-end
 
-local waiter_entry_id = redis.call('XADD', waiters_stream, '*', unpack(message))
+    local capacity = max_concurrent - redis.call('ZCARD', slots_key)
+    if capacity > 0 then
+        local entries = redis.call('XRANGE', waiters_stream, '-', '+', 'COUNT', capacity)
+        for _, entry in ipairs(entries) do
+            local waiter_id = entry[1]
+            local fields = entry[2]
 
--- Record the waiter's location so the dependency's cancel subscriber can
--- find and XDEL the waiter entry when the task transitions to 'cancelled'.
-redis.call('HSET', runs_key,
-    'state', 'scheduled',
-    'waiter_stream', waiters_stream,
-    'waiter_entry_id', waiter_entry_id,
-    'function', function_name,
-    'args', args_data,
-    'kwargs', kwargs_data
-)
-redis.call('HDEL', runs_key, 'stream_id')
+            -- Pull out the waiter's task_key so we can address its runs hash and
+            -- its state-change pubsub channel.
+            local waiter_task_key
+            for i = 1, #fields, 2 do
+                if fields[i] == 'key' then
+                    waiter_task_key = fields[i + 1]
+                    break
+                end
+            end
 
-local payload = '{"type":"state","key":"' .. task_key .. '","state":"scheduled"}'
-redis.call('PUBLISH', state_channel, payload)
+            local runs_key = runs_prefix .. waiter_task_key
 
-return 0
-"""
+            -- Forward only if the task is still in the parked state.  Anything
+            -- else -- 'cancelled', a missing runs hash (DELed by a cancel with
+            -- execution_ttl=0), or any other terminal state -- means the task
+            -- has been superseded and must not be revived.  Drop the waiter
+            -- entry without forwarding.
+            local current_state = redis.call('HGET', runs_key, 'state')
+            local safeguard_key = '__safeguard__:' .. waiter_task_key
+            if current_state ~= 'scheduled' then
+                redis.call('XDEL', waiters_stream, waiter_id)
+                -- Cancelled/superseded waiter: drop its safeguard backstop too.
+                redis.call('ZREM', queue_key, safeguard_key)
+                redis.call('DEL', parked_prefix .. safeguard_key)
+                redis.call('DEL', runs_prefix .. safeguard_key)
+            else
+                local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
+                for i = 1, #fields, 2 do
+                    if fields[i] == 'generation' then
+                        fields[i + 1] = tostring(new_gen)
+                    end
+                end
+
+                local main_id = redis.call('XADD', stream_key, '*', unpack(fields))
+                redis.call('XDEL', waiters_stream, waiter_id)
+                redis.call('HSET', runs_key, 'state', 'queued', 'stream_id', main_id)
+                redis.call('HDEL', runs_key, 'waiter_stream', 'waiter_entry_id')
+
+                -- Cancel the safeguard task this waiter scheduled on park.
+                -- It's no longer needed; leaving it in the future queue would
+                -- keep the worker awake for one redelivery_timeout for nothing.
+                redis.call('ZREM', queue_key, safeguard_key)
+                redis.call('DEL', parked_prefix .. safeguard_key)
+                redis.call('DEL', runs_prefix .. safeguard_key)
+
+                local payload = '{"type":"state","key":"' .. json_escape(waiter_task_key) .. '","state":"queued"}'
+                redis.call('PUBLISH', state_prefix .. waiter_task_key, payload)
+            end
+        end
+    end
+
+    if redis.call('ZCARD', slots_key) == 0 then
+        redis.call('DEL', slots_key)
+    end
+    if redis.call('XLEN', waiters_stream) == 0 then
+        redis.call('DEL', waiters_stream)
+    end
+    """
+    ...
 
 
-# Release this task's slot and, if waiters are parked, hand the freed
-# capacity off by re-injecting the oldest waiter(s) into the main stream.
-# Stale peer slots are scavenged opportunistically, but only when waiters
-# exist -- we don't want to prematurely evict slots held by briefly-paused
-# live workers.
-#
-# Waiters whose runs hash has flipped to ``cancelled`` are XDEL'd without
-# being forwarded.  This is the correctness backstop for the cancel-races-
-# with-wake case where the dependency's cancel subscriber might not have
-# pulled the waiter entry off the stream in time (Redis pub/sub is fire-
-# and-forget); cancelled tasks must never run.
-#
-# KEYS[1]: slots (concurrency_key)
-# KEYS[2]: waiters stream (concurrency_key:waiters)
-# KEYS[3]: main stream_key
-# KEYS[4]: future queue (docket queue_key)
-# ARGV: task_key (releasing), max_concurrent, stale_threshold, runs_prefix,
-#       state_prefix, parked_prefix
-_RELEASE_AND_WAKE = """
-local slots_key = KEYS[1]
-local waiters_stream = KEYS[2]
-local stream_key = KEYS[3]
-local queue_key = KEYS[4]
+@redis_script
+async def _scavenge_and_wake(
+    redis: RedisClient,
+    *,
+    slots_key: Key[str],
+    waiters_stream: Key[str],
+    stream_key: Key[str],
+    queue_key: Key[str],
+    max_concurrent: Arg[int],
+    stale_threshold: Arg[float],
+    runs_prefix: Arg[str],
+    state_prefix: Arg[str],
+    parked_prefix: Arg[str],
+) -> int:
+    """
+    -- Scavenge any stale slot holders and hand freed capacity to parked
+    -- waiters.  Called by the worker's concurrency-sweep loop to recover
+    -- the degenerate case where every slot holder crashed without
+    -- releasing AND no new tasks are arriving to trigger the normal
+    -- acquire-path scavenge.  Structurally identical to
+    -- _release_and_wake's post-release body, minus the self-ZREM.
+    --
+    -- Returns the number of waiters woken (zero means either no waiters
+    -- were parked, or no capacity was free to give them).
 
-local task_key = ARGV[1]
-local max_concurrent = tonumber(ARGV[2])
-local stale_threshold = tonumber(ARGV[3])
-local runs_prefix = ARGV[4]
-local state_prefix = ARGV[5]
-local parked_prefix = ARGV[6]
+    -- Inline JSON-string escaper (see _release_and_wake for the rationale).
+    local function json_escape(s)
+        s = s:gsub('\\\\', '\\\\\\\\')
+        s = s:gsub('"', '\\\\"')
+        s = s:gsub('\\n', '\\\\n')
+        s = s:gsub('\\r', '\\\\r')
+        s = s:gsub('\\t', '\\\\t')
+        return s
+    end
 
-redis.call('ZREM', slots_key, task_key)
+    local waiters_count = redis.call('XLEN', waiters_stream)
+    if waiters_count == 0 then
+        redis.call('DEL', waiters_stream)
+        return 0
+    end
 
-local waiters_count = redis.call('XLEN', waiters_stream)
-if waiters_count > 0 then
+    -- Evict any stale slot holders; a live peer would be heartbeating every
+    -- redelivery_timeout/4, so anything older than redelivery_timeout belongs
+    -- to a dead worker.
     local stale = redis.call('ZRANGEBYSCORE', slots_key, 0, stale_threshold)
     for _, s in ipairs(stale) do
         redis.call('ZREM', slots_key, s)
     end
-end
 
-local capacity = max_concurrent - redis.call('ZCARD', slots_key)
-if capacity > 0 then
+    local capacity = max_concurrent - redis.call('ZCARD', slots_key)
+    if capacity == 0 then
+        return 0
+    end
+
+    local woken = 0
     local entries = redis.call('XRANGE', waiters_stream, '-', '+', 'COUNT', capacity)
     for _, entry in ipairs(entries) do
         local waiter_id = entry[1]
         local fields = entry[2]
 
-        -- Pull out the waiter's task_key so we can address its runs hash and
-        -- its state-change pubsub channel.
         local waiter_task_key
         for i = 1, #fields, 2 do
             if fields[i] == 'key' then
@@ -204,16 +335,11 @@ if capacity > 0 then
 
         local runs_key = runs_prefix .. waiter_task_key
 
-        -- Forward only if the task is still in the parked state.  Anything
-        -- else -- 'cancelled', a missing runs hash (DELed by a cancel with
-        -- execution_ttl=0), or any other terminal state -- means the task
-        -- has been superseded and must not be revived.  Drop the waiter
-        -- entry without forwarding.
+        -- Skip cancelled/superseded waiters: drop the entry without forwarding.
         local current_state = redis.call('HGET', runs_key, 'state')
         local safeguard_key = '__safeguard__:' .. waiter_task_key
         if current_state ~= 'scheduled' then
             redis.call('XDEL', waiters_stream, waiter_id)
-            -- Cancelled/superseded waiter: drop its safeguard backstop too.
             redis.call('ZREM', queue_key, safeguard_key)
             redis.call('DEL', parked_prefix .. safeguard_key)
             redis.call('DEL', runs_prefix .. safeguard_key)
@@ -231,156 +357,55 @@ if capacity > 0 then
             redis.call('HDEL', runs_key, 'waiter_stream', 'waiter_entry_id')
 
             -- Cancel the safeguard task this waiter scheduled on park.
-            -- It's no longer needed; leaving it in the future queue would
-            -- keep the worker awake for one redelivery_timeout for nothing.
             redis.call('ZREM', queue_key, safeguard_key)
             redis.call('DEL', parked_prefix .. safeguard_key)
             redis.call('DEL', runs_prefix .. safeguard_key)
 
-            local payload = '{"type":"state","key":"' .. waiter_task_key .. '","state":"queued"}'
+            local payload = '{"type":"state","key":"' .. json_escape(waiter_task_key) .. '","state":"queued"}'
             redis.call('PUBLISH', state_prefix .. waiter_task_key, payload)
-        end
-    end
-end
-
-if redis.call('ZCARD', slots_key) == 0 then
-    redis.call('DEL', slots_key)
-end
-if redis.call('XLEN', waiters_stream) == 0 then
-    redis.call('DEL', waiters_stream)
-end
-"""
-
-
-# Scavenge any stale slot holders and hand freed capacity to parked waiters.
-# Called by the worker's concurrency-sweep loop to recover the degenerate
-# case where every slot holder crashed without releasing AND no new tasks
-# are arriving to trigger the normal acquire-path scavenge.  Structurally
-# identical to _RELEASE_AND_WAKE's post-release body, minus the self-ZREM.
-#
-# Returns the number of waiters woken (zero means either no waiters were
-# parked, or no capacity was free to give them).
-#
-# KEYS[1]: slots (concurrency_key)
-# KEYS[2]: waiters stream
-# KEYS[3]: main stream_key
-# KEYS[4]: future queue (docket queue_key)
-# ARGV: max_concurrent, stale_threshold, runs_prefix, state_prefix,
-#       parked_prefix
-_SCAVENGE_AND_WAKE = """
-local slots_key = KEYS[1]
-local waiters_stream = KEYS[2]
-local stream_key = KEYS[3]
-local queue_key = KEYS[4]
-
-local max_concurrent = tonumber(ARGV[1])
-local stale_threshold = tonumber(ARGV[2])
-local runs_prefix = ARGV[3]
-local state_prefix = ARGV[4]
-local parked_prefix = ARGV[5]
-
-local waiters_count = redis.call('XLEN', waiters_stream)
-if waiters_count == 0 then
-    redis.call('DEL', waiters_stream)
-    return 0
-end
-
--- Evict any stale slot holders; a live peer would be heartbeating every
--- redelivery_timeout/4, so anything older than redelivery_timeout belongs
--- to a dead worker.
-local stale = redis.call('ZRANGEBYSCORE', slots_key, 0, stale_threshold)
-for _, s in ipairs(stale) do
-    redis.call('ZREM', slots_key, s)
-end
-
-local capacity = max_concurrent - redis.call('ZCARD', slots_key)
-if capacity == 0 then
-    return 0
-end
-
-local woken = 0
-local entries = redis.call('XRANGE', waiters_stream, '-', '+', 'COUNT', capacity)
-for _, entry in ipairs(entries) do
-    local waiter_id = entry[1]
-    local fields = entry[2]
-
-    local waiter_task_key
-    for i = 1, #fields, 2 do
-        if fields[i] == 'key' then
-            waiter_task_key = fields[i + 1]
-            break
+            woken = woken + 1
         end
     end
 
-    local runs_key = runs_prefix .. waiter_task_key
-
-    -- Skip cancelled/superseded waiters: drop the entry without forwarding.
-    local current_state = redis.call('HGET', runs_key, 'state')
-    local safeguard_key = '__safeguard__:' .. waiter_task_key
-    if current_state ~= 'scheduled' then
-        redis.call('XDEL', waiters_stream, waiter_id)
-        redis.call('ZREM', queue_key, safeguard_key)
-        redis.call('DEL', parked_prefix .. safeguard_key)
-        redis.call('DEL', runs_prefix .. safeguard_key)
-    else
-        local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
-        for i = 1, #fields, 2 do
-            if fields[i] == 'generation' then
-                fields[i + 1] = tostring(new_gen)
-            end
-        end
-
-        local main_id = redis.call('XADD', stream_key, '*', unpack(fields))
-        redis.call('XDEL', waiters_stream, waiter_id)
-        redis.call('HSET', runs_key, 'state', 'queued', 'stream_id', main_id)
-        redis.call('HDEL', runs_key, 'waiter_stream', 'waiter_entry_id')
-
-        -- Cancel the safeguard task this waiter scheduled on park.
-        redis.call('ZREM', queue_key, safeguard_key)
-        redis.call('DEL', parked_prefix .. safeguard_key)
-        redis.call('DEL', runs_prefix .. safeguard_key)
-
-        local payload = '{"type":"state","key":"' .. waiter_task_key .. '","state":"queued"}'
-        redis.call('PUBLISH', state_prefix .. waiter_task_key, payload)
-        woken = woken + 1
+    if redis.call('ZCARD', slots_key) == 0 then
+        redis.call('DEL', slots_key)
     end
-end
+    if redis.call('XLEN', waiters_stream) == 0 then
+        redis.call('DEL', waiters_stream)
+    end
 
-if redis.call('ZCARD', slots_key) == 0 then
-    redis.call('DEL', slots_key)
-end
-if redis.call('XLEN', waiters_stream) == 0 then
-    redis.call('DEL', waiters_stream)
-end
-
-return woken
-"""
+    return woken
+    """
+    ...
 
 
-# Atomically tear down a cancelled task's waiter footprint.  Invoked by
-# ConcurrencyLimit's pubsub-driven cancel subscriber after Docket.cancel
-# flips the task to 'cancelled'.
-#
-# KEYS[1]: waiters_stream, KEYS[2]: progress_key, KEYS[3]: runs_key
-# ARGV[1]: waiter_entry_id
-_CANCEL_CLEANUP = """
-local waiters_stream = KEYS[1]
-local progress_key = KEYS[2]
-local runs_key = KEYS[3]
-local waiter_entry_id = ARGV[1]
+@redis_script
+async def _cancel_cleanup(
+    redis: RedisClient,
+    *,
+    waiters_stream: Key[str],
+    progress_key: Key[str],
+    runs_key: Key[str],
+    waiter_entry_id: Arg[str],
+) -> None:
+    """
+    -- Atomically tear down a cancelled task's waiter footprint.  Invoked
+    -- by ConcurrencyLimit's pubsub-driven cancel subscriber after
+    -- Docket.cancel flips the task to 'cancelled'.
 
-redis.call('XDEL', waiters_stream, waiter_entry_id)
-if redis.call('XLEN', waiters_stream) == 0 then
-    redis.call('DEL', waiters_stream)
-end
+    redis.call('XDEL', waiters_stream, waiter_entry_id)
+    if redis.call('XLEN', waiters_stream) == 0 then
+        redis.call('DEL', waiters_stream)
+    end
 
--- claim() creates a per-task progress hash before the concurrency gate
--- runs, so a task that's cancelled while parked leaks one of these
--- without an explicit DEL.
-redis.call('DEL', progress_key)
+    -- claim() creates a per-task progress hash before the concurrency gate
+    -- runs, so a task that's cancelled while parked leaks one of these
+    -- without an explicit DEL.
+    redis.call('DEL', progress_key)
 
-redis.call('HDEL', runs_key, 'waiter_stream', 'waiter_entry_id')
-"""
+    redis.call('HDEL', runs_key, 'waiter_stream', 'waiter_entry_id')
+    """
+    ...
 
 
 class ConcurrencyBlocked(AdmissionBlocked):
@@ -544,31 +569,27 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         # Folding acquire-and-park together closes a race where a slot holder
         # releases in the gap between an acquire failure and a Python-side
         # park, leaving the blocked task with nothing to wake it.
+        park_state_payload = json.dumps(
+            {"type": "state", "key": execution.key, "state": "scheduled"}
+        )
         async with docket.redis() as redis:
-            acquire_or_park = redis.register_script(_ACQUIRE_OR_PARK)
-            result = await acquire_or_park(
-                keys=[
-                    concurrency_key,
-                    waiters_stream,
-                    docket.stream_key,
-                    execution._redis_key,
-                ],
-                args=[
-                    self.max_concurrent,
-                    execution.key,
-                    current_time,
-                    1 if execution.redelivered else 0,
-                    stale_threshold,
-                    key_ttl,
-                    execution.message_id,
-                    docket.worker_group_name,
-                    f"{docket.prefix}:state:{execution.key}",
-                    *[
-                        item
-                        for field, value in message.items()
-                        for item in (field, value)
-                    ],
-                ],
+            result = await _acquire_or_park(
+                redis,
+                slots_key=concurrency_key,
+                waiters_stream=waiters_stream,
+                stream_key=docket.stream_key,
+                runs_key=execution._redis_key,
+                max_concurrent=self.max_concurrent,
+                task_key=execution.key,
+                current_time=current_time,
+                is_redelivery=execution.redelivered,
+                stale_threshold=stale_threshold,
+                key_ttl=key_ttl,
+                message_id=execution.message_id,
+                worker_group_name=docket.worker_group_name,
+                state_channel=f"{docket.prefix}:state:{execution.key}",
+                state_payload=park_state_payload,
+                message=message,
             )
 
         if not bool(result):  # pragma: no branch
@@ -720,14 +741,12 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                 return
             waiter_stream = waiter_stream_b.decode()
             waiter_entry_id = waiter_entry_id_b.decode()
-            cleanup = redis.register_script(_CANCEL_CLEANUP)
-            await cleanup(
-                keys=[
-                    waiter_stream,
-                    f"{docket.prefix}:progress:{task_key}",
-                    runs_key,
-                ],
-                args=[waiter_entry_id],
+            await _cancel_cleanup(
+                redis,
+                waiters_stream=waiter_stream,
+                progress_key=f"{docket.prefix}:progress:{task_key}",
+                runs_key=runs_key,
+                waiter_entry_id=waiter_entry_id,
             )
         # Drop the safeguard task this waiter scheduled at park time.
         # Cancelling routes through the same cancel pubsub we're subscribed
@@ -745,22 +764,18 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         stale_threshold = current_time - self._redelivery_timeout.total_seconds()
 
         async with docket.redis() as redis:
-            release = redis.register_script(_RELEASE_AND_WAKE)
-            await release(
-                keys=[
-                    self._concurrency_key,
-                    waiters_stream,
-                    docket.stream_key,
-                    docket.queue_key,
-                ],
-                args=[
-                    self._task_key,
-                    self.max_concurrent,
-                    stale_threshold,
-                    f"{docket.prefix}:runs:",
-                    f"{docket.prefix}:state:",
-                    f"{docket.prefix}:",
-                ],
+            await _release_and_wake(
+                redis,
+                slots_key=self._concurrency_key,
+                waiters_stream=waiters_stream,
+                stream_key=docket.stream_key,
+                queue_key=docket.queue_key,
+                task_key=self._task_key,
+                max_concurrent=self.max_concurrent,
+                stale_threshold=stale_threshold,
+                runs_prefix=f"{docket.prefix}:runs:",
+                state_prefix=f"{docket.prefix}:state:",
+                parked_prefix=f"{docket.prefix}:",
             )
 
     async def _renew_lease_loop(self, redelivery_timeout: timedelta) -> None:
@@ -838,19 +853,15 @@ async def _safeguard_wake(waiter_stream: str, max_concurrent: int) -> None:
     )
 
     async with docket.redis() as redis:
-        scavenge = redis.register_script(_SCAVENGE_AND_WAKE)
-        await scavenge(
-            keys=[
-                concurrency_key,
-                waiter_stream,
-                docket.stream_key,
-                docket.queue_key,
-            ],
-            args=[
-                max_concurrent,
-                stale_threshold,
-                f"{docket.prefix}:runs:",
-                f"{docket.prefix}:state:",
-                f"{docket.prefix}:",
-            ],
+        await _scavenge_and_wake(
+            redis,
+            slots_key=concurrency_key,
+            waiters_stream=waiter_stream,
+            stream_key=docket.stream_key,
+            queue_key=docket.queue_key,
+            max_concurrent=max_concurrent,
+            stale_threshold=stale_threshold,
+            runs_prefix=f"{docket.prefix}:runs:",
+            state_prefix=f"{docket.prefix}:state:",
+            parked_prefix=f"{docket.prefix}:",
         )
