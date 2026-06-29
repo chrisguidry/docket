@@ -21,6 +21,7 @@ from typing import (
     TypedDict,
     cast,
 )
+from uuid import uuid4
 
 import cloudpickle
 
@@ -33,7 +34,7 @@ else:
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
-from ._lua import Arg, Key, redis_script
+from ._lua import Arg, Args, Key, redis_script
 from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
@@ -136,6 +137,37 @@ tracer: Tracer = trace.get_tracer(__name__)
 
 class _WorkerInfrastructureConnectionError(ConnectionError):
     pass
+
+
+@redis_script
+async def _remove_worker_heartbeat(
+    redis: RedisClient,
+    *,
+    heartbeat_owners_key: Key[str],
+    workers_key: Key[str],
+    worker_tasks_key: Key[str],
+    owner_id: Arg[str],
+    worker_name: Arg[str],
+    task_worker_keys: Args[list[str]],
+) -> int:
+    """
+    redis.call('SREM', heartbeat_owners_key, owner_id)
+
+    if redis.call('SCARD', heartbeat_owners_key) > 0 then
+        return 0
+    end
+
+    redis.call('ZREM', workers_key, worker_name)
+    redis.call('DEL', worker_tasks_key)
+    redis.call('DEL', heartbeat_owners_key)
+
+    for i = task_worker_keys_start, #ARGV do
+        redis.call('ZREM', ARGV[i], worker_name)
+    end
+
+    return 1
+    """
+    ...
 
 
 def _is_worker_infrastructure_connection_error_group(exc: ExceptionGroup) -> bool:
@@ -1315,7 +1347,11 @@ class Worker:
     def task_workers_set(self, task_name: str) -> str:
         return self.docket.task_workers_set(task_name)
 
+    def worker_heartbeat_owners_set(self, worker_name: str) -> str:
+        return self.docket.key(f"worker-heartbeat-owners:{worker_name}")
+
     async def _heartbeat(self) -> None:
+        heartbeat_owner_id = uuid4().hex
         try:
             while not self._worker_stopping.is_set():  # pragma: no branch
                 try:
@@ -1326,6 +1362,10 @@ class Worker:
                     oldest = now - maximum_age.total_seconds()
 
                     task_names = list(self.docket.tasks)
+                    heartbeat_ttl = max(
+                        maximum_age,
+                        timedelta(seconds=MINIMUM_TTL_SECONDS),
+                    )
 
                     async with self.docket.redis() as r:
                         with self._maybe_suppress_instrumentation():
@@ -1344,11 +1384,15 @@ class Worker:
                                     self.worker_tasks_set(self.name), *task_names
                                 )
                                 pipeline.expire(
-                                    self.worker_tasks_set(self.name),
-                                    max(
-                                        maximum_age,
-                                        timedelta(seconds=MINIMUM_TTL_SECONDS),
-                                    ),
+                                    self.worker_tasks_set(self.name), heartbeat_ttl
+                                )
+                                pipeline.sadd(
+                                    self.worker_heartbeat_owners_set(self.name),
+                                    heartbeat_owner_id,
+                                )
+                                pipeline.expire(
+                                    self.worker_heartbeat_owners_set(self.name),
+                                    heartbeat_ttl,
                                 )
 
                                 await pipeline.execute()
@@ -1394,21 +1438,24 @@ class Worker:
                 except asyncio.TimeoutError:
                     pass
         finally:
-            await self._remove_heartbeat()
+            await self._remove_heartbeat(heartbeat_owner_id)
 
-    async def _remove_heartbeat(self) -> None:
+    async def _remove_heartbeat(self, heartbeat_owner_id: str) -> None:
         try:
             async with self.docket.redis() as r:
-                task_names = list(self.docket.tasks)
-                async with r.pipeline() as pipeline:
-                    pipeline.zrem(self.workers_set, self.name)
-
-                    for task_name in task_names:
-                        pipeline.zrem(self.task_workers_set(task_name), self.name)
-
-                    pipeline.delete(self.worker_tasks_set(self.name))
-
-                    await pipeline.execute()
+                heartbeat_owners_set = self.worker_heartbeat_owners_set(self.name)
+                await _remove_worker_heartbeat(
+                    cast(RedisClient, r),
+                    heartbeat_owners_key=heartbeat_owners_set,
+                    workers_key=self.workers_set,
+                    worker_tasks_key=self.worker_tasks_set(self.name),
+                    owner_id=heartbeat_owner_id,
+                    worker_name=self.name,
+                    task_worker_keys=[
+                        self.task_workers_set(task_name)
+                        for task_name in self.docket.tasks
+                    ],
+                )
         except ConnectionError:  # pragma: no cover
             REDIS_DISRUPTIONS.add(1, self.labels())
             logger.exception(

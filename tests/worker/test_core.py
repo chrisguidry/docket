@@ -14,6 +14,7 @@ if sys.version_info < (3, 11):  # pragma: no cover
 
 from docket import CurrentWorker, Docket, Worker
 from docket.tasks import standard_tasks
+from tests.conftest import wait_until
 
 
 async def test_worker_acknowledges_messages(
@@ -239,6 +240,54 @@ async def test_worker_announcements(
 
     workers = await docket.workers()
     assert len(workers) == 0
+
+
+async def test_shared_name_worker_stays_visible_when_peer_exits(
+    docket: Docket,
+    the_task: AsyncMock,
+):
+    heartbeat = timedelta(seconds=1)
+    docket.heartbeat_interval = heartbeat
+    docket.missed_heartbeats = 3
+    docket.register(the_task)
+
+    async with (
+        Worker(docket, name="shared-worker") as worker_a,
+        Worker(docket, name="shared-worker") as worker_b,
+    ):
+        worker_a_task = asyncio.create_task(worker_a.run_forever())
+        worker_b_task = asyncio.create_task(worker_b.run_forever())
+
+        async def shared_worker_is_visible() -> bool:
+            return any(
+                worker.name == "shared-worker" for worker in await docket.workers()
+            )
+
+        try:
+            await wait_until(
+                shared_worker_is_visible,
+                timeout=2.0,
+                description="shared worker announcement",
+            )
+
+            worker_b_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker_b_task
+
+            workers = await docket.workers()
+            task_workers = await docket.task_workers("the_task")
+        finally:
+            worker_a_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker_a_task
+
+            if not worker_b_task.done():
+                worker_b_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await worker_b_task
+
+    assert {worker.name for worker in workers} == {"shared-worker"}
+    assert {worker.name for worker in task_workers} == {"shared-worker"}
 
 
 async def test_task_announcements(
