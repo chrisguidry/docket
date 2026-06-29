@@ -10,14 +10,17 @@ import socket
 import sys
 import time
 from contextlib import AsyncExitStack, contextmanager, suppress
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
     Any,
+    Awaitable,
     Generator,
     Mapping,
     Sequence,
     TypeAlias,
+    TypeVar,
     TypedDict,
     cast,
 )
@@ -34,7 +37,7 @@ else:
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
-from ._lua import Arg, Args, Key, redis_script
+from ._lua import Arg, Key, Keys, redis_script
 from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
@@ -72,7 +75,13 @@ from .docket import (
     RedisMessageID,
     RedisReadGroupResponse,
 )
-from .execution import TaskFunction, compact_signature, get_signature
+from .execution import (
+    Disposition,
+    ExecutionState,
+    TaskFunction,
+    compact_signature,
+    get_signature,
+)
 from .instrumentation import (
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
@@ -110,6 +119,7 @@ MINIMUM_TTL_SECONDS = 1
 ONE_SHOT_SCHEDULE_LOOKAHEAD = timedelta(seconds=1)
 
 TaskKey: TypeAlias = str
+_T = TypeVar("_T")
 
 
 class PubSubMessage(TypedDict):
@@ -119,6 +129,14 @@ class PubSubMessage(TypedDict):
     pattern: bytes
     channel: bytes
     data: bytes | str
+
+
+@dataclass
+class _WorkerRunSession:
+    heartbeat_owner_id: str = field(default_factory=lambda: uuid4().hex)
+    active_tasks: dict[asyncio.Task[None], RedisMessageID] = field(default_factory=dict)
+    task_executions: dict[asyncio.Task[None], Execution] = field(default_factory=dict)
+    rescheduled_keys: set[str] = field(default_factory=set)
 
 
 async def default_fallback_task(
@@ -143,6 +161,10 @@ class _WorkerInfrastructureConnectionError(ConnectionError):
     pass
 
 
+class _WorkerPollStopped(Exception):
+    pass
+
+
 @redis_script
 async def _remove_worker_heartbeat(
     redis: RedisClient,
@@ -153,7 +175,7 @@ async def _remove_worker_heartbeat(
     owner_id: Arg[str],
     oldest_owner_timestamp: Arg[float],
     worker_name: Arg[str],
-    task_worker_keys: Args[list[str]],
+    task_worker_keys: Keys[list[str]],
 ) -> int:
     """
     redis.call('ZREM', heartbeat_owners_key, owner_id)
@@ -167,8 +189,8 @@ async def _remove_worker_heartbeat(
     redis.call('DEL', worker_tasks_key)
     redis.call('DEL', heartbeat_owners_key)
 
-    for i = task_worker_keys_start, #ARGV do
-        redis.call('ZREM', ARGV[i], worker_name)
+    for i = task_worker_keys_start, #KEYS do
+        redis.call('ZREM', KEYS[i], worker_name)
     end
 
     return 1
@@ -419,6 +441,50 @@ class Worker:
             "docket.stream_key": self.docket.stream_key,
         }
 
+    async def _close_blocked_polling_client(self, redis: Redis) -> None:
+        if not isinstance(redis, Redis):
+            return
+
+        close = getattr(redis, "aclose", None)
+        if close is None:  # pragma: no cover
+            return
+
+        with suppress(Exception):
+            await close()
+
+    async def _await_poll_result(
+        self,
+        awaitable: Awaitable[_T],
+        redis: Redis,
+        stop_event: asyncio.Event,
+    ) -> _T:
+        poll_task = asyncio.ensure_future(awaitable)
+        stop_task = asyncio.create_task(stop_event.wait())
+
+        try:
+            done, _ = await asyncio.wait(
+                {poll_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if poll_task in done:
+                return await poll_task
+
+            await self._close_blocked_polling_client(redis)
+            poll_task.cancel()
+            await asyncio.gather(poll_task, return_exceptions=True)
+            raise _WorkerPollStopped()
+        except asyncio.CancelledError:
+            await self._close_blocked_polling_client(redis)
+            poll_task.cancel()
+            stop_task.cancel()
+            await asyncio.gather(poll_task, stop_task, return_exceptions=True)
+            raise
+        finally:
+            if not stop_task.done():
+                stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
+
     @classmethod
     async def run(
         cls,
@@ -666,8 +732,9 @@ class Worker:
 
         self._cancellation_ready.clear()  # Reset for reconnection scenarios
 
-        active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
-        task_executions: dict[asyncio.Task[None], Execution] = {}
+        session = _WorkerRunSession()
+        active_tasks = session.active_tasks
+        task_executions = session.task_executions
         available_slots = self.concurrency
         log_context = self._log_context()
 
@@ -676,6 +743,7 @@ class Worker:
             try:
                 now = datetime.now(timezone.utc).timestamp()
                 schedule_cutoff = now + ONE_SHOT_SCHEDULE_LOOKAHEAD.total_seconds()
+                rescheduled_keys = list(session.rescheduled_keys)
                 async with redis.pipeline() as pipeline:
                     pipeline.xlen(self.docket.stream_key)
                     pipeline.zcount(
@@ -683,7 +751,9 @@ class Worker:
                         0,
                         schedule_cutoff,
                     )
-                    results: list[int] = await pipeline.execute()
+                    for key in rescheduled_keys:
+                        pipeline.hget(self.docket.runs_key(key), "state")
+                    results: list[Any] = await pipeline.execute()
             except ConnectionError as exc:  # pragma: no cover
                 raise _WorkerInfrastructureConnectionError(
                     "Redis connection error while checking for work"
@@ -691,21 +761,37 @@ class Worker:
 
             stream_len = results[0]
             scheduled_soon_len = results[1]
-            return stream_len > 0 or scheduled_soon_len > 0
+            live_states = {
+                ExecutionState.SCHEDULED.value.encode(),
+                ExecutionState.QUEUED.value.encode(),
+                ExecutionState.RUNNING.value.encode(),
+            }
+            live_rescheduled = False
+            for key, state in zip(rescheduled_keys, results[2:]):
+                if state in live_states:
+                    live_rescheduled = True
+                else:
+                    session.rescheduled_keys.discard(key)
+
+            return stream_len > 0 or scheduled_soon_len > 0 or live_rescheduled
 
         async def get_redeliveries(redis: Redis) -> RedisReadGroupResponse:
             logger.debug("Getting redeliveries", extra=log_context)
             try:
                 with self._maybe_suppress_instrumentation():
-                    _, redeliveries, *_ = await redis.xautoclaim(
-                        name=self.docket.stream_key,
-                        groupname=self.docket.worker_group_name,
-                        consumername=self.name,
-                        min_idle_time=int(
-                            self.redelivery_timeout.total_seconds() * 1000
+                    _, redeliveries, *_ = await self._await_poll_result(
+                        redis.xautoclaim(
+                            name=self.docket.stream_key,
+                            groupname=self.docket.worker_group_name,
+                            consumername=self.name,
+                            min_idle_time=int(
+                                self.redelivery_timeout.total_seconds() * 1000
+                            ),
+                            start_id="0-0",
+                            count=available_slots,
                         ),
-                        start_id="0-0",
-                        count=available_slots,
+                        redis,
+                        self._worker_stopping,
                     )
             except ResponseError as e:
                 if "NOGROUP" in str(e):
@@ -722,11 +808,15 @@ class Worker:
             logger.debug("Getting new deliveries", extra=log_context)
             try:
                 with self._maybe_suppress_instrumentation():
-                    result = await redis.xreadgroup(
-                        groupname=self.docket.worker_group_name,
-                        consumername=self.name,
-                        streams={self.docket.stream_key: ">"},
-                        count=available_slots,
+                    result = await self._await_poll_result(
+                        redis.xreadgroup(
+                            groupname=self.docket.worker_group_name,
+                            consumername=self.name,
+                            streams={self.docket.stream_key: ">"},
+                            count=available_slots,
+                        ),
+                        redis,
+                        self._worker_stopping,
                     )
             except ResponseError as e:
                 if "NOGROUP" in str(e):
@@ -786,6 +876,7 @@ class Worker:
                         )
                         e.execution.when = datetime.now(timezone.utc) + delay
                         await e.execution.schedule(reschedule_message=message_id)
+                        session.rescheduled_keys.add(e.execution.key)
                     else:
                         logger.debug(
                             "⏭ Task %s blocked by admission control, dropping",
@@ -793,6 +884,12 @@ class Worker:
                             extra=log_context,
                         )
                         await e.execution.mark_as_cancelled()
+                        session.rescheduled_keys.discard(e.execution.key)
+                else:
+                    if execution.disposition is Disposition.SCHEDULED:
+                        session.rescheduled_keys.add(execution.key)
+                    else:
+                        session.rescheduled_keys.discard(execution.key)
 
                 # Safety net: if nothing inside _execute or these except
                 # handlers acked the stream message (e.g. a custom
@@ -861,7 +958,8 @@ class Worker:
                             name=f"{self.docket.name} - lease renewal",
                         )
                         self._heartbeat_task = infra.create_task(
-                            self._heartbeat(), name=f"{self.docket.name} - heartbeat"
+                            self._heartbeat(session.heartbeat_owner_id),
+                            name=f"{self.docket.name} - heartbeat",
                         )
 
                         has_work: bool = True
@@ -908,6 +1006,8 @@ class Worker:
                                             self._worker_stopping.wait(),
                                             timeout=poll_interval,
                                         )
+                            except _WorkerPollStopped:
+                                break
                             except ConnectionError as error:
                                 # The worker's own polling read lost its connection --
                                 # a failover or a server restart drops an
@@ -942,22 +1042,31 @@ class Worker:
         finally:
             # Drain any remaining active tasks
             if active_tasks:
-                drain_renewal_stop = asyncio.Event()
+                drain_stop = asyncio.Event()
+                drain_cancellation_ready = asyncio.Event()
                 drain_renewal_task = asyncio.create_task(
                     self._renew_leases(
                         redis,
                         active_tasks,
-                        stop_event=drain_renewal_stop,
+                        stop_event=drain_stop,
                     ),
                     name=f"{self.docket.name} - drain lease renewal",
+                )
+                drain_cancellation_task = asyncio.create_task(
+                    self._cancellation_listener(
+                        stop_event=drain_stop,
+                        ready_event=drain_cancellation_ready,
+                    ),
+                    name=f"{self.docket.name} - drain cancellation listener",
                 )
                 try:
                     await asyncio.gather(*active_tasks, return_exceptions=True)
                     await process_completed_tasks()
                 finally:
-                    drain_renewal_stop.set()
+                    drain_stop.set()
                     await asyncio.gather(
                         drain_renewal_task,
+                        drain_cancellation_task,
                         return_exceptions=True,
                     )
 
@@ -1384,8 +1493,7 @@ class Worker:
     def worker_heartbeat_owners_set(self, worker_name: str) -> str:
         return self.docket.key(f"worker-heartbeat-owners:{worker_name}")
 
-    async def _heartbeat(self) -> None:
-        heartbeat_owner_id = uuid4().hex
+    async def _heartbeat(self, heartbeat_owner_id: str) -> None:
         try:
             while not self._worker_stopping.is_set():  # pragma: no branch
                 try:
@@ -1483,6 +1591,12 @@ class Worker:
         try:
             async with self.docket.redis() as r:
                 heartbeat_owners_set = self.worker_heartbeat_owners_set(self.name)
+                worker_tasks_set = self.worker_tasks_set(self.name)
+                advertised_task_names = {
+                    task_name_bytes.decode()
+                    for task_name_bytes in await r.smembers(worker_tasks_set)
+                }
+                advertised_task_names.update(self.docket.tasks)
                 maximum_age = (
                     self.docket.heartbeat_interval * self.docket.missed_heartbeats
                 )
@@ -1493,13 +1607,13 @@ class Worker:
                     cast(RedisClient, r),
                     heartbeat_owners_key=heartbeat_owners_set,
                     workers_key=self.workers_set,
-                    worker_tasks_key=self.worker_tasks_set(self.name),
+                    worker_tasks_key=worker_tasks_set,
                     owner_id=heartbeat_owner_id,
                     oldest_owner_timestamp=oldest,
                     worker_name=self.name,
                     task_worker_keys=[
                         self.task_workers_set(task_name)
-                        for task_name in self.docket.tasks
+                        for task_name in sorted(advertised_task_names)
                     ],
                 )
         except ConnectionError:  # pragma: no cover
@@ -1516,41 +1630,53 @@ class Worker:
                 extra=self._log_context(),
             )
 
-    async def _cancellation_listener(self) -> None:
+    async def _cancellation_listener(
+        self,
+        *,
+        stop_event: asyncio.Event | None = None,
+        ready_event: asyncio.Event | None = None,
+    ) -> None:
         """Listen for cancellation signals and cancel matching tasks."""
+        if stop_event is None:
+            stop_event = self._worker_stopping
+        if ready_event is None:
+            ready_event = self._cancellation_ready
+
         cancel_pattern = self.docket.key("cancel:*")
         log_context = self._log_context()
 
-        while not self._worker_stopping.is_set():
+        while not stop_event.is_set():
             try:
                 async with self.docket._pubsub() as pubsub:
                     await pubsub.psubscribe(cancel_pattern)
-                    self._cancellation_ready.set()
+                    ready_event.set()
                     # Poll for messages, checking _worker_stopping periodically
-                    while not self._worker_stopping.is_set():
+                    while not stop_event.is_set():
                         message = await pubsub.get_message(
                             ignore_subscribe_messages=True, timeout=0.1
                         )
                         if message is not None and message["type"] == "pmessage":
                             await self._handle_cancellation(message)
             except ConnectionError:
-                if self._worker_stopping.is_set():
+                if stop_event.is_set():
                     return  # pragma: no cover
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.warning(
                     "Redis connection error in cancellation listener, reconnecting...",
                     extra=log_context,
                 )
-                await asyncio.sleep(1)
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(stop_event.wait(), timeout=1)
             except Exception:
-                if self._worker_stopping.is_set():
+                if stop_event.is_set():
                     return  # pragma: no cover
                 logger.exception(
                     "Error in cancellation listener",
                     exc_info=True,
                     extra=log_context,
                 )
-                await asyncio.sleep(1)
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(stop_event.wait(), timeout=1)
 
     async def _handle_cancellation(self, message: PubSubMessage) -> None:
         """Handle a cancellation message by cancelling the matching task."""

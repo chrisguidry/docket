@@ -169,7 +169,7 @@ async def test_watch_scheduled_task_transition(docket: Docket, worker: Worker):
     """Watch should show task transition from scheduled to completed."""
 
     async def scheduled_task():
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.01)  # pragma: no cover
 
     docket.register(scheduled_task)
 
@@ -273,9 +273,9 @@ async def test_watch_task_that_starts_while_watching(docket: Docket, worker: Wor
 
     async def task_that_waits_then_progresses(progress: Progress = Progress()):
         # Immediately report progress so watch sees it
-        await progress.set_total(10)
-        await progress.increment(1)
-        await progress.set_message("Started")
+        await progress.set_total(10)  # pragma: no cover
+        await progress.increment(1)  # pragma: no cover
+        await progress.set_message("Started")  # pragma: no cover
         # Then continue
         for _ in range(9):  # pragma: no cover
             await asyncio.sleep(0.15)

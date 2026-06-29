@@ -4,14 +4,17 @@ import asyncio
 import sys
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
-from typing import Any, AsyncGenerator, Callable
+from typing import Any, AsyncGenerator, Callable, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Worker, testing
+from docket.dependencies import Retry
+from docket.worker import _WorkerPollStopped  # pyright: ignore[reportPrivateUsage]
 from tests._container import BASE_VERSION, CLUSTER_ENABLED
+from tests.conftest import wait_until
 
 if sys.version_info >= (3, 11):  # pragma: no cover
     from asyncio import timeout as async_timeout
@@ -68,6 +71,118 @@ async def test_run_until_finished_exits_promptly_with_future_tasks(
 
     the_task.assert_not_called()
     await testing.assert_task_scheduled(docket, the_task, key=execution.key)
+
+
+async def test_run_until_finished_drains_delayed_retry_it_created(docket: Docket):
+    attempts = 0
+
+    async def flaky_task(
+        retry: Retry = Retry(attempts=2, delay=timedelta(seconds=1.5)),
+    ) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("retry me")
+
+    await docket.add(flaky_task, key="delayed-retry")()
+
+    async with Worker(
+        docket,
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as worker:
+        async with async_timeout(6.0):  # pragma: no branch
+            await worker.run_until_finished()
+
+    snapshot = await docket.snapshot()
+
+    assert attempts == 2
+    assert snapshot.total_tasks == 0
+
+
+async def test_run_until_finished_exits_when_created_retry_is_cancelled(
+    docket: Docket,
+):
+    attempts = 0
+    first_attempt_finished = asyncio.Event()
+
+    async def flaky_task(
+        retry: Retry = Retry(attempts=2, delay=timedelta(seconds=1.5)),
+    ) -> None:
+        nonlocal attempts
+        attempts += 1
+        first_attempt_finished.set()
+        raise RuntimeError("cancel retry")
+
+    await docket.add(flaky_task, key="cancelled-retry")()
+
+    async with Worker(
+        docket,
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as worker:
+        worker_task = asyncio.create_task(worker.run_until_finished())
+        await asyncio.wait_for(first_attempt_finished.wait(), timeout=2.0)
+
+        async def retry_is_scheduled() -> bool:
+            execution = await docket.get_execution("cancelled-retry")
+            return execution is not None and execution.state.value == "scheduled"
+
+        await wait_until(
+            retry_is_scheduled,
+            timeout=2.0,
+            description="delayed retry schedule before cancellation",
+        )
+        await docket.cancel("cancelled-retry")
+        async with async_timeout(6.0):  # pragma: no branch
+            await worker_task
+
+    snapshot = await docket.snapshot()
+
+    assert attempts == 1
+    assert snapshot.total_tasks == 0
+
+
+async def test_poll_wait_stops_when_worker_stop_event_wins(docket: Docket):
+    async def never_finishes() -> None:
+        await asyncio.Event().wait()
+
+    async with Worker(docket) as worker:
+        stop_event = asyncio.Event()
+        stop_event.set()
+
+        with pytest.raises(_WorkerPollStopped):
+            await worker._await_poll_result(  # pyright: ignore[reportPrivateUsage]
+                never_finishes(),
+                cast(Any, object()),
+                stop_event,
+            )
+
+
+async def test_worker_loop_exits_when_poll_stop_is_reported(docket: Docket):
+    async def registered_task() -> None: ...
+
+    docket.register(registered_task)
+
+    async with Worker(
+        docket,
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as worker:
+
+        async def stop_poll(
+            awaitable: Any,
+            redis: Any,
+            stop_event: asyncio.Event,
+        ) -> Any:
+            del redis, stop_event
+            close = getattr(awaitable, "close", None)
+            if close is not None:  # pragma: no branch
+                close()
+            raise _WorkerPollStopped()
+
+        with patch.object(worker, "_await_poll_result", stop_poll):
+            await asyncio.wait_for(worker.run_forever(), timeout=2.0)
 
 
 async def test_run_at_most_cancels_promptly_with_future_tasks(

@@ -74,6 +74,10 @@ class _Key:
     """``Annotated`` metadata marker -- one Lua KEYS slot."""
 
 
+class _Keys:
+    """``Annotated`` metadata marker -- variadic Lua KEYS slots."""
+
+
 class _Arg:
     """``Annotated`` metadata marker -- one Lua ARGV slot."""
 
@@ -92,11 +96,15 @@ class _Args:
 # allowed to resolve to.
 
 _KeyT = TypeVar("_KeyT", str, bytes)
+_KeysT = TypeVar("_KeysT", list[Any], tuple[Any, ...])
 _ArgT = TypeVar("_ArgT", str, bytes, int, float, bool)
 _ArgsT = TypeVar("_ArgsT", dict[Any, Any], list[Any], tuple[Any, ...])
 
 Key: TypeAlias = Annotated[_KeyT, _Key]
 """One Lua ``KEYS`` slot.  Bounded to the types Redis accepts as keys."""
+
+Keys: TypeAlias = Annotated[_KeysT, _Keys]
+"""Variadic Lua ``KEYS`` slots.  A list or tuple spreads element-wise."""
 
 Arg: TypeAlias = Annotated[_ArgT, _Arg]
 """One Lua ``ARGV`` slot.  Bounded to scalar types the decoder knows how to format."""
@@ -153,7 +161,7 @@ def _expand_args(value: Any) -> list[Any]:
     return [_encode_scalar(item) for item in sequence]
 
 
-_Marker: TypeAlias = type[_Key] | type[_Arg] | type[_Args]
+_Marker: TypeAlias = type[_Key] | type[_Keys] | type[_Arg] | type[_Args]
 
 
 def _annotation_for(hint: Any) -> tuple[_Marker, Any] | None:
@@ -166,7 +174,7 @@ def _annotation_for(hint: Any) -> tuple[_Marker, Any] | None:
     ``== '1'`` for bools, raw for strings/bytes).
     """
     for meta in getattr(hint, "__metadata__", ()):
-        if meta in (_Key, _Arg, _Args):
+        if meta in (_Key, _Keys, _Arg, _Args):
             return meta, get_args(hint)[0]
     return None
 
@@ -187,7 +195,7 @@ def _decode_for(py_type: Any) -> str:
 
 
 def _generate_preamble(
-    key_params: list[str],
+    key_params: list[tuple[str, _Marker]],
     arg_params: list[tuple[str, _Marker, Any]],
 ) -> str:
     """Emit ``local name = KEYS[i]`` / ``ARGV[j]`` bindings for each slot.
@@ -200,8 +208,13 @@ def _generate_preamble(
     without hard-coding the offset.
     """
     lines: list[str] = []
-    for i, name in enumerate(key_params, 1):
-        lines.append(f"local {name} = KEYS[{i}]")
+    key_index = 1
+    for name, kind in key_params:
+        if kind is _Keys:
+            lines.append(f"local {name}_start = {key_index}")
+            continue
+        lines.append(f"local {name} = KEYS[{key_index}]")
+        key_index += 1
     argv_index = 1
     for name, kind, py_type in arg_params:
         if kind is _Args:
@@ -227,7 +240,7 @@ def redis_script(fn: _F) -> _F:
     sig = inspect.signature(fn)
     hints = get_type_hints(fn, include_extras=True)
 
-    key_params: list[str] = []
+    key_params: list[tuple[str, _Marker]] = []
     arg_params: list[tuple[str, _Marker, Any]] = []
     redis_param: str | None = None
 
@@ -244,8 +257,8 @@ def redis_script(fn: _F) -> _F:
                 f"(or typed as RedisClient for the first parameter)"
             )
         kind, py_type = annotation
-        if kind is _Key:
-            key_params.append(name)
+        if kind in (_Key, _Keys):
+            key_params.append((name, kind))
         else:
             arg_params.append((name, kind, py_type))
 
@@ -258,6 +271,27 @@ def redis_script(fn: _F) -> _F:
         raise TypeError(
             f"@redis_script: {fn.__qualname__} must declare at least one Key[...] parameter"
         )
+
+    # A variadic ``Keys[...]`` parameter consumes an unknown number of KEYS
+    # slots at runtime, so a scalar ``Key[...]`` after it would have an
+    # indeterminate index in the generated preamble.  Forbid multiple
+    # variadic key groups too; a second group's start would be equally
+    # ambiguous.
+    variadic_key_seen = False
+    for name, kind in key_params:
+        if kind is _Keys:
+            if variadic_key_seen:
+                raise TypeError(
+                    f"@redis_script: {fn.__qualname__} has multiple Keys[...] "
+                    "parameters; only one variadic key group is supported"
+                )
+            variadic_key_seen = True
+        elif variadic_key_seen:
+            raise TypeError(
+                f"@redis_script: {fn.__qualname__} has Key[...] parameter {name} "
+                "after a Keys[...] parameter; Keys[...] must be the last key "
+                "parameter"
+            )
 
     # A variadic ``Args[...]`` parameter consumes an unknown number of ARGV
     # slots at runtime, so any scalar ``Arg[...]`` after it would have an
@@ -290,7 +324,13 @@ def redis_script(fn: _F) -> _F:
     # callers always pass keyword arguments.
     @functools.wraps(fn)
     async def wrapper(redis: RedisClient, **kwargs: Any) -> Any:
-        keys: list[Any] = [kwargs[name] for name in key_params]
+        keys: list[Any] = []
+        for name, kind in key_params:
+            value = kwargs[name]
+            if kind is _Keys:
+                keys.extend(_expand_args(value))
+            else:
+                keys.append(value)
         argv: list[Any] = []
         for name, kind, _ in arg_params:
             value = kwargs[name]
@@ -308,5 +348,6 @@ __all__ = [
     "Arg",
     "Args",
     "Key",
+    "Keys",
     "redis_script",
 ]

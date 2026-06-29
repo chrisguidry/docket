@@ -281,7 +281,7 @@ async def test_shared_name_worker_stays_visible_when_peer_exits(
             with suppress(asyncio.CancelledError):
                 await worker_a_task
 
-            if not worker_b_task.done():
+            if not worker_b_task.done():  # pragma: no cover
                 worker_b_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await worker_b_task

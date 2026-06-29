@@ -110,7 +110,9 @@ async def test_worker_does_not_restart_when_stop_races_with_reconnect_timeout(
         if redis_calls == 1:
             raise ConnectionError("transient outage")
 
-        raise AssertionError("worker restarted after shutdown request")
+        raise AssertionError(
+            "worker restarted after shutdown request"
+        )  # pragma: no cover
         yield  # pragma: no cover
 
     monkeypatch.setattr(docket, "redis", mock_redis)
@@ -133,7 +135,7 @@ async def test_worker_does_not_restart_when_stop_races_with_reconnect_timeout(
                 worker._worker_stopping.set()  # pyright: ignore[reportPrivateUsage]
                 raise asyncio.TimeoutError
 
-            return await original_wait_for(awaitable, timeout)
+            return await original_wait_for(awaitable, timeout)  # pragma: no cover
 
         monkeypatch.setattr(asyncio, "wait_for", stop_as_reconnect_delay_expires)
 
