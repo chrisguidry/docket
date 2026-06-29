@@ -8,6 +8,7 @@ import pytest
 
 from docket import Docket, Execution, ExecutionState, Progress, Worker
 from docket.execution import ExecutionProgress, ProgressEvent, StateEvent
+from tests.conftest import wait_until
 
 
 @pytest.fixture
@@ -126,7 +127,28 @@ async def test_run_subscribe_both_state_and_progress(execution: Execution):
     await execution.progress.increment(5)
 
     # Wait for subscriber to collect events
-    await asyncio.wait_for(subscriber_task, timeout=2.0)
+    def saw_expected_events() -> bool:
+        return (
+            any(
+                event["type"] == "state" and event["state"] == ExecutionState.RUNNING
+                for event in all_events
+            )
+            and any(
+                event["type"] == "progress" and event.get("total") == 50
+                for event in all_events
+            )
+            and any(
+                event["type"] == "progress" and event.get("current") == 5
+                for event in all_events
+            )
+        )
+
+    await wait_until(
+        saw_expected_events,
+        timeout=5.0,
+        description="state and progress subscription events",
+    )
+    await asyncio.wait_for(subscriber_task, timeout=1.0)
 
     # Verify we got both types
     state_events = [e for e in all_events if e["type"] == "state"]

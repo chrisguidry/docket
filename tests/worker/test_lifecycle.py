@@ -126,7 +126,8 @@ async def test_worker_done_set_after_early_cancellation(docket: Docket):
     worker_task.cancel()
 
     with suppress(asyncio.CancelledError):
-        await worker_task
+        async with async_timeout(1.0):  # pragma: no branch
+            await worker_task
 
     # Verify the event is set after the worker loop finishes
     # (must check before __aexit__ which deletes the attribute)

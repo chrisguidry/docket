@@ -98,8 +98,15 @@ async def test_running_worker_recovers_from_transient_heartbeat_connection_error
     ) as worker:
         worker_task = asyncio.create_task(worker.run_forever())
         try:
-            await asyncio.sleep(heartbeat.total_seconds() * 2)
-            assert {w.name for w in await docket.workers()} == {worker.name}
+
+            async def worker_is_announced() -> bool:
+                return {w.name for w in await docket.workers()} == {worker.name}
+
+            await wait_until(
+                worker_is_announced,
+                timeout=2.0,
+                description="heartbeat worker announcement",
+            )
 
             original_redis = docket.redis
             failed_once = False
@@ -116,8 +123,16 @@ async def test_running_worker_recovers_from_transient_heartbeat_connection_error
 
             monkeypatch.setattr(docket, "redis", flaky_heartbeat_redis)
 
-            await asyncio.sleep(heartbeat.total_seconds() * 4)
+            async def heartbeat_recovered() -> bool:
+                if not failed_once:
+                    return False
+                return {w.name for w in await docket.workers()} == {worker.name}
 
+            await wait_until(
+                heartbeat_recovered,
+                timeout=2.0,
+                description="heartbeat recovery",
+            )
             workers = await docket.workers()
         finally:
             worker_task.cancel()
@@ -295,7 +310,7 @@ async def test_worker_drains_due_work_after_real_redis_connection_drop(  # pragm
                 if str(client["id"]) != disruptor_id
             }
 
-        worker_task = asyncio.create_task(worker.run_until_finished())
+        worker_task = asyncio.create_task(worker.run_forever())
         redis_client_ids: set[str] = set()
 
         async def worker_is_announced() -> bool:
@@ -325,7 +340,7 @@ async def test_worker_drains_due_work_after_real_redis_connection_drop(  # pragm
                 )
 
             assert killed_connections > 0
-            await asyncio.wait_for(worker_task, timeout=5.0)
+            await asyncio.wait_for(task_complete.wait(), timeout=5.0)
         finally:
             worker_task.cancel()
             await asyncio.gather(worker_task, return_exceptions=True)

@@ -105,6 +105,10 @@ AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS = 60
 # redelivery_timeout is very small (e.g., in tests with 200ms timeouts).
 MINIMUM_TTL_SECONDS = 1
 
+# One-shot worker runs should wait for short-delay work that is already in the
+# scheduler queue, without treating distant future tasks as a reason to stay up.
+ONE_SHOT_SCHEDULE_LOOKAHEAD = timedelta(seconds=1)
+
 TaskKey: TypeAlias = str
 
 
@@ -147,13 +151,15 @@ async def _remove_worker_heartbeat(
     workers_key: Key[str],
     worker_tasks_key: Key[str],
     owner_id: Arg[str],
+    oldest_owner_timestamp: Arg[float],
     worker_name: Arg[str],
     task_worker_keys: Args[list[str]],
 ) -> int:
     """
-    redis.call('SREM', heartbeat_owners_key, owner_id)
+    redis.call('ZREM', heartbeat_owners_key, owner_id)
+    redis.call('ZREMRANGEBYSCORE', heartbeat_owners_key, 0, oldest_owner_timestamp)
 
-    if redis.call('SCARD', heartbeat_owners_key) > 0 then
+    if redis.call('ZCARD', heartbeat_owners_key) > 0 then
         return 0
     end
 
@@ -609,6 +615,10 @@ class Worker:
                         return  # pragma: no cover
                     except asyncio.TimeoutError:
                         pass
+        except asyncio.CancelledError:
+            self._worker_stop_requested.set()
+            self._worker_stopping.set()
+            raise
         finally:
             self._worker_done.set()
 
@@ -664,9 +674,15 @@ class Worker:
         async def check_for_work() -> bool:
             logger.debug("Checking for work", extra=log_context)
             try:
+                now = datetime.now(timezone.utc).timestamp()
+                schedule_cutoff = now + ONE_SHOT_SCHEDULE_LOOKAHEAD.total_seconds()
                 async with redis.pipeline() as pipeline:
                     pipeline.xlen(self.docket.stream_key)
-                    pipeline.zcard(self.docket.queue_key)
+                    pipeline.zcount(
+                        self.docket.queue_key,
+                        0,
+                        schedule_cutoff,
+                    )
                     results: list[int] = await pipeline.execute()
             except ConnectionError as exc:  # pragma: no cover
                 raise _WorkerInfrastructureConnectionError(
@@ -674,8 +690,8 @@ class Worker:
                 ) from exc
 
             stream_len = results[0]
-            queue_len = results[1]
-            return stream_len > 0 or queue_len > 0
+            scheduled_soon_len = results[1]
+            return stream_len > 0 or scheduled_soon_len > 0
 
         async def get_redeliveries(redis: Redis) -> RedisReadGroupResponse:
             logger.debug("Getting redeliveries", extra=log_context)
@@ -899,12 +915,15 @@ class Worker:
                 raise disconnect
 
         except asyncio.CancelledError:
+            self._worker_stop_requested.set()
+            self._worker_stopping.set()
             if active_tasks:  # pragma: no cover
                 logger.info(
                     "Shutdown requested, finishing %d active tasks...",
                     len(active_tasks),
                     extra=log_context,
                 )
+            raise
         finally:
             # Drain any remaining active tasks
             if active_tasks:
@@ -1386,9 +1405,14 @@ class Worker:
                                 pipeline.expire(
                                     self.worker_tasks_set(self.name), heartbeat_ttl
                                 )
-                                pipeline.sadd(
+                                pipeline.zremrangebyscore(
                                     self.worker_heartbeat_owners_set(self.name),
-                                    heartbeat_owner_id,
+                                    0,
+                                    oldest,
+                                )
+                                pipeline.zadd(
+                                    self.worker_heartbeat_owners_set(self.name),
+                                    {heartbeat_owner_id: now},
                                 )
                                 pipeline.expire(
                                     self.worker_heartbeat_owners_set(self.name),
@@ -1444,12 +1468,19 @@ class Worker:
         try:
             async with self.docket.redis() as r:
                 heartbeat_owners_set = self.worker_heartbeat_owners_set(self.name)
+                maximum_age = (
+                    self.docket.heartbeat_interval * self.docket.missed_heartbeats
+                )
+                oldest = (
+                    datetime.now(timezone.utc).timestamp() - maximum_age.total_seconds()
+                )
                 await _remove_worker_heartbeat(
                     cast(RedisClient, r),
                     heartbeat_owners_key=heartbeat_owners_set,
                     workers_key=self.workers_set,
                     worker_tasks_key=self.worker_tasks_set(self.name),
                     owner_id=heartbeat_owner_id,
+                    oldest_owner_timestamp=oldest,
                     worker_name=self.name,
                     task_worker_keys=[
                         self.task_workers_set(task_name)
