@@ -9,7 +9,7 @@ import signal
 import socket
 import sys
 import time
-from contextlib import AsyncExitStack, contextmanager
+from contextlib import AsyncExitStack, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
@@ -726,7 +726,6 @@ class Worker:
                         groupname=self.docket.worker_group_name,
                         consumername=self.name,
                         streams={self.docket.stream_key: ">"},
-                        block=int(self.minimum_check_interval.total_seconds() * 1000),
                         count=available_slots,
                     )
             except ResponseError as e:
@@ -867,17 +866,17 @@ class Worker:
 
                         has_work: bool = True
                         stopping = self._worker_stopping.is_set
+                        poll_interval = self.minimum_check_interval.total_seconds()
                         while (forever or has_work or active_tasks) and not stopping():
                             await process_completed_tasks()
 
                             available_slots = self.concurrency - len(active_tasks)
 
                             if available_slots <= 0:
-                                await asyncio.sleep(
-                                    self.minimum_check_interval.total_seconds()
-                                )
+                                await asyncio.sleep(poll_interval)
                                 continue
 
+                            received_messages = False
                             try:
                                 for source in [get_redeliveries, get_new_deliveries]:
                                     for stream_key, messages in await source(redis):
@@ -886,6 +885,7 @@ class Worker:
                                             if not message:  # pragma: no cover
                                                 continue
 
+                                            received_messages = True
                                             await start_task(
                                                 message_id, message, is_redelivery
                                             )
@@ -895,9 +895,22 @@ class Worker:
 
                                 if not forever and not active_tasks:
                                     has_work = await check_for_work()
+
+                                if (
+                                    not received_messages
+                                    and (forever or has_work or active_tasks)
+                                    and not stopping()
+                                ):
+                                    # Keep the same polling cadence without relying on
+                                    # cancelling a blocked redis-py socket read.
+                                    with suppress(asyncio.TimeoutError):
+                                        await asyncio.wait_for(
+                                            self._worker_stopping.wait(),
+                                            timeout=poll_interval,
+                                        )
                             except ConnectionError as error:
                                 # The worker's own polling read lost its connection --
-                                # a failover or a server restart drops a blocked
+                                # a failover or a server restart drops an
                                 # XREADGROUP this way.  Stop the loop and let _run
                                 # reconnect; in-flight tasks still drain in the finally
                                 # below.  A ConnectionError raised by a task body

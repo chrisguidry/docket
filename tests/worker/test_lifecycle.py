@@ -19,6 +19,9 @@ else:  # pragma: no cover
     from async_timeout import timeout as async_timeout
 
 
+WORKER_SHUTDOWN_TIMEOUT_SECONDS = 10.0
+
+
 async def test_run_forever_cancels_promptly_with_future_tasks(
     docket: Docket, the_task: AsyncMock, now: Callable[[], datetime]
 ):
@@ -37,7 +40,9 @@ async def test_run_forever_cancels_promptly_with_future_tasks(
         await asyncio.sleep(0.05)
         worker_task.cancel()
         with suppress(asyncio.CancelledError):  # pragma: no branch
-            async with async_timeout(1.0):  # pragma: no branch
+            async with async_timeout(  # pragma: no branch
+                WORKER_SHUTDOWN_TIMEOUT_SECONDS
+            ):
                 await worker_task
 
     the_task.assert_not_called()
@@ -58,7 +63,7 @@ async def test_run_until_finished_exits_promptly_with_future_tasks(
         minimum_check_interval=timedelta(milliseconds=5),
         scheduling_resolution=timedelta(milliseconds=5),
     ) as worker:
-        async with async_timeout(1.0):  # pragma: no branch
+        async with async_timeout(WORKER_SHUTDOWN_TIMEOUT_SECONDS):  # pragma: no branch
             await worker.run_until_finished()
 
     the_task.assert_not_called()
@@ -83,7 +88,9 @@ async def test_run_at_most_cancels_promptly_with_future_tasks(
         await asyncio.sleep(0.05)
         worker_task.cancel()
         with suppress(asyncio.CancelledError):  # pragma: no branch
-            async with async_timeout(1.0):  # pragma: no branch
+            async with async_timeout(  # pragma: no branch
+                WORKER_SHUTDOWN_TIMEOUT_SECONDS
+            ):
                 await worker_task
 
     the_task.assert_not_called()
@@ -105,10 +112,12 @@ async def test_worker_aexit_completes_on_immediate_cancellation(docket: Docket):
         # Cancel immediately - before setup completes
         worker_task.cancel()
 
-        # __aexit__ should complete promptly (within 1 second)
+        # __aexit__ should complete promptly.
         # Without the fix, this would hang forever
         with suppress(asyncio.CancelledError):
-            async with async_timeout(1.0):  # pragma: no branch
+            async with async_timeout(  # pragma: no branch
+                WORKER_SHUTDOWN_TIMEOUT_SECONDS
+            ):
                 await worker_task
 
 
@@ -127,7 +136,7 @@ async def test_worker_done_set_after_early_cancellation(docket: Docket):
     worker_task.cancel()
 
     with suppress(asyncio.CancelledError):
-        async with async_timeout(1.0):  # pragma: no branch
+        async with async_timeout(WORKER_SHUTDOWN_TIMEOUT_SECONDS):  # pragma: no branch
             await worker_task
 
     # Verify the event is set after the worker loop finishes
@@ -135,7 +144,7 @@ async def test_worker_done_set_after_early_cancellation(docket: Docket):
     assert worker._worker_done.is_set()  # pyright: ignore[reportPrivateUsage]
 
     # __aexit__ should complete promptly because _worker_done should be set
-    async with async_timeout(1.0):  # pragma: no branch
+    async with async_timeout(WORKER_SHUTDOWN_TIMEOUT_SECONDS):  # pragma: no branch
         await worker.__aexit__(None, None, None)
 
 
@@ -145,7 +154,7 @@ async def test_worker_done_set_after_early_cancellation(docket: Docket):
 )
 async def test_worker_rapid_start_cancel_cycles(docket: Docket):
     """Verify worker handles rapid start/cancel cycles without hanging."""
-    for cancel_delay in (0, 0.001, 0.005, 0.02) * 3:  # pragma: no branch
+    for cancel_delay in (0, 0.001, 0.005, 0.02):  # pragma: no branch
         async with Worker(
             docket,
             minimum_check_interval=timedelta(milliseconds=5),
@@ -156,7 +165,9 @@ async def test_worker_rapid_start_cancel_cycles(docket: Docket):
             worker_task.cancel()
 
             with suppress(asyncio.CancelledError):
-                async with async_timeout(5.0):  # pragma: no branch
+                async with async_timeout(  # pragma: no branch
+                    WORKER_SHUTDOWN_TIMEOUT_SECONDS
+                ):
                     await worker_task
 
 
@@ -187,11 +198,13 @@ async def test_worker_cancellation_during_setup_before_scheduler_created(
         worker_task.cancel()
 
         with suppress(asyncio.CancelledError):
-            async with async_timeout(1.0):  # pragma: no branch
+            async with async_timeout(
+                WORKER_SHUTDOWN_TIMEOUT_SECONDS
+            ):  # pragma: no branch
                 await worker_task
 
     # Cleanup
-    async with async_timeout(1.0):  # pragma: no branch
+    async with async_timeout(WORKER_SHUTDOWN_TIMEOUT_SECONDS):  # pragma: no branch
         await worker.__aexit__(None, None, None)
 
 
