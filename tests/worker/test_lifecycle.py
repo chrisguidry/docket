@@ -11,7 +11,7 @@ import pytest
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Worker, testing
-from tests._container import CLUSTER_ENABLED
+from tests._container import BASE_VERSION, CLUSTER_ENABLED
 
 if sys.version_info >= (3, 11):  # pragma: no cover
     from asyncio import timeout as async_timeout
@@ -149,8 +149,8 @@ async def test_worker_done_set_after_early_cancellation(docket: Docket):
 
 
 @pytest.mark.skipif(
-    CLUSTER_ENABLED,
-    reason="redis-py cluster cancellation can outlive this rapid-cancel check",
+    CLUSTER_ENABLED or BASE_VERSION == "memory",
+    reason="requires real non-cluster Redis polling cancellation behavior",
 )
 async def test_worker_rapid_start_cancel_cycles(docket: Docket):
     """Verify worker handles rapid start/cancel cycles without hanging."""
