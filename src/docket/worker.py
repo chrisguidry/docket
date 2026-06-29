@@ -873,8 +873,24 @@ class Worker:
         finally:
             # Drain any remaining active tasks
             if active_tasks:
-                await asyncio.gather(*active_tasks, return_exceptions=True)
-                await process_completed_tasks()
+                drain_renewal_stop = asyncio.Event()
+                drain_renewal_task = asyncio.create_task(
+                    self._renew_leases(
+                        redis,
+                        active_tasks,
+                        stop_event=drain_renewal_stop,
+                    ),
+                    name=f"{self.docket.name} - drain lease renewal",
+                )
+                try:
+                    await asyncio.gather(*active_tasks, return_exceptions=True)
+                    await process_completed_tasks()
+                finally:
+                    drain_renewal_stop.set()
+                    await asyncio.gather(
+                        drain_renewal_task,
+                        return_exceptions=True,
+                    )
 
             self._heartbeat_task = None
 
@@ -928,21 +944,24 @@ class Worker:
         self,
         redis: Redis,
         active_messages: dict[asyncio.Task[None], RedisMessageID],
+        *,
+        stop_event: asyncio.Event | None = None,
     ) -> None:
         """Periodically renew leases on stream messages.
 
         Calls XCLAIM with idle=0 to reset the message's idle time, preventing
         XAUTOCLAIM from reclaiming it while we're still processing.
         """
+        if stop_event is None:
+            stop_event = self._worker_stopping
+
         # Renew leases 4 times per redelivery_timeout period
         renewal_interval = self.redelivery_timeout.total_seconds() / 4
 
-        while not self._worker_stopping.is_set():  # pragma: no branch
+        while not stop_event.is_set():  # pragma: no branch
             # Use interruptible wait so we respond to stopping quickly
             try:
-                await asyncio.wait_for(
-                    self._worker_stopping.wait(), timeout=renewal_interval
-                )
+                await asyncio.wait_for(stop_event.wait(), timeout=renewal_interval)
                 # Event was set, exit the loop
                 return
             except asyncio.TimeoutError:
