@@ -277,7 +277,7 @@ async def test_watch_task_that_starts_while_watching(docket: Docket, worker: Wor
         await progress.increment(1)
         await progress.set_message("Started")
         # Then continue
-        for _ in range(9):
+        for _ in range(9):  # pragma: no cover
             await asyncio.sleep(0.15)
             await progress.increment()
 

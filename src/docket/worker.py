@@ -822,91 +822,93 @@ class Worker:
                         await dependency_stack.enter_async_context(cm)
 
                 async with TaskGroup() as infra:
-                    # Start cancellation listener and wait for it to be ready
-                    cancellation_listener_task = infra.create_task(
-                        self._cancellation_listener(),
-                        name=f"{self.docket.name} - cancellation listener",
-                    )
-                    while not self._cancellation_ready.is_set():
-                        if self._worker_stopping.is_set():
-                            cancellation_listener_task.cancel()
-                            return
-                        try:
-                            await asyncio.wait_for(
-                                self._cancellation_ready.wait(),
-                                timeout=0.1,
-                            )
-                        except asyncio.TimeoutError:
-                            pass
+                    try:
+                        # Start cancellation listener and wait for it to be ready
+                        cancellation_listener_task = infra.create_task(
+                            self._cancellation_listener(),
+                            name=f"{self.docket.name} - cancellation listener",
+                        )
+                        while not self._cancellation_ready.is_set():
+                            if self._worker_stopping.is_set():
+                                cancellation_listener_task.cancel()
+                                return
+                            try:
+                                await asyncio.wait_for(
+                                    self._cancellation_ready.wait(),
+                                    timeout=0.1,
+                                )
+                            except asyncio.TimeoutError:
+                                pass
 
-                    if self.schedule_automatic_tasks:
-                        try:
-                            await self._schedule_all_automatic_perpetual_tasks()
-                        except ConnectionError as exc:  # pragma: no cover
-                            raise _WorkerInfrastructureConnectionError(
-                                "Redis connection error while scheduling automatic tasks"
-                            ) from exc
+                        if self.schedule_automatic_tasks:
+                            try:
+                                await self._schedule_all_automatic_perpetual_tasks()
+                            except ConnectionError as exc:  # pragma: no cover
+                                raise _WorkerInfrastructureConnectionError(
+                                    "Redis connection error while scheduling "
+                                    "automatic tasks"
+                                ) from exc
+                            infra.create_task(
+                                self._reseed_automatic_perpetual_tasks_loop(),
+                                name=f"{self.docket.name} - automatic perpetual reseed",
+                            )
+
                         infra.create_task(
-                            self._reseed_automatic_perpetual_tasks_loop(),
-                            name=f"{self.docket.name} - automatic perpetual reseed",
+                            self._scheduler_loop(redis),
+                            name=f"{self.docket.name} - scheduler",
+                        )
+                        infra.create_task(
+                            self._renew_leases(redis, active_tasks),
+                            name=f"{self.docket.name} - lease renewal",
+                        )
+                        self._heartbeat_task = infra.create_task(
+                            self._heartbeat(), name=f"{self.docket.name} - heartbeat"
                         )
 
-                    infra.create_task(
-                        self._scheduler_loop(redis),
-                        name=f"{self.docket.name} - scheduler",
-                    )
-                    infra.create_task(
-                        self._renew_leases(redis, active_tasks),
-                        name=f"{self.docket.name} - lease renewal",
-                    )
-                    self._heartbeat_task = infra.create_task(
-                        self._heartbeat(), name=f"{self.docket.name} - heartbeat"
-                    )
+                        has_work: bool = True
+                        stopping = self._worker_stopping.is_set
+                        while (forever or has_work or active_tasks) and not stopping():
+                            await process_completed_tasks()
 
-                    has_work: bool = True
-                    stopping = self._worker_stopping.is_set
-                    while (forever or has_work or active_tasks) and not stopping():
-                        await process_completed_tasks()
+                            available_slots = self.concurrency - len(active_tasks)
 
-                        available_slots = self.concurrency - len(active_tasks)
+                            if available_slots <= 0:
+                                await asyncio.sleep(
+                                    self.minimum_check_interval.total_seconds()
+                                )
+                                continue
 
-                        if available_slots <= 0:
-                            await asyncio.sleep(
-                                self.minimum_check_interval.total_seconds()
-                            )
-                            continue
+                            try:
+                                for source in [get_redeliveries, get_new_deliveries]:
+                                    for stream_key, messages in await source(redis):
+                                        is_redelivery = stream_key == b"__redelivery__"
+                                        for message_id, message in messages:
+                                            if not message:  # pragma: no cover
+                                                continue
 
-                        try:
-                            for source in [get_redeliveries, get_new_deliveries]:
-                                for stream_key, messages in await source(redis):
-                                    is_redelivery = stream_key == b"__redelivery__"
-                                    for message_id, message in messages:
-                                        if not message:  # pragma: no cover
-                                            continue
+                                            await start_task(
+                                                message_id, message, is_redelivery
+                                            )
 
-                                        await start_task(
-                                            message_id, message, is_redelivery
-                                        )
+                                    if available_slots <= 0:
+                                        break
 
-                                if available_slots <= 0:
-                                    break
-
-                            if not forever and not active_tasks:
-                                has_work = await check_for_work()
-                        except ConnectionError as error:
-                            # The worker's own polling read lost its connection --
-                            # a failover or a server restart drops a blocked
-                            # XREADGROUP this way.  Stop the loop and let _run
-                            # reconnect; in-flight tasks still drain in the finally
-                            # below.  A ConnectionError raised by a task body
-                            # surfaces through process_completed_tasks instead,
-                            # which stays outside this guard so it keeps its
-                            # die-and-redeliver behavior.
-                            disconnect = error
-                            break
-
-                    # Signal internal tasks to stop before exiting TaskGroup
-                    self._worker_stopping.set()
+                                if not forever and not active_tasks:
+                                    has_work = await check_for_work()
+                            except ConnectionError as error:
+                                # The worker's own polling read lost its connection --
+                                # a failover or a server restart drops a blocked
+                                # XREADGROUP this way.  Stop the loop and let _run
+                                # reconnect; in-flight tasks still drain in the finally
+                                # below.  A ConnectionError raised by a task body
+                                # surfaces through process_completed_tasks instead,
+                                # which stays outside this guard so it keeps its
+                                # die-and-redeliver behavior.
+                                disconnect = error
+                                break
+                    finally:
+                        # Signal internal tasks to stop before exiting TaskGroup
+                        self._worker_stopping.set()
 
             # A disconnection in the poll loop above leaves the TaskGroup intact
             # (no exception escaped it), so re-raise it here as a bare

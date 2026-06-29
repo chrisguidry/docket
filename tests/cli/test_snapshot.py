@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import os
+from contextlib import suppress
 from types import TracebackType
 
 import asyncio
@@ -112,7 +113,8 @@ async def test_snapshot_with_running_tasks(
         assert "test-worker" in result.output, result.output
 
         worker_running.cancel()
-        await worker_running
+        with suppress(asyncio.CancelledError):
+            await worker_running
 
 
 async def test_snapshot_with_mixed_tasks(
@@ -155,7 +157,8 @@ async def test_snapshot_with_mixed_tasks(
         assert "trace" in result.output, result.output
 
         worker_running.cancel()
-        await worker_running
+        with suppress(asyncio.CancelledError):
+            await worker_running
 
 
 @pytest.mark.parametrize(
@@ -270,7 +273,8 @@ async def test_snapshot_with_stats_flag_mixed_tasks(
         assert "trace" in result.output
 
         worker_running.cancel()
-        await worker_running
+        with suppress(asyncio.CancelledError):
+            await worker_running
 
 
 async def test_snapshot_with_stats_shows_timestamp_columns(docket: Docket):
@@ -336,7 +340,8 @@ async def test_snapshot_stats_with_running_tasks_only(docket: Docket):
         assert "sleep" in result.output
 
         worker_running.cancel()
-        await worker_running
+        with suppress(asyncio.CancelledError):
+            await worker_running
 
 
 class _RecordingConsole:
