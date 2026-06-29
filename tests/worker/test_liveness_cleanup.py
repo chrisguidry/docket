@@ -59,6 +59,29 @@ async def test_same_named_workers_remove_all_advertised_tasks_on_final_cleanup(
                 local_run.cancel()
                 await asyncio.gather(local_run, return_exceptions=True)
 
+                async def only_peer_capability_remains() -> bool:
+                    local_workers = await docket.task_workers("local_task")
+                    peer_workers = await docket.task_workers("peer_task")
+                    workers = await docket.workers()
+                    return (
+                        local_workers == []
+                        and {worker.name for worker in peer_workers}
+                        == {"shared-capability-worker"}
+                        and {
+                            task
+                            for worker in workers
+                            if worker.name == "shared-capability-worker"
+                            for task in worker.tasks
+                        }
+                        == {"peer_task"}
+                    )
+
+                await wait_until(
+                    only_peer_capability_remains,
+                    timeout=2.0,
+                    description="exiting-only capability cleanup",
+                )
+
                 peer_run.cancel()
                 await asyncio.gather(peer_run, return_exceptions=True)
             finally:

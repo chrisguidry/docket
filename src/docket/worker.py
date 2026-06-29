@@ -16,6 +16,7 @@ from types import TracebackType
 from typing import (
     Any,
     Awaitable,
+    Coroutine,
     Generator,
     Mapping,
     Sequence,
@@ -30,14 +31,11 @@ import cloudpickle
 
 if sys.version_info < (3, 11):
     from exceptiongroup import ExceptionGroup  # pragma: no cover
-    from taskgroup import TaskGroup  # pragma: no cover
-else:
-    from asyncio import TaskGroup  # pragma: no cover
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
-from ._lua import Arg, Key, Keys, redis_script
+from ._lua import Arg, Args, Key, Keys, redis_script
 from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
@@ -172,26 +170,59 @@ async def _remove_worker_heartbeat(
     heartbeat_owners_key: Key[str],
     workers_key: Key[str],
     worker_tasks_key: Key[str],
+    owner_tasks_key: Key[str],
     owner_id: Arg[str],
+    session_task_count: Arg[int],
     oldest_owner_timestamp: Arg[float],
     worker_name: Arg[str],
-    task_worker_keys: Keys[list[str]],
+    task_cleanup_keys: Keys[list[str]],
+    task_names: Args[list[str]],
 ) -> int:
     """
     redis.call('ZREM', heartbeat_owners_key, owner_id)
     redis.call('ZREMRANGEBYSCORE', heartbeat_owners_key, 0, oldest_owner_timestamp)
 
-    if redis.call('ZCARD', heartbeat_owners_key) > 0 then
+    local remaining_owners = redis.call('ZCARD', heartbeat_owners_key)
+    local key_index = task_cleanup_keys_start
+
+    for task_index = task_names_start, #ARGV do
+        local task_offset = task_index - task_names_start
+        local task_workers_key = KEYS[key_index]
+        local task_owner_key = KEYS[key_index + 1]
+        key_index = key_index + 2
+
+        if task_offset < session_task_count then
+            redis.call('ZREM', task_owner_key, owner_id)
+            redis.call('ZREMRANGEBYSCORE', task_owner_key, 0, oldest_owner_timestamp)
+
+            if redis.call('ZCARD', task_owner_key) == 0 then
+                redis.call('ZREM', task_workers_key, worker_name)
+                redis.call('SREM', worker_tasks_key, ARGV[task_index])
+                redis.call('DEL', task_owner_key)
+            end
+        end
+    end
+
+    redis.call('DEL', owner_tasks_key)
+
+    if remaining_owners > 0 then
         return 0
     end
 
-    redis.call('ZREM', workers_key, worker_name)
+    key_index = task_cleanup_keys_start
+
+    for task_index = task_names_start, #ARGV do
+        local task_workers_key = KEYS[key_index]
+        local task_owner_key = KEYS[key_index + 1]
+        key_index = key_index + 2
+
+        redis.call('ZREM', task_workers_key, worker_name)
+        redis.call('DEL', task_owner_key)
+    end
+
     redis.call('DEL', worker_tasks_key)
     redis.call('DEL', heartbeat_owners_key)
-
-    for i = task_worker_keys_start, #KEYS do
-        redis.call('ZREM', KEYS[i], worker_name)
-    end
+    redis.call('ZREM', workers_key, worker_name)
 
     return 1
     """
@@ -441,10 +472,7 @@ class Worker:
             "docket.stream_key": self.docket.stream_key,
         }
 
-    async def _close_blocked_polling_client(self, redis: Redis) -> None:
-        if not isinstance(redis, Redis):
-            return
-
+    async def _close_blocked_polling_client(self, redis: Any) -> None:
         close = getattr(redis, "aclose", None)
         if close is None:  # pragma: no cover
             return
@@ -657,7 +685,21 @@ class Worker:
                 try:
                     self._worker_stopping.clear()
                     async with self.docket.redis() as redis:
-                        return await self._worker_loop(redis, forever=forever)
+                        worker_loop_task = asyncio.create_task(
+                            self._worker_loop(redis, forever=forever),
+                            name=f"{self.docket.name} - worker loop",
+                        )
+                        try:
+                            return await worker_loop_task
+                        except asyncio.CancelledError:
+                            self._worker_stop_requested.set()
+                            self._worker_stopping.set()
+                            worker_loop_task.cancel()
+                            await asyncio.gather(
+                                worker_loop_task,
+                                return_exceptions=True,
+                            )
+                            raise
                 except (ConnectionError, ExceptionGroup) as exc:
                     if isinstance(
                         exc, ExceptionGroup
@@ -737,6 +779,16 @@ class Worker:
         task_executions = session.task_executions
         available_slots = self.concurrency
         log_context = self._log_context()
+        live_rescheduled_states = {
+            ExecutionState.SCHEDULED.value.encode(),
+            ExecutionState.QUEUED.value.encode(),
+            ExecutionState.RUNNING.value.encode(),
+        }
+        terminal_execution_states = {
+            ExecutionState.COMPLETED,
+            ExecutionState.FAILED,
+            ExecutionState.CANCELLED,
+        }
 
         async def check_for_work() -> bool:
             logger.debug("Checking for work", extra=log_context)
@@ -761,14 +813,9 @@ class Worker:
 
             stream_len = results[0]
             scheduled_soon_len = results[1]
-            live_states = {
-                ExecutionState.SCHEDULED.value.encode(),
-                ExecutionState.QUEUED.value.encode(),
-                ExecutionState.RUNNING.value.encode(),
-            }
             live_rescheduled = False
             for key, state in zip(rescheduled_keys, results[2:]):
-                if state in live_states:
+                if state in live_rescheduled_states:
                     live_rescheduled = True
                 else:
                     session.rescheduled_keys.discard(key)
@@ -853,6 +900,27 @@ class Worker:
             nonlocal available_slots
             available_slots -= 1
 
+        async def update_rescheduled_key(execution: Execution) -> None:
+            if execution.disposition is Disposition.SCHEDULED:
+                session.rescheduled_keys.add(execution.key)
+                return
+
+            if execution.state not in terminal_execution_states:
+                session.rescheduled_keys.discard(execution.key)
+                return
+
+            try:
+                state = await redis.hget(self.docket.runs_key(execution.key), "state")
+            except ConnectionError as exc:  # pragma: no cover
+                raise _WorkerInfrastructureConnectionError(
+                    "Redis connection error while checking completed task state"
+                ) from exc
+
+            if state in live_rescheduled_states:
+                session.rescheduled_keys.add(execution.key)
+            else:
+                session.rescheduled_keys.discard(execution.key)
+
         async def process_completed_tasks() -> None:
             completed_tasks = {task for task in active_tasks if task.done()}
             for task in completed_tasks:
@@ -885,11 +953,11 @@ class Worker:
                         )
                         await e.execution.mark_as_cancelled()
                         session.rescheduled_keys.discard(e.execution.key)
+                except Exception as exc:
+                    session.rescheduled_keys.discard(execution.key)
+                    raise ExceptionGroup("Worker task failed", [exc]) from exc
                 else:
-                    if execution.disposition is Disposition.SCHEDULED:
-                        session.rescheduled_keys.add(execution.key)
-                    else:
-                        session.rescheduled_keys.discard(execution.key)
+                    await update_rescheduled_key(execution)
 
                 # Safety net: if nothing inside _execute or these except
                 # handlers acked the stream message (e.g. a custom
@@ -904,6 +972,58 @@ class Worker:
                     await execution.mark_as_failed(error=None)
 
         disconnect: ConnectionError | None = None
+        infra_tasks: set[asyncio.Task[None]] = set()
+        infra_errors: dict[asyncio.Task[None], Exception] = {}
+        lease_renewal_stop = asyncio.Event()
+        lease_renewal_task: asyncio.Task[None] | None = None
+        heartbeat_task: asyncio.Task[None] | None = None
+        heartbeat_removal_task: asyncio.Task[None] | None = None
+
+        def start_heartbeat_removal() -> None:
+            nonlocal heartbeat_removal_task
+            if heartbeat_removal_task is not None and not heartbeat_removal_task.done():
+                return  # pragma: no cover
+            heartbeat_removal_task = asyncio.create_task(
+                self._remove_heartbeat(session.heartbeat_owner_id),
+                name=f"{self.docket.name} - heartbeat removal",
+            )
+
+        def create_infra_task(
+            coroutine: Coroutine[Any, Any, None],
+            *,
+            name: str,
+        ) -> asyncio.Task[None]:
+            task = asyncio.create_task(coroutine, name=name)
+            infra_tasks.add(task)
+
+            def record_infra_result(done_task: asyncio.Task[None]) -> None:
+                with suppress(asyncio.CancelledError):
+                    exception = done_task.exception()
+                    if isinstance(exception, Exception):
+                        infra_errors[done_task] = exception
+                        self._worker_stopping.set()
+                        if (  # pragma: no branch
+                            heartbeat_task is not None
+                            and done_task is not heartbeat_task
+                        ):
+                            heartbeat_task.cancel()
+                            start_heartbeat_removal()
+
+            task.add_done_callback(record_infra_result)
+            return task
+
+        def raise_infra_errors() -> None:
+            if not infra_errors:
+                return
+
+            errors = list(infra_errors.values())
+            if len(errors) == 1:  # pragma: no branch
+                raise errors[0]
+
+            raise ExceptionGroup(
+                "Worker infrastructure tasks failed", errors
+            )  # pragma: no cover
+
         try:
             async with AsyncExitStack() as dependency_stack:
                 # Each Dependency class used by a registered task may declare
@@ -917,115 +1037,141 @@ class Worker:
                     if cm is not None:  # pragma: no branch
                         await dependency_stack.enter_async_context(cm)
 
-                async with TaskGroup() as infra:
-                    try:
-                        # Start cancellation listener and wait for it to be ready
-                        cancellation_listener_task = infra.create_task(
-                            self._cancellation_listener(),
-                            name=f"{self.docket.name} - cancellation listener",
-                        )
-                        while not self._cancellation_ready.is_set():
-                            if self._worker_stopping.is_set():
-                                cancellation_listener_task.cancel()
-                                return
-                            try:
-                                await asyncio.wait_for(
-                                    self._cancellation_ready.wait(),
-                                    timeout=0.1,
-                                )
-                            except asyncio.TimeoutError:
-                                pass
-
-                        if self.schedule_automatic_tasks:
-                            try:
-                                await self._schedule_all_automatic_perpetual_tasks()
-                            except ConnectionError as exc:  # pragma: no cover
-                                raise _WorkerInfrastructureConnectionError(
-                                    "Redis connection error while scheduling "
-                                    "automatic tasks"
-                                ) from exc
-                            infra.create_task(
-                                self._reseed_automatic_perpetual_tasks_loop(),
-                                name=f"{self.docket.name} - automatic perpetual reseed",
+                try:
+                    # Start cancellation listener and wait for it to be ready
+                    cancellation_listener_task = create_infra_task(
+                        self._cancellation_listener(),
+                        name=f"{self.docket.name} - cancellation listener",
+                    )
+                    while not self._cancellation_ready.is_set():
+                        raise_infra_errors()
+                        if self._worker_stopping.is_set():
+                            cancellation_listener_task.cancel()
+                            return
+                        try:
+                            await asyncio.wait_for(
+                                self._cancellation_ready.wait(),
+                                timeout=0.1,
                             )
+                        except asyncio.TimeoutError:
+                            pass
 
-                        infra.create_task(
-                            self._scheduler_loop(redis),
-                            name=f"{self.docket.name} - scheduler",
+                    if self.schedule_automatic_tasks:
+                        try:
+                            await self._schedule_all_automatic_perpetual_tasks()
+                        except ConnectionError as exc:  # pragma: no cover
+                            raise _WorkerInfrastructureConnectionError(
+                                "Redis connection error while scheduling "
+                                "automatic tasks"
+                            ) from exc
+                        create_infra_task(
+                            self._reseed_automatic_perpetual_tasks_loop(),
+                            name=f"{self.docket.name} - automatic perpetual reseed",
                         )
-                        infra.create_task(
-                            self._renew_leases(redis, active_tasks),
-                            name=f"{self.docket.name} - lease renewal",
-                        )
-                        self._heartbeat_task = infra.create_task(
-                            self._heartbeat(session.heartbeat_owner_id),
-                            name=f"{self.docket.name} - heartbeat",
-                        )
 
-                        has_work: bool = True
-                        stopping = self._worker_stopping.is_set
-                        poll_interval = self.minimum_check_interval.total_seconds()
-                        while (forever or has_work or active_tasks) and not stopping():
-                            await process_completed_tasks()
+                    create_infra_task(
+                        self._scheduler_loop(redis),
+                        name=f"{self.docket.name} - scheduler",
+                    )
+                    lease_renewal_task = create_infra_task(
+                        self._renew_leases(
+                            redis,
+                            active_tasks,
+                            stop_event=lease_renewal_stop,
+                        ),
+                        name=f"{self.docket.name} - lease renewal",
+                    )
+                    heartbeat_task = self._heartbeat_task = create_infra_task(
+                        self._heartbeat(session.heartbeat_owner_id),
+                        name=f"{self.docket.name} - heartbeat",
+                    )
 
-                            available_slots = self.concurrency - len(active_tasks)
+                    has_work: bool = True
+                    stopping = self._worker_stopping.is_set
+                    poll_interval = self.minimum_check_interval.total_seconds()
+                    while (forever or has_work or active_tasks) and not stopping():
+                        raise_infra_errors()
+                        await process_completed_tasks()
+                        raise_infra_errors()
 
-                            if available_slots <= 0:
-                                await asyncio.sleep(poll_interval)
-                                continue
+                        available_slots = self.concurrency - len(active_tasks)
 
-                            received_messages = False
-                            try:
-                                for source in [get_redeliveries, get_new_deliveries]:
-                                    for stream_key, messages in await source(redis):
-                                        is_redelivery = stream_key == b"__redelivery__"
-                                        for message_id, message in messages:
-                                            if not message:  # pragma: no cover
-                                                continue
+                        if available_slots <= 0:
+                            await asyncio.sleep(poll_interval)
+                            continue
 
-                                            received_messages = True
-                                            await start_task(
-                                                message_id, message, is_redelivery
-                                            )
+                        received_messages = False
+                        try:
+                            for source in [get_redeliveries, get_new_deliveries]:
+                                for stream_key, messages in await source(redis):
+                                    is_redelivery = stream_key == b"__redelivery__"
+                                    for message_id, message in messages:
+                                        if not message:  # pragma: no cover
+                                            continue
 
-                                    if available_slots <= 0:
-                                        break
-
-                                if not forever and not active_tasks:
-                                    has_work = await check_for_work()
-
-                                if (
-                                    not received_messages
-                                    and (forever or has_work or active_tasks)
-                                    and not stopping()
-                                ):
-                                    # Keep the same polling cadence without relying on
-                                    # cancelling a blocked redis-py socket read.
-                                    with suppress(asyncio.TimeoutError):
-                                        await asyncio.wait_for(
-                                            self._worker_stopping.wait(),
-                                            timeout=poll_interval,
+                                        received_messages = True
+                                        await start_task(
+                                            message_id, message, is_redelivery
                                         )
-                            except _WorkerPollStopped:
-                                break
-                            except ConnectionError as error:
-                                # The worker's own polling read lost its connection --
-                                # a failover or a server restart drops an
-                                # XREADGROUP this way.  Stop the loop and let _run
-                                # reconnect; in-flight tasks still drain in the finally
-                                # below.  A ConnectionError raised by a task body
-                                # surfaces through process_completed_tasks instead,
-                                # which stays outside this guard so it keeps its
-                                # die-and-redeliver behavior.
-                                disconnect = error
-                                break
-                    finally:
-                        # Signal internal tasks to stop before exiting TaskGroup
-                        self._worker_stopping.set()
 
-            # A disconnection in the poll loop above leaves the TaskGroup intact
-            # (no exception escaped it), so re-raise it here as a bare
-            # ConnectionError for _run to catch and reconnect on.
+                                if available_slots <= 0:
+                                    break
+
+                            if not forever and not active_tasks:
+                                has_work = await check_for_work()
+
+                            if (
+                                not received_messages
+                                and (forever or has_work or active_tasks)
+                                and not stopping()
+                            ):
+                                # Keep the same polling cadence without relying on
+                                # cancelling a blocked redis-py socket read.
+                                await asyncio.sleep(poll_interval)
+                        except _WorkerPollStopped:
+                            break
+                        except ConnectionError as error:
+                            # The worker's own polling read lost its connection --
+                            # a failover or a server restart drops an
+                            # XREADGROUP this way.  Stop the loop and let _run
+                            # reconnect; in-flight tasks still drain in the finally
+                            # below.  A ConnectionError raised by a task body
+                            # surfaces through process_completed_tasks instead,
+                            # which stays outside this guard so it keeps its
+                            # die-and-redeliver behavior.
+                            disconnect = error
+                            break
+                finally:
+                    self._worker_stopping.set()
+                    tasks_to_stop = set(infra_tasks)
+                    if active_tasks and lease_renewal_task is not None:
+                        tasks_to_stop.discard(lease_renewal_task)
+                    else:
+                        lease_renewal_stop.set()
+
+                    for task in tasks_to_stop:
+                        task.cancel()
+
+                    tasks = tuple(tasks_to_stop)
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for task, result in zip(tasks, results):
+                        if (
+                            isinstance(result, Exception)
+                            and not isinstance(result, asyncio.CancelledError)
+                            and task not in infra_errors
+                        ):
+                            infra_errors[task] = result  # pragma: no cover
+
+                    if heartbeat_task is not None:
+                        start_heartbeat_removal()
+                    if heartbeat_removal_task is not None:
+                        await heartbeat_removal_task
+
+            raise_infra_errors()
+
+            # A disconnection in the poll loop above leaves active executions
+            # running, so re-raise it here as a bare ConnectionError for _run to
+            # catch and reconnect on.
             if disconnect is not None:
                 raise disconnect
 
@@ -1044,14 +1190,17 @@ class Worker:
             if active_tasks:
                 drain_stop = asyncio.Event()
                 drain_cancellation_ready = asyncio.Event()
-                drain_renewal_task = asyncio.create_task(
-                    self._renew_leases(
-                        redis,
-                        active_tasks,
-                        stop_event=drain_stop,
-                    ),
-                    name=f"{self.docket.name} - drain lease renewal",
-                )
+                if lease_renewal_task is not None and not lease_renewal_task.done():
+                    drain_renewal_task = lease_renewal_task
+                else:  # pragma: no cover
+                    drain_renewal_task = asyncio.create_task(
+                        self._renew_leases(
+                            redis,
+                            active_tasks,
+                            stop_event=drain_stop,
+                        ),
+                        name=f"{self.docket.name} - drain lease renewal",
+                    )
                 drain_cancellation_task = asyncio.create_task(
                     self._cancellation_listener(
                         stop_event=drain_stop,
@@ -1064,6 +1213,7 @@ class Worker:
                     await process_completed_tasks()
                 finally:
                     drain_stop.set()
+                    lease_renewal_stop.set()
                     await asyncio.gather(
                         drain_renewal_task,
                         drain_cancellation_task,
@@ -1131,7 +1281,7 @@ class Worker:
         XAUTOCLAIM from reclaiming it while we're still processing.
         """
         if stop_event is None:
-            stop_event = self._worker_stopping
+            stop_event = self._worker_stopping  # pragma: no cover
 
         # Renew leases 4 times per redelivery_timeout period
         renewal_interval = self.redelivery_timeout.total_seconds() / 4
@@ -1493,6 +1643,12 @@ class Worker:
     def worker_heartbeat_owners_set(self, worker_name: str) -> str:
         return self.docket.key(f"worker-heartbeat-owners:{worker_name}")
 
+    def worker_heartbeat_owner_tasks_set(self, worker_name: str, owner_id: str) -> str:
+        return self.docket.key(f"worker-heartbeat-owner-tasks:{worker_name}:{owner_id}")
+
+    def task_worker_owners_set(self, task_name: str, worker_name: str) -> str:
+        return self.docket.key(f"task-worker-owners:{task_name}:{worker_name}")
+
     async def _heartbeat(self, heartbeat_owner_id: str) -> None:
         try:
             while not self._worker_stopping.is_set():  # pragma: no branch
@@ -1504,6 +1660,9 @@ class Worker:
                     oldest = now - maximum_age.total_seconds()
 
                     task_names = list(self.docket.tasks)
+                    owner_tasks_set = self.worker_heartbeat_owner_tasks_set(
+                        self.name, heartbeat_owner_id
+                    )
                     heartbeat_ttl = max(
                         maximum_age,
                         timedelta(seconds=MINIMUM_TTL_SECONDS),
@@ -1517,17 +1676,31 @@ class Worker:
 
                                 for task_name in task_names:
                                     task_workers_set = self.task_workers_set(task_name)
+                                    task_owner_set = self.task_worker_owners_set(
+                                        task_name, self.name
+                                    )
                                     pipeline.zremrangebyscore(
                                         task_workers_set, 0, oldest
                                     )
                                     pipeline.zadd(task_workers_set, {self.name: now})
+                                    pipeline.zremrangebyscore(task_owner_set, 0, oldest)
+                                    pipeline.zadd(
+                                        task_owner_set, {heartbeat_owner_id: now}
+                                    )
+                                    pipeline.expire(task_owner_set, heartbeat_ttl)
 
-                                pipeline.sadd(
-                                    self.worker_tasks_set(self.name), *task_names
-                                )
+                                if task_names:
+                                    pipeline.sadd(
+                                        self.worker_tasks_set(self.name), *task_names
+                                    )
+                                    pipeline.sadd(owner_tasks_set, *task_names)
+                                else:  # pragma: no cover
+                                    pipeline.delete(owner_tasks_set)
+
                                 pipeline.expire(
                                     self.worker_tasks_set(self.name), heartbeat_ttl
                                 )
+                                pipeline.expire(owner_tasks_set, heartbeat_ttl)
                                 pipeline.zremrangebyscore(
                                     self.worker_heartbeat_owners_set(self.name),
                                     0,
@@ -1581,7 +1754,7 @@ class Worker:
                         self._worker_stopping.wait(),
                         timeout=self.docket.heartbeat_interval.total_seconds(),
                     )
-                    return
+                    return  # pragma: no cover
                 except asyncio.TimeoutError:
                     pass
         finally:
@@ -1592,11 +1765,31 @@ class Worker:
             async with self.docket.redis() as r:
                 heartbeat_owners_set = self.worker_heartbeat_owners_set(self.name)
                 worker_tasks_set = self.worker_tasks_set(self.name)
+                owner_tasks_set = self.worker_heartbeat_owner_tasks_set(
+                    self.name, heartbeat_owner_id
+                )
+                owner_task_names = {
+                    task_name_bytes.decode()
+                    for task_name_bytes in await r.smembers(owner_tasks_set)
+                }
+                owner_task_names.update(self.docket.tasks)
                 advertised_task_names = {
                     task_name_bytes.decode()
                     for task_name_bytes in await r.smembers(worker_tasks_set)
                 }
-                advertised_task_names.update(self.docket.tasks)
+                session_task_names = sorted(owner_task_names)
+                all_task_names = [
+                    *session_task_names,
+                    *sorted(advertised_task_names - owner_task_names),
+                ]
+                task_cleanup_keys = [
+                    key
+                    for task_name in all_task_names
+                    for key in (
+                        self.task_workers_set(task_name),
+                        self.task_worker_owners_set(task_name, self.name),
+                    )
+                ]
                 maximum_age = (
                     self.docket.heartbeat_interval * self.docket.missed_heartbeats
                 )
@@ -1608,13 +1801,13 @@ class Worker:
                     heartbeat_owners_key=heartbeat_owners_set,
                     workers_key=self.workers_set,
                     worker_tasks_key=worker_tasks_set,
+                    owner_tasks_key=owner_tasks_set,
                     owner_id=heartbeat_owner_id,
+                    session_task_count=len(session_task_names),
                     oldest_owner_timestamp=oldest,
                     worker_name=self.name,
-                    task_worker_keys=[
-                        self.task_workers_set(task_name)
-                        for task_name in sorted(advertised_task_names)
-                    ],
+                    task_cleanup_keys=task_cleanup_keys,
+                    task_names=all_task_names,
                 )
         except ConnectionError:  # pragma: no cover
             REDIS_DISRUPTIONS.add(1, self.labels())
