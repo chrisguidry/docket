@@ -1,14 +1,16 @@
 """Tests for how the worker survives losing its Redis connection."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any, AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
-from docket._redis import RedisClient
+import pytest
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Worker
+from docket._redis import RedisClient
 
 
 async def test_worker_reconnects_when_connection_is_lost(
@@ -88,3 +90,53 @@ async def test_worker_reconnects_when_main_loop_read_disconnects(
 
     the_task.assert_called_once()
     assert reads["count"] >= 2
+
+
+async def test_worker_does_not_restart_when_stop_races_with_reconnect_timeout(
+    docket: Docket,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A stop request after reconnect timeout must prevent another loop."""
+
+    async def reconnect_task() -> None: ...
+
+    docket.register(reconnect_task)
+    redis_calls = 0
+
+    @asynccontextmanager
+    async def mock_redis() -> AsyncGenerator[RedisClient, None]:
+        nonlocal redis_calls
+        redis_calls += 1
+        if redis_calls == 1:
+            raise ConnectionError("transient outage")
+
+        raise AssertionError("worker restarted after shutdown request")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(docket, "redis", mock_redis)
+
+    async with Worker(
+        docket,
+        reconnection_delay=timedelta(milliseconds=5),
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as worker:
+        original_wait_for = asyncio.wait_for
+
+        async def stop_as_reconnect_delay_expires(
+            awaitable: Any,
+            timeout: float | None = None,
+        ) -> Any:
+            if timeout == worker.reconnection_delay.total_seconds():
+                awaitable.close()
+                worker._worker_stop_requested.set()  # pyright: ignore[reportPrivateUsage]
+                worker._worker_stopping.set()  # pyright: ignore[reportPrivateUsage]
+                raise asyncio.TimeoutError
+
+            return await original_wait_for(awaitable, timeout)
+
+        monkeypatch.setattr(asyncio, "wait_for", stop_as_reconnect_delay_expires)
+
+        await worker.run_forever()
+
+    assert redis_calls == 1

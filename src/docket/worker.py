@@ -547,6 +547,9 @@ class Worker:
 
         try:
             while True:
+                if self._worker_stop_requested.is_set():
+                    return
+
                 try:
                     self._worker_stopping.clear()
                     async with self.docket.redis() as redis:
