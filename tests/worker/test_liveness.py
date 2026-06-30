@@ -114,12 +114,20 @@ async def test_running_worker_recovers_from_transient_heartbeat_connection_error
             @asynccontextmanager
             async def flaky_heartbeat_redis() -> AsyncGenerator[RedisClient, None]:
                 nonlocal failed_once
-                if not failed_once:
-                    failed_once = True
-                    raise ConnectionError("transient heartbeat outage")
-
                 async with original_redis() as r:
-                    yield r
+
+                    class FlakyHeartbeatRedis:
+                        def __getattr__(self, name: str) -> Any:
+                            return getattr(r, name)
+
+                        def pipeline(self, *args: Any, **kwargs: Any) -> Any:
+                            nonlocal failed_once
+                            if not failed_once:
+                                failed_once = True
+                                raise ConnectionError("transient heartbeat outage")
+                            return r.pipeline(*args, **kwargs)
+
+                    yield cast(RedisClient, FlakyHeartbeatRedis())
 
             monkeypatch.setattr(docket, "redis", flaky_heartbeat_redis)
 

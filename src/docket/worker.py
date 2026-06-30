@@ -23,7 +23,6 @@ from typing import (
     TypeAlias,
     TypeVar,
     TypedDict,
-    cast,
 )
 from uuid import uuid4
 
@@ -38,7 +37,6 @@ from opentelemetry.trace import Status, StatusCode, Tracer
 from ._lua import Arg, Args, Key, Keys, redis_script
 from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
-from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
 from typing_extensions import Self
 
@@ -130,11 +128,19 @@ class PubSubMessage(TypedDict):
 
 
 @dataclass
-class _WorkerRunSession:
+class _WorkerRunState:
+    active_tasks: dict[asyncio.Task[None], RedisMessageID] = field(
+        default_factory=lambda: {}
+    )
+    task_executions: dict[asyncio.Task[None], Execution] = field(
+        default_factory=lambda: {}
+    )
+    rescheduled_keys: set[str] = field(default_factory=lambda: set())
+
+
+@dataclass
+class _WorkerProcessingSession:
     heartbeat_owner_id: str = field(default_factory=lambda: uuid4().hex)
-    active_tasks: dict[asyncio.Task[None], RedisMessageID] = field(default_factory=dict)
-    task_executions: dict[asyncio.Task[None], Execution] = field(default_factory=dict)
-    rescheduled_keys: set[str] = field(default_factory=set)
 
 
 async def default_fallback_task(
@@ -483,7 +489,7 @@ class Worker:
     async def _await_poll_result(
         self,
         awaitable: Awaitable[_T],
-        redis: Redis,
+        redis: Any,
         stop_event: asyncio.Event,
     ) -> _T:
         poll_task = asyncio.ensure_future(awaitable)
@@ -676,6 +682,7 @@ class Worker:
         self._worker_stop_requested.clear()
         self._worker_stopping.clear()
         self._worker_done.clear()
+        run_state = _WorkerRunState()
 
         try:
             while True:
@@ -686,7 +693,11 @@ class Worker:
                     self._worker_stopping.clear()
                     async with self.docket.redis() as redis:
                         worker_loop_task = asyncio.create_task(
-                            self._worker_loop(redis, forever=forever),
+                            self._worker_loop(
+                                redis,
+                                run_state=run_state,
+                                forever=forever,
+                            ),
                             name=f"{self.docket.name} - worker loop",
                         )
                         try:
@@ -768,15 +779,21 @@ class Worker:
 
         return ordered
 
-    async def _worker_loop(self, redis: Redis, forever: bool = False):
+    async def _worker_loop(
+        self,
+        redis: RedisClient,
+        *,
+        run_state: _WorkerRunState,
+        forever: bool = False,
+    ):
         if self._worker_stopping.is_set():
             return
 
         self._cancellation_ready.clear()  # Reset for reconnection scenarios
 
-        session = _WorkerRunSession()
-        active_tasks = session.active_tasks
-        task_executions = session.task_executions
+        processing_session = _WorkerProcessingSession()
+        active_tasks = run_state.active_tasks
+        task_executions = run_state.task_executions
         available_slots = self.concurrency
         log_context = self._log_context()
         live_rescheduled_states = {
@@ -795,7 +812,7 @@ class Worker:
             try:
                 now = datetime.now(timezone.utc).timestamp()
                 schedule_cutoff = now + ONE_SHOT_SCHEDULE_LOOKAHEAD.total_seconds()
-                rescheduled_keys = list(session.rescheduled_keys)
+                rescheduled_keys = list(run_state.rescheduled_keys)
                 async with redis.pipeline() as pipeline:
                     pipeline.xlen(self.docket.stream_key)
                     pipeline.zcount(
@@ -818,16 +835,16 @@ class Worker:
                 if state in live_rescheduled_states:
                     live_rescheduled = True
                 else:
-                    session.rescheduled_keys.discard(key)
+                    run_state.rescheduled_keys.discard(key)
 
             return stream_len > 0 or scheduled_soon_len > 0 or live_rescheduled
 
-        async def get_redeliveries(redis: Redis) -> RedisReadGroupResponse:
+        async def get_redeliveries(polling_redis: RedisClient) -> RedisReadGroupResponse:
             logger.debug("Getting redeliveries", extra=log_context)
             try:
                 with self._maybe_suppress_instrumentation():
                     _, redeliveries, *_ = await self._await_poll_result(
-                        redis.xautoclaim(
+                        polling_redis.xautoclaim(
                             name=self.docket.stream_key,
                             groupname=self.docket.worker_group_name,
                             consumername=self.name,
@@ -837,13 +854,13 @@ class Worker:
                             start_id="0-0",
                             count=available_slots,
                         ),
-                        redis,
+                        polling_redis,
                         self._worker_stopping,
                     )
             except ResponseError as e:
                 if "NOGROUP" in str(e):
                     await self.docket._ensure_stream_and_group()
-                    return await get_redeliveries(redis)
+                    return await get_redeliveries(polling_redis)
                 raise  # pragma: no cover
             except ConnectionError as exc:  # pragma: no cover
                 raise _WorkerInfrastructureConnectionError(
@@ -851,24 +868,26 @@ class Worker:
                 ) from exc
             return [(b"__redelivery__", redeliveries)]
 
-        async def get_new_deliveries(redis: Redis) -> RedisReadGroupResponse:
+        async def get_new_deliveries(
+            polling_redis: RedisClient,
+        ) -> RedisReadGroupResponse:
             logger.debug("Getting new deliveries", extra=log_context)
             try:
                 with self._maybe_suppress_instrumentation():
                     result = await self._await_poll_result(
-                        redis.xreadgroup(
+                        polling_redis.xreadgroup(
                             groupname=self.docket.worker_group_name,
                             consumername=self.name,
                             streams={self.docket.stream_key: ">"},
                             count=available_slots,
                         ),
-                        redis,
+                        polling_redis,
                         self._worker_stopping,
                     )
             except ResponseError as e:
                 if "NOGROUP" in str(e):
                     await self.docket._ensure_stream_and_group()
-                    return await get_new_deliveries(redis)
+                    return await get_new_deliveries(polling_redis)
                 raise  # pragma: no cover
             except ConnectionError as exc:
                 raise _WorkerInfrastructureConnectionError(
@@ -902,11 +921,11 @@ class Worker:
 
         async def update_rescheduled_key(execution: Execution) -> None:
             if execution.disposition is Disposition.SCHEDULED:
-                session.rescheduled_keys.add(execution.key)
+                run_state.rescheduled_keys.add(execution.key)
                 return
 
             if execution.state not in terminal_execution_states:
-                session.rescheduled_keys.discard(execution.key)
+                run_state.rescheduled_keys.discard(execution.key)
                 return
 
             try:
@@ -917,9 +936,9 @@ class Worker:
                 ) from exc
 
             if state in live_rescheduled_states:
-                session.rescheduled_keys.add(execution.key)
+                run_state.rescheduled_keys.add(execution.key)
             else:
-                session.rescheduled_keys.discard(execution.key)
+                run_state.rescheduled_keys.discard(execution.key)
 
         async def process_completed_tasks() -> None:
             completed_tasks = {task for task in active_tasks if task.done()}
@@ -944,7 +963,7 @@ class Worker:
                         )
                         e.execution.when = datetime.now(timezone.utc) + delay
                         await e.execution.schedule(reschedule_message=message_id)
-                        session.rescheduled_keys.add(e.execution.key)
+                        run_state.rescheduled_keys.add(e.execution.key)
                     else:
                         logger.debug(
                             "⏭ Task %s blocked by admission control, dropping",
@@ -952,9 +971,9 @@ class Worker:
                             extra=log_context,
                         )
                         await e.execution.mark_as_cancelled()
-                        session.rescheduled_keys.discard(e.execution.key)
+                        run_state.rescheduled_keys.discard(e.execution.key)
                 except Exception as exc:
-                    session.rescheduled_keys.discard(execution.key)
+                    run_state.rescheduled_keys.discard(execution.key)
                     raise ExceptionGroup("Worker task failed", [exc]) from exc
                 else:
                     await update_rescheduled_key(execution)
@@ -984,7 +1003,7 @@ class Worker:
             if heartbeat_removal_task is not None and not heartbeat_removal_task.done():
                 return  # pragma: no cover
             heartbeat_removal_task = asyncio.create_task(
-                self._remove_heartbeat(session.heartbeat_owner_id),
+                self._remove_heartbeat(processing_session.heartbeat_owner_id),
                 name=f"{self.docket.name} - heartbeat removal",
             )
 
@@ -1037,6 +1056,10 @@ class Worker:
                     if cm is not None:  # pragma: no branch
                         await dependency_stack.enter_async_context(cm)
 
+                polling_redis = await dependency_stack.enter_async_context(
+                    self.docket.redis()
+                )
+
                 try:
                     # Start cancellation listener and wait for it to be ready
                     cancellation_listener_task = create_infra_task(
@@ -1082,7 +1105,7 @@ class Worker:
                         name=f"{self.docket.name} - lease renewal",
                     )
                     heartbeat_task = self._heartbeat_task = create_infra_task(
-                        self._heartbeat(session.heartbeat_owner_id),
+                        self._heartbeat(processing_session.heartbeat_owner_id),
                         name=f"{self.docket.name} - heartbeat",
                     )
 
@@ -1103,7 +1126,9 @@ class Worker:
                         received_messages = False
                         try:
                             for source in [get_redeliveries, get_new_deliveries]:
-                                for stream_key, messages in await source(redis):
+                                for stream_key, messages in await source(
+                                    polling_redis
+                                ):
                                     is_redelivery = stream_key == b"__redelivery__"
                                     for message_id, message in messages:
                                         if not message:  # pragma: no cover
@@ -1222,7 +1247,7 @@ class Worker:
 
             self._heartbeat_task = None
 
-    async def _scheduler_loop(self, redis: Redis) -> None:
+    async def _scheduler_loop(self, redis: RedisClient) -> None:
         """Loop that moves due tasks from the queue to the stream."""
         log_context = self._log_context()
 
@@ -1231,7 +1256,7 @@ class Worker:
                 logger.debug("Scheduling due tasks", extra=log_context)
                 with self._maybe_suppress_instrumentation():
                     total_work, due_work = await _stream_due_tasks(
-                        cast(RedisClient, redis),
+                        redis,
                         queue_key=self.docket.queue_key,
                         stream_key=self.docket.stream_key,
                         now_timestamp=datetime.now(timezone.utc).timestamp(),
@@ -1270,7 +1295,7 @@ class Worker:
 
     async def _renew_leases(
         self,
-        redis: Redis,
+        redis: RedisClient,
         active_messages: dict[asyncio.Task[None], RedisMessageID],
         *,
         stop_event: asyncio.Event | None = None,
@@ -1388,7 +1413,11 @@ class Worker:
             return True
         return (await redis.hget(runs_key, "state")) == b"running"
 
-    async def _delete_known_task(self, redis: Redis, execution: Execution) -> None:
+    async def _delete_known_task(
+        self,
+        redis: RedisClient,
+        execution: Execution,
+    ) -> None:
         logger.debug("Deleting known task", extra=self._log_context())
         # Delete known/stream_id from runs hash to allow task rescheduling
         runs_key = self.docket.runs_key(execution.key)
@@ -1797,7 +1826,7 @@ class Worker:
                     datetime.now(timezone.utc).timestamp() - maximum_age.total_seconds()
                 )
                 await _remove_worker_heartbeat(
-                    cast(RedisClient, r),
+                    r,
                     heartbeat_owners_key=heartbeat_owners_set,
                     workers_key=self.workers_set,
                     worker_tasks_key=worker_tasks_set,

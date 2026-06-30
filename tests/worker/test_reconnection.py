@@ -23,12 +23,21 @@ async def test_worker_reconnects_when_connection_is_lost(
     original_worker_loop = worker._worker_loop  # type: ignore[protected-access]
     call_count = 0
 
-    async def mock_worker_loop(redis: RedisClient, forever: bool = False):
+    async def mock_worker_loop(
+        redis: RedisClient,
+        *,
+        run_state: Any,
+        forever: bool = False,
+    ):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
             raise ConnectionError("Simulated connection error")
-        return await original_worker_loop(redis, forever=forever)  # type: ignore[arg-type]
+        return await original_worker_loop(
+            redis,
+            run_state=run_state,
+            forever=forever,
+        )
 
     worker._worker_loop = mock_worker_loop  # type: ignore[protected-access]
 
