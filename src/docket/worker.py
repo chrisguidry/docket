@@ -33,6 +33,7 @@ else:
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
+from ._cancellation import CANCEL_MSG_CLEANUP, cancel_task
 from ._lua import Arg, Key, redis_script
 from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
@@ -699,12 +700,8 @@ class Worker:
         disconnect: ConnectionError | None = None
         try:
             async with AsyncExitStack() as dependency_stack:
-                # Each Dependency class used by a registered task may declare
-                # a ``worker_lifecycle`` classmethod that returns an async
-                # context manager.  We enter all of them around the worker's
-                # main loop so dependency-owned background work (subscribers,
-                # housekeeping tasks, etc.) gets started up and torn down in
-                # lockstep with the worker.  Worker stays dependency-agnostic.
+                # Enter dependency-owned worker lifecycle hooks around the
+                # processing loop while keeping Worker dependency-agnostic.
                 for dep_cls in self._dependency_lifecycle_classes():
                     cm = dep_cls.worker_lifecycle(self.docket, self)
                     if cm is not None:
@@ -733,7 +730,7 @@ class Worker:
                         self._renew_leases(redis, active_tasks),
                         name=f"{self.docket.name} - lease renewal",
                     )
-                    self._heartbeat_task = infra.create_task(
+                    self._heartbeat_task = asyncio.create_task(
                         self._heartbeat(), name=f"{self.docket.name} - heartbeat"
                     )
 
@@ -801,8 +798,10 @@ class Worker:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
                 await process_completed_tasks()
 
-            self._worker_done.set()
+            if self._heartbeat_task is not None:
+                await cancel_task(self._heartbeat_task, CANCEL_MSG_CLEANUP)
             self._heartbeat_task = None
+            self._worker_done.set()
 
     async def _scheduler_loop(self, redis: Redis) -> None:
         """Loop that moves due tasks from the queue to the stream."""

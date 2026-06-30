@@ -69,3 +69,37 @@ async def test_worker_waits_for_cancellation_readiness_before_announcement(
 
     assert {worker.name for worker in snapshot.workers} == set()
     assert task_complete
+
+
+async def test_context_exit_cancels_blocked_processing_heartbeat(docket: Docket):
+    heartbeat_started = asyncio.Event()
+    heartbeat_cancelled = asyncio.Event()
+
+    async def liveness_task() -> None: ...
+
+    docket.register(liveness_task)
+
+    async def exercise() -> None:
+        async with Worker(
+            docket,
+            minimum_check_interval=timedelta(milliseconds=5),
+            scheduling_resolution=timedelta(milliseconds=5),
+        ) as worker:
+
+            async def blocked_heartbeat() -> None:
+                heartbeat_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    heartbeat_cancelled.set()
+                    raise
+
+            with patch.object(worker, "_heartbeat", blocked_heartbeat):
+                worker_run = asyncio.create_task(worker.run_forever())
+                await heartbeat_started.wait()
+
+        await worker_run
+
+    await asyncio.wait_for(exercise(), timeout=2.0)
+
+    assert heartbeat_cancelled.is_set()
