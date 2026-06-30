@@ -105,6 +105,7 @@ async def test_invariant_worker_attributes_deleted_after_exit(docket: Docket):
     assert hasattr(worker, "_worker_done")
     assert hasattr(worker, "_cancellation_ready")
     assert hasattr(worker, "_heartbeat_task")
+    assert worker._heartbeat_task is None  # type: ignore[protected-access]
     assert hasattr(worker, "_shared_context")
 
     await worker.__aexit__(None, None, None)

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, patch
@@ -197,30 +197,47 @@ async def test_worker_announcements(
     docket.register(another_task)
 
     async with Worker(docket, name="worker-a") as worker_a:
-        await asyncio.sleep(heartbeat.total_seconds() * 5)
-
-        workers = await docket.workers()
-        assert len(workers) == 1
-        assert worker_a.name in {w.name for w in workers}
-
-        async with Worker(docket, name="worker-b") as worker_b:
+        run_a = asyncio.create_task(worker_a.run_forever())
+        try:
             await asyncio.sleep(heartbeat.total_seconds() * 5)
 
             workers = await docket.workers()
-            assert len(workers) == 2
-            assert {w.name for w in workers} == {worker_a.name, worker_b.name}
+            assert len(workers) == 1
+            assert worker_a.name in {w.name for w in workers}
 
-            for worker in workers:
-                # Allow generous timing tolerance - CI can have significant delays
-                assert worker.last_seen > datetime.now(timezone.utc) - (heartbeat * 20)
-                assert worker.tasks == builtin_tasks | {"the_task", "another_task"}
+            async with Worker(docket, name="worker-b") as worker_b:
+                run_b = asyncio.create_task(worker_b.run_forever())
+                try:
+                    await asyncio.sleep(heartbeat.total_seconds() * 5)
 
-        await asyncio.sleep(heartbeat.total_seconds() * 10)
+                    workers = await docket.workers()
+                    assert len(workers) == 2
+                    assert {w.name for w in workers} == {worker_a.name, worker_b.name}
 
-        workers = await docket.workers()
-        assert len(workers) == 1
-        assert worker_a.name in {w.name for w in workers}
-        assert worker_b.name not in {w.name for w in workers}
+                    for worker in workers:
+                        # Allow generous timing tolerance - CI can have significant delays
+                        assert worker.last_seen > datetime.now(timezone.utc) - (
+                            heartbeat * 20
+                        )
+                        assert worker.tasks == builtin_tasks | {
+                            "the_task",
+                            "another_task",
+                        }
+                finally:
+                    run_b.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await run_b
+
+            await asyncio.sleep(heartbeat.total_seconds() * 10)
+
+            workers = await docket.workers()
+            assert len(workers) == 1
+            assert worker_a.name in {w.name for w in workers}
+            assert worker_b.name not in {w.name for w in workers}
+        finally:
+            run_a.cancel()
+            with suppress(asyncio.CancelledError):
+                await run_a
 
     await asyncio.sleep(heartbeat.total_seconds() * 10)
 
@@ -242,30 +259,47 @@ async def test_task_announcements(
     docket.register(the_task)
     docket.register(another_task)
     async with Worker(docket, name="worker-a") as worker_a:
-        await asyncio.sleep(heartbeat.total_seconds() * 5)
-
-        workers = await docket.task_workers("the_task")
-        assert len(workers) == 1
-        assert worker_a.name in {w.name for w in workers}
-
-        async with Worker(docket, name="worker-b") as worker_b:
+        run_a = asyncio.create_task(worker_a.run_forever())
+        try:
             await asyncio.sleep(heartbeat.total_seconds() * 5)
 
             workers = await docket.task_workers("the_task")
-            assert len(workers) == 2
-            assert {w.name for w in workers} == {worker_a.name, worker_b.name}
+            assert len(workers) == 1
+            assert worker_a.name in {w.name for w in workers}
 
-            for worker in workers:
-                # Allow generous timing tolerance - CI can have significant delays
-                assert worker.last_seen > datetime.now(timezone.utc) - (heartbeat * 20)
-                assert worker.tasks == builtin_tasks | {"the_task", "another_task"}
+            async with Worker(docket, name="worker-b") as worker_b:
+                run_b = asyncio.create_task(worker_b.run_forever())
+                try:
+                    await asyncio.sleep(heartbeat.total_seconds() * 5)
 
-        await asyncio.sleep(heartbeat.total_seconds() * 10)
+                    workers = await docket.task_workers("the_task")
+                    assert len(workers) == 2
+                    assert {w.name for w in workers} == {worker_a.name, worker_b.name}
 
-        workers = await docket.task_workers("the_task")
-        assert len(workers) == 1
-        assert worker_a.name in {w.name for w in workers}
-        assert worker_b.name not in {w.name for w in workers}
+                    for worker in workers:
+                        # Allow generous timing tolerance - CI can have significant delays
+                        assert worker.last_seen > datetime.now(timezone.utc) - (
+                            heartbeat * 20
+                        )
+                        assert worker.tasks == builtin_tasks | {
+                            "the_task",
+                            "another_task",
+                        }
+                finally:
+                    run_b.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await run_b
+
+            await asyncio.sleep(heartbeat.total_seconds() * 10)
+
+            workers = await docket.task_workers("the_task")
+            assert len(workers) == 1
+            assert worker_a.name in {w.name for w in workers}
+            assert worker_b.name not in {w.name for w in workers}
+        finally:
+            run_a.cancel()
+            with suppress(asyncio.CancelledError):
+                await run_a
 
     await asyncio.sleep(heartbeat.total_seconds() * 10)
 
@@ -312,21 +346,27 @@ async def test_worker_recovers_from_redis_errors(
 
     monkeypatch.setattr(docket, "redis", mock_redis)
 
-    async with Worker(docket) as worker:
-        await asyncio.sleep(heartbeat.total_seconds() * 1.5)
+    async with Worker(docket, schedule_automatic_tasks=False) as worker:
+        run = asyncio.create_task(worker.run_forever())
+        try:
+            await asyncio.sleep(heartbeat.total_seconds() * 1.5)
 
-        await asyncio.sleep(heartbeat.total_seconds() * 5)
+            await asyncio.sleep(heartbeat.total_seconds() * 5)
 
-        workers = await docket.workers()
-        assert len(workers) == 1
-        assert worker.name in {w.name for w in workers}
+            workers = await docket.workers()
+            assert len(workers) == 1
+            assert worker.name in {w.name for w in workers}
 
-        # Verify that the last_seen timestamp is after our error
-        worker_info = next(w for w in workers if w.name == worker.name)
-        assert error_time
-        assert worker_info.last_seen > error_time, (
-            "Worker should have sent heartbeats after the Redis error"
-        )
+            # Verify that the last_seen timestamp is after our error
+            worker_info = next(w for w in workers if w.name == worker.name)
+            assert error_time
+            assert worker_info.last_seen > error_time, (
+                "Worker should have sent heartbeats after the Redis error"
+            )
+        finally:
+            run.cancel()
+            with suppress(asyncio.CancelledError):
+                await run
 
 
 async def test_worker_can_be_told_to_skip_automatic_tasks(docket: Docket):

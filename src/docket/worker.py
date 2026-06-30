@@ -33,7 +33,6 @@ else:
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
-from ._cancellation import CANCEL_MSG_CLEANUP, cancel_task
 from ._lua import Arg, Key, redis_script
 from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
@@ -284,7 +283,6 @@ class Worker:
         self._stack = AsyncExitStack()
         await self._stack.__aenter__()
 
-        # Events for coordinating worker loop shutdown (cleaned up last)
         self._worker_stopping = asyncio.Event()
         self._stack.callback(lambda: delattr(self, "_worker_stopping"))
         self._worker_done = asyncio.Event()
@@ -298,21 +296,14 @@ class Worker:
         self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
         self._stack.callback(lambda: delattr(self, "_tasks_by_key"))
 
-        self._heartbeat_task = asyncio.create_task(
-            self._heartbeat(), name=f"{self.docket.name} - heartbeat"
-        )
+        self._heartbeat_task: asyncio.Task[None] | None = None
         self._stack.callback(lambda: delattr(self, "_heartbeat_task"))
-        self._stack.push_async_callback(
-            cancel_task, self._heartbeat_task, CANCEL_MSG_CLEANUP
-        )
 
-        # Worker-scoped ContextVars for ambient access to docket/worker
         self._docket_token = current_docket.set(self.docket)
         self._stack.callback(lambda: current_docket.reset(self._docket_token))
         self._worker_token = current_worker.set(self)
         self._stack.callback(lambda: current_worker.reset(self._worker_token))
 
-        # Shared context is set up last, so it's cleaned up first (LIFO)
         self._shared_context = SharedContext()
         self._stack.callback(lambda: delattr(self, "_shared_context"))
         await self._stack.enter_async_context(self._shared_context)
@@ -325,11 +316,9 @@ class Worker:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        # Signal worker loop to stop and wait for it to drain
         self._worker_stopping.set()
         await self._worker_done.wait()
 
-        # Stack handles LIFO cleanup: shared_context first, then heartbeat
         try:
             await self._stack.__aexit__(exc_type, exc_value, traceback)
         finally:
@@ -744,6 +733,9 @@ class Worker:
                         self._renew_leases(redis, active_tasks),
                         name=f"{self.docket.name} - lease renewal",
                     )
+                    self._heartbeat_task = infra.create_task(
+                        self._heartbeat(), name=f"{self.docket.name} - heartbeat"
+                    )
 
                     has_work: bool = True
                     stopping = self._worker_stopping.is_set
@@ -810,6 +802,7 @@ class Worker:
                 await process_completed_tasks()
 
             self._worker_done.set()
+            self._heartbeat_task = None
 
     async def _scheduler_loop(self, redis: Redis) -> None:
         """Loop that moves due tasks from the queue to the stream."""
@@ -1223,7 +1216,7 @@ class Worker:
         return self.docket.task_workers_set(task_name)
 
     async def _heartbeat(self) -> None:
-        while True:
+        while not self._worker_stopping.is_set():  # pragma: no branch
             try:
                 now = datetime.now(timezone.utc).timestamp()
                 maximum_age = (
@@ -1284,7 +1277,14 @@ class Worker:
                     extra=self._log_context(),
                 )
 
-            await asyncio.sleep(self.docket.heartbeat_interval.total_seconds())
+            try:
+                await asyncio.wait_for(
+                    self._worker_stopping.wait(),
+                    timeout=self.docket.heartbeat_interval.total_seconds(),
+                )
+                return
+            except asyncio.TimeoutError:
+                pass
 
     async def _cancellation_listener(self) -> None:
         """Listen for cancellation signals and cancel matching tasks."""
