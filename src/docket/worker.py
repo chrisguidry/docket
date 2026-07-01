@@ -10,6 +10,7 @@ import socket
 import sys
 import time
 from contextlib import AsyncExitStack, contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
@@ -123,6 +124,14 @@ class PubSubMessage(TypedDict):
     pattern: bytes
     channel: bytes
     data: bytes | str
+
+
+@dataclass
+class _ProcessingSession:
+    """State scoped to one ready-to-claim Redis processing attempt."""
+
+    stopping: asyncio.Event
+    cancellation_ready: asyncio.Event
 
 
 async def default_fallback_task(
@@ -298,8 +307,6 @@ class Worker:
         self._worker_done = asyncio.Event()
         self._stack.callback(lambda: delattr(self, "_worker_done"))
         self._worker_done.set()  # Initially done (not running)
-        self._cancellation_ready = asyncio.Event()
-        self._stack.callback(lambda: delattr(self, "_cancellation_ready"))
 
         self._execution_counts: dict[str, int] = {}
         self._stack.callback(lambda: delattr(self, "_execution_counts"))
@@ -310,6 +317,8 @@ class Worker:
         # Worker context.  It starts only after that attempt can claim work.
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._stack.callback(lambda: delattr(self, "_heartbeat_task"))
+        self._processing_session: _ProcessingSession | None = None
+        self._stack.callback(lambda: delattr(self, "_processing_session"))
 
         # Worker-scoped ContextVars for ambient access to docket/worker
         self._docket_token = current_docket.set(self.docket)
@@ -597,9 +606,11 @@ class Worker:
         return ordered
 
     async def _worker_loop(self, redis: Redis, forever: bool = False):
-        cancellation_ready = self._cancellation_ready
-        cancellation_ready.clear()  # Reset for reconnection scenarios
-        processing_stopping = asyncio.Event()
+        session = _ProcessingSession(
+            stopping=asyncio.Event(),
+            cancellation_ready=asyncio.Event(),
+        )
+        self._processing_session = session
         stopping = self._worker_stopping
         active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
         task_executions: dict[asyncio.Task[None], Execution] = {}
@@ -739,34 +750,33 @@ class Worker:
                 async with TaskGroup() as infra:
                     # Start cancellation listener and wait for it to be ready
                     infra.create_task(
-                        self._cancellation_listener(
-                            processing_stopping, cancellation_ready
-                        ),
+                        self._cancellation_listener(),
                         name=f"{self.docket.name} - cancellation listener",
                     )
-                    while not cancellation_ready.is_set() and not stopping.is_set():
-                        await _wait_for_event(cancellation_ready, 0.1)
+                    while (
+                        not session.cancellation_ready.is_set()
+                        and not stopping.is_set()
+                    ):
+                        await _wait_for_event(session.cancellation_ready, 0.1)
                     if stopping.is_set():
-                        processing_stopping.set()
+                        session.stopping.set()
                         return
                     if self.schedule_automatic_tasks:
                         await self._schedule_all_automatic_perpetual_tasks()
                         infra.create_task(
-                            self._reseed_automatic_perpetual_tasks_loop(
-                                processing_stopping
-                            ),
+                            self._reseed_automatic_perpetual_tasks_loop(),
                             name=f"{self.docket.name} - automatic perpetual reseed",
                         )
                     infra.create_task(
-                        self._scheduler_loop(redis, processing_stopping),
+                        self._scheduler_loop(redis),
                         name=f"{self.docket.name} - scheduler",
                     )
                     infra.create_task(
-                        self._renew_leases(redis, active_tasks, processing_stopping),
+                        self._renew_leases(redis, active_tasks),
                         name=f"{self.docket.name} - lease renewal",
                     )
                     self._heartbeat_task = asyncio.create_task(
-                        self._heartbeat(processing_stopping),
+                        self._heartbeat(),
                         name=f"{self.docket.name} - heartbeat",
                     )
                     has_work: bool = True
@@ -809,7 +819,7 @@ class Worker:
                             disconnect = error
                             break
 
-                    processing_stopping.set()
+                    session.stopping.set()
 
             # A disconnection in the poll loop above leaves the TaskGroup intact
             # (no exception escaped it), so re-raise it here as a bare
@@ -824,7 +834,7 @@ class Worker:
                     extra=log_context,
                 )
         finally:
-            processing_stopping.set()
+            session.stopping.set()
             if self._heartbeat_task is not None:
                 await cancel_task(self._heartbeat_task, CANCEL_MSG_CLEANUP)
             self._heartbeat_task = None
@@ -832,10 +842,16 @@ class Worker:
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
                 await process_completed_tasks()
+            if self._processing_session is session:
+                self._processing_session = None
 
-    async def _scheduler_loop(self, redis: Redis, stop_event: asyncio.Event) -> None:
+    async def _scheduler_loop(self, redis: Redis) -> None:
+        session = self._processing_session
+        if session is None:
+            return  # pragma: no cover
+
         log_context = self._log_context()
-        while not stop_event.is_set():  # pragma: no branch
+        while not session.stopping.is_set():  # pragma: no branch
             try:
                 logger.debug("Scheduling due tasks", extra=log_context)
                 with self._maybe_suppress_instrumentation():
@@ -864,7 +880,7 @@ class Worker:
                 )
 
             if await _wait_for_event(
-                stop_event, self.scheduling_resolution.total_seconds()
+                session.stopping, self.scheduling_resolution.total_seconds()
             ):
                 return
 
@@ -872,18 +888,21 @@ class Worker:
         self,
         redis: Redis,
         active_messages: dict[asyncio.Task[None], RedisMessageID],
-        stop_event: asyncio.Event,
     ) -> None:
         """Periodically renew leases on stream messages.
 
         Calls XCLAIM with idle=0 to reset the message's idle time, preventing
         XAUTOCLAIM from reclaiming it while we're still processing.
         """
+        session = self._processing_session
+        if session is None:
+            return  # pragma: no cover
+
         # Renew leases 4 times per redelivery_timeout period
         renewal_interval = self.redelivery_timeout.total_seconds() / 4
 
-        while not stop_event.is_set():  # pragma: no branch
-            if await _wait_for_event(stop_event, renewal_interval):
+        while not session.stopping.is_set():  # pragma: no branch
+            if await _wait_for_event(session.stopping, renewal_interval):
                 return
 
             message_ids = list(active_messages.values())
@@ -903,9 +922,7 @@ class Worker:
             except Exception:
                 logger.warning("Failed to renew leases", exc_info=True)
 
-    async def _reseed_automatic_perpetual_tasks_loop(
-        self, stop_event: asyncio.Event
-    ) -> None:
+    async def _reseed_automatic_perpetual_tasks_loop(self) -> None:
         """Periodically re-sow automatic perpetuals so a chain severed after
         startup is recovered without a full restart.
 
@@ -916,11 +933,15 @@ class Worker:
         ``docket.add`` under the deterministic key dedups against a live
         perpetual and only takes effect once the chain has actually been lost.
         """
+        session = self._processing_session
+        if session is None:
+            return  # pragma: no cover
+
         log_context = self._log_context()
 
-        while not stop_event.is_set():  # pragma: no branch
+        while not session.stopping.is_set():  # pragma: no branch
             if await _wait_for_event(
-                stop_event, AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS
+                session.stopping, AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS
             ):
                 return
 
@@ -1243,8 +1264,12 @@ class Worker:
                 extra=self._log_context(),
             )
 
-    async def _heartbeat(self, stop_event: asyncio.Event) -> None:
-        while not stop_event.is_set():  # pragma: no branch
+    async def _heartbeat(self) -> None:
+        session = self._processing_session
+        if session is None:
+            return  # pragma: no cover
+
+        while not session.stopping.is_set():  # pragma: no branch
             try:
                 now = datetime.now(timezone.utc).timestamp()
                 maximum_age = (
@@ -1306,47 +1331,47 @@ class Worker:
                 )
 
             if await _wait_for_event(
-                stop_event, self.docket.heartbeat_interval.total_seconds()
+                session.stopping, self.docket.heartbeat_interval.total_seconds()
             ):
                 return
 
-    async def _cancellation_listener(
-        self,
-        stop_event: asyncio.Event,
-        ready_event: asyncio.Event,
-    ) -> None:
+    async def _cancellation_listener(self) -> None:
+        session = self._processing_session
+        if session is None:
+            return  # pragma: no cover
+
         cancel_pattern = self.docket.key("cancel:*")
         log_context = self._log_context()
-        while not stop_event.is_set():
+        while not session.stopping.is_set():
             try:
                 async with self.docket._pubsub() as pubsub:
                     await pubsub.psubscribe(cancel_pattern)
-                    ready_event.set()
-                    while not stop_event.is_set():
+                    session.cancellation_ready.set()
+                    while not session.stopping.is_set():
                         message = await pubsub.get_message(
                             ignore_subscribe_messages=True, timeout=0.1
                         )
                         if message is not None and message["type"] == "pmessage":
                             await self._handle_cancellation(message)
             except ConnectionError:
-                if stop_event.is_set():
+                if session.stopping.is_set():
                     return  # pragma: no cover
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.warning(
                     "Redis connection error in cancellation listener, reconnecting...",
                     extra=log_context,
                 )
-                if await _wait_for_event(stop_event, 1):
+                if await _wait_for_event(session.stopping, 1):
                     return
             except Exception:
-                if stop_event.is_set():
+                if session.stopping.is_set():
                     return  # pragma: no cover
                 logger.exception(
                     "Error in cancellation listener",
                     exc_info=True,
                     extra=log_context,
                 )
-                if await _wait_for_event(stop_event, 1):
+                if await _wait_for_event(session.stopping, 1):
                     return
 
     async def _handle_cancellation(self, message: PubSubMessage) -> None:

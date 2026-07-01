@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from docket import Docket, Worker
 from docket._redis import RedisClient
+from docket.worker import _ProcessingSession  # pyright: ignore[reportPrivateUsage]
 from redis.exceptions import ConnectionError
 from tests.conftest import wait_until
 
@@ -54,14 +55,13 @@ async def test_worker_waits_for_cancellation_readiness_before_announcement(
     ) as worker:
         listener_ready = asyncio.Event()
 
-        async def slow_listener(
-            stop_event: asyncio.Event,
-            ready_event: asyncio.Event,
-        ) -> None:
+        async def slow_listener() -> None:
+            session = worker._processing_session  # pyright: ignore[reportPrivateUsage]
+            assert session is not None
             await asyncio.sleep(heartbeat.total_seconds() * 8)
-            ready_event.set()
+            session.cancellation_ready.set()
             listener_ready.set()
-            await stop_event.wait()
+            await session.stopping.wait()
 
         with patch.object(worker, "_cancellation_listener", slow_listener):
             worker_run = asyncio.create_task(worker.run_until_finished())
@@ -94,7 +94,7 @@ async def test_context_exit_cancels_blocked_processing_heartbeat(docket: Docket)
             scheduling_resolution=timedelta(milliseconds=5),
         ) as worker:
 
-            async def blocked_heartbeat(stop_event: asyncio.Event) -> None:
+            async def blocked_heartbeat() -> None:
                 heartbeat_started.set()
                 try:
                     await asyncio.Event().wait()
@@ -219,10 +219,14 @@ async def test_heartbeat_recovers_from_connection_error(docket: Docket):
             yield redis
 
     async with Worker(docket, name="heartbeat-worker") as worker:
-        stop_event = asyncio.Event()
+        session = _ProcessingSession(
+            stopping=asyncio.Event(),
+            cancellation_ready=asyncio.Event(),
+        )
+        worker._processing_session = session  # pyright: ignore[reportPrivateUsage]
         with patch.object(Docket, "redis", flaky_redis):
             heartbeat_task = asyncio.create_task(
-                worker._heartbeat(stop_event)  # pyright: ignore[reportPrivateUsage]
+                worker._heartbeat()  # pyright: ignore[reportPrivateUsage]
             )
             try:
                 await wait_until(
@@ -231,8 +235,9 @@ async def test_heartbeat_recovers_from_connection_error(docket: Docket):
                     description="heartbeat retry after connection error",
                 )
             finally:
-                stop_event.set()
+                session.stopping.set()
                 await heartbeat_task
+                worker._processing_session = None  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_remove_heartbeat_suppresses_cleanup_errors(docket: Docket):

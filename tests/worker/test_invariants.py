@@ -103,9 +103,10 @@ async def test_invariant_worker_attributes_deleted_after_exit(docket: Docket):
     assert hasattr(worker, "_execution_counts")
     assert hasattr(worker, "_worker_stopping")
     assert hasattr(worker, "_worker_done")
-    assert hasattr(worker, "_cancellation_ready")
     assert hasattr(worker, "_heartbeat_task")
     assert worker._heartbeat_task is None  # type: ignore[protected-access]
+    assert hasattr(worker, "_processing_session")
+    assert worker._processing_session is None  # type: ignore[protected-access]
     assert hasattr(worker, "_shared_context")
 
     await worker.__aexit__(None, None, None)
@@ -115,8 +116,8 @@ async def test_invariant_worker_attributes_deleted_after_exit(docket: Docket):
     assert not hasattr(worker, "_execution_counts")
     assert not hasattr(worker, "_worker_stopping")
     assert not hasattr(worker, "_worker_done")
-    assert not hasattr(worker, "_cancellation_ready")
     assert not hasattr(worker, "_heartbeat_task")
+    assert not hasattr(worker, "_processing_session")
     assert not hasattr(worker, "_shared_context")
     assert not hasattr(worker, "_stack")
 

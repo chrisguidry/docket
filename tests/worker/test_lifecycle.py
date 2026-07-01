@@ -12,6 +12,7 @@ from redis.exceptions import ConnectionError
 
 from docket import Docket, Worker, testing
 from docket.dependencies import Dependency
+from docket.worker import _ProcessingSession  # pyright: ignore[reportPrivateUsage]
 
 if sys.version_info >= (3, 11):  # pragma: no cover
     from asyncio import timeout as async_timeout
@@ -240,9 +241,10 @@ async def test_worker_rapid_start_cancel_cycles(docket: Docket):
 async def test_worker_cancellation_during_setup_before_scheduler_created(
     docket: Docket,
 ):
-    """Test cancellation during _cancellation_ready.wait() before scheduler/lease tasks exist.
+    """Test cancellation before scheduler/lease tasks are created.
 
-    This hits the None branches in the finally block for scheduler_task and lease_renewal_task.
+    This keeps the processing attempt before its heartbeat, scheduler, and
+    lease-renewal tasks start.
     """
     worker = Worker(
         docket,
@@ -251,18 +253,14 @@ async def test_worker_cancellation_during_setup_before_scheduler_created(
     )
     await worker.__aenter__()
 
-    # Patch _cancellation_listener to block indefinitely on _cancellation_ready
-    # This ensures scheduler_task and lease_renewal_task are never created
-    async def slow_listener(
-        stop_event: asyncio.Event,
-        ready_event: asyncio.Event,
-    ) -> None:
-        # Don't set _cancellation_ready, just wait forever
+    # Patch _cancellation_listener to block indefinitely before readiness.
+    # This ensures scheduler_task and lease_renewal_task are never created.
+    async def slow_listener() -> None:
         await asyncio.Event().wait()
 
     with patch.object(worker, "_cancellation_listener", slow_listener):
         worker_task = asyncio.create_task(worker.run_forever())
-        # Give time for the task to start and reach _cancellation_ready.wait()
+        # Give time for the task to start and wait on cancellation readiness.
         await asyncio.sleep(0.01)
         worker_task.cancel()
 
@@ -283,11 +281,10 @@ async def test_context_exit_while_waiting_for_cancellation_readiness(docket: Doc
             scheduling_resolution=timedelta(milliseconds=5),
         ) as worker:
 
-            async def slow_listener(
-                stop_event: asyncio.Event,
-                ready_event: asyncio.Event,
-            ) -> None:
-                await stop_event.wait()
+            async def slow_listener() -> None:
+                session = worker._processing_session  # pyright: ignore[reportPrivateUsage]
+                assert session is not None
+                await session.stopping.wait()
 
             with patch.object(worker, "_cancellation_listener", slow_listener):
                 asyncio.create_task(worker.run_forever())
@@ -342,8 +339,11 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
 async def test_cancellation_listener_stops_during_error_backoff(docket: Docket):
     async with Worker(docket) as worker:
         for error in [ConnectionError("redis down"), RuntimeError("listener error")]:
-            stop_event = asyncio.Event()
-            ready_event = asyncio.Event()
+            session = _ProcessingSession(
+                stopping=asyncio.Event(),
+                cancellation_ready=asyncio.Event(),
+            )
+            worker._processing_session = session  # pyright: ignore[reportPrivateUsage]
 
             @asynccontextmanager
             async def failing_pubsub() -> AsyncGenerator[Any, None]:
@@ -351,14 +351,16 @@ async def test_cancellation_listener_stops_during_error_backoff(docket: Docket):
                 yield  # pragma: no cover
 
             with patch.object(docket, "_pubsub", failing_pubsub):
-                listener = asyncio.create_task(
-                    worker._cancellation_listener(  # pyright: ignore[reportPrivateUsage]
-                        stop_event, ready_event
+                try:
+                    listener = asyncio.create_task(
+                        worker._cancellation_listener()  # pyright: ignore[reportPrivateUsage]
                     )
-                )
-                await asyncio.sleep(0.01)
-                stop_event.set()
-                await asyncio.wait_for(listener, timeout=1.0)
+                    await asyncio.sleep(0.01)
+                    session.stopping.set()
+                    await asyncio.wait_for(listener, timeout=1.0)
+                finally:
+                    session.stopping.set()
+                    worker._processing_session = None  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_cancellation_listener_handles_generic_exception(docket: Docket):
