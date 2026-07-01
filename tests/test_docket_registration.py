@@ -1,5 +1,8 @@
 """Tests for Docket task registration."""
 
+import asyncio
+from contextlib import suppress
+
 from docket.docket import Docket
 from docket.worker import Worker
 from tests.conftest import wait_until
@@ -165,17 +168,23 @@ async def test_alias_appears_in_worker_announcements(docket: Docket):
     docket.register(my_task, names=["custom_alias"])
 
     async with Worker(docket) as w:
-        # The worker registers itself as a handler for "custom_alias"
-        # during its first heartbeat, which fires on a timer.  Poll
-        # task_workers() instead of guessing how long the heartbeat takes.
-        async def alias_visible() -> bool:
+        run = asyncio.create_task(w.run_forever())
+        try:
+            # The worker registers itself as a handler for "custom_alias"
+            # during its first heartbeat, which fires on a timer.  Poll
+            # task_workers() instead of guessing how long the heartbeat takes.
+            async def alias_visible() -> bool:
+                workers = await docket.task_workers("custom_alias")
+                return any(worker.name == w.name for worker in workers)
+
+            await wait_until(
+                alias_visible, description="custom_alias to appear in task_workers"
+            )
+
             workers = await docket.task_workers("custom_alias")
-            return any(worker.name == w.name for worker in workers)
-
-        await wait_until(
-            alias_visible, description="custom_alias to appear in task_workers"
-        )
-
-        workers = await docket.task_workers("custom_alias")
-        assert len(workers) == 1
-        assert w.name in {worker.name for worker in workers}
+            assert len(workers) == 1
+            assert w.name in {worker.name for worker in workers}
+        finally:
+            run.cancel()
+            with suppress(asyncio.CancelledError):
+                await run

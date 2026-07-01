@@ -10,6 +10,7 @@ import socket
 import sys
 import time
 from contextlib import AsyncExitStack, contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import (
@@ -108,6 +109,14 @@ MINIMUM_TTL_SECONDS = 1
 TaskKey: TypeAlias = str
 
 
+async def _wait_for_event(event: asyncio.Event, timeout: float) -> bool:
+    try:
+        await asyncio.wait_for(event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        return False
+    return True
+
+
 class PubSubMessage(TypedDict):
     """Message received from Redis pub/sub pattern subscription."""
 
@@ -115,6 +124,14 @@ class PubSubMessage(TypedDict):
     pattern: bytes
     channel: bytes
     data: bytes | str
+
+
+@dataclass
+class _ProcessingSession:
+    """State scoped to one ready-to-claim Redis processing attempt."""
+
+    stopping: asyncio.Event
+    cancellation_ready: asyncio.Event
 
 
 async def default_fallback_task(
@@ -290,21 +307,18 @@ class Worker:
         self._worker_done = asyncio.Event()
         self._stack.callback(lambda: delattr(self, "_worker_done"))
         self._worker_done.set()  # Initially done (not running)
-        self._cancellation_ready = asyncio.Event()
-        self._stack.callback(lambda: delattr(self, "_cancellation_ready"))
 
         self._execution_counts: dict[str, int] = {}
         self._stack.callback(lambda: delattr(self, "_execution_counts"))
         self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
         self._stack.callback(lambda: delattr(self, "_tasks_by_key"))
 
-        self._heartbeat_task = asyncio.create_task(
-            self._heartbeat(), name=f"{self.docket.name} - heartbeat"
-        )
+        # The heartbeat task is owned by each processing attempt, not the
+        # Worker context.  It starts only after that attempt can claim work.
+        self._heartbeat_task: asyncio.Task[None] | None = None
         self._stack.callback(lambda: delattr(self, "_heartbeat_task"))
-        self._stack.push_async_callback(
-            cancel_task, self._heartbeat_task, CANCEL_MSG_CLEANUP
-        )
+        self._processing_session: _ProcessingSession | None = None
+        self._stack.callback(lambda: delattr(self, "_processing_session"))
 
         # Worker-scoped ContextVars for ambient access to docket/worker
         self._docket_token = current_docket.set(self.docket)
@@ -329,7 +343,7 @@ class Worker:
         self._worker_stopping.set()
         await self._worker_done.wait()
 
-        # Stack handles LIFO cleanup: shared_context first, then heartbeat
+        # Stack handles LIFO cleanup: shared context first, then attributes
         try:
             await self._stack.__aexit__(exc_type, exc_value, traceback)
         finally:
@@ -529,19 +543,29 @@ class Worker:
 
     async def _run(self, forever: bool = False) -> None:
         self._startup_log()
-
-        while True:
-            try:
-                async with self.docket.redis() as redis:
-                    return await self._worker_loop(redis, forever=forever)
-            except ConnectionError:
-                REDIS_DISRUPTIONS.add(1, self.labels())
-                logger.warning(
-                    "Error connecting to redis, retrying in %s...",
-                    self.reconnection_delay,
-                    exc_info=True,
-                )
-                await asyncio.sleep(self.reconnection_delay.total_seconds())
+        self._worker_stopping.clear()
+        self._worker_done.clear()
+        stopping = self._worker_stopping
+        try:
+            while not stopping.is_set():  # pragma: no branch
+                try:
+                    async with self.docket.redis() as redis:
+                        return await self._worker_loop(redis, forever=forever)
+                except ConnectionError:
+                    if stopping.is_set():
+                        return
+                    REDIS_DISRUPTIONS.add(1, self.labels())
+                    logger.warning(
+                        "Error connecting to redis, retrying in %s...",
+                        self.reconnection_delay,
+                        exc_info=True,
+                    )
+                    if await _wait_for_event(
+                        stopping, self.reconnection_delay.total_seconds()
+                    ):
+                        return
+        finally:
+            self._worker_done.set()
 
     def _dependency_lifecycle_classes(self) -> list[type[Dependency[Any]]]:
         """Discover Dependency subclasses (used by registered tasks or worker
@@ -582,10 +606,12 @@ class Worker:
         return ordered
 
     async def _worker_loop(self, redis: Redis, forever: bool = False):
-        self._worker_stopping.clear()
-        self._worker_done.clear()
-        self._cancellation_ready.clear()  # Reset for reconnection scenarios
-
+        session = _ProcessingSession(
+            stopping=asyncio.Event(),
+            cancellation_ready=asyncio.Event(),
+        )
+        self._processing_session = session
+        stopping = self._worker_stopping
         active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
         task_executions: dict[asyncio.Task[None], Execution] = {}
         available_slots = self.concurrency
@@ -727,15 +753,20 @@ class Worker:
                         self._cancellation_listener(),
                         name=f"{self.docket.name} - cancellation listener",
                     )
-                    await self._cancellation_ready.wait()
-
+                    while (
+                        not session.cancellation_ready.is_set()
+                        and not stopping.is_set()
+                    ):
+                        await _wait_for_event(session.cancellation_ready, 0.1)
+                    if stopping.is_set():
+                        session.stopping.set()
+                        return
                     if self.schedule_automatic_tasks:
                         await self._schedule_all_automatic_perpetual_tasks()
                         infra.create_task(
                             self._reseed_automatic_perpetual_tasks_loop(),
                             name=f"{self.docket.name} - automatic perpetual reseed",
                         )
-
                     infra.create_task(
                         self._scheduler_loop(redis),
                         name=f"{self.docket.name} - scheduler",
@@ -744,20 +775,21 @@ class Worker:
                         self._renew_leases(redis, active_tasks),
                         name=f"{self.docket.name} - lease renewal",
                     )
-
+                    self._heartbeat_task = asyncio.create_task(
+                        self._heartbeat(),
+                        name=f"{self.docket.name} - heartbeat",
+                    )
                     has_work: bool = True
-                    stopping = self._worker_stopping.is_set
-                    while (forever or has_work or active_tasks) and not stopping():
+                    while (
+                        forever or has_work or active_tasks
+                    ) and not stopping.is_set():
                         await process_completed_tasks()
-
                         available_slots = self.concurrency - len(active_tasks)
-
                         if available_slots <= 0:
                             await asyncio.sleep(
                                 self.minimum_check_interval.total_seconds()
                             )
                             continue
-
                         try:
                             for source in [get_redeliveries, get_new_deliveries]:
                                 for stream_key, messages in await source(redis):
@@ -787,15 +819,13 @@ class Worker:
                             disconnect = error
                             break
 
-                    # Signal internal tasks to stop before exiting TaskGroup
-                    self._worker_stopping.set()
+                    session.stopping.set()
 
             # A disconnection in the poll loop above leaves the TaskGroup intact
             # (no exception escaped it), so re-raise it here as a bare
             # ConnectionError for _run to catch and reconnect on.
             if disconnect is not None:
                 raise disconnect
-
         except asyncio.CancelledError:
             if active_tasks:  # pragma: no cover
                 logger.info(
@@ -804,18 +834,24 @@ class Worker:
                     extra=log_context,
                 )
         finally:
-            # Drain any remaining active tasks
+            session.stopping.set()
+            if self._heartbeat_task is not None:
+                await cancel_task(self._heartbeat_task, CANCEL_MSG_CLEANUP)
+            self._heartbeat_task = None
+            await self._remove_heartbeat()
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
                 await process_completed_tasks()
-
-            self._worker_done.set()
+            if self._processing_session is session:
+                self._processing_session = None
 
     async def _scheduler_loop(self, redis: Redis) -> None:
-        """Loop that moves due tasks from the queue to the stream."""
-        log_context = self._log_context()
+        session = self._processing_session
+        if session is None:
+            return  # pragma: no cover
 
-        while not self._worker_stopping.is_set():  # pragma: no branch
+        log_context = self._log_context()
+        while not session.stopping.is_set():  # pragma: no branch
             try:
                 logger.debug("Scheduling due tasks", extra=log_context)
                 with self._maybe_suppress_instrumentation():
@@ -843,15 +879,10 @@ class Worker:
                     extra=log_context,
                 )
 
-            # Use interruptible wait so we respond to stopping quickly
-            try:
-                await asyncio.wait_for(
-                    self._worker_stopping.wait(),
-                    timeout=self.scheduling_resolution.total_seconds(),
-                )
-                return  # Event was set, exit the loop
-            except asyncio.TimeoutError:
-                pass  # Normal timeout, continue scheduling
+            if await _wait_for_event(
+                session.stopping, self.scheduling_resolution.total_seconds()
+            ):
+                return
 
     async def _renew_leases(
         self,
@@ -863,20 +894,16 @@ class Worker:
         Calls XCLAIM with idle=0 to reset the message's idle time, preventing
         XAUTOCLAIM from reclaiming it while we're still processing.
         """
+        session = self._processing_session
+        if session is None:
+            return  # pragma: no cover
+
         # Renew leases 4 times per redelivery_timeout period
         renewal_interval = self.redelivery_timeout.total_seconds() / 4
 
-        while not self._worker_stopping.is_set():  # pragma: no branch
-            # Use interruptible wait so we respond to stopping quickly
-            try:
-                await asyncio.wait_for(
-                    self._worker_stopping.wait(), timeout=renewal_interval
-                )
-                # Event was set, exit the loop
+        while not session.stopping.is_set():  # pragma: no branch
+            if await _wait_for_event(session.stopping, renewal_interval):
                 return
-            except asyncio.TimeoutError:
-                # Normal timeout, continue with lease renewal
-                pass
 
             message_ids = list(active_messages.values())
             if not message_ids:
@@ -906,17 +933,17 @@ class Worker:
         ``docket.add`` under the deterministic key dedups against a live
         perpetual and only takes effect once the chain has actually been lost.
         """
+        session = self._processing_session
+        if session is None:
+            return  # pragma: no cover
+
         log_context = self._log_context()
 
-        while not self._worker_stopping.is_set():  # pragma: no branch
-            try:
-                await asyncio.wait_for(
-                    self._worker_stopping.wait(),
-                    timeout=AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS,
-                )
-                return  # Event was set, exit the loop
-            except asyncio.TimeoutError:
-                pass  # Normal timeout, re-seed and continue
+        while not session.stopping.is_set():  # pragma: no branch
+            if await _wait_for_event(
+                session.stopping, AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS
+            ):
+                return
 
             try:
                 await self._schedule_all_automatic_perpetual_tasks()
@@ -1222,8 +1249,27 @@ class Worker:
     def task_workers_set(self, task_name: str) -> str:
         return self.docket.task_workers_set(task_name)
 
+    async def _remove_heartbeat(self) -> None:
+        try:
+            async with self.docket.redis() as r, r.pipeline() as pipeline:
+                pipeline.zrem(self.workers_set, self.name)
+                for task_name in self.docket.tasks:
+                    pipeline.zrem(self.task_workers_set(task_name), self.name)
+                pipeline.delete(self.worker_tasks_set(self.name))
+                await pipeline.execute()
+        except Exception:
+            logger.exception(
+                "Error clearing worker heartbeat",
+                exc_info=True,
+                extra=self._log_context(),
+            )
+
     async def _heartbeat(self) -> None:
-        while True:
+        session = self._processing_session
+        if session is None:
+            return  # pragma: no cover
+
+        while not session.stopping.is_set():  # pragma: no branch
             try:
                 now = datetime.now(timezone.utc).timestamp()
                 maximum_age = (
@@ -1284,43 +1330,49 @@ class Worker:
                     extra=self._log_context(),
                 )
 
-            await asyncio.sleep(self.docket.heartbeat_interval.total_seconds())
+            if await _wait_for_event(
+                session.stopping, self.docket.heartbeat_interval.total_seconds()
+            ):
+                return
 
     async def _cancellation_listener(self) -> None:
-        """Listen for cancellation signals and cancel matching tasks."""
+        session = self._processing_session
+        if session is None:
+            return  # pragma: no cover
+
         cancel_pattern = self.docket.key("cancel:*")
         log_context = self._log_context()
-
-        while not self._worker_stopping.is_set():
+        while not session.stopping.is_set():
             try:
                 async with self.docket._pubsub() as pubsub:
                     await pubsub.psubscribe(cancel_pattern)
-                    self._cancellation_ready.set()
-                    # Poll for messages, checking _worker_stopping periodically
-                    while not self._worker_stopping.is_set():
+                    session.cancellation_ready.set()
+                    while not session.stopping.is_set():
                         message = await pubsub.get_message(
                             ignore_subscribe_messages=True, timeout=0.1
                         )
                         if message is not None and message["type"] == "pmessage":
                             await self._handle_cancellation(message)
             except ConnectionError:
-                if self._worker_stopping.is_set():
+                if session.stopping.is_set():
                     return  # pragma: no cover
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.warning(
                     "Redis connection error in cancellation listener, reconnecting...",
                     extra=log_context,
                 )
-                await asyncio.sleep(1)
+                if await _wait_for_event(session.stopping, 1):
+                    return
             except Exception:
-                if self._worker_stopping.is_set():
+                if session.stopping.is_set():
                     return  # pragma: no cover
                 logger.exception(
                     "Error in cancellation listener",
                     exc_info=True,
                     extra=log_context,
                 )
-                await asyncio.sleep(1)
+                if await _wait_for_event(session.stopping, 1):
+                    return
 
     async def _handle_cancellation(self, message: PubSubMessage) -> None:
         """Handle a cancellation message by cancelling the matching task."""
