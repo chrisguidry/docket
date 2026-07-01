@@ -292,6 +292,7 @@ class Worker:
         self._stack = AsyncExitStack()
         await self._stack.__aenter__()
 
+        # Events for coordinating worker loop shutdown (cleaned up last)
         self._worker_stopping = asyncio.Event()
         self._stack.callback(lambda: delattr(self, "_worker_stopping"))
         self._worker_done = asyncio.Event()
@@ -305,14 +306,18 @@ class Worker:
         self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
         self._stack.callback(lambda: delattr(self, "_tasks_by_key"))
 
+        # The heartbeat task is owned by each processing attempt, not the
+        # Worker context.  It starts only after that attempt can claim work.
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._stack.callback(lambda: delattr(self, "_heartbeat_task"))
 
+        # Worker-scoped ContextVars for ambient access to docket/worker
         self._docket_token = current_docket.set(self.docket)
         self._stack.callback(lambda: current_docket.reset(self._docket_token))
         self._worker_token = current_worker.set(self)
         self._stack.callback(lambda: current_worker.reset(self._worker_token))
 
+        # Shared context is set up last, so it's cleaned up first (LIFO)
         self._shared_context = SharedContext()
         self._stack.callback(lambda: delattr(self, "_shared_context"))
         await self._stack.enter_async_context(self._shared_context)
@@ -325,9 +330,11 @@ class Worker:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        # Signal worker loop to stop and wait for it to drain
         self._worker_stopping.set()
         await self._worker_done.wait()
 
+        # Stack handles LIFO cleanup: shared context first, then attributes
         try:
             await self._stack.__aexit__(exc_type, exc_value, traceback)
         finally:
@@ -718,8 +725,12 @@ class Worker:
         disconnect: ConnectionError | None = None
         try:
             async with AsyncExitStack() as dependency_stack:
-                # Enter dependency-owned worker lifecycle hooks around the
-                # processing loop while keeping Worker dependency-agnostic.
+                # Each Dependency class used by a registered task may declare
+                # a ``worker_lifecycle`` classmethod that returns an async
+                # context manager.  We enter all of them around the worker's
+                # main loop so dependency-owned background work (subscribers,
+                # housekeeping tasks, etc.) gets started up and torn down in
+                # lockstep with the worker.  Worker stays dependency-agnostic.
                 for dep_cls in self._dependency_lifecycle_classes():
                     cm = dep_cls.worker_lifecycle(self.docket, self)
                     if cm is not None:
