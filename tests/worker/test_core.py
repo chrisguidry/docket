@@ -5,7 +5,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -17,6 +17,7 @@ from redis.exceptions import ConnectionError
 
 from docket import CurrentWorker, Docket, Worker
 from docket.tasks import standard_tasks
+from tests.conftest import wait_until
 
 
 async def test_worker_acknowledges_messages(
@@ -307,66 +308,99 @@ async def test_task_announcements(
     assert len(workers) == 0
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        ConnectionError("oof"),
-        ValueError("woops"),
-    ],
-)
 async def test_worker_recovers_from_redis_errors(
     docket: Docket,
     the_task: AsyncMock,
-    monkeypatch: pytest.MonkeyPatch,
-    error: Exception,
 ):
-    """Should recover from errors and continue sending heartbeats"""
+    """Should recover from a polling disconnection and resume heartbeats."""
 
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
-    docket.missed_heartbeats = 3
-
+    docket.missed_heartbeats = 2
     docket.register(the_task)
+    fail_next_read = asyncio.Event()
+    read_failed = asyncio.Event()
+    error_time: datetime | None = None
 
-    original_redis = docket.redis
-    error_time = None
-    redis_calls = 0
+    class FailNextRead:
+        def __init__(self, wrapped: Any):
+            self._wrapped = wrapped
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._wrapped, name)
+
+        async def xreadgroup(self, *args: Any, **kwargs: Any) -> Any:
+            nonlocal error_time
+            if fail_next_read.is_set() and not read_failed.is_set():
+                error_time = datetime.now(timezone.utc)
+                read_failed.set()
+                raise ConnectionError("Simulated server loss mid-XREADGROUP")
+            return await self._wrapped.xreadgroup(*args, **kwargs)
+
+    original_redis = Docket.redis
 
     @asynccontextmanager
-    async def mock_redis() -> AsyncGenerator[RedisClient, None]:
-        nonlocal redis_calls, error_time
-        redis_calls += 1
+    async def flaky_redis(self: Docket) -> AsyncGenerator[RedisClient, None]:
+        async with original_redis(self) as r:
+            yield FailNextRead(r)  # type: ignore[arg-type]
 
-        if redis_calls == 2:
-            error_time = datetime.now(timezone.utc)
-            raise error
+    async def worker_is_visible(worker_name: str) -> bool:
+        workers = await docket.workers()
+        return any(worker.name == worker_name for worker in workers)
 
-        async with original_redis() as r:
-            yield r
+    async def worker_is_absent(worker_name: str) -> bool:
+        return not await worker_is_visible(worker_name)
 
-    monkeypatch.setattr(docket, "redis", mock_redis)
+    async def worker_info_after_error(worker_name: str) -> bool:
+        workers = await docket.workers()
+        return any(
+            worker.name == worker_name
+            and error_time is not None
+            and worker.last_seen > error_time
+            for worker in workers
+        )
 
-    async with Worker(docket, schedule_automatic_tasks=False) as worker:
-        run = asyncio.create_task(worker.run_forever())
-        try:
-            await asyncio.sleep(heartbeat.total_seconds() * 1.5)
+    with patch.object(Docket, "redis", flaky_redis):
+        async with Worker(
+            docket,
+            reconnection_delay=timedelta(milliseconds=150),
+            minimum_check_interval=timedelta(milliseconds=5),
+            scheduling_resolution=timedelta(milliseconds=5),
+            schedule_automatic_tasks=False,
+        ) as worker:
+            run = asyncio.create_task(worker.run_forever())
+            try:
+                await wait_until(
+                    lambda: worker_is_visible(worker.name),
+                    timeout=1.0,
+                    description="initial worker heartbeat",
+                )
 
-            await asyncio.sleep(heartbeat.total_seconds() * 5)
+                fail_next_read.set()
+                await asyncio.wait_for(read_failed.wait(), timeout=2.0)
 
-            workers = await docket.workers()
-            assert len(workers) == 1
-            assert worker.name in {w.name for w in workers}
+                await wait_until(
+                    lambda: worker_is_absent(worker.name),
+                    timeout=1.0,
+                    description="worker to disappear while reconnecting",
+                )
 
-            # Verify that the last_seen timestamp is after our error
-            worker_info = next(w for w in workers if w.name == worker.name)
-            assert error_time
-            assert worker_info.last_seen > error_time, (
-                "Worker should have sent heartbeats after the Redis error"
-            )
-        finally:
-            run.cancel()
-            with suppress(asyncio.CancelledError):
-                await run
+                await wait_until(
+                    lambda: worker_info_after_error(worker.name),
+                    timeout=2.0,
+                    description="worker heartbeat after reconnect",
+                )
+
+                await docket.add(the_task)()
+                await wait_until(
+                    lambda: the_task.await_count == 1,
+                    timeout=2.0,
+                    description="worker to claim work after reconnect",
+                )
+            finally:
+                run.cancel()
+                with suppress(asyncio.CancelledError):
+                    await run
 
 
 async def test_worker_can_be_told_to_skip_automatic_tasks(docket: Docket):

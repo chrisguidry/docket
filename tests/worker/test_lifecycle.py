@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Worker, testing
+from docket.dependencies import Dependency
 
 if sys.version_info >= (3, 11):  # pragma: no cover
     from asyncio import timeout as async_timeout
@@ -137,6 +138,87 @@ async def test_worker_done_set_after_early_cancellation(docket: Docket):
         await worker.__aexit__(None, None, None)
 
 
+async def test_context_exit_interrupts_reconnection_delay(docket: Docket):
+    reconnecting = asyncio.Event()
+
+    async with Worker(
+        docket,
+        reconnection_delay=timedelta(seconds=30),
+    ) as worker:
+
+        async def failing_loop(redis: Any, forever: bool = False) -> None:
+            reconnecting.set()
+            raise ConnectionError("simulated reconnect")
+
+        with patch.object(worker, "_worker_loop", failing_loop):
+            worker_task = asyncio.create_task(worker.run_forever())
+            await asyncio.wait_for(reconnecting.wait(), timeout=1.0)
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(worker_task, timeout=1.0)
+
+
+async def test_worker_stopped_disconnect_returns_without_retry(docket: Docket):
+    async with Worker(docket) as worker:
+
+        async def stopped_loop(redis: Any, forever: bool = False) -> None:
+            worker._worker_stopping.set()  # pyright: ignore[reportPrivateUsage]
+            raise ConnectionError("simulated stopped reconnect")
+
+        with patch.object(worker, "_worker_loop", stopped_loop):
+            await worker.run_forever()
+
+
+async def test_worker_lifecycle_skips_dependency_without_context(docket: Docket):
+    events: list[str] = []
+
+    class NoLifecycleContext(Dependency[None]):
+        @classmethod
+        def worker_lifecycle(cls, docket: Docket, worker: Worker) -> None:
+            events.append("skipped-context")
+            return None
+
+        async def __aenter__(self) -> None:
+            return None
+
+    class TrackedLifecycleContext(Dependency[None]):
+        @classmethod
+        @asynccontextmanager
+        async def worker_lifecycle(
+            cls, docket: Docket, worker: Worker
+        ) -> AsyncGenerator[None, None]:
+            events.append("enter-context")
+            try:
+                yield
+            finally:
+                events.append("exit-context")
+
+        async def __aenter__(self) -> None:
+            return None
+
+    async def the_task(
+        no_context: None = NoLifecycleContext(),  # type: ignore[assignment]
+        tracked: None = TrackedLifecycleContext(),  # type: ignore[assignment]
+    ) -> None:
+        events.append("task")
+
+    await docket.add(the_task)()
+
+    async with Worker(
+        docket,
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as worker:
+        await worker.run_until_finished()
+
+    assert events == [
+        "skipped-context",
+        "enter-context",
+        "task",
+        "exit-context",
+    ]
+
+
 async def test_worker_rapid_start_cancel_cycles(docket: Docket):
     """Verify worker handles rapid start/cancel cycles without hanging."""
     for _ in range(10):  # pragma: no branch
@@ -171,7 +253,10 @@ async def test_worker_cancellation_during_setup_before_scheduler_created(
 
     # Patch _cancellation_listener to block indefinitely on _cancellation_ready
     # This ensures scheduler_task and lease_renewal_task are never created
-    async def slow_listener() -> None:
+    async def slow_listener(
+        stop_event: asyncio.Event,
+        ready_event: asyncio.Event,
+    ) -> None:
         # Don't set _cancellation_ready, just wait forever
         await asyncio.Event().wait()
 
@@ -188,6 +273,27 @@ async def test_worker_cancellation_during_setup_before_scheduler_created(
     # Cleanup
     async with async_timeout(1.0):  # pragma: no branch
         await worker.__aexit__(None, None, None)
+
+
+async def test_context_exit_while_waiting_for_cancellation_readiness(docket: Docket):
+    async def exercise() -> None:
+        async with Worker(
+            docket,
+            minimum_check_interval=timedelta(milliseconds=5),
+            scheduling_resolution=timedelta(milliseconds=5),
+        ) as worker:
+
+            async def slow_listener(
+                stop_event: asyncio.Event,
+                ready_event: asyncio.Event,
+            ) -> None:
+                await stop_event.wait()
+
+            with patch.object(worker, "_cancellation_listener", slow_listener):
+                asyncio.create_task(worker.run_forever())
+                await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(exercise(), timeout=1.0)
 
 
 async def test_cancellation_listener_handles_connection_error(docket: Docket):
@@ -231,6 +337,28 @@ async def test_cancellation_listener_handles_connection_error(docket: Docket):
                 await worker_task
 
         assert error_count >= 2
+
+
+async def test_cancellation_listener_stops_during_error_backoff(docket: Docket):
+    async with Worker(docket) as worker:
+        for error in [ConnectionError("redis down"), RuntimeError("listener error")]:
+            stop_event = asyncio.Event()
+            ready_event = asyncio.Event()
+
+            @asynccontextmanager
+            async def failing_pubsub() -> AsyncGenerator[Any, None]:
+                raise error
+                yield  # pragma: no cover
+
+            with patch.object(docket, "_pubsub", failing_pubsub):
+                listener = asyncio.create_task(
+                    worker._cancellation_listener(  # pyright: ignore[reportPrivateUsage]
+                        stop_event, ready_event
+                    )
+                )
+                await asyncio.sleep(0.01)
+                stop_event.set()
+                await asyncio.wait_for(listener, timeout=1.0)
 
 
 async def test_cancellation_listener_handles_generic_exception(docket: Docket):
