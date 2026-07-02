@@ -42,7 +42,9 @@ from ._uuid7 import uuid7
 from .execution import (
     Disposition,
     Execution,
+    TaskCall,
     TaskFunction,
+    schedule_many,
 )
 from .instrumentation import (
     TASKS_ADDED,
@@ -410,22 +412,7 @@ class Docket(DocketSnapshotMixin):
                     "code.function.name": execution.function_name,
                 },
             ) as span:
-                # Check if task is stricken before scheduling
-                if self.strike_list.is_stricken(execution):
-                    logger.warning(
-                        "%r is stricken, skipping schedule of %r",
-                        execution.function_name,
-                        execution.key,
-                    )
-                    TASKS_STRICKEN.add(
-                        1,
-                        {
-                            **self.labels(),
-                            **execution.general_labels(),
-                            "docket.where": "docket",
-                        },
-                    )
-                    execution.disposition = Disposition.STRUCK
+                if self._check_stricken(execution):
                     span.set_attribute(
                         "docket.disposition", execution.disposition.value
                     )
@@ -435,9 +422,7 @@ class Docket(DocketSnapshotMixin):
                 await execution.schedule(replace=False)
                 span.set_attribute("docket.disposition", execution.disposition.value)
 
-            TASKS_ADDED.add(1, {**self.labels(), **execution.general_labels()})
-            if execution.disposition is Disposition.SCHEDULED:
-                TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
+            self._record_schedule_metrics(execution, replace=False)
 
             return execution
 
@@ -520,22 +505,7 @@ class Docket(DocketSnapshotMixin):
                     "code.function.name": execution.function_name,
                 },
             ) as span:
-                # Check if task is stricken before scheduling
-                if self.strike_list.is_stricken(execution):
-                    logger.warning(
-                        "%r is stricken, skipping schedule of %r",
-                        execution.function_name,
-                        execution.key,
-                    )
-                    TASKS_STRICKEN.add(
-                        1,
-                        {
-                            **self.labels(),
-                            **execution.general_labels(),
-                            "docket.where": "docket",
-                        },
-                    )
-                    execution.disposition = Disposition.STRUCK
+                if self._check_stricken(execution):
                     span.set_attribute(
                         "docket.disposition", execution.disposition.value
                     )
@@ -545,13 +515,249 @@ class Docket(DocketSnapshotMixin):
                 await execution.schedule(replace=True)
                 span.set_attribute("docket.disposition", execution.disposition.value)
 
-            TASKS_REPLACED.add(1, {**self.labels(), **execution.general_labels()})
-            TASKS_CANCELLED.add(1, {**self.labels(), **execution.general_labels()})
-            TASKS_SCHEDULED.add(1, {**self.labels(), **execution.general_labels()})
+            self._record_schedule_metrics(execution, replace=True)
 
             return execution
 
         return scheduler
+
+    @overload
+    def call(
+        self,
+        function: Callable[P, Awaitable[R]],
+        when: datetime | None = None,
+        key: str | None = None,
+    ) -> Callable[P, TaskCall]:
+        """Build a TaskCall for batch scheduling.
+
+        Args:
+            function: The task function to call.
+            when: The time to schedule the task.
+            key: The key to schedule the task under.
+        """
+
+    @overload
+    def call(
+        self,
+        function: str,
+        when: datetime | None = None,
+        key: str | None = None,
+    ) -> Callable[..., TaskCall]:
+        """Build a TaskCall for batch scheduling.
+
+        Args:
+            function: The name of a task to call.
+            when: The time to schedule the task.
+            key: The key to schedule the task under.
+        """
+
+    def call(
+        self,
+        function: Callable[P, Awaitable[R]] | str,
+        when: datetime | None = None,
+        key: str | None = None,
+    ) -> Callable[..., TaskCall]:
+        """Build a :class:`TaskCall` for :meth:`add_many` / :meth:`replace_many`.
+
+        Mirrors the currying of :meth:`add` and :meth:`replace`, but instead
+        of scheduling immediately, the returned callable captures the task's
+        arguments into a ``TaskCall`` spec.  Nothing touches Redis until the
+        spec is passed to a batch method.
+
+        Args:
+            function: The task (or registered task name) to call.
+            when: The time to schedule the task.  Defaults to now.
+            key: The key to schedule the task under.  Defaults to a fresh
+                uuid7, exactly like :meth:`add`.
+
+        Returns:
+            A callable that, when invoked with the task's arguments, returns
+            a ``TaskCall``.
+
+        Raises:
+            KeyError: If ``function`` is a name that isn't registered.
+        """
+        function_name: str | None = None
+        if isinstance(function, str):
+            function_name = function
+            function = self.tasks[function]
+        else:
+            self.register(function)
+
+        if when is None:
+            when = datetime.now(timezone.utc)
+
+        if key is None:
+            key = str(uuid7())
+
+        def specifier(*args: P.args, **kwargs: P.kwargs) -> TaskCall:
+            return TaskCall(
+                function=function,
+                args=args,
+                kwargs=kwargs,
+                key=key,
+                when=when,
+                function_name=function_name,
+            )
+
+        return specifier
+
+    async def add_many(
+        self, calls: Iterable[TaskCall], *, chunk_size: int | None = 1000
+    ) -> list[Execution]:
+        """Add a batch of tasks to the Docket in pipelined round-trips.
+
+        Semantically equivalent to awaiting :meth:`add` for each
+        :class:`TaskCall`, but schedules travel to Redis in pipelined chunks
+        of ``chunk_size``, so a batch of N costs O(N / chunk_size)
+        round-trips instead of O(N).  Per-execution semantics are unchanged:
+        each task is individually checked against the strike list,
+        deduplicated by key (an already-known key preserves its prior
+        schedule), and scheduled atomically.  There is no atomicity across
+        the batch, and a Redis error for one task marks only that execution
+        failed.
+
+        Args:
+            calls: TaskCall specs built with :meth:`call`.
+            chunk_size: How many schedules to buffer client-side and send
+                per round-trip; ``None`` sends the whole batch as one
+                pipeline (fastest, but buffers every task's payload in
+                memory at once).
+
+        Returns:
+            One :class:`Execution` per call, in input order.  Each
+            execution's ``disposition`` reports its own outcome:
+            ``Disposition.SCHEDULED``, ``Disposition.ALREADY_SCHEDULED``,
+            ``Disposition.STRUCK``, or ``Disposition.FAILED`` (with the
+            error attached as ``Execution.schedule_exception``).
+        """
+        return await self._schedule_many(calls, replace=False, chunk_size=chunk_size)
+
+    async def replace_many(
+        self, calls: Iterable[TaskCall], *, chunk_size: int | None = 1000
+    ) -> list[Execution]:
+        """Replace a batch of tasks on the Docket in pipelined round-trips.
+
+        Semantically equivalent to awaiting :meth:`replace` for each
+        :class:`TaskCall`, but schedules travel to Redis in pipelined chunks
+        of ``chunk_size``, so a batch of N costs O(N / chunk_size)
+        round-trips instead of O(N).  Each task's prior schedule (if any) is
+        cancelled and overwritten individually and atomically; there is no
+        atomicity across the batch, and a Redis error for one task marks
+        only that execution failed.
+
+        Args:
+            calls: TaskCall specs built with :meth:`call`.  Pass an explicit
+                ``key`` to :meth:`call` to target the schedule to replace.
+            chunk_size: How many schedules to buffer client-side and send
+                per round-trip; ``None`` sends the whole batch as one
+                pipeline (fastest, but buffers every task's payload in
+                memory at once).
+
+        Returns:
+            One :class:`Execution` per call, in input order, with
+            ``disposition`` set to ``Disposition.SCHEDULED``,
+            ``Disposition.STRUCK``, or ``Disposition.FAILED`` (with the
+            error attached as ``Execution.schedule_exception``).
+        """
+        return await self._schedule_many(calls, replace=True, chunk_size=chunk_size)
+
+    def _check_stricken(self, execution: Execution) -> bool:
+        """Mark and count an execution blocked by a strike rule.
+
+        Shared by every scheduling path (``add``, ``replace``, ``schedule``,
+        and the batch methods) so the warning, the ``TASKS_STRICKEN``
+        counter, and the ``STRUCK`` disposition stay identical everywhere.
+        Returns True when the execution was blocked.
+        """
+        if not self.strike_list.is_stricken(execution):
+            return False
+
+        logger.warning(
+            "%r is stricken, skipping schedule of %r",
+            execution.function_name,
+            execution.key,
+        )
+        TASKS_STRICKEN.add(
+            1,
+            {
+                **self.labels(),
+                **execution.general_labels(),
+                "docket.where": "docket",
+            },
+        )
+        execution.disposition = Disposition.STRUCK
+        return True
+
+    def _record_schedule_metrics(self, execution: Execution, *, replace: bool) -> None:
+        """Increment the scheduling counters for one non-stricken execution,
+        exactly as the single-call ``add`` / ``replace`` paths always have.
+
+        Executions whose Redis command failed during a batch don't count:
+        nothing was added, replaced, or scheduled for them.
+        """
+        if execution.disposition is Disposition.FAILED:
+            return
+
+        labels = {**self.labels(), **execution.general_labels()}
+        if replace:
+            TASKS_REPLACED.add(1, labels)
+            TASKS_CANCELLED.add(1, labels)
+            TASKS_SCHEDULED.add(1, labels)
+        else:
+            TASKS_ADDED.add(1, labels)
+            if execution.disposition is Disposition.SCHEDULED:
+                TASKS_SCHEDULED.add(1, labels)
+
+    async def _schedule_many(
+        self, calls: Iterable[TaskCall], *, replace: bool, chunk_size: int | None
+    ) -> list[Execution]:
+        # Validate here as well as in schedule_many(), so a bad chunk_size is
+        # rejected even when the batch is empty or entirely stricken and
+        # nothing ever reaches Redis.
+        if chunk_size is not None and chunk_size < 1:
+            raise ValueError(f"chunk_size must be at least 1, got {chunk_size}")
+
+        executions = [
+            Execution(
+                self,
+                task_call.function,
+                task_call.args,
+                task_call.kwargs,
+                task_call.key,
+                task_call.when,
+                attempt=1,
+                function_name=task_call.function_name,
+            )
+            for task_call in calls
+        ]
+
+        span_name = "docket.replace_many" if replace else "docket.add_many"
+        with tracer.start_as_current_span(
+            span_name,
+            attributes={**self.labels(), "docket.batch.count": len(executions)},
+        ) as span:
+            to_schedule = [
+                execution
+                for execution in executions
+                if not self._check_stricken(execution)
+            ]
+
+            if to_schedule:
+                async with self.redis() as redis:
+                    await schedule_many(
+                        redis, to_schedule, replace=replace, chunk_size=chunk_size
+                    )
+
+            span.set_attribute(
+                "docket.batch.stricken", len(executions) - len(to_schedule)
+            )
+
+        for execution in executions:
+            if execution.disposition is not Disposition.STRUCK:
+                self._record_schedule_metrics(execution, replace=replace)
+
+        return executions
 
     async def schedule(self, execution: Execution) -> None:
         with tracer.start_as_current_span(
@@ -562,22 +768,7 @@ class Docket(DocketSnapshotMixin):
                 "code.function.name": execution.function_name,
             },
         ) as span:
-            # Check if task is stricken before scheduling
-            if self.strike_list.is_stricken(execution):
-                logger.warning(
-                    "%r is stricken, skipping schedule of %r",
-                    execution.function_name,
-                    execution.key,
-                )
-                TASKS_STRICKEN.add(
-                    1,
-                    {
-                        **self.labels(),
-                        **execution.general_labels(),
-                        "docket.where": "docket",
-                    },
-                )
-                execution.disposition = Disposition.STRUCK
+            if self._check_stricken(execution):
                 span.set_attribute("docket.disposition", execution.disposition.value)
                 return
 

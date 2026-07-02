@@ -114,6 +114,12 @@ class Pipeline(Protocol):
     """
 
     def delete(self, *names: KeyT) -> "Pipeline": ...
+    def eval(
+        self, script: str | bytes, numkeys: int, *keys_and_args: EncodableT
+    ) -> "Pipeline": ...
+    def evalsha(
+        self, sha: str | bytes, numkeys: int, *keys_and_args: EncodableT
+    ) -> "Pipeline": ...
     def expire(self, name: KeyT, time: ExpiryT) -> "Pipeline": ...
     def hgetall(self, name: KeyT) -> "Pipeline": ...
     def hincrby(self, name: KeyT, key: KeyT, amount: int = 1) -> "Pipeline": ...
@@ -532,6 +538,18 @@ class RedisClient(Protocol):
 
 class MemoryRedisClient(RedisClient, AsyncCloseable, Protocol):
     """Protocol for the in-process Redis client used by memory:// URLs."""
+
+
+def is_cluster_client(redis: RedisClient) -> bool:
+    """True when ``redis`` speaks to a Redis Cluster rather than a single server.
+
+    Callers that only hold a client (not the :class:`RedisConnection` that
+    created it, whose ``is_cluster`` answers this from the URL scheme) can
+    use this to pick cluster-safe command strategies -- e.g. full-source
+    ``EVAL`` instead of ``EVALSHA`` in pipelines, since a cluster node's
+    script cache can't be relied upon across failover and resharding.
+    """
+    return isinstance(redis, RedisCluster)
 
 
 async def close_resource(resource: AsyncCloseable, name: str) -> None:

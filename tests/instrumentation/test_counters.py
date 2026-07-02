@@ -107,6 +107,95 @@ async def test_cancelling_a_task_increments_counter(
     TASKS_CANCELLED.assert_called_once_with(1, {"docket.name": docket.name})
 
 
+async def test_add_many_increments_counters_per_execution(
+    docket: Docket,
+    the_task: AsyncMock,
+    task_labels: dict[str, str],
+    TASKS_ADDED: Mock,
+    TASKS_REPLACED: Mock,
+    TASKS_SCHEDULED: Mock,
+):
+    """A batch add counts each execution exactly like N single adds."""
+    await docket.add_many([docket.call(the_task)(), docket.call(the_task)()])
+
+    assert TASKS_ADDED.call_count == 2
+    assert TASKS_SCHEDULED.call_count == 2
+    TASKS_ADDED.assert_called_with(1, task_labels)
+    TASKS_SCHEDULED.assert_called_with(1, task_labels)
+    TASKS_REPLACED.assert_not_called()
+
+
+async def test_replace_many_increments_counters_per_execution(
+    docket: Docket,
+    the_task: AsyncMock,
+    task_labels: dict[str, str],
+    TASKS_ADDED: Mock,
+    TASKS_REPLACED: Mock,
+    TASKS_CANCELLED: Mock,
+    TASKS_SCHEDULED: Mock,
+):
+    """A batch replace counts each execution exactly like N single replaces."""
+    when = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    await docket.replace_many(
+        [
+            docket.call(the_task, when=when, key="replace-a")(),
+            docket.call(the_task, when=when, key="replace-b")(),
+        ]
+    )
+
+    TASKS_ADDED.assert_not_called()
+    assert TASKS_REPLACED.call_count == 2
+    assert TASKS_CANCELLED.call_count == 2
+    assert TASKS_SCHEDULED.call_count == 2
+    TASKS_REPLACED.assert_called_with(1, task_labels)
+
+
+async def test_add_many_counts_deduplicated_tasks_as_added_but_not_scheduled(
+    docket: Docket,
+    the_task: AsyncMock,
+    TASKS_ADDED: Mock,
+    TASKS_SCHEDULED: Mock,
+):
+    """A deduplicated key counts as added but not scheduled, matching add()."""
+    await docket.add_many(
+        [
+            docket.call(the_task, key="dup")(),
+            docket.call(the_task, key="dup")(),
+        ]
+    )
+
+    assert TASKS_ADDED.call_count == 2
+    assert TASKS_SCHEDULED.call_count == 1
+
+
+@pytest.fixture
+def TASKS_STRICKEN(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Mock for the TASKS_STRICKEN counter."""
+    mock_obj = Mock(spec=Counter.add)
+    monkeypatch.setattr("docket.instrumentation.TASKS_STRICKEN.add", mock_obj)
+    return mock_obj
+
+
+async def test_add_many_counts_stricken_tasks_individually(
+    docket: Docket,
+    the_task: AsyncMock,
+    another_task: AsyncMock,
+    task_labels: dict[str, str],
+    TASKS_ADDED: Mock,
+    TASKS_STRICKEN: Mock,
+):
+    """Strikes count per blocked execution; the rest count as added."""
+    docket.register(the_task)
+    docket.register(another_task)
+    await docket.strike("the_task")
+
+    await docket.add_many([docket.call(the_task)(), docket.call(another_task)()])
+
+    TASKS_STRICKEN.assert_called_once_with(1, {**task_labels, "docket.where": "docket"})
+    assert TASKS_ADDED.call_count == 1
+
+
 @pytest.fixture
 def worker_labels(
     docket: Docket, worker: Worker, the_task: AsyncMock

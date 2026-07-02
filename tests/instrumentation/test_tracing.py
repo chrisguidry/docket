@@ -258,6 +258,51 @@ async def test_admission_blocked_span_has_ok_status(
         )
 
 
+async def test_add_many_emits_one_batch_span(
+    docket: Docket, span_exporter: InMemorySpanExporter
+):
+    """A batch add emits one docket.add_many span with a count attribute,
+    not one docket.add span per task -- span volume is itself overhead on
+    hot fan-out paths."""
+
+    async def the_task() -> None:
+        pass  # pragma: no cover
+
+    await docket.add_many(docket.call(the_task)() for _ in range(5))
+
+    spans = span_exporter.get_finished_spans()
+    (batch_span,) = [span for span in spans if span.name == "docket.add_many"]
+    assert batch_span.attributes
+    assert batch_span.attributes["docket.name"] == docket.name
+    assert batch_span.attributes["docket.batch.count"] == 5
+    assert batch_span.attributes["docket.batch.stricken"] == 0
+
+    assert not [span for span in spans if span.name == "docket.add"]
+
+
+async def test_replace_many_emits_one_batch_span(
+    docket: Docket, span_exporter: InMemorySpanExporter
+):
+    """A batch replace emits one docket.replace_many span, not N
+    docket.replace spans."""
+
+    async def the_task() -> None:
+        pass  # pragma: no cover
+
+    await docket.replace_many(
+        docket.call(the_task, key=f"replace-span-{index}")() for index in range(4)
+    )
+
+    spans = span_exporter.get_finished_spans()
+    (batch_span,) = [span for span in spans if span.name == "docket.replace_many"]
+    assert batch_span.attributes
+    assert batch_span.attributes["docket.name"] == docket.name
+    assert batch_span.attributes["docket.batch.count"] == 4
+    assert batch_span.attributes["docket.batch.stricken"] == 0
+
+    assert not [span for span in spans if span.name == "docket.replace"]
+
+
 async def test_message_getter_returns_none_for_missing_key():
     """Should return None when a key is not present in the message."""
 

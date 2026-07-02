@@ -199,6 +199,51 @@ async def test_keys_and_args_arrive_in_declaration_order(docket: Docket) -> None
     ]
 
 
+async def test_positional_script_parameters_are_rejected(docket: Docket) -> None:
+    """Key/Arg values must be passed by keyword.
+
+    The wrapper looks arguments up by name, so a positional value would be
+    silently dropped -- the guard turns that into an immediate TypeError.
+    """
+    async with docket.redis() as redis:
+        with pytest.raises(TypeError, match="keyword only"):
+            await _echo_bool(redis, _k(docket, "k"), flag=True)  # pyright: ignore[reportCallIssue]
+
+
+async def test_enqueue_rejects_positional_script_parameters(docket: Docket) -> None:
+    """The pipelined form applies the same keyword-only guard."""
+    async with docket.redis() as redis:
+        pipeline = redis.pipeline()
+        with pytest.raises(TypeError, match="keyword only"):
+            _echo_bool.enqueue(pipeline, _k(docket, "k"), flag=True)  # pyright: ignore[reportCallIssue]
+
+
+async def test_enqueue_shares_one_pipelined_round_trip() -> None:
+    """N enqueued EVALSHAs execute together after one SCRIPT LOAD.
+
+    Runs against the in-process memory backend on every CI leg, because
+    redis-py refuses pipelined EVALSHA in cluster mode outright -- the very
+    reason ``schedule_many()`` switches to ``enqueue_eval()`` on clusters.
+    """
+    async with Docket(name="enqueue-evalsha", url="memory://enqueue-evalsha") as docket:
+        async with docket.redis() as redis:
+            await redis.script_load(_echo_bool.lua)
+            async with redis.pipeline() as pipeline:
+                _echo_bool.enqueue(pipeline, key=_k(docket, "k"), flag=True)
+                _echo_bool.enqueue(pipeline, key=_k(docket, "k"), flag=False)
+                assert await pipeline.execute() == [b"1", b"0"]
+
+
+async def test_enqueue_eval_carries_the_full_source(docket: Docket) -> None:
+    """enqueue_eval ships the Lua source with each command, so it works
+    without any prior SCRIPT LOAD -- the property the cluster path relies on."""
+    async with docket.redis() as redis:
+        async with redis.pipeline() as pipeline:
+            _echo_bool.enqueue_eval(pipeline, key=_k(docket, "k"), flag=True)
+            _echo_bool.enqueue_eval(pipeline, key=_k(docket, "k"), flag=False)
+            assert await pipeline.execute() == [b"1", b"0"]
+
+
 async def test_bool_encodes_as_one_or_zero(docket: Docket) -> None:
     async with docket.redis() as redis:
         true_value = await _echo_bool(redis, key=_k(docket, "k"), flag=True)
@@ -324,8 +369,10 @@ def test_missing_docstring_is_rejected_at_decoration_time() -> None:
 
 def test_missing_redis_parameter_is_rejected_at_decoration_time() -> None:
     with pytest.raises(TypeError, match="must take a RedisClient"):
-
-        @redis_script
+        # The decorator's signature requires a leading RedisClient parameter,
+        # so this invalid shape is now also a static error -- keep the runtime
+        # check covered anyway.
+        @redis_script  # pyright: ignore[reportArgumentType]
         async def no_redis(*, key: Key[str]) -> bytes:  # pyright: ignore[reportUnusedFunction]
             """return 'x'"""
             ...

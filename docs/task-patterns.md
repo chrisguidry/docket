@@ -31,6 +31,55 @@ async def process_single_order(order_id: int) -> None:
 
 This pattern separates discovery (finding work) from execution (doing work), allowing for better load distribution and fault isolation. The perpetual task stays lightweight and fast, while the actual work is distributed across many workers.
 
+## Batch Scheduling with add_many and replace_many
+
+Scheduling in a loop costs one Redis round-trip per task, which adds up
+quickly when flooding hundreds of tasks from a hot code path. The batch
+methods collapse the whole fan-out into a single pipelined round-trip:
+
+```python
+from docket import CurrentDocket, Docket
+
+async def find_pending_orders(docket: Docket = CurrentDocket()) -> None:
+    pending_orders = await database.fetch_pending_orders()
+
+    await docket.add_many(
+        docket.call(process_single_order)(order.id)
+        for order in pending_orders
+    )
+```
+
+`docket.call(...)` mirrors the currying of `docket.add(...)` — the same
+`when` and `key` parameters, the same argument type-checking — but returns a
+`TaskCall` spec instead of scheduling anything. Passing a batch of specs to
+`add_many` (or `replace_many`) schedules them all in one round-trip and
+returns one `Execution` per call, in order.
+
+Per-task semantics are exactly the single-call semantics: each task is
+individually checked against the strike list, deduplicated by key, and
+scheduled atomically. Each execution's `disposition` reports its own
+outcome (`SCHEDULED`, `ALREADY_SCHEDULED`, `STRUCK`, or `FAILED` with the
+error attached as `schedule_exception`); there is no atomicity across the
+batch, and a Redis error for one task never poisons the others.
+
+Very large batches are sent in chunks of `chunk_size` (default 1,000) to
+bound how much is buffered client-side per round-trip — still
+O(N / chunk_size) round-trips rather than O(N). Tune it up (or pass
+`chunk_size=None` for a single pipeline) when round-trips matter more than
+memory, or down for gentler pacing.
+
+`replace_many` is the batched form of `replace`, useful for periodically
+re-scheduling a fleet of keyed tasks:
+
+```python
+next_check = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+await docket.replace_many(
+    docket.call(check_freshness, when=next_check, key=f"freshness-{d.id}")(d.id)
+    for d in deployments
+)
+```
+
 ## Task Scattering with Agenda
 
 For "find-and-flood" workloads, you often want to distribute a batch of tasks over time rather than scheduling them all immediately. The `Agenda` class collects related tasks and scatters them evenly across a time window.

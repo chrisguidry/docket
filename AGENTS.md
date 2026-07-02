@@ -97,6 +97,7 @@ prose ride along to a PR. Only switch into the skill's standalone
 - **`Docket`** (`src/docket/docket.py`): Central task registry and scheduler
   - `add()`: Schedule tasks for execution
   - `replace()`: Replace existing scheduled tasks
+  - `call()` + `add_many()`/`replace_many()`: Batch scheduling in one pipelined round-trip
   - `cancel()`: Cancel pending tasks
   - `strike()`/`restore()`: Conditionally block/unblock tasks
   - `snapshot()`: Get current state for observability

@@ -31,7 +31,13 @@ from .dependencies import (
     Timeout,
 )
 from .docket import Docket
-from .execution import Disposition, Execution, ExecutionCancelled, ExecutionState
+from .execution import (
+    Disposition,
+    Execution,
+    ExecutionCancelled,
+    ExecutionState,
+    TaskCall,
+)
 from .strikelist import StrikeList
 from .worker import Worker
 from . import testing
@@ -61,6 +67,7 @@ __all__ = [
     "Shared",
     "StrikeList",
     "TaskArgument",
+    "TaskCall",
     "TaskKey",
     "TaskLogger",
     "testing",

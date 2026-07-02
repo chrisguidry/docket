@@ -128,6 +128,19 @@ await docket.cancel(key)
 
 Cancellation is best-effort: tasks waiting in the stream or queue are removed atomically, but a task already running by the time the cancel arrives may complete before the signal is processed.
 
+When you're scheduling many tasks at once, `add_many` and `replace_many`
+send the whole batch to Redis in a single pipelined round-trip instead of
+one round-trip per task:
+
+```python
+await docket.add_many(
+    docket.call(send_notification)(user_id, "Welcome!")
+    for user_id in new_user_ids
+)
+```
+
+See [Batch Scheduling](task-patterns.md#batch-scheduling-with-add_many-and-replace_many) for the details.
+
 ## Running Tasks: Workers
 
 Tasks don't execute automatically - you need workers to process them. A worker connects to the same docket and continuously pulls tasks from the queue.

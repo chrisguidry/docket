@@ -1,10 +1,10 @@
 """Declarative Lua-script wrappers.
 
 The ``@redis_script`` decorator collapses each Lua-backed Redis operation
-into a single async function whose signature *is* the wrapper's calling
-contract and whose docstring *is* the Lua source.  Compared with the
-hand-rolled ``redis.register_script`` + lazy-singleton pattern, every
-script gains:
+into a single callable :class:`RedisScript` whose signature *is* the
+declared function's calling contract and whose docstring *is* the Lua
+source.  Compared with the hand-rolled ``redis.register_script`` +
+lazy-singleton pattern, every script gains:
 
 * SHA1 computed once at decoration time and reused forever -- no
   per-call ``register_script`` hash work.
@@ -14,6 +14,12 @@ script gains:
 * Encoding rules (``bool`` -> ``"1"``/``"0"``, numbers -> ``str``, dicts
   flattened, lists/tuples spread) centralised here instead of repeated
   at every call site.
+* Pipelined forms: ``script.enqueue(pipeline, **same_kwargs)`` queues
+  the EVALSHA on a pipeline so N invocations share one round-trip (after
+  a ``script_load`` on the client, since a pipelined EVALSHA can't fall
+  back on ``NOSCRIPT``), and ``script.enqueue_eval(...)`` sends the full
+  source instead for servers whose script cache can't be relied on --
+  the only pipelined form Redis Cluster permits.
 
 Authoring shape:
 
@@ -51,7 +57,10 @@ from typing import (
     Any,
     Awaitable,
     Callable,
+    Concatenate,
+    Generic,
     Mapping,
+    ParamSpec,
     Sequence,
     TypeAlias,
     TypeVar,
@@ -62,7 +71,7 @@ from typing import (
 
 from redis.commands.core import AsyncScript
 
-from ._redis import RedisClient
+from ._redis import Pipeline, RedisClient
 
 
 # Marker classes used as ``Annotated`` metadata.  The class objects
@@ -110,7 +119,8 @@ A ``dict`` flattens into alternating field/value pairs in insertion order
 same per-value encoding rules as ``Arg``.
 """
 
-_F = TypeVar("_F", bound=Callable[..., Awaitable[Any]])
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 
 def _encode_scalar(value: Any) -> str | bytes | int | float:
@@ -212,11 +222,117 @@ def _generate_preamble(
     return "\n".join(lines)
 
 
-def redis_script(fn: _F) -> _F:
+class RedisScript(Generic[_P, _R]):
+    """A declared Lua script, callable directly or enqueueable on a pipeline.
+
+    Calling the script executes it immediately (one ``EVALSHA`` round-trip
+    with a ``NOSCRIPT`` reload fallback).  ``enqueue()`` instead queues the
+    same ``EVALSHA`` on a pipeline, so N script invocations can share a
+    single round-trip; callers are responsible for ensuring the script is
+    loaded first (``await redis.script_load(script.lua)``), because a
+    pipelined ``EVALSHA`` cannot fall back on ``NOSCRIPT``.
+    ``enqueue_eval()`` queues a full-source ``EVAL`` instead, for servers
+    (Redis Cluster nodes) whose script cache can't be relied upon.
+
+    Script parameters are keyword-only at runtime: every ``Key``/``Arg``/
+    ``Args`` value must be passed by name, matching the declared function's
+    keyword-only signature.
+    """
+
+    def __init__(
+        self,
+        fn: Callable[..., Awaitable[Any]],
+        lua: str,
+        key_params: list[str],
+        arg_params: list[tuple[str, _Marker, Any]],
+    ) -> None:
+        functools.update_wrapper(self, fn)
+        self.lua = lua
+        self._key_params = key_params
+        self._arg_params = arg_params
+        # Pre-encode to bytes so ``AsyncScript.__init__`` skips its
+        # client-encoder lookup; then put the ``str`` back on ``.script``
+        # because burner's ``script_load`` (used on the NOSCRIPT path)
+        # rejects bytes.
+        self._script: AsyncScript = AsyncScript(None, lua.encode("utf-8"))  # type: ignore[arg-type]
+        self._script.script = lua
+
+    @property
+    def sha(self) -> str:
+        return self._script.sha
+
+    def _keys_and_argv(
+        self, args: tuple[Any, ...], kwargs: Mapping[str, Any]
+    ) -> tuple[list[Any], list[Any]]:
+        # The declared functions take every Key/Arg/Args parameter as
+        # keyword-only, so anything positional would be silently dropped by
+        # the name-based lookups below -- reject it loudly instead.
+        if args:
+            raise TypeError(
+                f"{self.__name__} takes script parameters by keyword only, "
+                f"but got {len(args)} positional argument(s)"
+            )
+        keys: list[Any] = [kwargs[name] for name in self._key_params]
+        argv: list[Any] = []
+        for name, kind, _ in self._arg_params:
+            value = kwargs[name]
+            if kind is _Args:
+                argv.extend(_expand_args(value))
+            else:
+                argv.append(_encode_scalar(value))
+        return keys, argv
+
+    # Hot-path call: redis is the first positional, everything else is by
+    # keyword.  Bypass ``inspect.Signature.bind`` (~20-50 us/call) -- we
+    # already parsed the parameter ordering at decoration time and the
+    # callers always pass keyword arguments.
+    async def __call__(
+        self, redis: RedisClient, /, *args: _P.args, **kwargs: _P.kwargs
+    ) -> _R:
+        keys, argv = self._keys_and_argv(args, kwargs)
+        return await self._script(keys=keys, args=argv, client=redis)  # type: ignore[arg-type]
+
+    def enqueue(
+        self, pipeline: Pipeline, /, *args: _P.args, **kwargs: _P.kwargs
+    ) -> None:
+        """Queue this script's EVALSHA on ``pipeline`` without executing it.
+
+        The reply appears in ``pipeline.execute()``'s results at this
+        command's position.  Unlike ``__call__``, there is no ``NOSCRIPT``
+        fallback -- load the script into the server's script cache first via
+        ``await redis.script_load(script.lua)``.  Not usable with cluster
+        pipelines: redis-py blocks pipelined EVALSHA in cluster mode; use
+        ``enqueue_eval`` there instead.
+        """
+        keys, argv = self._keys_and_argv(args, kwargs)
+        pipeline.evalsha(self.sha, len(keys), *keys, *argv)
+
+    def enqueue_eval(
+        self, pipeline: Pipeline, /, *args: _P.args, **kwargs: _P.kwargs
+    ) -> None:
+        """Queue this script as a full-source EVAL on ``pipeline``.
+
+        Unlike ``enqueue``, the Lua source travels with the command, so
+        nothing depends on the server's script cache.  This is the only
+        pipelined form that works on Redis Cluster: redis-py blocks
+        pipelined EVALSHA there outright, and even if it didn't, a command
+        could land on a node whose cache has never seen the script (after
+        failover or resharding) with no NOSCRIPT fallback available.
+        """
+        keys, argv = self._keys_and_argv(args, kwargs)
+        pipeline.eval(self.lua, len(keys), *keys, *argv)
+
+
+def redis_script(
+    fn: Callable[Concatenate[RedisClient, _P], Awaitable[_R]],
+) -> RedisScript[_P, _R]:
     """Wrap an async function declaring a Lua script as its docstring.
 
-    See the module docstring for the authoring contract and the encoding
-    rules applied to ``Arg`` / ``Args`` parameters.
+    Returns a :class:`RedisScript`: call it exactly like the declared
+    function to execute immediately, or use ``.enqueue(pipeline, ...)`` to
+    queue it on a pipeline.  See the module docstring for the authoring
+    contract and the encoding rules applied to ``Arg`` / ``Args``
+    parameters.
     """
     body = inspect.getdoc(fn)
     if not body:
@@ -277,36 +393,13 @@ def redis_script(fn: _F) -> _F:
     preamble = _generate_preamble(key_params, arg_params)
     lua = f"{preamble}\n\n{body}" if preamble else body
 
-    # Pre-encode to bytes so ``AsyncScript.__init__`` skips its
-    # client-encoder lookup; then put the ``str`` back on ``.script``
-    # because burner's ``script_load`` (used on the NOSCRIPT path)
-    # rejects bytes.
-    script: AsyncScript = AsyncScript(None, lua.encode("utf-8"))  # type: ignore[arg-type]
-    script.script = lua
-
-    # Hot-path call: redis is the first positional, everything else is by
-    # keyword.  Bypass ``inspect.Signature.bind`` (~20-50 us/call) -- we
-    # already parsed the parameter ordering at decoration time and the
-    # callers always pass keyword arguments.
-    @functools.wraps(fn)
-    async def wrapper(redis: RedisClient, **kwargs: Any) -> Any:
-        keys: list[Any] = [kwargs[name] for name in key_params]
-        argv: list[Any] = []
-        for name, kind, _ in arg_params:
-            value = kwargs[name]
-            if kind is _Args:
-                argv.extend(_expand_args(value))
-            else:
-                argv.append(_encode_scalar(value))
-        return await script(keys=keys, args=argv, client=redis)  # type: ignore[arg-type]
-
-    wrapper.__lua__ = lua  # type: ignore[attr-defined]
-    return cast(_F, wrapper)
+    return RedisScript(fn, lua, key_params, arg_params)
 
 
 __all__ = [
     "Arg",
     "Args",
     "Key",
+    "RedisScript",
     "redis_script",
 ]

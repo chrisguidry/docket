@@ -5,6 +5,7 @@ import inspect
 import json
 import logging
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import (
     TYPE_CHECKING,
@@ -14,6 +15,7 @@ from typing import (
     Callable,
     Generator,
     Mapping,
+    Sequence,
 )
 
 import cloudpickle
@@ -34,7 +36,7 @@ from uncalled_for.introspection import (
 
 from ._execution_progress import ExecutionProgress, ProgressEvent, StateEvent
 from ._lua import Arg, Args, Key, redis_script
-from ._redis import RedisClient
+from ._redis import RedisClient, is_cluster_client
 from .annotations import Logged
 from .instrumentation import CACHE_SIZE, message_getter, message_setter
 
@@ -239,6 +241,94 @@ async def _schedule(
     return 'OK'
     """
     ...
+
+
+async def schedule_many(
+    redis: RedisClient,
+    executions: "Sequence[Execution]",
+    *,
+    replace: bool,
+    chunk_size: int | None = 1000,
+) -> None:
+    """Schedule N executions in O(N / chunk_size) pipelined round-trips.
+
+    Runs the same ``_schedule`` script as ``Execution.schedule()`` for each
+    execution, but queued on non-transactional pipelines instead of one
+    round-trip apiece.  Each script invocation is still individually atomic
+    in Redis, so per-key dedup/replace semantics are identical to the
+    single-call path; there is intentionally no atomicity *across* the
+    batch.  Each execution's ``disposition`` and ``state`` are updated from
+    its own reply, and a per-command Redis error marks just that execution
+    ``Disposition.FAILED`` (with the exception attached as
+    ``Execution.schedule_exception``) rather than aborting the rest of the
+    batch.  Connection-level failures still raise; executions in chunks
+    that never reached Redis keep ``Disposition.LOADED``.
+
+    ``chunk_size`` bounds how many schedules are buffered client-side and
+    sent per round-trip: smaller chunks bound memory and give other clients
+    more room to interleave, larger chunks minimize round-trips.  Pass
+    ``None`` to send the entire batch as one pipeline.
+
+    On standalone Redis and the memory backend, each invocation is an
+    EVALSHA primed by one idempotent ``SCRIPT LOAD`` (a pipelined EVALSHA
+    has no NOSCRIPT fallback).  On Redis Cluster, the full source is sent
+    with EVAL instead: redis-py blocks pipelined EVALSHA in cluster mode,
+    and a node's script cache can't be relied upon across failover and
+    resharding anyway.
+
+    Unlike ``Execution.schedule()``, no per-key ``{key}:lock`` is taken:
+    that lock guards nothing beyond the single atomic ``_schedule`` script
+    call (no other code acquires it), and pipelined invocations already
+    serialize in Redis, so the batch path deliberately skips it.
+    """
+    if chunk_size is not None and chunk_size < 1:
+        raise ValueError(f"chunk_size must be at least 1, got {chunk_size}")
+
+    if not executions:
+        return
+
+    # A conditional expression (not an if/else) so each CI backend leg can
+    # still reach 100% branch coverage: only cluster legs take the EVAL arm.
+    enqueue_schedule = (
+        _schedule.enqueue_eval if is_cluster_client(redis) else _schedule.enqueue
+    )
+    # Prime the script cache for the EVALSHA path.  SCRIPT LOAD is idempotent
+    # and O(1) per batch; on a cluster (where the EVAL arm carries its own
+    # source) it is a redundant-but-harmless broadcast to the primaries,
+    # which keeps this function free of per-backend branches.
+    await redis.script_load(_schedule.lua)
+
+    per_round_trip = chunk_size if chunk_size is not None else len(executions)
+    for chunk_start in range(0, len(executions), per_round_trip):
+        chunk = executions[chunk_start : chunk_start + per_round_trip]
+        per_execution: list[tuple[Execution, dict[str, Any], bool]] = [
+            (execution, *execution._schedule_script_args(replace))  # pyright: ignore[reportPrivateUsage]
+            for execution in chunk
+        ]
+
+        # Non-transactional: wrapping a chunk in MULTI/EXEC would make it one
+        # uninterruptible block on the server, head-of-line-blocking worker
+        # claims and heartbeats, and per-execution semantics don't need it.
+        try:
+            pipeline = redis.pipeline(transaction=False)
+        except TypeError:  # pragma: no cover - burner's pipeline() takes no arguments
+            # The in-process memory backend executes commands sequentially
+            # with no MULTI/EXEC concept, so its default pipeline already
+            # behaves this way.
+            pipeline = redis.pipeline()
+        async with pipeline:
+            for _, script_args, _ in per_execution:
+                enqueue_schedule(pipeline, **script_args)
+            replies = await pipeline.execute(raise_on_error=False)
+
+        for (execution, _, is_immediate), reply in zip(
+            per_execution, replies, strict=True
+        ):
+            if isinstance(reply, Exception):
+                execution.disposition = Disposition.FAILED
+                execution.schedule_exception = reply
+            else:
+                execution._apply_schedule_reply(reply, is_immediate)  # pyright: ignore[reportPrivateUsage]
 
 
 @redis_script
@@ -446,6 +536,30 @@ class Disposition(enum.Enum):
     STRUCK = "struck"
     """A strike rule blocked the call before any Redis state was touched."""
 
+    FAILED = "failed"
+    """The Redis command scheduling this task returned an error.  Only
+    possible with ``Docket.add_many`` / ``Docket.replace_many``, which record
+    each execution's error instead of aborting the batch; the underlying
+    exception is attached as ``Execution.schedule_exception``."""
+
+
+@dataclass(frozen=True)
+class TaskCall:
+    """A fully-resolved request to schedule one task.
+
+    Built with :meth:`Docket.call` and consumed in bulk by
+    :meth:`Docket.add_many` / :meth:`Docket.replace_many`.  All scheduling
+    inputs (function, arguments, key, and time) are resolved at construction,
+    so a ``TaskCall`` describes exactly one future execution.
+    """
+
+    function: TaskFunction
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    key: str
+    when: datetime
+    function_name: str | None = None
+
 
 class Execution:
     """Represents a task execution with state management and progress tracking.
@@ -501,6 +615,9 @@ class Execution:
         self.error: str | None = None
         self.result_key: str | None = None
         self.disposition: Disposition = Disposition.LOADED
+        # Set alongside Disposition.FAILED when a batch schedule's Redis
+        # command errored for this execution specifically.
+        self.schedule_exception: BaseException | None = None
 
         # Progress tracking
         self.progress: ExecutionProgress = ExecutionProgress(docket, key)
@@ -686,12 +803,36 @@ class Execution:
             schedule is preserved and no local state changes are published).
             Sets ``self.disposition`` to the same value.
         """
+        script_args, is_immediate = self._schedule_script_args(
+            replace, reschedule_message
+        )
+        known_task_key = self.docket.known_task_key(self.key)
+
+        async with self.docket.redis() as redis:
+            # Lock per task key to prevent race conditions between concurrent operations
+            async with redis.lock(f"{known_task_key}:lock", timeout=10):
+                reply = await _schedule(redis, **script_args)
+
+        return self._apply_schedule_reply(reply, is_immediate, reschedule_message)
+
+    def _schedule_script_args(
+        self,
+        replace: bool,
+        reschedule_message: "RedisMessageID | None" = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Build the keyword arguments for one ``_schedule`` script invocation.
+
+        Shared by the single-call path (``schedule()``) and the batch path
+        (``schedule_many``), so both schedule with identical semantics.
+        Returns the kwargs plus the ``is_immediate`` decision (stream vs.
+        queue), which the caller must hand back to
+        ``_apply_schedule_reply`` when interpreting the script's reply.
+        """
         message: dict[bytes, bytes] = self.as_message()
         propagate.inject(message, setter=message_setter)
 
         key = self.key
         when = self.when
-        known_task_key = self.docket.known_task_key(key)
         is_immediate = when <= datetime.now(timezone.utc)
 
         # The Lua takes the payload as a pre-formatted string so it can just
@@ -713,28 +854,32 @@ class Execution:
             }
         )
 
-        async with self.docket.redis() as redis:
-            # Lock per task key to prevent race conditions between concurrent operations
-            async with redis.lock(f"{known_task_key}:lock", timeout=10):
-                reply = await _schedule(
-                    redis,
-                    stream_key=self.docket.stream_key,
-                    known_key=known_task_key,
-                    parked_key=self.docket.parked_task_key(key),
-                    queue_key=self.docket.queue_key,
-                    stream_id_key=self.docket.stream_id_key(key),
-                    runs_key=self._redis_key,
-                    state_channel=self.docket.key(f"state:{key}"),
-                    task_key=key,
-                    when_timestamp=when.timestamp(),
-                    is_immediate=is_immediate,
-                    replace=replace,
-                    reschedule_message_id=reschedule_message or b"",
-                    worker_group_name=self.docket.worker_group_name,
-                    state_payload=state_payload,
-                    message=message,
-                )
+        script_args: dict[str, Any] = {
+            "stream_key": self.docket.stream_key,
+            "known_key": self.docket.known_task_key(key),
+            "parked_key": self.docket.parked_task_key(key),
+            "queue_key": self.docket.queue_key,
+            "stream_id_key": self.docket.stream_id_key(key),
+            "runs_key": self._redis_key,
+            "state_channel": self.docket.key(f"state:{key}"),
+            "task_key": key,
+            "when_timestamp": when.timestamp(),
+            "is_immediate": is_immediate,
+            "replace": replace,
+            "reschedule_message_id": reschedule_message or b"",
+            "worker_group_name": self.docket.worker_group_name,
+            "state_payload": state_payload,
+            "message": message,
+        }
+        return script_args, is_immediate
 
+    def _apply_schedule_reply(
+        self,
+        reply: bytes | str,
+        is_immediate: bool,
+        reschedule_message: "RedisMessageID | None" = None,
+    ) -> Disposition:
+        """Fold one ``_schedule`` script reply back into this execution."""
         if reply in (b"EXISTS", "EXISTS"):
             # An existing schedule for this key remains untouched; leave local
             # state alone and do not publish a misleading state event.
