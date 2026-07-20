@@ -54,6 +54,14 @@ logger: logging.Logger = logging.getLogger(__name__)
 # keepalive still detects genuinely dead peers.
 BLOCKING_READ_SOCKET_TIMEOUT: float | None = None
 
+# TCP connects are different: a connect that stalls (dropped SYNs on an
+# overloaded host) has no server-side work to wait for, so an unbounded hang
+# is never useful.  Without an explicit value, redis-py inherits the read
+# timeout above -- unbounded -- for connects too.  Bounding it lets redis-py's
+# retry layer surface a stalled connect as an error instead of hanging the
+# caller (a worker clearing its heartbeat during shutdown, for example).
+CONNECT_TIMEOUT: float = 10.0
+
 
 # ---------------------------------------------------------------------------
 # Input type aliases (mirror redis-py's type domain)
@@ -227,6 +235,22 @@ class PubSubClient(Protocol):
     ) -> dict[str, Any] | None: ...
     def listen(self) -> AsyncIterator[dict[str, Any]]: ...
     async def aclose(self) -> None: ...
+
+
+async def confirm_subscriptions(pubsub: PubSubClient, count: int) -> None:
+    """Block until the server has confirmed ``count`` subscription commands.
+
+    ``PubSub.subscribe()`` only sends the SUBSCRIBE command; the server's
+    confirmation arrives later as the first pub/sub message.  A publisher on
+    another connection can therefore beat the subscription unless the caller
+    waits for the confirmation before signaling readiness.
+
+    Subscription confirmations are delivered on a fresh connection before any
+    published message can arrive, so consuming the first ``count`` messages
+    consumes exactly the confirmations.
+    """
+    for _ in range(count):
+        await pubsub.get_message(ignore_subscribe_messages=False, timeout=None)
 
 
 # ---------------------------------------------------------------------------
@@ -791,7 +815,9 @@ class RedisConnection:
             An initialized RedisCluster client ready for use
         """
         client: RedisCluster = RedisCluster.from_url(
-            self._normalized_url(), socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT
+            self._normalized_url(),
+            socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
+            socket_connect_timeout=CONNECT_TIMEOUT,
         )
         await client.initialize()
         return client
@@ -821,6 +847,7 @@ class RedisConnection:
             else Connection,
             decode_responses=False,
             socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
+            socket_connect_timeout=CONNECT_TIMEOUT,
         )
 
     async def _connection_pool_from_url(
@@ -845,11 +872,13 @@ class RedisConnection:
                 self.url,
                 decode_responses=decode_responses,
                 socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
+                socket_connect_timeout=CONNECT_TIMEOUT,
             )
         return ConnectionPool.from_url(  # pyright: ignore[reportUnknownMemberType]
             self.url,
             decode_responses=decode_responses,
             socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
+            socket_connect_timeout=CONNECT_TIMEOUT,
         )
 
     async def _get_or_create_memory_client(self) -> MemoryRedisClient:

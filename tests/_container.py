@@ -55,8 +55,11 @@ class ACLCredentials:
 
 @contextmanager
 def sync_redis(url: str) -> Generator[Redis, None, None]:
+    # redis-py 8 defaults the sync client's socket_timeout to 5s, which a
+    # FLUSHALL on a busy CI container can exceed.  Keep reads bounded but
+    # generous so fixture setup fails only when Redis is genuinely stuck.
     pool: ConnectionPool | None = None
-    redis = Redis.from_url(url)  # type: ignore
+    redis = Redis.from_url(url, socket_timeout=30)  # type: ignore
     try:
         with redis:
             pool = redis.connection_pool
@@ -82,7 +85,7 @@ def wait_for_redis(port: int) -> None:
             with administrative_redis(port) as r:
                 if r.ping():  # type: ignore
                     return
-        except redis.exceptions.ConnectionError:
+        except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
             time.sleep(0.1)
 
 

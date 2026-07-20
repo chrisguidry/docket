@@ -36,7 +36,7 @@ from uncalled_for.introspection import (
 
 from ._execution_progress import ExecutionProgress, ProgressEvent, StateEvent
 from ._lua import Arg, Args, Key, redis_script
-from ._redis import RedisClient, is_cluster_client
+from ._redis import RedisClient, confirm_subscriptions, is_cluster_client
 from .annotations import Logged
 from .instrumentation import CACHE_SIZE, message_getter, message_setter
 
@@ -1296,6 +1296,7 @@ class Execution:
         progress_channel = self.docket.key(f"progress:{self.key}")
         async with self.docket._pubsub() as pubsub:
             await pubsub.subscribe(state_channel, progress_channel)
+            await confirm_subscriptions(pubsub, 2)
             if ready is not None:
                 ready.set()
             async for message in pubsub.listen():  # pragma: no cover

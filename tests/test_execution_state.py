@@ -121,8 +121,10 @@ async def test_full_lifecycle_integration(docket: Docket, worker: Worker):
             await progress.set_message(f"Step {i + 1}")
             await asyncio.sleep(0.01)
 
-    # Schedule task in the future
-    when = datetime.now(timezone.utc) + timedelta(milliseconds=50)
+    # Schedule the task far enough out that a slow CI runner can't cross the
+    # deadline between computing `when` here and the server evaluating it,
+    # which would enqueue the task immediately as QUEUED instead of SCHEDULED.
+    when = datetime.now(timezone.utc) + timedelta(seconds=2)
     execution = await docket.add(tracking_task, when=when)()
 
     # Should be SCHEDULED

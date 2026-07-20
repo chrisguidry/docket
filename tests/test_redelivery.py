@@ -141,18 +141,21 @@ async def test_multiple_workers_no_duplicate_execution(docket: Docket):
     async def slow_task(task_id: int, worker_name: str = ""):
         async with lock:
             executions.append((worker_name, task_id))
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1.5)
 
     # Schedule several tasks
     for i in range(6):
         await docket.add(slow_task, key=f"task-{i}")(task_id=i)
 
-    # Run multiple workers concurrently with short redelivery_timeout
+    # Tasks sleep longer than the redelivery_timeout, so without renewal a
+    # competing worker's XAUTOCLAIM would reclaim them.  Use a 1s timeout so
+    # renewal (every 250ms) tolerates the multi-hundred-millisecond stalls
+    # that CI runners hit; at 200ms a single late renewal caused a steal.
     workers = [
         Worker(
             docket,
             name=f"worker-{i}",
-            redelivery_timeout=timedelta(milliseconds=200),
+            redelivery_timeout=timedelta(seconds=1),
             minimum_check_interval=timedelta(milliseconds=10),
             scheduling_resolution=timedelta(milliseconds=10),
             concurrency=2,
@@ -295,15 +298,20 @@ async def test_worker_joining_doesnt_steal_renewed_lease(docket: Docket):
     async def slow_task(task_id: int):
         executions.append(("start", task_id))
         task_started.set()
-        await asyncio.sleep(0.6)  # Long task
+        # Sleep well past the redelivery_timeout so B's XAUTOCLAIM would
+        # reclaim the task if A's renewal ever let it go idle.
+        await asyncio.sleep(2.5)
         executions.append(("end", task_id))
 
     await docket.add(slow_task, key="task")(task_id=1)
 
+    # A 1s timeout gives renewal (every 250ms) enough margin for the
+    # multi-hundred-millisecond stalls that CI runners hit; at 200ms a
+    # single late renewal let worker B steal the task.
     worker_a = Worker(
         docket,
         name="worker-a",
-        redelivery_timeout=timedelta(milliseconds=200),
+        redelivery_timeout=timedelta(seconds=1),
         minimum_check_interval=timedelta(milliseconds=10),
         scheduling_resolution=timedelta(milliseconds=10),
     )
@@ -325,7 +333,7 @@ async def test_worker_joining_doesnt_steal_renewed_lease(docket: Docket):
     worker_b = Worker(
         docket,
         name="worker-b",
-        redelivery_timeout=timedelta(milliseconds=200),
+        redelivery_timeout=timedelta(seconds=1),
         minimum_check_interval=timedelta(milliseconds=10),
         scheduling_resolution=timedelta(milliseconds=10),
     )
