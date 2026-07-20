@@ -62,8 +62,13 @@ async def test_running_worker_resows_severed_automatic_perpetual(
     await wait_until(next_run_is_parked, description="next run parked")
 
     # Sever the chain the same way the fallback drop does: no scheduled entry,
-    # nothing in flight.
-    await docket.cancel("perpetual_task")
+    # nothing in flight.  Work directly on the keys rather than through
+    # docket.cancel(), whose pub/sub signal can cancel the first execution's
+    # still-running bookkeeping and race the state this test asserts on.
+    async with docket.redis() as redis:
+        await redis.zrem(docket.queue_key, "perpetual_task")
+        await redis.delete(docket.parked_task_key("perpetual_task"))
+        await redis.hdel(runs_key, "known", "stream_id")
 
     await wait_until(lambda: calls == 2, description="re-seeding re-ran the perpetual")
 
