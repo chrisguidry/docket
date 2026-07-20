@@ -1346,13 +1346,19 @@ class Worker:
             try:
                 async with self.docket._pubsub() as pubsub:
                     await pubsub.psubscribe(cancel_pattern)
-                    session.cancellation_ready.set()
                     while not session.stopping.is_set():
                         message = await pubsub.get_message(
-                            ignore_subscribe_messages=True, timeout=0.1
+                            ignore_subscribe_messages=False, timeout=0.1
                         )
-                        if message is not None and message["type"] == "pmessage":
+                        if message is None:
+                            continue
+                        if message["type"] == "pmessage":
                             await self._handle_cancellation(message)
+                        else:
+                            # The PSUBSCRIBE confirmation: the server now has
+                            # the subscription, so cancellations published
+                            # from here on will be delivered.
+                            session.cancellation_ready.set()
             except ConnectionError:
                 if session.stopping.is_set():
                     return  # pragma: no cover

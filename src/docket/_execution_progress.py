@@ -14,7 +14,7 @@ from typing import (
 )
 
 from ._lua import Arg, Args, Key, redis_script
-from ._redis import RedisClient
+from ._redis import RedisClient, confirm_subscriptions
 
 from ._telemetry import suppress_instrumentation
 from typing_extensions import Self
@@ -271,6 +271,7 @@ class ExecutionProgress:
         channel = self.docket.key(f"progress:{self.key}")
         async with self.docket._pubsub() as pubsub:
             await pubsub.subscribe(channel)
+            await confirm_subscriptions(pubsub, 1)
             if ready is not None:
                 ready.set()
             async for message in pubsub.listen():  # pragma: no cover
