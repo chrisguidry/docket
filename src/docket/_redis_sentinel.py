@@ -119,7 +119,9 @@ def parse_sentinel_url(url: str) -> SentinelConfiguration:
     All other query parameters are standard redis-py connection options
     (``max_connections``, ``socket_timeout``, ``health_check_interval``, ...)
     and apply to the data-node connections with exactly the same parsing as a
-    standalone ``redis://`` URL.
+    standalone ``redis://`` URL. On the ``rediss+sentinel`` scheme the ``ssl_*``
+    options additionally apply to the connections to the Sentinel daemons, so a
+    single private CA (``?ssl_ca_certs=...``) covers the whole topology.
 
     Raises:
         ValueError: for a missing host, malformed port, missing service name,
@@ -194,6 +196,19 @@ def parse_sentinel_url(url: str) -> SentinelConfiguration:
         for governed in ("db", "username", "password"):
             funneled.pop(governed, None)
         connection_kwargs.update(funneled)
+        if tls:
+            # The Sentinel daemons share the data nodes' TLS profile: without
+            # this, a private CA passed as ?ssl_ca_certs= (or ?ssl_cert_reqs=none
+            # for unverified setups) would apply to the master connections only,
+            # and every connection to a Sentinel daemon would fail certificate
+            # verification during discovery.
+            sentinel_kwargs.update(
+                {
+                    name: value
+                    for name, value in funneled.items()
+                    if name.startswith("ssl_")
+                }
+            )
 
     if parsed.username:
         connection_kwargs["username"] = unquote(parsed.username)

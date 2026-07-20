@@ -129,6 +129,37 @@ def test_parse_sentinel_url_passes_through_pool_options():
     assert config.sentinel_kwargs == {}
 
 
+def test_parse_sentinel_url_tls_shares_ssl_options_with_sentinels():
+    """On the rediss+sentinel scheme the ssl_* options apply to the Sentinel
+    daemon connections too, so one private CA verifies the whole topology
+    (discovery would otherwise fail certificate verification)."""
+    config = parse_sentinel_url(
+        "rediss+sentinel://sentinel-a/mymaster"
+        "?ssl_ca_certs=/etc/redis/ca.pem&ssl_check_hostname=false&socket_timeout=5"
+    )
+    assert config.connection_kwargs == {
+        "ssl": True,
+        "ssl_ca_certs": "/etc/redis/ca.pem",
+        "ssl_check_hostname": False,
+        "socket_timeout": 5.0,
+    }
+    assert config.sentinel_kwargs == {
+        "ssl": True,
+        "ssl_ca_certs": "/etc/redis/ca.pem",
+        "ssl_check_hostname": False,
+    }
+
+
+def test_parse_sentinel_url_plaintext_sentinels_get_no_ssl_options():
+    """Without TLS the daemons stay plaintext: ssl_* options pass through to
+    the data-node kwargs only, like any other redis-py option."""
+    config = parse_sentinel_url(
+        "redis+sentinel://sentinel-a/mymaster?ssl_ca_certs=/etc/redis/ca.pem"
+    )
+    assert config.connection_kwargs == {"ssl_ca_certs": "/etc/redis/ca.pem"}
+    assert config.sentinel_kwargs == {}
+
+
 def test_parse_sentinel_url_db_comes_from_path_only():
     """The database is taken from the path; a stray ?db= is not an alternate
     source, and credentials stay sourced from the URL userinfo."""
