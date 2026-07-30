@@ -93,6 +93,19 @@ async def test_failed_acknowledgement_is_redelivered(docket: Docket) -> None:
             await redelivered.acknowledge()
 
 
+async def test_acknowledgement_can_retry_after_local_settlement(
+    docket: Docket,
+) -> None:
+    queue = docket.queue("jobs")
+    assert await queue.put("alpha", b"one")
+    async with queue.subscribe(
+        ["alpha"], visibility_timeout=timedelta(seconds=1)
+    ) as subscription:
+        message = await subscription.receive(timeout=1)
+        subscription._settle(message)
+        await message.acknowledge()
+
+
 async def test_bounded_put_waits_for_acknowledgement(docket: Docket) -> None:
     queue = docket.queue("jobs")
     assert await queue.put("alpha", b"one", key="one", max_size=1)
@@ -392,6 +405,22 @@ async def test_claim_propagates_other_redis_errors(docket: Docket) -> None:
         await subscription._claim()
 
 
+async def test_group_creation_propagates_other_redis_errors(
+    docket: Docket,
+) -> None:
+    subscription = docket.queue("jobs").subscribe(
+        ["alpha"], visibility_timeout=timedelta(seconds=1)
+    )
+    redis = AsyncMock()
+    redis.xgroup_create.side_effect = ResponseError("WRONGTYPE")
+
+    with (
+        patch.object(docket, "redis", side_effect=lambda: _redis_connection(redis)),
+        pytest.raises(ResponseError, match="WRONGTYPE"),
+    ):
+        await subscription._claim()
+
+
 async def test_visibility_renewal_retries_connection_errors(
     docket: Docket, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -416,6 +445,26 @@ async def test_visibility_renewal_retries_connection_errors(
     ):
         await subscription._renew_visibility()
     assert "could not renew message visibility" in caplog.text
+
+
+async def test_subscription_exit_tolerates_release_errors_and_clears_buffer(
+    docket: Docket, caplog: pytest.LogCaptureFixture
+) -> None:
+    subscription = docket.queue("jobs").subscribe(
+        ["alpha"], visibility_timeout=timedelta(seconds=1)
+    )
+    message = subscription._message(
+        "alpha", b"1-0", {b"key": b"one", b"data": b"payload"}
+    )
+    subscription._outstanding.add(message)
+    subscription._available.put_nowait((0, 0, message))
+    subscription._release = AsyncMock(side_effect=ConnectionError("offline"))
+
+    with caplog.at_level(logging.WARNING):
+        await subscription.__aexit__(None, None, None)
+
+    assert "could not release a claimed message" in caplog.text
+    assert subscription._available.empty()
 
 
 async def test_subscription_must_be_active_and_cannot_be_reentered(
