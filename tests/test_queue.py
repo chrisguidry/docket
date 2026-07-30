@@ -363,7 +363,7 @@ async def test_consumer_retries_connection_errors(
 
 
 @asynccontextmanager
-async def _redis_connection(redis: AsyncMock) -> AsyncGenerator[AsyncMock]:
+async def _redis_connection(redis: AsyncMock) -> AsyncGenerator[AsyncMock, None]:
     yield redis
 
 
