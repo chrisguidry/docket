@@ -46,6 +46,7 @@ class QueueMessage:
     _subscription: QueueSubscription = field(repr=False)
     _message_id: bytes = field(repr=False)
     _settled: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    _acknowledged: bool = field(default=False, repr=False)
 
     async def acknowledge(self) -> None:
         """Permanently remove this delivery from the queue."""
@@ -357,8 +358,10 @@ class QueueSubscription:
 
     async def _acknowledge(self, message: QueueMessage) -> None:
         """Acknowledge a message claimed by this subscription."""
-        if message._settled.is_set():
+        if message._acknowledged:
             return
+        if not message._settled.is_set():
+            self._settle(message)
         async with self.queue.docket.redis() as redis:
             await acknowledge_message(
                 redis,
@@ -370,7 +373,7 @@ class QueueSubscription:
                 idle_ttl_seconds=self.queue._idle_ttl_seconds,
                 acknowledged_until=self.queue._acknowledged_until,
             )
-        self._settle(message)
+        message._acknowledged = True
 
     async def _release(
         self, message: QueueMessage, topic: str, *, max_size: int

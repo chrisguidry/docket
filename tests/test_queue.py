@@ -67,6 +67,32 @@ async def test_acknowledgement_tombstone_deduplicates_repairs(
     assert await queue.put("alpha", b"after-expiry", key="one")
 
 
+async def test_failed_acknowledgement_is_redelivered(docket: Docket) -> None:
+    queue = docket.queue("jobs")
+    assert await queue.put("alpha", b"one", key="one")
+
+    async with queue.subscribe(
+        ["alpha"], visibility_timeout=timedelta(milliseconds=50)
+    ) as first:
+        message = await first.receive(timeout=1)
+        with (
+            patch(
+                "docket.queue.acknowledge_message",
+                new=AsyncMock(side_effect=ConnectionError("offline")),
+            ),
+            pytest.raises(ConnectionError, match="offline"),
+        ):
+            await message.acknowledge()
+
+        await asyncio.sleep(0.06)
+        async with queue.subscribe(
+            ["alpha"], visibility_timeout=timedelta(milliseconds=50)
+        ) as second:
+            redelivered = await second.receive(timeout=1)
+            assert redelivered.key == "one"
+            await redelivered.acknowledge()
+
+
 async def test_bounded_put_waits_for_acknowledgement(docket: Docket) -> None:
     queue = docket.queue("jobs")
     assert await queue.put("alpha", b"one", key="one", max_size=1)
