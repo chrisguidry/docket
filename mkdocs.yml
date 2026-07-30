@@ -76,6 +76,7 @@ nav:
   - Dependency Injection: dependency-injection.md
   - Task Design Patterns: task-patterns.md
   - Task Observability: observability.md
+  - Reliable Message Queues: queues.md
   - Testing with Docket: testing.md
   - Docket in Production: production.md
   - API Reference: api-reference.md

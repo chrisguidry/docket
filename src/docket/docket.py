@@ -60,6 +60,7 @@ from .strikelist import (
     Strike,
     StrikeList,
 )
+from .queue import DocketQueueMixin
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: trace.Tracer = trace.get_tracer(__name__)
@@ -126,7 +127,7 @@ R = TypeVar("R")
 TaskCollection = Iterable[TaskFunction]
 
 
-class Docket(DocketSnapshotMixin):
+class Docket(DocketQueueMixin, DocketSnapshotMixin):
     """A Docket represents a collection of tasks that may be scheduled for later
     execution.  With a Docket, you can add, replace, and cancel tasks.
     Example:
@@ -199,7 +200,6 @@ class Docket(DocketSnapshotMixin):
     @property
     def prefix(self) -> str:
         """Return the key prefix for this docket.
-
         All Redis keys for this docket are prefixed with this value.
 
         For Redis Cluster mode, returns a hash-tagged prefix like "{myapp}"

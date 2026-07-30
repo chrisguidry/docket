@@ -39,6 +39,7 @@ from .execution import (
     TaskCall,
 )
 from .strikelist import StrikeList
+from .queue import Queue, QueueMessage, QueueSubscription
 from .worker import Worker
 from . import testing
 
@@ -63,6 +64,9 @@ __all__ = [
     "Logged",
     "Perpetual",
     "Progress",
+    "Queue",
+    "QueueMessage",
+    "QueueSubscription",
     "Retry",
     "Shared",
     "StrikeList",
