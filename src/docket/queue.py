@@ -207,6 +207,18 @@ class QueueSubscription:
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        for message in list(self._outstanding):
+            try:
+                await self._release(message, message.topic, max_size=0)
+            except (ConnectionError, ResponseError, TimeoutError):
+                logger.warning(
+                    "Queue consumer %s could not release a claimed message",
+                    self.consumer,
+                    exc_info=True,
+                )
+        self._claimed.clear()
+        while not self._available.empty():
+            self._available.get_nowait()
         self._tasks.clear()
         self._entered = False
 
@@ -296,6 +308,7 @@ class QueueSubscription:
                         self.group,
                         self.consumer,
                         streams={stream_key: ">" for stream_key in streams},
+                        count=1,
                         block=1000,
                     )
                 except ResponseError as exc:
@@ -320,6 +333,7 @@ class QueueSubscription:
                     for message_id, fields in stream_messages
                 ]
                 messages.sort(key=lambda message: self.priorities[message.topic])
+                self._outstanding.update(messages)
                 self._claimed.extend(messages[1:])
                 return messages[0]
 

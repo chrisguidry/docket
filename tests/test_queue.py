@@ -236,6 +236,35 @@ async def test_lower_priority_number_is_delivered_first(docket: Docket) -> None:
     assert (first.topic, second.topic) == ("retry", "scheduled")
 
 
+async def test_competing_consumers_do_not_reclaim_prefetched_messages(
+    docket: Docket,
+) -> None:
+    queue = docket.queue("jobs")
+    for index in range(10):
+        assert await queue.put("alpha", str(index).encode(), key=str(index))
+
+    first_data: list[bytes] = []
+    second_data: list[bytes] = []
+    async with (
+        queue.subscribe(
+            ["alpha"], visibility_timeout=timedelta(milliseconds=50)
+        ) as first,
+        queue.subscribe(
+            ["alpha"], visibility_timeout=timedelta(milliseconds=50)
+        ) as second,
+    ):
+        for _ in range(5):
+            first_message = await first.receive(timeout=1)
+            first_data.append(first_message.data)
+            await first_message.acknowledge()
+            second_message = await second.receive(timeout=1)
+            second_data.append(second_message.data)
+            await second_message.acknowledge()
+
+    assert set(first_data).isdisjoint(second_data)
+    assert set(first_data + second_data) == {str(index).encode() for index in range(10)}
+
+
 async def test_queue_validates_configuration(docket: Docket) -> None:
     queue = docket.queue("jobs")
 
@@ -366,9 +395,8 @@ async def test_visibility_renewal_retries_connection_errors(
 async def test_subscription_must_be_active_and_cannot_be_reentered(
     docket: Docket,
 ) -> None:
-    subscription = docket.queue("jobs").subscribe(
-        ["alpha"], visibility_timeout=timedelta(seconds=1)
-    )
+    queue = docket.queue("jobs")
+    subscription = queue.subscribe(["alpha"], visibility_timeout=timedelta(seconds=1))
 
     with pytest.raises(RuntimeError, match="not active"):
         await subscription.receive(timeout=0.01)
@@ -376,3 +404,11 @@ async def test_subscription_must_be_active_and_cannot_be_reentered(
     async with subscription:
         with pytest.raises(RuntimeError, match="already active"):
             await subscription.__aenter__()
+
+    assert await queue.put("alpha", b"one")
+    async with subscription:
+        first = await subscription.receive(timeout=1)
+    async with subscription:
+        redelivered = await subscription.receive(timeout=1)
+        await redelivered.acknowledge()
+    assert redelivered.key == first.key
