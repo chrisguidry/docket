@@ -181,10 +181,11 @@ class QueueSubscription:
         self.group: str = group
         self.consumer: str = str(uuid4())
         self._available: asyncio.PriorityQueue[tuple[int, int, QueueMessage]] = (
-            asyncio.PriorityQueue(maxsize=max(1, len(priorities)))
+            asyncio.PriorityQueue(maxsize=1)
         )
         self._sequence = itertools.count()
         self._outstanding: set[QueueMessage] = set()
+        self._claimed: list[QueueMessage] = []
         self._tasks: list[asyncio.Task[None]] = []
         self._initialized_streams: set[str] = set()
         self._next_recovery: dict[str, float] = {}
@@ -194,8 +195,7 @@ class QueueSubscription:
         if self._entered:
             raise RuntimeError("queue subscription is already active")
         self._entered = True
-        for topic, priority in self.priorities.items():
-            self._tasks.append(asyncio.create_task(self._consume(topic, priority)))
+        self._tasks.append(asyncio.create_task(self._consume()))
         self._tasks.append(asyncio.create_task(self._renew_visibility()))
         return self
 
@@ -223,12 +223,18 @@ class QueueSubscription:
             )
         return message
 
-    async def _consume(self, topic: str, priority: int) -> None:
+    async def _consume(self) -> None:
         while True:
             try:
-                message = await self._claim(topic)
+                message = await self._claim()
                 self._outstanding.add(message)
-                await self._available.put((priority, next(self._sequence), message))
+                await self._available.put(
+                    (
+                        self.priorities[message.topic],
+                        next(self._sequence),
+                        message,
+                    )
+                )
                 await message._settled.wait()
             except asyncio.CancelledError:
                 raise
@@ -240,55 +246,74 @@ class QueueSubscription:
                 )
                 await asyncio.sleep(0.5)
 
-    async def _claim(self, topic: str) -> QueueMessage:
-        stream_key = self.queue._stream_key(topic)
+    async def _claim(self) -> QueueMessage:
+        if self._claimed:
+            return self._claimed.pop(0)
+
+        streams = {self.queue._stream_key(topic): topic for topic in self.priorities}
         while True:
             async with self.queue.docket.redis() as redis:
-                if stream_key not in self._initialized_streams:
-                    await ensure_consumer_group(
-                        redis,
-                        stream_key=stream_key,
-                        group_name=self.group,
-                        idle_ttl_seconds=self.queue._idle_ttl_seconds,
-                    )
-                    self._initialized_streams.add(stream_key)
+                for stream_key in streams:
+                    if stream_key not in self._initialized_streams:
+                        await ensure_consumer_group(
+                            redis,
+                            stream_key=stream_key,
+                            group_name=self.group,
+                            idle_ttl_seconds=self.queue._idle_ttl_seconds,
+                        )
+                        self._initialized_streams.add(stream_key)
 
                 loop_time = asyncio.get_running_loop().time()
-                if loop_time >= self._next_recovery.get(topic, 0):
-                    recovered = await redis.xautoclaim(
-                        stream_key,
-                        self.group,
-                        self.consumer,
-                        min_idle_time=int(
-                            self.visibility_timeout.total_seconds() * 1000
-                        ),
-                        start_id="0-0",
-                        count=1,
-                    )
-                    if recovered[1]:
-                        message_id, fields = recovered[1][0]
-                        return self._message(topic, message_id, fields)
-                    self._next_recovery[topic] = loop_time + min(
-                        1, self.visibility_timeout.total_seconds() / 2
-                    )
+                for topic in sorted(self.priorities, key=self.priorities.get):
+                    if loop_time >= self._next_recovery.get(topic, 0):
+                        recovered = await redis.xautoclaim(
+                            self.queue._stream_key(topic),
+                            self.group,
+                            self.consumer,
+                            min_idle_time=int(
+                                self.visibility_timeout.total_seconds() * 1000
+                            ),
+                            start_id="0-0",
+                            count=1,
+                        )
+                        if recovered[1]:
+                            message_id, fields = recovered[1][0]
+                            return self._message(topic, message_id, fields)
+                        self._next_recovery[topic] = loop_time + min(
+                            1, self.visibility_timeout.total_seconds() / 2
+                        )
 
                 try:
                     result = await redis.xreadgroup(
                         self.group,
                         self.consumer,
-                        streams={stream_key: ">"},
-                        count=1,
+                        streams={stream_key: ">" for stream_key in streams},
                         block=1000,
                     )
                 except ResponseError as exc:
                     if "NOGROUP" not in str(exc):
                         raise
-                    self._initialized_streams.discard(stream_key)
+                    self._initialized_streams.clear()
                     continue
             if result:
-                _, messages = result[0]
-                message_id, fields = messages[0]
-                return self._message(topic, message_id, fields)
+                messages = [
+                    self._message(
+                        streams[
+                            (
+                                raw_stream_key.decode()
+                                if isinstance(raw_stream_key, bytes)
+                                else raw_stream_key
+                            )
+                        ],
+                        message_id,
+                        fields,
+                    )
+                    for raw_stream_key, stream_messages in result
+                    for message_id, fields in stream_messages
+                ]
+                messages.sort(key=lambda message: self.priorities[message.topic])
+                self._claimed.extend(messages[1:])
+                return messages[0]
 
     def _message(
         self, topic: str, message_id: bytes, fields: Mapping[bytes, bytes]

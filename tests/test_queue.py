@@ -198,6 +198,44 @@ async def test_topics_route_messages_to_matching_subscriptions(
         await message.acknowledge()
 
 
+async def test_subscription_reads_many_topics_with_constant_background_tasks(
+    docket: Docket,
+) -> None:
+    queue = docket.queue("jobs")
+    topics = [f"topic-{index}" for index in range(25)]
+    for topic in topics:
+        assert await queue.put(topic, topic.encode(), key=topic)
+
+    async with queue.subscribe(
+        topics, visibility_timeout=timedelta(seconds=1)
+    ) as subscription:
+        assert len(subscription._tasks) == 2
+        received: list[str] = []
+        for _ in topics:
+            message = await subscription.receive(timeout=1)
+            received.append(message.topic)
+            await message.acknowledge()
+
+    assert set(received) == set(topics)
+
+
+async def test_lower_priority_number_is_delivered_first(docket: Docket) -> None:
+    queue = docket.queue("jobs")
+    assert await queue.put("scheduled", b"scheduled")
+    assert await queue.put("retry", b"retry")
+
+    async with queue.subscribe(
+        {"retry": 0, "scheduled": 1},
+        visibility_timeout=timedelta(seconds=1),
+    ) as subscription:
+        first = await subscription.receive(timeout=1)
+        await first.acknowledge()
+        second = await subscription.receive(timeout=1)
+        await second.acknowledge()
+
+    assert (first.topic, second.topic) == ("retry", "scheduled")
+
+
 async def test_queue_validates_configuration(docket: Docket) -> None:
     queue = docket.queue("jobs")
 
@@ -252,7 +290,7 @@ async def test_consumer_retries_connection_errors(
         patch("docket.queue.asyncio.sleep", new=AsyncMock()),
         pytest.raises(asyncio.CancelledError),
     ):
-        await subscription._consume("alpha", 0)
+        await subscription._consume()
     assert "lost its Redis connection" in caplog.text
 
 
@@ -277,11 +315,9 @@ async def test_claim_recovers_a_missing_group(docket: Docket) -> None:
 
     with (
         patch.object(docket, "redis", side_effect=lambda: _redis_connection(redis)),
-        patch(
-            "docket.queue.ensure_consumer_group", new=AsyncMock()
-        ) as ensure_group,
+        patch("docket.queue.ensure_consumer_group", new=AsyncMock()) as ensure_group,
     ):
-        message = await subscription._claim("alpha")
+        message = await subscription._claim()
 
     assert message.key == "one"
     ensure_group.assert_awaited_once()
@@ -301,7 +337,7 @@ async def test_claim_propagates_other_redis_errors(docket: Docket) -> None:
         patch.object(docket, "redis", side_effect=lambda: _redis_connection(redis)),
         pytest.raises(ResponseError, match="WRONGTYPE"),
     ):
-        await subscription._claim("alpha")
+        await subscription._claim()
 
 
 async def test_visibility_renewal_retries_connection_errors(
