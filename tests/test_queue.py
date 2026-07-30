@@ -84,11 +84,14 @@ async def test_failed_acknowledgement_is_redelivered(docket: Docket) -> None:
         ):
             await message.acknowledge()
 
-        await asyncio.sleep(0.06)
+        # The failed durable acknowledgement is locally settled, so it is no
+        # longer renewed by the first subscriber. Allow margin for coarse
+        # event-loop clocks before another subscriber attempts to reclaim it.
+        await asyncio.sleep(0.1)
         async with queue.subscribe(
             ["alpha"], visibility_timeout=timedelta(milliseconds=50)
         ) as second:
-            redelivered = await second.receive(timeout=1)
+            redelivered = await second.receive(timeout=2)
             assert redelivered.key == "one"
             await redelivered.acknowledge()
 
