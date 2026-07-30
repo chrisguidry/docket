@@ -18,7 +18,6 @@ from redis.exceptions import ConnectionError, ResponseError, TimeoutError
 
 from ._queue_scripts import (
     acknowledge_message,
-    ensure_consumer_group,
     put_message,
     release_message,
 )
@@ -255,12 +254,21 @@ class QueueSubscription:
             async with self.queue.docket.redis() as redis:
                 for stream_key in streams:
                     if stream_key not in self._initialized_streams:
-                        await ensure_consumer_group(
-                            redis,
-                            stream_key=stream_key,
-                            group_name=self.group,
-                            idle_ttl_seconds=self.queue._idle_ttl_seconds,
-                        )
+                        try:
+                            await redis.xgroup_create(
+                                stream_key,
+                                self.group,
+                                id="0",
+                                mkstream=True,
+                            )
+                        except ResponseError as exc:
+                            if "BUSYGROUP" not in str(exc):
+                                raise
+                        if await redis.xlen(stream_key) == 0:
+                            await redis.expire(
+                                stream_key,
+                                self.queue._idle_ttl_seconds,
+                            )
                         self._initialized_streams.add(stream_key)
 
                 loop_time = asyncio.get_running_loop().time()

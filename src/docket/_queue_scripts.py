@@ -97,29 +97,3 @@ async def release_message(
     return new_message_id
     """
     ...
-
-
-@redis_script
-async def ensure_consumer_group(
-    redis: RedisClient,
-    *,
-    stream_key: Key[str],
-    group_name: Arg[str],
-    idle_ttl_seconds: Arg[int],
-) -> int:
-    """
-    local result = redis.pcall(
-        'XGROUP', 'CREATE', stream_key, group_name, '0', 'MKSTREAM'
-    )
-    if type(result) == 'table'
-        and result.err
-        and not string.find(result.err, 'BUSYGROUP')
-    then
-        return redis.error_reply(result.err)
-    end
-    if redis.call('XLEN', stream_key) == 0 then
-        redis.call('EXPIRE', stream_key, idle_ttl_seconds)
-    end
-    return 1
-    """
-    ...

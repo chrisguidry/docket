@@ -313,14 +313,11 @@ async def test_claim_recovers_a_missing_group(docket: Docket) -> None:
         [(stream_key, [(b"1-0", {b"key": b"one", b"data": b"payload"})])],
     ]
 
-    with (
-        patch.object(docket, "redis", side_effect=lambda: _redis_connection(redis)),
-        patch("docket.queue.ensure_consumer_group", new=AsyncMock()) as ensure_group,
-    ):
+    with patch.object(docket, "redis", side_effect=lambda: _redis_connection(redis)):
         message = await subscription._claim()
 
     assert message.key == "one"
-    ensure_group.assert_awaited_once()
+    redis.xgroup_create.assert_awaited_once()
 
 
 async def test_claim_propagates_other_redis_errors(docket: Docket) -> None:
