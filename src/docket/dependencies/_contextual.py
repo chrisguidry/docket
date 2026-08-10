@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
+from uncalled_for import current_frame
+from uncalled_for.frames import _CallArgument  # pyright: ignore[reportPrivateUsage]
+
 from ._base import Dependency, current_docket, current_execution, current_worker
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -89,29 +92,32 @@ def TaskKey() -> str:
     return cast(str, _TaskKey())
 
 
-class _TaskArgument(Dependency[Any]):
-    parameter: str | None
-    optional: bool
+class _TaskArgument(_CallArgument):
+    """A `CallArgument` limited to arguments the caller supplied.
 
-    def __init__(self, parameter: str | None = None, optional: bool = False) -> None:
-        self.parameter = parameter
-        self.optional = optional
+    `provided_only=True` keeps `TaskArgument` from resolving sibling
+    dependencies or falling back to signature defaults, so `optional=True`
+    yields None for a parameter that is only backed by a dependency.
+    """
 
     async def __aenter__(self) -> Any:
         assert self.parameter is not None
-        execution = current_execution.get()
         try:
-            return execution.get_argument(self.parameter)
-        except KeyError:
+            return await current_frame().resolve(self.parameter, provided_only=True)
+        except LookupError:
             if self.optional:
                 return None
-            raise
+            raise KeyError(self.parameter) from None
 
 
 def TaskArgument(parameter: str | None = None, optional: bool = False) -> Any:
     """A dependency to access a argument of the currently executing task.  This is
     often useful in dependency functions so they can access the arguments of the
     task they are injected into.
+
+    `TaskArgument` sees only the arguments the caller supplied. Use
+    `CallArgument` to also see values that sibling dependencies produce and
+    plain signature defaults.
 
     Example:
 

@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, TypeVar
 
 from uncalled_for import (
     FailedDependency,
+    frame_scope,
     get_annotation_dependencies,
+    get_signature,
 )
 
 from ._base import (
@@ -159,6 +161,20 @@ def detect_single_conflicts(
     return conflicts
 
 
+def _provided_arguments(execution: Execution) -> dict[str, Any]:
+    """Map the caller's positional and keyword arguments to parameter names.
+
+    When the arguments do not bind to the signature, fall back to the keyword
+    arguments alone; calling the task will fail later with the same TypeError.
+    """
+    signature = get_signature(execution.function)
+    try:
+        bound = signature.bind(*execution.args, **execution.kwargs)
+    except TypeError:
+        return dict(execution.kwargs)
+    return dict(bound.arguments)
+
+
 @asynccontextmanager
 async def resolved_dependencies(
     worker: Worker, execution: Execution
@@ -172,63 +188,67 @@ async def resolved_dependencies(
         async with AsyncExitStack() as stack:
             stack_token = _Depends.stack.set(stack)
             try:
-                arguments: dict[str, Any] = {}
+                with frame_scope(execution.function, _provided_arguments(execution)):
+                    arguments: dict[str, Any] = {}
 
-                for name, dependency in worker.dependencies.items():
-                    slot = f"__worker_dep__{name}"
-                    try:
-                        arguments[slot] = await stack.enter_async_context(dependency)
-                    except Exception as error:
-                        arguments[slot] = FailedDependency(name, error)
-
-                parameters = get_dependency_parameters(execution.function)
-                for parameter, dependency in parameters.items():
-                    kwargs = execution.kwargs
-                    if parameter in kwargs:
-                        arguments[parameter] = kwargs[parameter]
-                        continue
-
-                    # At the top-level task function call, a bare TaskArgument without
-                    # a parameter name doesn't make sense, so mark it as failed.
-                    if (
-                        isinstance(dependency, _TaskArgument)
-                        and not dependency.parameter
-                    ):
-                        arguments[parameter] = FailedDependency(
-                            parameter, ValueError("No parameter name specified")
-                        )
-                        continue
-
-                    try:
-                        arguments[parameter] = await stack.enter_async_context(
-                            dependency
-                        )
-                    except Exception as error:
-                        arguments[parameter] = FailedDependency(parameter, error)
-
-                annotations = get_annotation_dependencies(execution.function)
-                for parameter_name, dependencies in annotations.items():
-                    argument_value = execution.kwargs.get(
-                        parameter_name, arguments.get(parameter_name)
-                    )
-                    for dependency in dependencies:
-                        bound = dependency.bind_to_parameter(
-                            parameter_name, argument_value
-                        )
+                    for name, dependency in worker.dependencies.items():
+                        slot = f"__worker_dep__{name}"
                         try:
-                            await stack.enter_async_context(bound)
-                        except Exception as error:
-                            arguments[parameter_name] = FailedDependency(
-                                parameter_name, error
+                            arguments[slot] = await stack.enter_async_context(
+                                dependency
                             )
+                        except Exception as error:
+                            arguments[slot] = FailedDependency(name, error)
 
-                arguments.update(
-                    worker.validate_task_dependencies(
-                        execution.function, arguments, annotations
+                    parameters = get_dependency_parameters(execution.function)
+                    for parameter, dependency in parameters.items():
+                        kwargs = execution.kwargs
+                        if parameter in kwargs:
+                            arguments[parameter] = kwargs[parameter]
+                            continue
+
+                        # At the top-level task function call, a bare TaskArgument
+                        # without a parameter name doesn't make sense, so mark it
+                        # as failed.
+                        if (
+                            isinstance(dependency, _TaskArgument)
+                            and not dependency.parameter
+                        ):
+                            arguments[parameter] = FailedDependency(
+                                parameter, ValueError("No parameter name specified")
+                            )
+                            continue
+
+                        try:
+                            arguments[parameter] = await stack.enter_async_context(
+                                dependency
+                            )
+                        except Exception as error:
+                            arguments[parameter] = FailedDependency(parameter, error)
+
+                    annotations = get_annotation_dependencies(execution.function)
+                    for parameter_name, dependencies in annotations.items():
+                        argument_value = execution.kwargs.get(
+                            parameter_name, arguments.get(parameter_name)
+                        )
+                        for dependency in dependencies:
+                            bound = dependency.bind_to_parameter(
+                                parameter_name, argument_value
+                            )
+                            try:
+                                await stack.enter_async_context(bound)
+                            except Exception as error:
+                                arguments[parameter_name] = FailedDependency(
+                                    parameter_name, error
+                                )
+
+                    arguments.update(
+                        worker.validate_task_dependencies(
+                            execution.function, arguments, annotations
+                        )
                     )
-                )
 
-                yield arguments
+                    yield arguments
             finally:
                 _Depends.stack.reset(stack_token)
     finally:
