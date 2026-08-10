@@ -5,7 +5,8 @@ Docket includes a dependency injection system that provides access to context, c
 As of version 0.18.0, Docket's dependency injection is built on the
 [`uncalled-for`](https://github.com/chrisguidry/uncalled-for) package
 ([PyPI](https://pypi.org/project/uncalled-for/)), which provides the core
-resolution engine, `Depends`, `Shared`, and `Dependency` base class.  Docket
+resolution engine, `Depends`, `Shared`, `CallArgument`, and the `Dependency`
+base class.  Docket
 layers on task-specific context (`CurrentDocket`, `CurrentWorker`, etc.) and
 behavioral dependencies (`Retry`, `Perpetual`, `Timeout`, etc.).
 
@@ -132,6 +133,80 @@ async def flexible_task(
     await process_data(data, resolved_config)
 ```
 
+### CallArgument
+
+`CallArgument` declares that a dependency function's parameter takes its value
+from a parameter of the task itself. It comes from
+[`uncalled-for`](https://github.com/chrisguidry/uncalled-for) and is
+re-exported from `docket`. The bare form takes the name of the parameter it is
+declared on:
+
+```python
+from docket import CallArgument, Depends
+
+async def load_user(user_id: int = CallArgument()) -> User:
+    return await fetch_user(user_id)
+
+async def send_welcome_email(
+    user_id: int,
+    user: User = Depends(load_user),
+) -> None:
+    await send_email(user.email, "Welcome!")
+```
+
+`CallArgument("name")` names a different parameter of the task:
+
+```python
+async def load_recipient(user_id: int = CallArgument("recipient_id")) -> User:
+    return await fetch_user(user_id)
+
+async def send_invoice(
+    recipient_id: int,
+    invoice_id: int,
+    recipient: User = Depends(load_recipient),
+) -> None:
+    ...
+```
+
+The reference sees the same value the task receives for that parameter,
+wherever it comes from. An argument the caller passed always wins. A parameter
+backed by another dependency resolves once, and the task and every reference
+share that one value. A plain signature default like `count: int = 5` is
+returned as-is:
+
+```python
+def default_region() -> str:
+    return "us-east-1"
+
+async def get_bucket(region: str = CallArgument()) -> Bucket:
+    return await connect_bucket(region)
+
+async def archive_report(
+    report_id: int,
+    region: str = Depends(default_region),
+    bucket: Bucket = Depends(get_bucket),
+) -> None:
+    ...
+```
+
+When the caller passes `region="eu-west-1"`, `default_region` is never called,
+and both the task and `get_bucket` see the caller's value. Otherwise
+`default_region` runs once and supplies both.
+
+`CallArgument(optional=True)` yields `None` when the task has no parameter
+with that name. References that form a cycle fail the task with a
+`CycleError` (also re-exported from `docket`) naming the path, such as
+`a -> b -> a`. `optional=True` does not suppress a cycle.
+
+#### TaskArgument and CallArgument
+
+`TaskArgument` is built on `CallArgument`, and the two differ in what they
+can see. `TaskArgument` sees only the
+arguments the caller supplied at the task's call site: for anything else,
+including a parameter backed by a dependency, it raises (or yields `None` with
+`optional=True`). `CallArgument` also sees values produced by sibling
+dependencies on the task's signature and plain signature defaults.
+
 ## Using Functions as Dependencies
 
 ### Depends
@@ -254,7 +329,57 @@ async def important_task(
     logger.info("Important task completed")
 ```
 
-### Shared
+#### Keyword Bindings
+
+`Depends` accepts keyword bindings, so you can wire arguments into a
+dependency function from the place that declares it, without changing the
+function itself. This is the other position for `CallArgument`:
+
+```python
+from docket import CallArgument, Depends
+
+async def load_user(user_id: int) -> User:
+    return await fetch_user(user_id)
+
+async def send_invoice(
+    user_id: int,
+    invoice_id: int,
+    user: User = Depends(load_user, user_id=CallArgument("user_id")),
+) -> None:
+    ...
+```
+
+A binding that is itself a dependency, such as `CallArgument(...)` or another
+`Depends(...)`, resolves first and the function receives its value. Any other
+value passes through as it is:
+
+```python
+async def fetch_report(source: str, timeout: int = 30) -> Report:
+    ...
+
+async def nightly_summary(
+    report: Report = Depends(fetch_report, source="warehouse", timeout=5),
+) -> None:
+    ...
+```
+
+A binding replaces the default of the function's own parameter, which is then
+never resolved. Here `Depends(get_replica)` never runs, because the binding
+supplies `db` directly:
+
+```python
+async def get_orders(db: Database = Depends(get_replica)) -> list[Order]:
+    return await db.fetch_orders()
+
+async def reconcile(
+    orders: list[Order] = Depends(get_orders, db=Depends(get_primary)),
+) -> None:
+    ...
+```
+
+Caching still applies per task execution, keyed by the function and its
+bindings. Two `Depends(same_function)` declarations with the same bindings
+share one result; declarations with different bindings each get their own.
 
 While `Depends` resolves a fresh instance for each task, `Shared` resolves once at worker startup and provides the same instance to all tasks for the worker's lifetime. This is useful for expensive resources like connection pools, loaded configuration, or shared clients.
 

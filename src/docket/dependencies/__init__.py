@@ -43,6 +43,8 @@ from ._functional import (
 from ._perpetual import Perpetual
 from ._progress import Progress
 from uncalled_for import (
+    CallArgument,
+    CycleError,
     FailedDependency,
     get_annotation_dependencies,
     validate_dependencies,
@@ -75,6 +77,8 @@ __all__ = [
     "TaskKey",
     "TaskLogger",
     # Functional dependencies
+    "CallArgument",
+    "CycleError",
     "Depends",
     "DependencyFunction",
     "Shared",

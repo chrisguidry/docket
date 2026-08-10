@@ -19,10 +19,8 @@ from uncalled_for.functional import _Depends as _UncalledForDepends
 # uncalled-for's get_dependency_parameters uses internally.
 from uncalled_for.introspection import (
     _parameter_cache as _parameter_cache,
-    get_dependency_parameters,
+    get_dependency_parameters as get_dependency_parameters,
 )
-
-from ._contextual import _TaskArgument
 
 R = TypeVar("R")
 
@@ -30,34 +28,22 @@ DependencyFunction = DependencyFactory
 
 
 class _Depends(_UncalledForDepends[R]):
-    """Docket's call-scoped dependency with TaskArgument inference."""
-
-    async def _resolve_parameters(
-        self,
-        function: Callable[..., Any],
-    ) -> dict[str, Any]:
-        stack = self.stack.get()
-        arguments: dict[str, Any] = {}
-        parameters = get_dependency_parameters(function)
-
-        for parameter, dependency in parameters.items():
-            if isinstance(dependency, _TaskArgument) and not dependency.parameter:
-                dependency.parameter = parameter
-
-            arguments[parameter] = await stack.enter_async_context(dependency)
-
-        return arguments
+    """Docket's call-scoped dependency, resolved fresh for each task."""
 
 
 @overload
-def Depends(dependency: Callable[..., AbstractAsyncContextManager[R]]) -> R: ...
+def Depends(
+    dependency: Callable[..., AbstractAsyncContextManager[R]], **bindings: Any
+) -> R: ...
 @overload
-def Depends(dependency: Callable[..., AbstractContextManager[R]]) -> R: ...
+def Depends(
+    dependency: Callable[..., AbstractContextManager[R]], **bindings: Any
+) -> R: ...
 @overload
-def Depends(dependency: Callable[..., Awaitable[R]]) -> R: ...
+def Depends(dependency: Callable[..., Awaitable[R]], **bindings: Any) -> R: ...
 @overload
-def Depends(dependency: Callable[..., R]) -> R: ...
-def Depends(dependency: DependencyFactory[R]) -> R:
+def Depends(dependency: Callable[..., R], **bindings: Any) -> R: ...
+def Depends(dependency: DependencyFactory[R], **bindings: Any) -> R:
     """Include a user-defined function as a dependency.  Dependencies may be:
     - Synchronous functions returning a value
     - Asynchronous functions returning a value (awaitable)
@@ -66,6 +52,14 @@ def Depends(dependency: DependencyFactory[R]) -> R:
 
     If a dependency returns a context manager, it will be entered and exited around
     the task, giving an opportunity to control the lifetime of a resource.
+
+    Keyword `bindings` supply arguments to the dependency function from the
+    place that declares it. A `Dependency` value, such as `CallArgument()` or
+    another `Depends(...)`, resolves first and the function receives its value.
+    Any other value passes through as it is. A binding replaces the default of
+    the function's own parameter, which is then never resolved. Two
+    dependencies on the same function share one cached result only when their
+    bindings match.
 
     **Important**: Synchronous dependencies should NOT include blocking I/O operations
     (file access, network calls, database queries, etc.). Use async dependencies for
@@ -117,4 +111,4 @@ def Depends(dependency: DependencyFactory[R]) -> R:
         await db.execute("UPDATE users SET ...", params)
     ```
     """
-    return cast(R, _Depends(dependency))
+    return cast(R, _Depends(dependency, **bindings))

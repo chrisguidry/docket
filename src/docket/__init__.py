@@ -11,9 +11,11 @@ __version__ = version("pydocket")
 from .agenda import Agenda
 from .annotations import Logged
 from .dependencies import (
+    CallArgument,
     ConcurrencyLimit,
     Cooldown,
     Cron,
+    CycleError,
     Debounce,
     RateLimit,
     CurrentDocket,
@@ -45,9 +47,11 @@ from . import testing
 __all__ = [
     "__version__",
     "Agenda",
+    "CallArgument",
     "ConcurrencyLimit",
     "Cooldown",
     "Cron",
+    "CycleError",
     "Debounce",
     "RateLimit",
     "CurrentDocket",
