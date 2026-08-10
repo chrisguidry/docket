@@ -188,7 +188,8 @@ async def resolved_dependencies(
         async with AsyncExitStack() as stack:
             stack_token = _Depends.stack.set(stack)
             try:
-                with frame_scope(execution.function, _provided_arguments(execution)):
+                provided = _provided_arguments(execution)
+                with frame_scope(execution.function, provided) as frame:
                     arguments: dict[str, Any] = {}
 
                     for name, dependency in worker.dependencies.items():
@@ -202,9 +203,14 @@ async def resolved_dependencies(
 
                     parameters = get_dependency_parameters(execution.function)
                     for parameter, dependency in parameters.items():
-                        kwargs = execution.kwargs
-                        if parameter in kwargs:
-                            arguments[parameter] = kwargs[parameter]
+                        if parameter in execution.kwargs:
+                            arguments[parameter] = execution.kwargs[parameter]
+                            continue
+
+                        # A positionally-supplied argument reaches the function
+                        # through *args, so resolving the dependency here would
+                        # collide with it at call time.
+                        if parameter in provided:
                             continue
 
                         # At the top-level task function call, a bare TaskArgument
@@ -219,10 +225,11 @@ async def resolved_dependencies(
                             )
                             continue
 
+                        # The frame memoizes each parameter, so a CallArgument
+                        # reference to a sibling shares this resolution instead
+                        # of entering the dependency a second time.
                         try:
-                            arguments[parameter] = await stack.enter_async_context(
-                                dependency
-                            )
+                            arguments[parameter] = await frame.resolve(parameter)
                         except Exception as error:
                             arguments[parameter] = FailedDependency(parameter, error)
 

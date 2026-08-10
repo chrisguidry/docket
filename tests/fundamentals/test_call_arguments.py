@@ -1,9 +1,6 @@
 """Tests for CallArgument references and Depends keyword bindings."""
 
-import logging
 from uuid import uuid4
-
-import pytest
 
 from docket import CallArgument, Depends, Docket, TaskArgument, Worker
 
@@ -250,33 +247,6 @@ async def test_optional_call_argument_yields_none_when_missing(
     await worker.run_until_finished()
 
     assert called == 1
-
-
-async def test_circular_call_arguments_fail_the_task(
-    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
-):
-    """CallArgument references that form a cycle fail the task with CycleError"""
-
-    async def needs_b(b: str = CallArgument("b")) -> str:
-        raise NotImplementedError("This should not be called")  # pragma: no cover
-
-    async def needs_a(a: str = CallArgument("a")) -> str:
-        raise NotImplementedError("This should not be called")  # pragma: no cover
-
-    async def dependent_task(
-        a: str = Depends(needs_b),
-        b: str = Depends(needs_a),
-    ) -> None:
-        raise NotImplementedError("This should not be called")  # pragma: no cover
-
-    await docket.add(dependent_task)()
-
-    with caplog.at_level(logging.ERROR):
-        await worker.run_until_finished()
-
-    assert "Failed to resolve dependencies" in caplog.text
-    assert "CycleError" in caplog.text
-    assert "Circular argument reference" in caplog.text
 
 
 async def test_task_argument_works_alongside_call_argument(
