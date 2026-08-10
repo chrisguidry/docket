@@ -44,12 +44,8 @@ async def test_positional_argument_overrides_a_dependency_backed_parameter(
 ):
     """A positionally-supplied argument wins over the parameter's dependency"""
 
-    factory_calls = 0
-
     async def default_region() -> str:
-        nonlocal factory_calls
-        factory_calls += 1
-        return "us-east-1"  # pragma: no cover
+        raise NotImplementedError("This should not be called")  # pragma: no cover
 
     received: list[str] = []
 
@@ -61,7 +57,6 @@ async def test_positional_argument_overrides_a_dependency_backed_parameter(
     await worker.run_until_finished()
 
     assert received == ["eu-west-1"]
-    assert factory_calls == 0
 
 
 async def test_referenced_sibling_dependency_is_entered_once(
