@@ -34,7 +34,7 @@ else:
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
-from ._cancellation import CANCEL_MSG_CLEANUP, cancel_task
+from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task
 from ._lua import Arg, Key, redis_script
 from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
@@ -107,14 +107,6 @@ AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS = 60
 MINIMUM_TTL_SECONDS = 1
 
 TaskKey: TypeAlias = str
-
-
-async def _wait_for_event(event: asyncio.Event, timeout: float) -> bool:
-    try:
-        await asyncio.wait_for(event.wait(), timeout=timeout)
-    except asyncio.TimeoutError:
-        return False
-    return True
 
 
 class PubSubMessage(TypedDict):
