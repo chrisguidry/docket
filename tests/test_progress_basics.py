@@ -217,3 +217,28 @@ async def test_concurrent_progress_updates(progress: ExecutionProgress):
     await progress.sync()
     # Should be exactly 30 due to atomic HINCRBY
     assert progress.current == 30
+
+
+async def test_sync_reads_state_and_progress_together(execution: Execution):
+    """One sync() fills in the execution's own state and its progress."""
+    await execution.claim("worker-1")
+    await execution.progress.set_total(3)
+    await execution.progress.increment(2)
+    await execution.progress.set_message("halfway")
+
+    fresh = Execution(
+        execution.docket,
+        execution.function,
+        (),
+        {},
+        execution.key,
+        execution.when,
+        execution.attempt,
+    )
+    await fresh.sync()
+
+    assert fresh.state == ExecutionState.RUNNING
+    assert fresh.worker == "worker-1"
+    assert fresh.progress.current == 2
+    assert fresh.progress.total == 3
+    assert fresh.progress.message == "halfway"

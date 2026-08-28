@@ -276,10 +276,9 @@ async def schedule_many(
     and a node's script cache can't be relied upon across failover and
     resharding anyway.
 
-    Unlike ``Execution.schedule()``, no per-key ``{key}:lock`` is taken:
-    that lock guards nothing beyond the single atomic ``_schedule`` script
-    call (no other code acquires it), and pipelined invocations already
-    serialize in Redis, so the batch path deliberately skips it.
+    Neither this nor ``Execution.schedule()`` takes a per-key lock: the
+    ``_schedule`` script is atomic on its own, and pipelined invocations
+    already serialize in Redis.
     """
     if chunk_size is not None and chunk_size < 1:
         raise ValueError(f"chunk_size must be at least 1, got {chunk_size}")
@@ -806,12 +805,9 @@ class Execution:
         script_args, is_immediate = self._schedule_script_args(
             replace, reschedule_message
         )
-        known_task_key = self.docket.known_task_key(self.key)
 
         async with self.docket.redis() as redis:
-            # Lock per task key to prevent race conditions between concurrent operations
-            async with redis.lock(f"{known_task_key}:lock", timeout=10):
-                reply = await _schedule(redis, **script_args)
+            reply = await _schedule(redis, **script_args)
 
         return self._apply_schedule_reply(reply, is_immediate, reschedule_message)
 
@@ -1178,46 +1174,48 @@ class Execution:
         """Synchronize instance attributes with current execution data from Redis.
 
         Updates self.state, execution metadata, and progress data from Redis.
-        Sets attributes to None if no data exists.
+        Sets attributes to None if no data exists.  No branch sits between the
+        two reads, so the runs hash and the progress hash go out together.
         """
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
-                data = await redis.hgetall(self._redis_key)
-                if data:
-                    # Update state
-                    state_value = data.get(b"state")
-                    if state_value:
-                        self.state = ExecutionState(state_value.decode())
+                async with redis.pipeline() as pipe:
+                    pipe.hgetall(self._redis_key)
+                    self.progress._read(pipe)  # pyright: ignore[reportPrivateUsage]
+                    data, progress_data = await pipe.execute()
 
-                    # Update metadata
-                    self.worker = (
-                        data[b"worker"].decode() if b"worker" in data else None
-                    )
-                    self.started_at = (
-                        datetime.fromisoformat(data[b"started_at"].decode())
-                        if b"started_at" in data
-                        else None
-                    )
-                    self.completed_at = (
-                        datetime.fromisoformat(data[b"completed_at"].decode())
-                        if b"completed_at" in data
-                        else None
-                    )
-                    self.error = data[b"error"].decode() if b"error" in data else None
-                    self.result_key = (
-                        data[b"result_key"].decode() if b"result_key" in data else None
-                    )
-                else:
-                    # No data exists - reset to defaults
-                    self.state = ExecutionState.SCHEDULED
-                    self.worker = None
-                    self.started_at = None
-                    self.completed_at = None
-                    self.error = None
-                    self.result_key = None
+        if data:
+            # Update state
+            state_value = data.get(b"state")
+            if state_value:
+                self.state = ExecutionState(state_value.decode())
 
-        # Sync progress data
-        await self.progress.sync()
+            # Update metadata
+            self.worker = data[b"worker"].decode() if b"worker" in data else None
+            self.started_at = (
+                datetime.fromisoformat(data[b"started_at"].decode())
+                if b"started_at" in data
+                else None
+            )
+            self.completed_at = (
+                datetime.fromisoformat(data[b"completed_at"].decode())
+                if b"completed_at" in data
+                else None
+            )
+            self.error = data[b"error"].decode() if b"error" in data else None
+            self.result_key = (
+                data[b"result_key"].decode() if b"result_key" in data else None
+            )
+        else:
+            # No data exists - reset to defaults
+            self.state = ExecutionState.SCHEDULED
+            self.worker = None
+            self.started_at = None
+            self.completed_at = None
+            self.error = None
+            self.result_key = None
+
+        self.progress._apply(progress_data)  # pyright: ignore[reportPrivateUsage]
 
     async def is_superseded(self) -> bool:
         """Check whether a newer schedule has superseded this execution.
