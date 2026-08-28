@@ -157,8 +157,8 @@ async def test_chain_survives_on_complete_failure_in_failure_path_no_retry(
 
 async def test_chain_survives_replace_failure_inside_on_complete(docket: Docket):
     """A more targeted failure than patching ``on_complete`` itself: simulate
-    a Redis outage on the ``Docket.replace`` call that ``Perpetual.on_complete``
-    makes at ``_perpetual.py:132``. Because ``replace`` fails on every call
+    a Redis outage on the ``Docket._replace`` call that ``Perpetual.on_complete``
+    makes to schedule the next run. Because ``replace`` fails on every call
     during worker_a's run, both the success-path ``on_complete`` and the
     in-place recovery's repeat call fail, the worker dies; redelivery brings
     the message back; once the patch is gone, ``replace`` works and the chain
@@ -177,13 +177,14 @@ async def test_chain_survives_replace_failure_inside_on_complete(docket: Docket)
         function: TaskFunction | str,
         when: datetime,
         key: str,
+        expected_generation: int = 0,
     ) -> Callable[..., Awaitable[Execution]]:
         raise ConnectionError("simulated Redis blip during docket.replace")
 
     async with Worker(
         docket, redelivery_timeout=timedelta(milliseconds=200)
     ) as worker_a:
-        with patch.object(Docket, "replace", crashing_replace):
+        with patch.object(Docket, "_replace", crashing_replace):
             with pytest.raises(ExceptionGroup):
                 await worker_a.run_until_finished()
         assert len(executions) == 1

@@ -18,6 +18,7 @@ from ._base import (
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
 
+from ..execution import Disposition
 from ..instrumentation import TASKS_PERPETUATED, TASKS_SUPERSEDED
 
 logger = logging.getLogger("docket.dependencies")
@@ -106,8 +107,26 @@ class Perpetual(CompletionHandler["Perpetual"]):
                 await docket._cancel(redis, execution.key)
             return False
 
-        if await execution.is_superseded():
-            worker = current_worker.get()
+        docket = current_docket.get()
+        worker = current_worker.get()
+
+        if self._next_when:
+            when = self._next_when
+        else:
+            now = datetime.now(timezone.utc)
+            when = max(now, now + self.every - outcome.duration)
+
+        # Reschedule under this attempt's generation, so the one script both
+        # checks whether someone else has taken the key and, when nobody has,
+        # schedules the next run.
+        successor = await docket._replace(
+            execution.function, when, execution.key, execution.generation
+        )(
+            *self.args,
+            **self.kwargs,
+        )
+
+        if successor.disposition is Disposition.SUPERSEDED:
             TASKS_SUPERSEDED.add(
                 1,
                 {
@@ -122,20 +141,6 @@ class Perpetual(CompletionHandler["Perpetual"]):
                 execution.call_repr(),
             )
             return True
-
-        docket = current_docket.get()
-        worker = current_worker.get()
-
-        if self._next_when:
-            when = self._next_when
-        else:
-            now = datetime.now(timezone.utc)
-            when = max(now, now + self.every - outcome.duration)
-
-        await docket.replace(execution.function, when, execution.key)(
-            *self.args,
-            **self.kwargs,
-        )
 
         TASKS_PERPETUATED.add(1, {**worker.labels(), **execution.general_labels()})
 

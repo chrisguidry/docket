@@ -689,12 +689,14 @@ class Worker:
             message: RedisMessage,
             is_redelivery: bool = False,
         ) -> None:
+            # No sync: the claim in `_execute` reads the same hashes back.
             execution = await Execution.from_message(
                 self.docket,
                 message,
                 redelivered=is_redelivery,
                 fallback_task=self.fallback_task,
                 message_id=message_id,
+                sync=False,
             )
 
             task = asyncio.create_task(
