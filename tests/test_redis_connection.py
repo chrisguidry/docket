@@ -24,7 +24,8 @@ async def test_client_is_shared_across_uses(redis_url: str) -> None:
 async def test_client_stays_usable_after_a_use_ends(redis_url: str) -> None:
     """Leaving one client() block leaves the shared client ready for the next."""
     async with RedisConnection(redis_url) as connection:
-        key = connection.prefix("shared-client")
+        # my-application:* is an ACL-granted key namespace in the test suite.
+        key = connection.prefix("my-application") + ":shared-client"
 
         async with connection.client() as r:
             await r.set(key, b"1")
@@ -51,7 +52,7 @@ async def test_connection_pool_closes_when_the_connection_exits(  # pragma: no c
         pool = connection._connection_pool
         assert pool is not None
 
-        key = connection.prefix("pool-close")
+        key = connection.prefix("my-application") + ":pool-close"
         async with connection.client() as r:
             await r.set(key, b"1")
             await r.delete(key)
