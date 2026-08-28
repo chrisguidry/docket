@@ -383,12 +383,15 @@ async def key_leak_checker(docket: Docket) -> AsyncGenerator[KeyCountChecker, No
         scheduling_resolution=timedelta(milliseconds=5),
     ) as temp_worker:
         await temp_worker.run_until_finished()
-        # Clean up heartbeat data to avoid polluting tests that check worker counts
+        # Clean up heartbeat data to avoid polluting tests that check worker
+        # counts, and release the redelivery sweep lease this worker took, so
+        # the test's own worker can sweep on its first pass.
         async with docket.redis() as r:
             await r.zrem(docket.workers_set, temp_worker.name)
             for task_name in docket.tasks:
                 await r.zrem(docket.task_workers_set(task_name), temp_worker.name)
             await r.delete(docket.worker_tasks_set(temp_worker.name))
+            await r.delete(docket.redelivery_sweep_key)
 
     await checker.capture_baseline()
 

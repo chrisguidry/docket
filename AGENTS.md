@@ -122,6 +122,7 @@ Rich dependency injection supporting:
 ### Redis Data Model
 
 - **Streams**: `{docket}:stream` (ready tasks), `{docket}:strikes` (commands)
+- **Strings**: `{docket}:redelivery-sweep` (the fleet's redelivery sweep lease)
 - **Sorted Sets**: `{docket}:queue` (scheduled tasks), `{docket}:workers` (heartbeats)
 - **Hashes**: `{docket}:{key}` (parked task data)
 - **Sets**: `{docket}:worker-tasks:{worker}` (worker capabilities)

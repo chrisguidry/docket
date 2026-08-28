@@ -36,6 +36,7 @@ from opentelemetry.trace import Status, StatusCode, Tracer
 
 from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task
 from ._lua import Arg, Key, redis_script
+from ._redelivery import DELIVERY_BATCH, RedeliverySweep, renew_leases
 from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
@@ -619,18 +620,21 @@ class Worker:
                 queue_len = results[1]
                 return stream_len > 0 or queue_len > 0
 
+        # See _redelivery for why this scan is periodic, bounded, and leased.
+        sweep = RedeliverySweep(
+            self.redelivery_timeout,
+            lease_key=self.docket.redelivery_sweep_key,
+            worker_name=self.name,
+        )
+
         async def get_redeliveries(redis: Redis) -> RedisReadGroupResponse:
             logger.debug("Getting redeliveries", extra=log_context)
             try:
                 with self._maybe_suppress_instrumentation():
-                    _, redeliveries, *_ = await redis.xautoclaim(
-                        name=self.docket.stream_key,
-                        groupname=self.docket.worker_group_name,
-                        consumername=self.name,
-                        min_idle_time=int(
-                            self.redelivery_timeout.total_seconds() * 1000
-                        ),
-                        start_id="0-0",
+                    redeliveries = await sweep.claim(
+                        cast(RedisClient, redis),
+                        stream_key=self.docket.stream_key,
+                        group_name=self.docket.worker_group_name,
                         count=available_slots,
                     )
             except ResponseError as e:
@@ -649,7 +653,7 @@ class Worker:
                         consumername=self.name,
                         streams={self.docket.stream_key: ">"},
                         block=int(self.minimum_check_interval.total_seconds() * 1000),
-                        count=available_slots,
+                        count=min(available_slots, DELIVERY_BATCH),
                     )
             except ResponseError as e:
                 if "NOGROUP" in str(e):
@@ -783,7 +787,10 @@ class Worker:
                             )
                             continue
                         try:
-                            for source in [get_redeliveries, get_new_deliveries]:
+                            sources = [get_new_deliveries]
+                            if await sweep.due(cast(RedisClient, redis)):
+                                sources.insert(0, get_redeliveries)
+                            for source in sources:
                                 for stream_key, messages in await source(redis):
                                     is_redelivery = stream_key == b"__redelivery__"
                                     for message_id, message in messages:
@@ -883,8 +890,8 @@ class Worker:
     ) -> None:
         """Periodically renew leases on stream messages.
 
-        Calls XCLAIM with idle=0 to reset the message's idle time, preventing
-        XAUTOCLAIM from reclaiming it while we're still processing.
+        See _redelivery for how a renewal keeps XAUTOCLAIM from reclaiming a
+        message that this worker is still processing.
         """
         session = self._processing_session
         if session is None:
@@ -901,18 +908,14 @@ class Worker:
             if not message_ids:
                 continue
 
-            try:
-                with self._maybe_suppress_instrumentation():
-                    await redis.xclaim(
-                        name=self.docket.stream_key,
-                        groupname=self.docket.worker_group_name,
-                        consumername=self.name,
-                        min_idle_time=0,
-                        message_ids=message_ids,
-                        idle=0,
-                    )
-            except Exception:
-                logger.warning("Failed to renew leases", exc_info=True)
+            with self._maybe_suppress_instrumentation():
+                await renew_leases(
+                    cast(RedisClient, redis),
+                    stream_key=self.docket.stream_key,
+                    group_name=self.docket.worker_group_name,
+                    consumer_name=self.name,
+                    message_ids=message_ids,
+                )
 
     async def _reseed_automatic_perpetual_tasks_loop(self) -> None:
         """Periodically re-sow automatic perpetuals so a chain severed after

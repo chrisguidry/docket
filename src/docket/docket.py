@@ -905,6 +905,14 @@ class Docket(DocketSnapshotMixin):
         return self.key(f"cancel:{task_key}")
 
     @property
+    def redelivery_sweep_key(self) -> str:
+        """Return the Redis key for the fleet's redelivery sweep lease.
+
+        See _redelivery for why only one worker per interval sweeps.
+        """
+        return self.key("redelivery-sweep")
+
+    @property
     def results_collection(self) -> str:
         """Return the collection name for result storage."""
         return self.key("results")
