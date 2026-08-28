@@ -1,30 +1,26 @@
 """Redis connection management.
 
-This module is the single point of control for Redis connections, including
-the burner-redis backend used for memory:// URLs.
+This module is the single point of control for Redis connections.
 
 This module is designed to be the single point of cluster-awareness, so that
 other modules can remain simple. When Redis Cluster support is added, only
 this module will need to change.
 
-Redis Sentinel support lives in the companion ``_redis_sentinel.py`` module;
-this module only detects the ``redis+sentinel://`` scheme and dispatches there.
+Redis Sentinel support lives in the companion ``_redis_sentinel.py`` module,
+and the burner-redis backend for ``memory://`` URLs in ``_redis_memory.py``;
+this module only detects those schemes and dispatches there.
 """
 
 from __future__ import annotations
 
-import asyncio
-import importlib
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta
-from threading import Lock as _ThreadLock
 from types import TracebackType
 from typing import (
     Any,
     AsyncGenerator,
     AsyncIterator,
-    Callable,
     Iterable,
     Literal,
     Mapping,
@@ -587,70 +583,6 @@ async def close_resource(resource: AsyncCloseable, name: str) -> None:
         logger.warning("Failed to close %s", name, exc_info=True)
 
 
-# Cache of BurnerRedis instances keyed by URL and event loop.  BurnerRedis is
-# loop-affine, so a memory:// URL may only reuse a client within the same loop.
-_MemoryServerKey = tuple[str, int]
-_MemoryServerEntry = tuple[asyncio.AbstractEventLoop, MemoryRedisClient]
-_memory_servers: dict[_MemoryServerKey, _MemoryServerEntry] = {}
-_memory_servers_lock = _ThreadLock()
-
-
-def _memory_server_key(url: str, loop: asyncio.AbstractEventLoop) -> _MemoryServerKey:
-    return url, id(loop)
-
-
-async def _close_memory_clients(clients: list[MemoryRedisClient]) -> None:
-    for client in clients:
-        await close_resource(client, "memory client")
-
-
-async def _drop_closed_memory_servers() -> None:
-    clients: list[MemoryRedisClient] = []
-    with _memory_servers_lock:
-        for key, (loop, client) in list(_memory_servers.items()):
-            if loop.is_closed():
-                clients.append(client)
-                del _memory_servers[key]
-
-    await _close_memory_clients(clients)
-
-
-def _memory_client_factory() -> Callable[[], MemoryRedisClient]:
-    burner_redis = importlib.import_module("burner_redis")
-    return cast(
-        Callable[[], MemoryRedisClient],
-        getattr(burner_redis, "BurnerRedis"),
-    )
-
-
-async def clear_memory_servers() -> None:
-    """Discard cached BurnerRedis instances, closing all cached clients.
-
-    Each BurnerRedis may hold internal state tied to the asyncio event loop
-    that created it (pub/sub listeners, blocking-read notifiers, Tokio
-    background tasks, etc.).  Clearing the cache first prevents new users from
-    taking these instances while they are closing.
-    """
-    with _memory_servers_lock:
-        clients = [client for _, client in _memory_servers.values()]
-        _memory_servers.clear()
-
-    await _close_memory_clients(clients)
-
-
-def get_memory_server(url: str) -> MemoryRedisClient | None:
-    """Get the cached BurnerRedis instance for a URL, if any.
-
-    This is primarily for testing to verify server isolation.
-    """
-    loop = asyncio.get_running_loop()
-    with _memory_servers_lock:
-        entry = _memory_servers.get(_memory_server_key(url, loop))
-    if entry is None:
-        return None
-    return entry[1]
-
-
 class RedisConnection:
     """Manages Redis connections for standalone, Sentinel, and cluster modes.
 
@@ -668,11 +600,17 @@ class RedisConnection:
 
     # Standalone mode: connection pool for all Redis operations
     _connection_pool: ConnectionPool | None
+    # Standalone mode: the one client every caller shares.  Building a redis-py
+    # client copies its whole response-callback table, so a client per call
+    # costs real CPU.
+    _client: Redis | None
     # Cluster mode: the RedisCluster client for data operations
     _cluster_client: RedisCluster | None
     # Cluster mode: connection pool to a single node for pub/sub (cluster doesn't
     # support pub/sub natively, so we connect directly to one primary node)
     _node_pool: ConnectionPool | None
+    # Cluster mode: the shared client on the node pool, for the same reason
+    _node_client: Redis | None
     # Memory mode: in-process BurnerRedis instance
     _memory_client: MemoryRedisClient | None
     _parsed: ParseResult
@@ -695,8 +633,10 @@ class RedisConnection:
             urlparse_multihost(url) if is_sentinel_url(url) else urlparse(url)
         )
         self._connection_pool = None
+        self._client = None
         self._cluster_client = None
         self._node_pool = None
+        self._node_client = None
         self._memory_client = None
 
     async def __aenter__(self) -> "RedisConnection":
@@ -718,8 +658,16 @@ class RedisConnection:
             self._stack.push_async_callback(
                 close_resource, self._node_pool, "node pool"
             )
+
+            self._node_client = Redis(connection_pool=self._node_pool)
+            self._stack.callback(lambda: setattr(self, "_node_client", None))
+            self._stack.push_async_callback(
+                close_resource, self._node_client, "node client"
+            )
         elif self.is_memory:
-            self._memory_client = await self._get_or_create_memory_client()
+            from ._redis_memory import get_or_create_memory_client
+
+            self._memory_client = await get_or_create_memory_client(self.url)
             self._stack.callback(lambda: setattr(self, "_memory_client", None))
         else:
             self._connection_pool = await self._connection_pool_from_url()
@@ -727,6 +675,13 @@ class RedisConnection:
             self._stack.push_async_callback(
                 close_resource, self._connection_pool, "connection pool"
             )
+
+            # Closing a client that was handed a pool releases the client's own
+            # connection and leaves the pool alone, so the pool callback above
+            # is still what closes the pool.
+            self._client = Redis(connection_pool=self._connection_pool)
+            self._stack.callback(lambda: setattr(self, "_client", None))
+            self._stack.push_async_callback(close_resource, self._client, "client")
 
         return self
 
@@ -881,26 +836,15 @@ class RedisConnection:
             socket_connect_timeout=CONNECT_TIMEOUT,
         )
 
-    async def _get_or_create_memory_client(self) -> MemoryRedisClient:
-        """Get or create a BurnerRedis instance for a memory:// URL."""
-        global _memory_servers
-
-        client_factory = _memory_client_factory()
-        loop = asyncio.get_running_loop()
-        key = _memory_server_key(self.url, loop)
-
-        await _drop_closed_memory_servers()
-        with _memory_servers_lock:
-            entry = _memory_servers.get(key)
-            if entry is not None:
-                return entry[1]
-            client = client_factory()
-            _memory_servers[key] = (loop, client)
-            return client
-
     @asynccontextmanager
     async def client(self) -> AsyncGenerator[RedisClient, None]:
-        """Get a Redis client, handling standalone, cluster, and memory modes.
+        """Get the Redis client, handling standalone, cluster, and memory modes.
+
+        The client lives as long as the connection does, and leaving this
+        context leaves it open for the next caller.  Concurrent callers may
+        hold it at the same time, because redis-py checks a connection out of
+        the pool per command.  Pipelines, pub/sub objects, and locks are
+        per-use and each caller must still close its own.
 
         Casts at the redis-py boundary translate from redis-py's
         ``Awaitable[T] | T`` dual-mode signatures into our async-only protocol.
@@ -912,8 +856,8 @@ class RedisConnection:
         elif self._memory_client is not None:
             yield self._memory_client
         else:
-            async with Redis(connection_pool=self._connection_pool) as r:
-                yield cast(RedisClient, r)
+            assert self._client is not None
+            yield cast(RedisClient, self._client)
 
     @asynccontextmanager
     async def pubsub(self) -> AsyncGenerator[PubSubClient, None]:
@@ -928,20 +872,20 @@ class RedisConnection:
             finally:
                 await ps.aclose()
         else:
-            async with Redis(connection_pool=self._connection_pool) as r:
-                async with r.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
-                    yield cast(PubSubClient, pubsub)
+            assert self._client is not None
+            async with self._client.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
+                yield cast(PubSubClient, pubsub)
 
     async def publish(self, channel: str, message: str) -> int:
         """Publish a message to a pub/sub channel."""
         if self._cluster_client is not None:  # pragma: no cover
-            async with Redis(connection_pool=self._node_pool) as r:
-                return cast(int, await r.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
+            assert self._node_client is not None
+            return cast(int, await self._node_client.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
         elif self._memory_client is not None:
             return await self._memory_client.publish(channel, message)
         else:
-            async with Redis(connection_pool=self._connection_pool) as r:
-                return cast(int, await r.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
+            assert self._client is not None
+            return cast(int, await self._client.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
 
     @asynccontextmanager
     async def _cluster_pubsub(self) -> AsyncGenerator[PubSub, None]:  # pragma: no cover
@@ -949,13 +893,14 @@ class RedisConnection:
 
         Redis Cluster doesn't natively support pub/sub through the cluster client,
         so we use a regular Redis client connected to one of the primary nodes.
-        The underlying connection pool is managed by the RedisConnection lifecycle.
+        The client and its connection pool are managed by the RedisConnection
+        lifecycle, so only the PubSub object closes here.
 
         Yields:
             A PubSub object connected to a cluster node
         """
-        client = Redis(connection_pool=self._node_pool)
-        pubsub = client.pubsub()  # pyright: ignore[reportUnknownMemberType]
+        assert self._node_client is not None
+        pubsub = self._node_client.pubsub()  # pyright: ignore[reportUnknownMemberType]
         try:
             yield pubsub
         finally:
@@ -963,7 +908,3 @@ class RedisConnection:
                 await pubsub.aclose()
             except Exception:
                 logger.warning("Failed to close cluster pubsub", exc_info=True)
-            try:
-                await client.aclose()
-            except Exception:
-                logger.warning("Failed to close cluster client", exc_info=True)

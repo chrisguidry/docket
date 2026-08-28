@@ -3,15 +3,11 @@
 import asyncio
 from typing import cast
 
-import docket._redis as redis_module
+import docket._redis_memory as memory_module
 import pytest
 from docket import Docket, Worker
-from docket._redis import (
-    MemoryRedisClient,
-    RedisConnection,
-    clear_memory_servers,
-    get_memory_server,
-)
+from docket._redis import MemoryRedisClient, RedisConnection
+from docket._redis_memory import clear_memory_servers, get_memory_server
 
 
 class CloseTrackingMemoryClient:
@@ -32,7 +28,7 @@ def _install_close_tracking_memory_factory(
         clients.append(client)
         return cast(MemoryRedisClient, client)
 
-    monkeypatch.setattr(redis_module, "_memory_client_factory", lambda: create_client)
+    monkeypatch.setattr(memory_module, "_memory_client_factory", lambda: create_client)
     return clients
 
 

@@ -278,7 +278,7 @@ async def _fresh_memory_server() -> AsyncGenerator[None, None]:  # pyright: igno
     while the event loop is still alive), then clears the cache so the next
     test gets a fresh instance.
     """
-    from docket._redis import clear_memory_servers
+    from docket._redis_memory import clear_memory_servers
 
     await clear_memory_servers()
     yield
