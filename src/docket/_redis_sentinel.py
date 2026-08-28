@@ -259,6 +259,7 @@ def sentinel_connection_pool(
     url: str,
     *,
     decode_responses: bool,
+    protocol: int | None,
     socket_timeout: float | None,
     socket_connect_timeout: float | None,
 ) -> ConnectionPool:
@@ -273,6 +274,7 @@ def sentinel_connection_pool(
     Args:
         url: The redis+sentinel:// or rediss+sentinel:// URL.
         decode_responses: If True, decode Redis responses from bytes to strings.
+        protocol: The RESP version to negotiate, or None for redis-py's default.
         socket_timeout: The read timeout for data-node connections.
         socket_connect_timeout: The TCP connect timeout for data-node
             connections.
@@ -287,6 +289,7 @@ def sentinel_connection_pool(
     pool_kwargs: dict[str, Any] = {
         "db": config.db,
         "decode_responses": decode_responses,
+        "protocol": protocol,
         "socket_timeout": socket_timeout,
         "socket_connect_timeout": socket_connect_timeout,
         "socket_keepalive": True,

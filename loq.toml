@@ -26,11 +26,11 @@ max_lines = 1105
 
 [[rules]]
 path = "src/docket/_redis.py"
-max_lines = 969
+max_lines = 996
 
 [[rules]]
 path = "src/docket/dependencies/_concurrency.py"
-max_lines = 867
+max_lines = 862
 
 [[rules]]
 path = "tests/instrumentation/test_counters.py"

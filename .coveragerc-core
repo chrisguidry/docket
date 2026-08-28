@@ -14,6 +14,7 @@ omit =
     tests/cli/*.py
     # real-Redis-only; skips on the memory and cluster legs
     tests/test_socket_timeout.py
+    tests/test_pubsub_resp_version.py
 
 [report]
 exclude_also = ["\\.\\.\\.$"]

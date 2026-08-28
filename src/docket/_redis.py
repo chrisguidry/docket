@@ -60,6 +60,18 @@ BLOCKING_READ_SOCKET_TIMEOUT: float | None = None
 # caller (a worker clearing its heartbeat during shutdown, for example).
 CONNECT_TIMEOUT: float = 10.0
 
+# hiredis-py leaks one small list for every RESP3 push reply: it passes a new
+# list to PyList_SetSlice, which does not steal the reference, so nothing ever
+# frees it.  Under RESP3 every pub/sub message is a push reply, and docket's
+# subscribers listen for the life of a worker, so the leak has no bound: about
+# 100 bytes per message until the process dies.  Streams and ordinary commands
+# are not push replies, so only the pub/sub connections drop to RESP2 and the
+# rest of the client keeps whatever redis-py negotiates.  Remove this once
+# hiredis-py releases the fix.
+# https://github.com/redis/hiredis-py/issues/235
+# https://github.com/redis/hiredis-py/pull/239
+PUBSUB_RESP_VERSION: int = 2
+
 
 # ---------------------------------------------------------------------------
 # Input type aliases (mirror redis-py's type domain)
@@ -622,6 +634,8 @@ class RedisConnection:
     # client copies its whole response-callback table, so a client per call
     # costs real CPU.
     _client: Redis | None
+    # Standalone mode: a second pool, at PUBSUB_RESP_VERSION, for pub/sub only
+    _pubsub_pool: ConnectionPool | None
     # Cluster mode: the RedisCluster client for data operations
     _cluster_client: RedisCluster | None
     # Cluster mode: connection pool to a single node for pub/sub (cluster doesn't
@@ -652,6 +666,7 @@ class RedisConnection:
         )
         self._connection_pool = None
         self._client = None
+        self._pubsub_pool = None
         self._cluster_client = None
         self._node_pool = None
         self._node_client = None
@@ -700,6 +715,14 @@ class RedisConnection:
             self._client = Redis(connection_pool=self._connection_pool)
             self._stack.callback(lambda: setattr(self, "_client", None))
             self._stack.push_async_callback(close_resource, self._client, "client")
+
+            self._pubsub_pool = await self._connection_pool_from_url(
+                protocol=PUBSUB_RESP_VERSION
+            )
+            self._stack.callback(lambda: setattr(self, "_pubsub_pool", None))
+            self._stack.push_async_callback(
+                close_resource, self._pubsub_pool, "pub/sub pool"
+            )
 
         return self
 
@@ -819,12 +842,13 @@ class RedisConnection:
             if self._parsed.scheme == "rediss+cluster"
             else Connection,
             decode_responses=False,
+            protocol=PUBSUB_RESP_VERSION,
             socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
             socket_connect_timeout=CONNECT_TIMEOUT,
         )
 
     async def _connection_pool_from_url(
-        self, decode_responses: bool = False
+        self, decode_responses: bool = False, protocol: int | None = None
     ) -> ConnectionPool:
         """Create a Redis connection pool from the URL.
 
@@ -834,6 +858,7 @@ class RedisConnection:
 
         Args:
             decode_responses: If True, decode Redis responses from bytes to strings
+            protocol: The RESP version to negotiate, or None for redis-py's default
 
         Returns:
             A ConnectionPool ready for use with Redis clients
@@ -844,12 +869,14 @@ class RedisConnection:
             return sentinel_connection_pool(
                 self.url,
                 decode_responses=decode_responses,
+                protocol=protocol,
                 socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
                 socket_connect_timeout=CONNECT_TIMEOUT,
             )
         return ConnectionPool.from_url(  # pyright: ignore[reportUnknownMemberType]
             self.url,
             decode_responses=decode_responses,
+            protocol=protocol,
             socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
             socket_connect_timeout=CONNECT_TIMEOUT,
         )
@@ -890,8 +917,9 @@ class RedisConnection:
             finally:
                 await ps.aclose()
         else:
-            async with require_open(self._client).pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
-                yield cast(PubSubClient, pubsub)
+            async with Redis(connection_pool=require_open(self._pubsub_pool)) as r:
+                async with r.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
+                    yield cast(PubSubClient, pubsub)
 
     async def publish(self, channel: str, message: str) -> int:
         """Publish a message to a pub/sub channel."""
