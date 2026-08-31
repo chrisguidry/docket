@@ -188,38 +188,24 @@ async def test_execution_sync_with_no_redis_data(docket: Docket):
 
 
 async def test_execution_sync_with_missing_state_field(docket: Docket):
-    """Test sync() when Redis data exists but has no 'state' field."""
-    from unittest.mock import AsyncMock, patch
-
+    """sync() keeps the current state when the runs hash has no 'state' field."""
     execution = Execution(
         docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
     )
+    await execution.claim("worker-1")
 
-    # Set initial state
+    async with docket.redis() as redis:
+        await redis.hdel(docket.key("runs:test-key"), "state")
+
     execution.state = ExecutionState.RUNNING
+    await execution.sync()
 
-    # Mock Redis to return data WITHOUT state field
-    mock_data = {
-        b"worker": b"worker-1",
-        b"started_at": b"2024-01-01T00:00:00+00:00",
-        # No b"state" field - state_value will be None
-    }
-
-    with patch.object(execution.docket, "redis") as mock_redis_ctx:
-        mock_redis = AsyncMock()
-        mock_redis.hgetall.return_value = mock_data
-        mock_redis_ctx.return_value.__aenter__.return_value = mock_redis
-        mock_redis_ctx.return_value.__aexit__.return_value = None
-
-        # Mock progress sync to avoid extra Redis calls
-        with patch.object(execution.progress, "sync"):
-            await execution.sync()
-
-    # State should NOT be updated (stays as RUNNING)
+    # State stays as RUNNING, but the other fields still come from Redis
     assert execution.state == ExecutionState.RUNNING
-    # But other fields should be updated
     assert execution.worker == "worker-1"
     assert execution.started_at is not None
+
+    await execution.mark_as_completed()
 
 
 async def test_mark_as_failed_without_error_message(docket: Docket):

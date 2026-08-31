@@ -1,8 +1,9 @@
+import asyncio
 from typing import Annotated
 
 import pytest
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from docket import Docket, Worker
 from docket.annotations import Logged
@@ -166,3 +167,22 @@ async def test_execution_from_message_without_fallback_raises_for_unknown_task(
 
     assert "unknown_task" in str(exc_info.value)
     assert "not registered" in str(exc_info.value)
+
+
+async def test_schedule_does_not_wait_on_a_per_key_lock(docket: Docket):
+    """schedule() takes no lock on the task key, so an outside holder cannot stall it.
+
+    The `_schedule` script is atomic on its own, and nothing else in docket
+    acquires a `{known}:lock` key.
+    """
+    when = datetime.now(timezone.utc) + timedelta(minutes=1)
+    lock_key = f"{docket.known_task_key('unblocked')}:lock"
+
+    async with docket.redis() as redis:
+        async with redis.lock(lock_key, timeout=10):
+            await asyncio.wait_for(
+                docket.add(no_args, when, key="unblocked")(), timeout=2
+            )
+
+    snapshot = await docket.snapshot()
+    assert [execution.key for execution in snapshot.future] == ["unblocked"]

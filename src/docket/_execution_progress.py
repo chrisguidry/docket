@@ -10,11 +10,12 @@ from typing import (
     AsyncGenerator,
     Generator,
     Literal,
+    Mapping,
     TypedDict,
 )
 
 from ._lua import Arg, Args, Key, redis_script
-from ._redis import RedisClient, confirm_subscriptions
+from ._redis import Pipeline, RedisClient, confirm_subscriptions
 
 from ._telemetry import suppress_instrumentation
 from typing_extensions import Self
@@ -213,22 +214,32 @@ class ExecutionProgress:
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
                 data = await redis.hgetall(self._redis_key)
-                if data:
-                    self.current = int(data.get(b"current", b"0"))
-                    self.total = int(data.get(b"total", b"100"))
-                    self.message = (
-                        data[b"message"].decode() if b"message" in data else None
-                    )
-                    self.updated_at = (
-                        datetime.fromisoformat(data[b"updated_at"].decode())
-                        if b"updated_at" in data
-                        else None
-                    )
-                else:
-                    self.current = None
-                    self.total = 100
-                    self.message = None
-                    self.updated_at = None
+        self._apply(data)
+
+    def _read(self, pipe: Pipeline) -> None:
+        """Queue the read of the progress hash onto ``pipe``.
+
+        ``Execution.sync`` reads the progress hash in the same pipeline as the
+        runs hash, one round trip for both, then hands the reply to ``_apply``.
+        """
+        pipe.hgetall(self._redis_key)
+
+    def _apply(self, data: Mapping[bytes, bytes]) -> None:
+        """Take the instance attributes from one read of the progress hash."""
+        if data:
+            self.current = int(data.get(b"current", b"0"))
+            self.total = int(data.get(b"total", b"100"))
+            self.message = data[b"message"].decode() if b"message" in data else None
+            self.updated_at = (
+                datetime.fromisoformat(data[b"updated_at"].decode())
+                if b"updated_at" in data
+                else None
+            )
+        else:
+            self.current = None
+            self.total = 100
+            self.message = None
+            self.updated_at = None
 
     async def _publish(self, data: dict[str, Any]) -> None:
         """Publish progress update to Redis pub/sub channel.
