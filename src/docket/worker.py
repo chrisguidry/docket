@@ -36,7 +36,7 @@ from opentelemetry.trace import Status, StatusCode, Tracer
 
 from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task
 from ._lua import Arg, Key, redis_script
-from ._redelivery import RedeliverySweep
+from ._redelivery import RedeliverySweep, renew_leases
 from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
@@ -906,8 +906,8 @@ class Worker:
     ) -> None:
         """Periodically renew leases on stream messages.
 
-        Calls XCLAIM with idle=0 to reset the message's idle time, preventing
-        XAUTOCLAIM from reclaiming it while we're still processing.
+        See _redelivery for how a renewal keeps XAUTOCLAIM from reclaiming a
+        message that this worker is still processing.
         """
         session = self._processing_session
         if session is None:
@@ -924,18 +924,14 @@ class Worker:
             if not message_ids:
                 continue
 
-            try:
-                with self._maybe_suppress_instrumentation():
-                    await redis.xclaim(
-                        name=self.docket.stream_key,
-                        groupname=self.docket.worker_group_name,
-                        consumername=self.name,
-                        min_idle_time=0,
-                        message_ids=message_ids,
-                        idle=0,
-                    )
-            except Exception:
-                logger.warning("Failed to renew leases", exc_info=True)
+            with self._maybe_suppress_instrumentation():
+                await renew_leases(
+                    cast(RedisClient, redis),
+                    stream_key=self.docket.stream_key,
+                    group_name=self.docket.worker_group_name,
+                    consumer_name=self.name,
+                    message_ids=message_ids,
+                )
 
     async def _reseed_automatic_perpetual_tasks_loop(self) -> None:
         """Periodically re-sow automatic perpetuals so a chain severed after
