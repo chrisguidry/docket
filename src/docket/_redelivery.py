@@ -1,4 +1,11 @@
-"""How a worker finds messages that another worker abandoned.
+"""How a worker keeps its own messages and finds ones another worker abandoned.
+
+A worker keeps a message by renewing its lease: XCLAIM with ``idle=0`` resets
+the message's idle clock, so the sweep below does not take it away while the
+task is still running.  A renewal names every message the worker holds, so it
+goes out in chunks of at most ``LEASE_RENEWAL_BATCH`` ids, and it asks for
+JUSTID.  A plain XCLAIM answers with the whole body of every message, and Redis
+blocks while it builds that reply for a worker that discards it.
 
 A worker sweeps its consumer group's pending list with XAUTOCLAIM to find
 messages that another worker left behind.  ``RedeliverySweep`` owns that claim:
@@ -40,14 +47,22 @@ than one window per timer tick.
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 from datetime import timedelta
+from typing import Sequence
 
 from redis.exceptions import ResponseError
 
-from ._redis import RedisClient, RedisMessages
+from ._redis import RedisClient, RedisMessageID, RedisMessages
 from .docket import Docket
+
+logger = logging.getLogger(__name__)
+
+# The most message ids one XCLAIM may name, so no single renewal command blocks
+# Redis long or ships a large reply.
+LEASE_RENEWAL_BATCH = 5000
 
 # The cursor Redis returns at the end of the pending list, and the one that
 # starts a fresh sweep from the front.
@@ -56,6 +71,39 @@ SWEEP_START = "0-0"
 # The narrowest and widest wait between sweeps, as a fraction of the interval.
 # The jitter keeps a fleet that started together from sweeping in lockstep.
 JITTER = (0.75, 1.25)
+
+
+async def renew_leases(
+    redis: RedisClient,
+    *,
+    stream_key: str,
+    group_name: str,
+    consumer_name: str,
+    message_ids: Sequence[RedisMessageID],
+) -> None:
+    """Reset the idle time of the messages one worker holds.
+
+    Each XCLAIM asks for JUSTID, so Redis returns only the claimed ids, not the
+    message bodies the worker already has and would discard.  The ids go out in
+    chunks of at most ``LEASE_RENEWAL_BATCH``, so no single command names every
+    held message and blocks Redis while it runs.
+
+    A chunk that Redis refuses is logged and passed over, so the rest of the
+    worker's messages still have their leases renewed on this pass.
+    """
+    for start in range(0, len(message_ids), LEASE_RENEWAL_BATCH):
+        try:
+            await redis.xclaim(
+                name=stream_key,
+                groupname=group_name,
+                consumername=consumer_name,
+                min_idle_time=0,
+                message_ids=message_ids[start : start + LEASE_RENEWAL_BATCH],
+                idle=0,
+                justid=True,
+            )
+        except Exception:
+            logger.warning("Failed to renew leases", exc_info=True)
 
 
 class RedeliverySweep:
