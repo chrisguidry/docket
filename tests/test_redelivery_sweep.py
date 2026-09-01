@@ -29,6 +29,10 @@ def the_task() -> AsyncMock:
     return task
 
 
+# A batch small enough that a test pending list needs several claims to walk.
+A_SMALL_BATCH = 5
+
+
 @pytest.fixture
 def sweep(docket: Docket) -> RedeliverySweep:
     """A sweep that treats every pending message as abandoned.
@@ -40,6 +44,7 @@ def sweep(docket: Docket) -> RedeliverySweep:
         docket,
         worker_name="the-sweeping-worker",
         redelivery_timeout=timedelta(0),
+        message_batch=A_SMALL_BATCH,
     )
 
 
@@ -58,6 +63,7 @@ def a_sweep(
         docket,
         worker_name=worker_name,
         redelivery_timeout=timeout,
+        message_batch=A_SMALL_BATCH,
     )
 
 
@@ -133,19 +139,16 @@ async def abandon_many(docket: Docket, the_task: AsyncMock, count: int) -> None:
         )
 
 
-async def test_one_claim_asks_for_no_more_than_the_scan_batch(
+async def test_one_claim_asks_for_no_more_than_the_message_batch(
     docket: Docket,
     sweep: RedeliverySweep,
     the_task: AsyncMock,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """A worker with more free slots than one batch still caps its ask.
 
-    Twenty free slots against a scan batch of five claims five, so Redis reads
-    a bounded slice of the pending list however many slots are free.
+    Twenty free slots against a message batch of five claims five, so Redis
+    reads a bounded slice of the pending list however many slots are free.
     """
-    monkeypatch.setattr("docket._redelivery.REDELIVERY_SCAN_BATCH", 5)
-
     await abandon_many(docket, the_task, count=20)
 
     async with docket.redis() as redis:
@@ -158,7 +161,6 @@ async def test_the_kept_cursor_reaches_entries_past_the_first_window(
     docket: Docket,
     sweep: RedeliverySweep,
     the_task: AsyncMock,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """A second claim picks up where the first one stopped.
 
@@ -166,8 +168,6 @@ async def test_the_kept_cursor_reaches_entries_past_the_first_window(
     entries forever, and the rest of the pending list would never be
     redelivered.
     """
-    monkeypatch.setattr("docket._redelivery.REDELIVERY_SCAN_BATCH", 5)
-
     await abandon_many(docket, the_task, count=20)
 
     async with docket.redis() as redis:
@@ -185,11 +185,8 @@ async def test_a_sweep_under_way_stays_due_regardless_of_the_timer(
     docket: Docket,
     sweep: RedeliverySweep,
     the_task: AsyncMock,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """While the cursor is past the front the worker sweeps on every pass."""
-    monkeypatch.setattr("docket._redelivery.REDELIVERY_SCAN_BATCH", 5)
-
     await abandon_many(docket, the_task, count=20)
 
     async with docket.redis() as redis:
@@ -260,20 +257,19 @@ async def test_a_missing_consumer_group_is_created_and_the_claim_retried(
 
 
 async def test_the_worker_redelivers_every_abandoned_message(
-    docket: Docket, the_task: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    docket: Docket, the_task: AsyncMock
 ):
     """A worker reaches entries past a single bounded claim.
 
-    Shrinking the scan batch to one caps each XAUTOCLAIM at about ten scanned
-    entries, so no single claim can reach the whole list.  The kept cursor
-    walks the rest, so every abandoned message is redelivered and run.
+    Shrinking the message batch to one caps each XAUTOCLAIM at about ten
+    scanned entries, so no single claim can reach the whole list.  The kept
+    cursor walks the rest, so every abandoned message is redelivered and run.
     """
-    monkeypatch.setattr("docket._redelivery.REDELIVERY_SCAN_BATCH", 1)
-
     await abandon_many(docket, the_task, count=25)
 
     async with Worker(
         docket,
+        message_batch=1,
         redelivery_timeout=timedelta(milliseconds=50),
         minimum_check_interval=timedelta(milliseconds=5),
         scheduling_resolution=timedelta(milliseconds=5),

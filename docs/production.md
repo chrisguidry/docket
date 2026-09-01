@@ -17,12 +17,15 @@ async with Worker(
     reconnection_delay=timedelta(seconds=5),           # Redis reconnection backoff
     minimum_check_interval=timedelta(milliseconds=100), # Polling frequency
     scheduling_resolution=timedelta(milliseconds=250),  # Future task check frequency
-    schedule_automatic_tasks=True                       # Enable perpetual task startup
+    schedule_automatic_tasks=True,                      # Enable perpetual task startup
+    message_batch=1000,                                 # Messages per Redis command
 ) as worker:
     await worker.run_forever()
 ```
 
 `redelivery_timeout` sets when a task becomes eligible for redelivery, not when redelivery happens. Each worker sweeps for eligible tasks on a timer at a quarter of the timeout, jittered 0.75–1.25×. A task therefore waits up to about 31% past the timeout before another worker claims it, and usually less.
+
+`message_batch` caps how many messages one Redis command may claim, for both the delivery read and the redelivery sweep. A larger batch costs fewer round trips. It also makes Redis serialize that many whole messages into one reply, and makes each sweep read about ten times the batch in pending-list entries. A burst larger than one batch still drains in full, because the worker reads again while slots stay free.
 
 ### Environment Variable Configuration
 
@@ -36,6 +39,7 @@ export DOCKET_URL=redis://redis.production.com:6379/0
 # Worker settings
 export DOCKET_WORKER_NAME=orders-worker-1
 export DOCKET_WORKER_CONCURRENCY=50
+export DOCKET_WORKER_MESSAGE_BATCH=1000
 export DOCKET_WORKER_REDELIVERY_TIMEOUT=10m
 export DOCKET_WORKER_RECONNECTION_DELAY=5s
 export DOCKET_WORKER_MINIMUM_CHECK_INTERVAL=100ms
