@@ -2,17 +2,20 @@
 
 The sweep claims its consumer group's pending list with XAUTOCLAIM to find
 messages another worker abandoned.  Each claim is bounded, and the cursor is
-kept across claims so entries past the first window are still reached.
+kept across claims so entries past the first window are still reached.  A
+worker sweeps on a jittered timer rather than on every poll pass, and keeps
+sweeping until the cursor comes back to the front of the list.
 """
 
 import inspect
+import time
 from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
 
 from docket import Docket, Worker
-from docket._redelivery import SWEEP_START, RedeliverySweep
+from docket._redelivery import JITTER, SWEEP_START, RedeliverySweep
 
 
 @pytest.fixture
@@ -41,6 +44,25 @@ def sweep(docket: Docket) -> RedeliverySweep:
 def test_a_fresh_sweep_starts_at_the_front(sweep: RedeliverySweep):
     """A sweep that has claimed nothing yet starts at the front of the list."""
     assert sweep.start_id == SWEEP_START
+
+
+def a_sweep(docket: Docket, timeout: timedelta) -> RedeliverySweep:
+    """A sweep whose redelivery timeout sets the interval between its sweeps."""
+    return RedeliverySweep(
+        docket,
+        worker_name="the-sweeping-worker",
+        redelivery_timeout=timeout,
+    )
+
+
+def test_the_interval_is_a_quarter_of_the_timeout(docket: Docket):
+    """A worker sweeps four times per redelivery timeout."""
+    assert a_sweep(docket, timedelta(seconds=8)).interval == 2.0
+
+
+def test_the_first_sweep_is_due_immediately(sweep: RedeliverySweep):
+    """A fresh worker sweeps at once, to reclaim a dead worker's messages."""
+    assert sweep.due is True
 
 
 async def abandon_many(docket: Docket, the_task: AsyncMock, count: int) -> None:
@@ -111,6 +133,26 @@ async def test_the_kept_cursor_reaches_entries_past_the_first_window(
     assert not first_ids & second_ids
 
 
+async def test_a_sweep_under_way_stays_due_regardless_of_the_timer(
+    docket: Docket,
+    sweep: RedeliverySweep,
+    the_task: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """While the cursor is past the front the worker sweeps on every pass."""
+    monkeypatch.setattr("docket._redelivery.REDELIVERY_SCAN_BATCH", 5)
+
+    await abandon_many(docket, the_task, count=20)
+
+    async with docket.redis() as redis:
+        await sweep.claim(redis, available_slots=5)
+
+    assert sweep.start_id != SWEEP_START
+    # Push the timer far into the future; the sweep under way is still due.
+    sweep.next_sweep = time.monotonic() + 3600
+    assert sweep.due is True
+
+
 async def test_reaching_the_end_starts_the_next_sweep_over(
     docket: Docket, sweep: RedeliverySweep, the_task: AsyncMock
 ):
@@ -122,6 +164,32 @@ async def test_reaching_the_end_starts_the_next_sweep_over(
 
     assert len(claimed) == 5
     assert sweep.start_id == SWEEP_START
+
+
+async def test_a_completed_sweep_is_not_due_until_the_timer_elapses(docket: Docket):
+    """Between sweeps the worker skips the scan until the timer comes due."""
+    sweep = a_sweep(docket, timedelta(seconds=8))
+
+    async with docket.redis() as redis:
+        await sweep.claim(redis, available_slots=10)
+
+    assert sweep.start_id == SWEEP_START
+    assert sweep.due is False
+
+
+@pytest.mark.parametrize("attempt", range(8))
+async def test_the_next_wait_falls_inside_the_jitter_band(docket: Docket, attempt: int):
+    """After a sweep reaches the front, the next wait lands within the band."""
+    interval = 2.0
+    sweep = a_sweep(docket, timedelta(seconds=interval * 4))
+
+    before = time.monotonic()
+    async with docket.redis() as redis:
+        await sweep.claim(redis, available_slots=10)
+    after = time.monotonic()
+
+    low, high = JITTER
+    assert before + low * interval <= sweep.next_sweep <= after + high * interval
 
 
 async def test_a_missing_consumer_group_is_created_and_the_claim_retried(

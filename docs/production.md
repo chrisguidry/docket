@@ -13,7 +13,7 @@ async with Worker(
     docket,
     name="worker-1",                                    # Unique worker identifier
     concurrency=20,                                     # Parallel task limit
-    redelivery_timeout=timedelta(minutes=5),           # When to redeliver tasks
+    redelivery_timeout=timedelta(minutes=5),           # When tasks become redeliverable
     reconnection_delay=timedelta(seconds=5),           # Redis reconnection backoff
     minimum_check_interval=timedelta(milliseconds=100), # Polling frequency
     scheduling_resolution=timedelta(milliseconds=250),  # Future task check frequency
@@ -21,6 +21,8 @@ async with Worker(
 ) as worker:
     await worker.run_forever()
 ```
+
+`redelivery_timeout` sets when a task becomes eligible for redelivery, not when redelivery happens. Each worker sweeps for eligible tasks on a timer at a quarter of the timeout, jittered 0.75–1.25×. A task therefore waits up to about 31% past the timeout before another worker claims it, and usually less.
 
 ### Environment Variable Configuration
 
