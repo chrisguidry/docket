@@ -571,6 +571,14 @@ class Worker:
                 except ConnectionError:
                     if stopping.is_set():
                         return
+                    if not self.docket._redis.is_connected:
+                        # The docket closed while this worker was still
+                        # running, so there is nothing to reconnect to.
+                        logger.debug(
+                            "Docket connection is closed, stopping worker",
+                            extra=self._log_context(),
+                        )
+                        return
                     REDIS_DISRUPTIONS.add(1, self.labels())
                     logger.warning(
                         "Error connecting to redis, retrying in %s...",
@@ -1268,6 +1276,14 @@ class Worker:
                     pipeline.zrem(self.task_workers_set(task_name), self.name)
                 pipeline.delete(self.worker_tasks_set(self.name))
                 await pipeline.execute()
+        except ConnectionError:
+            # A worker that loses Redis on the way out ages out on its own:
+            # every other heartbeat prunes members older than the missed
+            # heartbeat window, and the worker's task set carries a TTL.
+            logger.debug(
+                "Could not clear worker heartbeat, connection is gone",
+                extra=self._log_context(),
+            )
         except Exception:
             logger.exception(
                 "Error clearing worker heartbeat",

@@ -249,3 +249,17 @@ async def test_remove_heartbeat_suppresses_cleanup_errors(docket: Docket):
     async with Worker(docket) as worker:
         with patch.object(Docket, "redis", broken_redis):
             await worker._remove_heartbeat()  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_remove_heartbeat_tolerates_a_closed_connection(docket: Docket):
+    """Clearing the heartbeat is best-effort once the docket has closed.
+
+    A worker on its way out can outlive its docket's connection.  Every
+    heartbeat entry ages out on its own, so skipping the cleanup is safe.
+    """
+    async with Worker(docket) as worker:
+        await docket._redis.__aexit__(None, None, None)  # pyright: ignore[reportPrivateUsage]
+
+        await worker._remove_heartbeat()  # pyright: ignore[reportPrivateUsage]
+
+        await docket._redis.__aenter__()  # pyright: ignore[reportPrivateUsage]

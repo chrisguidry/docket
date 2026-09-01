@@ -2,6 +2,9 @@
 
 # pyright: reportPrivateUsage=false
 
+import pytest
+from redis.exceptions import ConnectionError
+
 from docket._redis import RedisConnection
 from tests.conftest import skip_cluster, skip_memory
 
@@ -60,3 +63,23 @@ async def test_connection_pool_closes_when_the_connection_exits(  # pragma: no c
         assert any(c.is_connected for c in pool._available_connections)
 
     assert not any(c.is_connected for c in pool._available_connections)
+
+
+async def test_a_closed_connection_reports_a_disconnect(redis_url: str) -> None:
+    """Reaching a torn-down connection looks like a Redis server going away.
+
+    A worker shutting down races the docket's teardown and still asks for a
+    client on its way out.  Every caller already handles ConnectionError.
+    """
+    connection = RedisConnection(redis_url)
+    async with connection:
+        pass
+
+    with pytest.raises(ConnectionError, match="Redis connection is closed"):
+        await connection.client().__aenter__()
+
+    with pytest.raises(ConnectionError, match="Redis connection is closed"):
+        await connection.pubsub().__aenter__()
+
+    with pytest.raises(ConnectionError, match="Redis connection is closed"):
+        await connection.publish("channel", "message")

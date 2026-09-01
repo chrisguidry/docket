@@ -28,6 +28,7 @@ from typing import (
     Sequence,
     TypeAlias,
     TypedDict,
+    TypeVar,
     cast,
     overload,
     runtime_checkable,
@@ -38,6 +39,7 @@ from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
 from redis.asyncio.connection import Connection, SSLConnection
+from redis.exceptions import ConnectionError
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -583,6 +585,22 @@ async def close_resource(resource: AsyncCloseable, name: str) -> None:
         logger.warning("Failed to close %s", name, exc_info=True)
 
 
+_Client = TypeVar("_Client")
+
+
+def require_open(client: _Client | None) -> _Client:
+    """Return the client, or report that the connection is closed.
+
+    A caller can reach a RedisConnection after its exit stack has torn the
+    clients down; a worker on its way out still asks the docket for a client.
+    ConnectionError puts that in the same family as a server that went away,
+    which every caller already handles.
+    """
+    if client is None:
+        raise ConnectionError("Redis connection is closed")
+    return client
+
+
 class RedisConnection:
     """Manages Redis connections for standalone, Sentinel, and cluster modes.
 
@@ -844,7 +862,8 @@ class RedisConnection:
         context leaves it open for the next caller.  Concurrent callers may
         hold it at the same time, because redis-py checks a connection out of
         the pool per command.  Pipelines, pub/sub objects, and locks are
-        per-use and each caller must still close its own.
+        per-use and each caller must still close its own.  Once the connection
+        has closed, this raises ConnectionError.
 
         Casts at the redis-py boundary translate from redis-py's
         ``Awaitable[T] | T`` dual-mode signatures into our async-only protocol.
@@ -856,8 +875,7 @@ class RedisConnection:
         elif self._memory_client is not None:
             yield self._memory_client
         else:
-            assert self._client is not None
-            yield cast(RedisClient, self._client)
+            yield cast(RedisClient, require_open(self._client))
 
     @asynccontextmanager
     async def pubsub(self) -> AsyncGenerator[PubSubClient, None]:
@@ -872,20 +890,19 @@ class RedisConnection:
             finally:
                 await ps.aclose()
         else:
-            assert self._client is not None
-            async with self._client.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
+            async with require_open(self._client).pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
                 yield cast(PubSubClient, pubsub)
 
     async def publish(self, channel: str, message: str) -> int:
         """Publish a message to a pub/sub channel."""
         if self._cluster_client is not None:  # pragma: no cover
-            assert self._node_client is not None
-            return cast(int, await self._node_client.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
+            node_client = require_open(self._node_client)
+            return cast(int, await node_client.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
         elif self._memory_client is not None:
             return await self._memory_client.publish(channel, message)
         else:
-            assert self._client is not None
-            return cast(int, await self._client.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
+            client = require_open(self._client)
+            return cast(int, await client.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
 
     @asynccontextmanager
     async def _cluster_pubsub(self) -> AsyncGenerator[PubSub, None]:  # pragma: no cover
@@ -899,8 +916,7 @@ class RedisConnection:
         Yields:
             A PubSub object connected to a cluster node
         """
-        assert self._node_client is not None
-        pubsub = self._node_client.pubsub()  # pyright: ignore[reportUnknownMemberType]
+        pubsub = require_open(self._node_client).pubsub()  # pyright: ignore[reportUnknownMemberType]
         try:
             yield pubsub
         finally:
