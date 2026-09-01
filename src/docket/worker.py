@@ -107,6 +107,11 @@ AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS = 60
 # redelivery_timeout is very small (e.g., in tests with 200ms timeouts).
 MINIMUM_TTL_SECONDS = 1
 
+# The most messages one Redis command may claim, for the delivery read and for
+# the redelivery sweep's claim alike.  A larger batch trades fewer round trips
+# for bigger single replies.
+MESSAGE_BATCH = 1000
+
 TaskKey: TypeAlias = str
 
 
@@ -230,11 +235,19 @@ class Worker:
         async with Worker(docket) as worker:
             await worker.run_forever()
     ```
+
+    ``message_batch`` caps how many messages one Redis command may claim: both
+    the delivery read and the redelivery sweep's claim.  A larger batch costs
+    fewer round trips.  It also makes Redis serialize that many whole messages
+    into one reply, and makes each sweep read about ten times the batch in
+    pending-list entries.  A burst larger than one batch still drains in full,
+    because the poll loop reads again while slots stay free.
     """
 
     docket: Docket
     name: str
     concurrency: int
+    message_batch: int
     redelivery_timeout: timedelta
     reconnection_delay: timedelta
     minimum_check_interval: timedelta
@@ -258,10 +271,17 @@ class Worker:
         enable_internal_instrumentation: bool = False,
         fallback_task: TaskFunction | None = None,
         dependencies: (Mapping[str, Any] | Sequence[Any] | None) = None,
+        # Last in the list so that every positional call written against an
+        # earlier version keeps its meaning.
+        message_batch: int = MESSAGE_BATCH,
     ) -> None:
+        if message_batch < 1:
+            raise ValueError(f"message_batch must be at least 1, got {message_batch}")
+
         self.docket = docket
         self.name = name or f"{socket.gethostname()}#{os.getpid()}"
         self.concurrency = concurrency
+        self.message_batch = message_batch
         self.redelivery_timeout = redelivery_timeout
         self.reconnection_delay = reconnection_delay
         self.minimum_check_interval = minimum_check_interval
@@ -394,6 +414,9 @@ class Worker:
         metrics_port: int | None = None,
         tasks: list[str] = ["docket.tasks:standard_tasks"],
         fallback_task: str | None = None,
+        # Last in the list so that every positional call written against an
+        # earlier version keeps its meaning.
+        message_batch: int = MESSAGE_BATCH,
     ) -> None:
         """Run a worker as the main entry point (CLI).
 
@@ -427,6 +450,7 @@ class Worker:
                         docket=docket,
                         name=name,
                         concurrency=concurrency,
+                        message_batch=message_batch,
                         redelivery_timeout=redelivery_timeout,
                         reconnection_delay=reconnection_delay,
                         minimum_check_interval=minimum_check_interval,
@@ -612,6 +636,7 @@ class Worker:
             self.docket,
             worker_name=self.name,
             redelivery_timeout=self.redelivery_timeout,
+            message_batch=self.message_batch,
         )
         log_context = self._log_context()
 
@@ -642,7 +667,7 @@ class Worker:
                         consumername=self.name,
                         streams={self.docket.stream_key: ">"},
                         block=int(self.minimum_check_interval.total_seconds() * 1000),
-                        count=available_slots,
+                        count=min(available_slots, self.message_batch),
                     )
             except ResponseError as e:
                 if "NOGROUP" in str(e):

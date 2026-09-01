@@ -57,6 +57,36 @@ def test_worker_command_exposes_all_the_options_of_worker():
         )
 
 
+def test_message_batch_option_reaches_the_worker(monkeypatch: pytest.MonkeyPatch):
+    """`--message-batch` sets the cap the worker applies to its Redis reads."""
+    from docket.cli import worker as worker_cli_command
+
+    passed: dict[str, object] = {}
+
+    class RecordingWorker:
+        @staticmethod
+        async def run(**kwargs: object) -> None:
+            passed.update(kwargs)
+
+    monkeypatch.setattr("docket.cli.Worker", RecordingWorker)
+
+    worker_cli_command(message_batch=17)
+
+    assert passed["message_batch"] == 17
+
+
+async def test_message_batch_below_one_is_rejected():
+    """The CLI fails at startup rather than running a worker that reads no
+    messages."""
+    # Rich styles each segment of the flag separately, so on a color-capable
+    # terminal the name arrives split by escape codes. TERM=dumb turns the
+    # color system off and leaves the flag as one plain string.
+    result = await run_cli("worker", "--message-batch", "0", env={"TERM": "dumb"})
+
+    assert result.exit_code != 0
+    assert "--message-batch" in result.output
+
+
 async def test_worker_command(
     docket: Docket,
 ):
