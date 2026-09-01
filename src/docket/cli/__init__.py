@@ -121,7 +121,12 @@ def worker(
         timedelta,
         typer.Option(
             parser=duration,
-            help="How long to wait before redelivering a task to another worker",
+            help=(
+                "How long a task must sit idle before it becomes eligible for "
+                "redelivery to another worker.  A worker sweeps for eligible "
+                "tasks on a jittered timer at a quarter of this timeout, so "
+                "redelivery lands up to about 31% past it, and usually sooner"
+            ),
             envvar="DOCKET_WORKER_REDELIVERY_TIMEOUT",
         ),
     ] = timedelta(minutes=5),

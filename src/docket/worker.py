@@ -776,7 +776,11 @@ class Worker:
                             )
                             continue
                         try:
-                            for source in [get_redeliveries, get_new_deliveries]:
+                            # Sweep the pending list only when the timer is due.
+                            sources = [get_new_deliveries]
+                            if redelivery_sweep.due:
+                                sources.insert(0, get_redeliveries)
+                            for source in sources:
                                 for stream_key, messages in await source(redis):
                                     is_redelivery = stream_key == b"__redelivery__"
                                     for message_id, message in messages:

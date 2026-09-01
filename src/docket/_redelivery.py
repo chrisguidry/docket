@@ -14,10 +14,23 @@ Each call starts where the last one stopped.  A sweep that always restarted at
 never be redelivered.  The sweep keeps the cursor that XAUTOCLAIM returns.
 Redis returns the cursor ``0-0`` at the end of the pending list, and the next
 call then starts a fresh sweep from the front.
+
+Walking the whole pending list once reads O(pending list) entries, so sweeping
+on every poll pass pins Redis once that list grows large.  A worker sweeps on a
+timer instead, at a quarter of the redelivery timeout.  Each wait is jittered by
+``JITTER`` so a fleet that started together does not sweep in lockstep.  An
+abandoned message therefore waits at most about a jittered quarter of the
+timeout beyond the timeout itself before a sweep reclaims it.
+
+Once a sweep is under way the worker keeps sweeping on every pass until the
+cursor returns to the front, so a long pending list is walked promptly rather
+than one window per timer tick.
 """
 
 from __future__ import annotations
 
+import random
+import time
 from datetime import timedelta
 
 from redis.exceptions import ResponseError
@@ -33,6 +46,10 @@ REDELIVERY_SCAN_BATCH = 1000
 # starts a fresh sweep from the front.
 SWEEP_START = "0-0"
 
+# The narrowest and widest wait between sweeps, as a fraction of the interval.
+# The jitter keeps a fleet that started together from sweeping in lockstep.
+JITTER = (0.75, 1.25)
+
 
 class RedeliverySweep:
     """A worker's bounded, cursor-kept claim on abandoned messages."""
@@ -47,7 +64,21 @@ class RedeliverySweep:
         self.docket = docket
         self.worker_name = worker_name
         self.min_idle_time = int(redelivery_timeout.total_seconds() * 1000)
+        self.interval = redelivery_timeout.total_seconds() / 4
         self.start_id = SWEEP_START
+        # Due immediately, so a worker that replaces a dead one picks up its
+        # messages without waiting a whole interval first.
+        self.next_sweep = time.monotonic()
+
+    @property
+    def due(self) -> bool:
+        """Whether the worker should sweep on this pass.
+
+        A sweep already under way (the cursor is past the front) keeps running
+        on every pass so it finishes quickly.  Otherwise the sweep waits for the
+        jittered timer to elapse.
+        """
+        return self.start_id != SWEEP_START or time.monotonic() >= self.next_sweep
 
     async def claim(self, redis: RedisClient, available_slots: int) -> RedisMessages:
         """Claim the messages that another worker has left idle too long.
@@ -56,6 +87,10 @@ class RedeliverySweep:
         ``REDELIVERY_SCAN_BATCH`` entries however many slots are free.  A
         docket that no worker has bootstrapped yet has no consumer group, so a
         NOGROUP answer means creating the group and claiming again.
+
+        Redis answers with ``SWEEP_START`` at the end of the pending list.  The
+        sweep then arms the next jittered timer, and a later pass starts a fresh
+        sweep from the front once that timer elapses.
         """
         try:
             cursor, redeliveries, *_ = await redis.xautoclaim(
@@ -73,4 +108,6 @@ class RedeliverySweep:
             raise  # pragma: no cover
 
         self.start_id = cursor.decode()
+        if self.start_id == SWEEP_START:
+            self.next_sweep = time.monotonic() + random.uniform(*JITTER) * self.interval
         return redeliveries
