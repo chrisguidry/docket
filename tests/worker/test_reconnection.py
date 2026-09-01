@@ -1,5 +1,6 @@
 """Tests for how the worker survives losing its Redis connection."""
 
+import sys
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any, AsyncGenerator
@@ -9,6 +10,11 @@ from docket._redis import RedisClient
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Worker
+
+if sys.version_info >= (3, 11):  # pragma: no cover
+    from asyncio import timeout as async_timeout
+else:  # pragma: no cover
+    from async_timeout import timeout as async_timeout
 
 
 async def test_worker_reconnects_when_connection_is_lost(
@@ -88,3 +94,25 @@ async def test_worker_reconnects_when_main_loop_read_disconnects(
 
     the_task.assert_called_once()
     assert reads["count"] >= 2
+
+
+async def test_worker_stops_when_the_docket_connection_closes(docket: Docket):
+    """A worker whose docket closed underneath it stops instead of raising.
+
+    Docket teardown closes the one client every caller shares.  The worker's
+    own read fails, and the retry that follows has nothing to reconnect to,
+    so the worker has to finish rather than spin or raise.
+    """
+    worker = Worker(docket, reconnection_delay=timedelta(milliseconds=10))
+
+    async def disconnected_worker_loop(redis: RedisClient, forever: bool = False):
+        await docket._redis.__aexit__(None, None, None)  # pyright: ignore[reportPrivateUsage]
+        raise ConnectionError("Simulated server loss")
+
+    worker._worker_loop = disconnected_worker_loop  # type: ignore[protected-access]
+
+    async with worker:
+        async with async_timeout(5):
+            await worker.run_forever()
+
+        await docket._redis.__aenter__()  # pyright: ignore[reportPrivateUsage]
