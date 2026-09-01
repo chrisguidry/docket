@@ -55,6 +55,7 @@ from typing import Sequence
 
 from redis.exceptions import ResponseError
 
+from ._lease import take_lease
 from ._redis import RedisClient, RedisMessageID, RedisMessages
 from .docket import Docket
 
@@ -141,15 +142,15 @@ class RedeliverySweep:
             return True
         if time.monotonic() < self.next_sweep:
             return False
-        took_lease = await redis.set(
+        took_lease = await take_lease(
+            redis,
             self.docket.redelivery_sweep_key,
             self.worker_name,
-            nx=True,
-            px=int(self.interval * 1000),
+            int(self.interval * 1000),
         )
         if not took_lease:
             self._rest()
-        return bool(took_lease)
+        return took_lease
 
     async def claim(self, redis: RedisClient, available_slots: int) -> RedisMessages:
         """Claim the messages that another worker has left idle too long.

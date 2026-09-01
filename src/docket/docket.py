@@ -894,6 +894,12 @@ class Docket(DocketSnapshotMixin):
         # would otherwise write over the lease.
         return self.key("leases:redelivery-sweep")
 
+    @property
+    def scheduler_lease_key(self) -> str:
+        # Under `leases:` for the same reason as the sweep lease: a parked task
+        # keyed `scheduler` would otherwise write over it.
+        return self.key("leases:scheduler")
+
     def known_task_key(self, task_key: str) -> str:
         return self.key(f"known:{task_key}")
 

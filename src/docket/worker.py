@@ -35,6 +35,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
 from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task
+from ._lease import take_lease
 from ._lua import Arg, Key, redis_script
 from ._redelivery import RedeliverySweep, renew_leases
 from ._redis import RedisClient
@@ -866,27 +867,50 @@ class Worker:
             return  # pragma: no cover
 
         log_context = self._log_context()
+        # Only the worker that takes the lease scans the queue this tick; the
+        # move is idempotent, so the lease only spares the fleet the redundant
+        # scans, never the scheduling itself.  The lease lasts one scheduling
+        # resolution, so a live holder's lease has expired by its own next tick
+        # and it can win again: a holder must not block its own next scan.  The
+        # short lease also lets a dead holder's scanning resume within about one
+        # resolution.  If the lease briefly lapses and two workers both scan in
+        # one tick, that is harmless; that is preferred over ever delaying due
+        # tasks to enforce a single scanner.
+        #
+        # The TTL follows the winner's own resolution but never exceeds one
+        # second, so a worker configured with a long resolution cannot win the
+        # lease and pause everyone else's scanning for that long.  Above one
+        # second the fleet therefore scans more often than one winner's
+        # resolution.  That extra scanning is cheap, and preferable to delaying
+        # due tasks.
+        lease_ttl_ms = min(int(self.scheduling_resolution.total_seconds() * 1000), 1000)
         while not session.stopping.is_set():  # pragma: no branch
             try:
                 logger.debug("Scheduling due tasks", extra=log_context)
                 with self._maybe_suppress_instrumentation():
-                    total_work, due_work = await _stream_due_tasks(
+                    if await take_lease(
                         cast(RedisClient, redis),
-                        queue_key=self.docket.queue_key,
-                        stream_key=self.docket.stream_key,
-                        now_timestamp=datetime.now(timezone.utc).timestamp(),
-                        docket_prefix=self.docket.prefix,
-                    )
+                        self.docket.scheduler_lease_key,
+                        self.name,
+                        lease_ttl_ms,
+                    ):
+                        total_work, due_work = await _stream_due_tasks(
+                            cast(RedisClient, redis),
+                            queue_key=self.docket.queue_key,
+                            stream_key=self.docket.stream_key,
+                            now_timestamp=datetime.now(timezone.utc).timestamp(),
+                            docket_prefix=self.docket.prefix,
+                        )
 
-                if due_work > 0:
-                    logger.debug(
-                        "Moved %d/%d due tasks from %s to %s",
-                        due_work,
-                        total_work,
-                        self.docket.queue_key,
-                        self.docket.stream_key,
-                        extra=log_context,
-                    )
+                        if due_work > 0:
+                            logger.debug(
+                                "Moved %d/%d due tasks from %s to %s",
+                                due_work,
+                                total_work,
+                                self.docket.queue_key,
+                                self.docket.stream_key,
+                                extra=log_context,
+                            )
             except Exception:  # pragma: no cover
                 logger.exception(
                     "Error in scheduler loop",
