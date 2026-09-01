@@ -776,9 +776,10 @@ class Worker:
                             )
                             continue
                         try:
-                            # Sweep the pending list only when the timer is due.
                             sources = [get_new_deliveries]
-                            if redelivery_sweep.due:
+                            with self._maybe_suppress_instrumentation():
+                                sweep_due = await redelivery_sweep.due(redis)
+                            if sweep_due:
                                 sources.insert(0, get_redeliveries)
                             for source in sources:
                                 for stream_key, messages in await source(redis):

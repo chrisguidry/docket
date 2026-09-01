@@ -22,7 +22,7 @@ async with Worker(
     await worker.run_forever()
 ```
 
-`redelivery_timeout` sets when a task becomes eligible for redelivery, not when redelivery happens. Each worker sweeps for eligible tasks on a timer at a quarter of the timeout, jittered 0.75–1.25×. A task therefore waits up to about 31% past the timeout before another worker claims it, and usually less.
+`redelivery_timeout` sets when a task becomes eligible for redelivery, not when redelivery happens. Each worker sweeps for eligible tasks on a timer at a quarter of the timeout, jittered 0.75–1.25×. A task therefore waits up to about 31% past the timeout before another worker claims it, and usually less. A sweep walks a very long pending list in bounded steps, one per poll pass, so that walk can add time beyond that.
 
 ### Environment Variable Configuration
 

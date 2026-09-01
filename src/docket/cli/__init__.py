@@ -125,7 +125,9 @@ def worker(
                 "How long a task must sit idle before it becomes eligible for "
                 "redelivery to another worker.  A worker sweeps for eligible "
                 "tasks on a jittered timer at a quarter of this timeout, so "
-                "redelivery lands up to about 31% past it, and usually sooner"
+                "redelivery lands up to about 31% past it, and usually sooner.  "
+                "A sweep walks a very long pending list in bounded steps, one "
+                "per poll pass, so that walk can add time beyond that"
             ),
             envvar="DOCKET_WORKER_REDELIVERY_TIMEOUT",
         ),

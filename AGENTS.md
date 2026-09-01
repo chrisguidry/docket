@@ -125,6 +125,7 @@ Rich dependency injection supporting:
 - **Sorted Sets**: `{docket}:queue` (scheduled tasks), `{docket}:workers` (heartbeats)
 - **Hashes**: `{docket}:{key}` (parked task data)
 - **Sets**: `{docket}:worker-tasks:{worker}` (worker capabilities)
+- **Strings**: `{docket}:leases:redelivery-sweep` (fleet-wide sweep lease, expiring)
 
 ### Task Lifecycle
 

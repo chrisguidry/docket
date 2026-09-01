@@ -887,6 +887,13 @@ class Docket(DocketSnapshotMixin):
     def stream_key(self) -> str:
         return self.key("stream")
 
+    @property
+    def redelivery_sweep_key(self) -> str:
+        # Under `leases:` rather than beside the task keys, because a parked
+        # task lives at `{docket}:{task_key}` and one keyed `redelivery-sweep`
+        # would otherwise write over the lease.
+        return self.key("leases:redelivery-sweep")
+
     def known_task_key(self, task_key: str) -> str:
         return self.key(f"known:{task_key}")
 
