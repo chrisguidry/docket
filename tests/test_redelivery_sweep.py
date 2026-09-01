@@ -4,7 +4,9 @@ The sweep claims its consumer group's pending list with XAUTOCLAIM to find
 messages another worker abandoned.  Each claim is bounded, and the cursor is
 kept across claims so entries past the first window are still reached.  A
 worker sweeps on a jittered timer rather than on every poll pass, and keeps
-sweeping until the cursor comes back to the front of the list.
+sweeping until the cursor comes back to the front of the list.  Once its timer
+elapses a worker sweeps only if it takes the fleet-wide lease, so the fleet
+runs at most one sweep per interval.
 """
 
 import inspect
@@ -46,11 +48,15 @@ def test_a_fresh_sweep_starts_at_the_front(sweep: RedeliverySweep):
     assert sweep.start_id == SWEEP_START
 
 
-def a_sweep(docket: Docket, timeout: timedelta) -> RedeliverySweep:
+def a_sweep(
+    docket: Docket,
+    timeout: timedelta,
+    worker_name: str = "the-sweeping-worker",
+) -> RedeliverySweep:
     """A sweep whose redelivery timeout sets the interval between its sweeps."""
     return RedeliverySweep(
         docket,
-        worker_name="the-sweeping-worker",
+        worker_name=worker_name,
         redelivery_timeout=timeout,
     )
 
@@ -60,9 +66,51 @@ def test_the_interval_is_a_quarter_of_the_timeout(docket: Docket):
     assert a_sweep(docket, timedelta(seconds=8)).interval == 2.0
 
 
-def test_the_first_sweep_is_due_immediately(sweep: RedeliverySweep):
+async def test_the_first_sweep_is_due_immediately(docket: Docket):
     """A fresh worker sweeps at once, to reclaim a dead worker's messages."""
-    assert sweep.due is True
+    sweep = a_sweep(docket, timedelta(seconds=8))
+
+    async with docket.redis() as redis:
+        assert await sweep.due(redis) is True
+
+
+async def test_only_the_lease_holder_sweeps_in_an_interval(docket: Docket):
+    """Two workers whose timers are due, but only the lease holder sweeps.
+
+    A sweep costs O(pending list) no matter how many workers run, so only the
+    worker that takes the lease sweeps this interval.  The other one skips.
+    """
+    worker_a = a_sweep(docket, timedelta(seconds=8), worker_name="worker-a")
+    worker_b = a_sweep(docket, timedelta(seconds=8), worker_name="worker-b")
+
+    async with docket.redis() as redis:
+        assert await worker_a.due(redis) is True
+        assert await worker_b.due(redis) is False
+        assert await redis.get(docket.redelivery_sweep_key) == b"worker-a"
+
+
+async def test_a_worker_that_loses_the_lease_arms_its_next_timer(docket: Docket):
+    """A worker that loses the lease waits for its own next timer, not a spin.
+
+    Losing the lease arms the jittered timer, so an immediate second check
+    returns False rather than hammering Redis with another SET on every pass.
+    """
+    interval = 8.0
+    holder = a_sweep(docket, timedelta(seconds=interval * 4), worker_name="holder")
+    loser = a_sweep(docket, timedelta(seconds=interval * 4), worker_name="loser")
+
+    async with docket.redis() as redis:
+        assert await holder.due(redis) is True
+
+        before = time.monotonic()
+        assert await loser.due(redis) is False
+        after = time.monotonic()
+
+        low, high = JITTER
+        assert before + low * interval <= loser.next_sweep <= after + high * interval
+        assert loser.start_id == SWEEP_START
+        # A second immediate check does not spin; the timer holds it off.
+        assert await loser.due(redis) is False
 
 
 async def abandon_many(docket: Docket, the_task: AsyncMock, count: int) -> None:
@@ -150,7 +198,11 @@ async def test_a_sweep_under_way_stays_due_regardless_of_the_timer(
     assert sweep.start_id != SWEEP_START
     # Push the timer far into the future; the sweep under way is still due.
     sweep.next_sweep = time.monotonic() + 3600
-    assert sweep.due is True
+
+    async with docket.redis() as redis:
+        assert await sweep.due(redis) is True
+        # A sweep under way carries on without taking the lease again.
+        assert await redis.get(docket.redelivery_sweep_key) is None
 
 
 async def test_reaching_the_end_starts_the_next_sweep_over(
@@ -173,8 +225,8 @@ async def test_a_completed_sweep_is_not_due_until_the_timer_elapses(docket: Dock
     async with docket.redis() as redis:
         await sweep.claim(redis, available_slots=10)
 
-    assert sweep.start_id == SWEEP_START
-    assert sweep.due is False
+        assert sweep.start_id == SWEEP_START
+        assert await sweep.due(redis) is False
 
 
 @pytest.mark.parametrize("attempt", range(8))
@@ -229,3 +281,30 @@ async def test_the_worker_redelivers_every_abandoned_message(
         await worker.run_until_finished()
 
     assert the_task.await_count == 25
+
+
+async def test_an_abandoned_message_is_reclaimed_after_the_lease_expires(
+    docket: Docket, the_task: AsyncMock
+):
+    """A lease another worker holds only delays a sweep, never blocks it.
+
+    Another worker holds the sweep lease when this worker starts, so its first
+    sweep attempts lose the lease and arm the next timer.  The lease expires
+    after one interval, well before the message has been idle for the whole
+    redelivery timeout, so this worker still wins the lease and reclaims the
+    message.  The timeout, not the lease, bounds redelivery.
+    """
+    await abandon_many(docket, the_task, count=1)
+
+    async with docket.redis() as redis:
+        await redis.set(docket.redelivery_sweep_key, "other-worker", nx=True, px=100)
+
+    async with Worker(
+        docket,
+        redelivery_timeout=timedelta(milliseconds=400),
+        minimum_check_interval=timedelta(milliseconds=5),
+        scheduling_resolution=timedelta(milliseconds=5),
+    ) as worker:
+        await worker.run_until_finished()
+
+    the_task.assert_awaited_once_with()

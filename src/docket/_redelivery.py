@@ -22,6 +22,17 @@ timer instead, at a quarter of the redelivery timeout.  Each wait is jittered by
 abandoned message therefore waits at most about a jittered quarter of the
 timeout beyond the timeout itself before a sweep reclaims it.
 
+One sweep costs O(pending list) no matter how many workers run, so the fleet
+sweeps once per interval rather than once per worker.  When a worker's timer
+elapses it takes a fleet-wide lease with ``SET {docket}:leases:redelivery-sweep
+<worker> NX PX <interval>``, and only the worker that takes the lease sweeps.  A
+worker that loses the lease arms its own next timer and waits, rather than
+spinning.  Nobody renews or deletes the lease; it expires after one interval on
+its own, and that expiry is what paces the fleet to at most one sweep per
+interval.  The tradeoff is that a lone worker that just held the lease may wait
+up to about one extra interval before it sweeps again.  That is acceptable
+because redelivery is bounded by the timeout, not latency-critical.
+
 Once a sweep is under way the worker keeps sweeping on every pass until the
 cursor returns to the front, so a long pending list is walked promptly rather
 than one window per timer tick.
@@ -70,15 +81,29 @@ class RedeliverySweep:
         # messages without waiting a whole interval first.
         self.next_sweep = time.monotonic()
 
-    @property
-    def due(self) -> bool:
+    async def due(self, redis: RedisClient) -> bool:
         """Whether the worker should sweep on this pass.
 
         A sweep already under way (the cursor is past the front) keeps running
         on every pass so it finishes quickly.  Otherwise the sweep waits for the
-        jittered timer to elapse.
+        jittered timer, and then for the fleet-wide lease: only the worker that
+        takes ``SET {docket}:leases:redelivery-sweep worker NX PX interval``
+        sweeps this interval.  A worker that loses the lease arms its next timer
+        and waits, rather than spinning.
         """
-        return self.start_id != SWEEP_START or time.monotonic() >= self.next_sweep
+        if self.start_id != SWEEP_START:
+            return True
+        if time.monotonic() < self.next_sweep:
+            return False
+        took_lease = await redis.set(
+            self.docket.redelivery_sweep_key,
+            self.worker_name,
+            nx=True,
+            px=int(self.interval * 1000),
+        )
+        if not took_lease:
+            self._rest()
+        return bool(took_lease)
 
     async def claim(self, redis: RedisClient, available_slots: int) -> RedisMessages:
         """Claim the messages that another worker has left idle too long.
@@ -109,5 +134,9 @@ class RedeliverySweep:
 
         self.start_id = cursor.decode()
         if self.start_id == SWEEP_START:
-            self.next_sweep = time.monotonic() + random.uniform(*JITTER) * self.interval
+            self._rest()
         return redeliveries
+
+    def _rest(self) -> None:
+        """Hold off the next sweep for a jittered interval."""
+        self.next_sweep = time.monotonic() + random.uniform(*JITTER) * self.interval
