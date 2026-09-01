@@ -36,6 +36,7 @@ from opentelemetry.trace import Status, StatusCode, Tracer
 
 from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task
 from ._lua import Arg, Key, redis_script
+from ._redelivery import RedeliverySweep
 from ._redis import RedisClient
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
@@ -607,6 +608,11 @@ class Worker:
         active_tasks: dict[asyncio.Task[None], RedisMessageID] = {}
         task_executions: dict[asyncio.Task[None], Execution] = {}
         available_slots = self.concurrency
+        redelivery_sweep = RedeliverySweep(
+            self.docket,
+            worker_name=self.name,
+            redelivery_timeout=self.redelivery_timeout,
+        )
         log_context = self._log_context()
 
         async def check_for_work() -> bool:
@@ -621,23 +627,10 @@ class Worker:
 
         async def get_redeliveries(redis: Redis) -> RedisReadGroupResponse:
             logger.debug("Getting redeliveries", extra=log_context)
-            try:
-                with self._maybe_suppress_instrumentation():
-                    _, redeliveries, *_ = await redis.xautoclaim(
-                        name=self.docket.stream_key,
-                        groupname=self.docket.worker_group_name,
-                        consumername=self.name,
-                        min_idle_time=int(
-                            self.redelivery_timeout.total_seconds() * 1000
-                        ),
-                        start_id="0-0",
-                        count=available_slots,
-                    )
-            except ResponseError as e:
-                if "NOGROUP" in str(e):
-                    await self.docket._ensure_stream_and_group()
-                    return await get_redeliveries(redis)
-                raise  # pragma: no cover
+            with self._maybe_suppress_instrumentation():
+                redeliveries = await redelivery_sweep.claim(redis, available_slots)
+            # The poll loop reads this sentinel stream name to mark the
+            # messages it starts as redeliveries.
             return [(b"__redelivery__", redeliveries)]
 
         async def get_new_deliveries(redis: Redis) -> RedisReadGroupResponse:
