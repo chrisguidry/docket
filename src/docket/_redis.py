@@ -858,25 +858,31 @@ class RedisConnection:
 
         Args:
             decode_responses: If True, decode Redis responses from bytes to strings
-            protocol: The RESP version to negotiate, or None for redis-py's default
+            protocol: The RESP version to negotiate, or None to leave redis-py's
+                default alone.  redis-py 5 and 6 send ``HELLO None`` when the
+                pool carries an explicit ``protocol=None``, so the key is only
+                passed when a version is set.
 
         Returns:
             A ConnectionPool ready for use with Redis clients
         """
+        protocol_kwargs: dict[str, int] = (
+            {"protocol": protocol} if protocol is not None else {}
+        )
         if self.is_sentinel:
             from ._redis_sentinel import sentinel_connection_pool
 
             return sentinel_connection_pool(
                 self.url,
                 decode_responses=decode_responses,
-                protocol=protocol,
+                **protocol_kwargs,
                 socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
                 socket_connect_timeout=CONNECT_TIMEOUT,
             )
         return ConnectionPool.from_url(  # pyright: ignore[reportUnknownMemberType]
             self.url,
             decode_responses=decode_responses,
-            protocol=protocol,
+            **protocol_kwargs,
             socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
             socket_connect_timeout=CONNECT_TIMEOUT,
         )
