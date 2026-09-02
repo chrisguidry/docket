@@ -693,8 +693,7 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         publish.
         """
         pattern = f"{docket.prefix}:cancel:*"
-        async with docket.redis() as redis:
-            pubsub = redis.pubsub()
+        async with docket._pubsub() as pubsub:
             try:
                 await pubsub.psubscribe(pattern)
                 async for message in pubsub.listen():
@@ -715,10 +714,6 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
             finally:
                 try:
                     await pubsub.punsubscribe(pattern)
-                except Exception:  # pragma: no cover
-                    pass
-                try:
-                    await pubsub.aclose()
                 except Exception:  # pragma: no cover
                     pass
 

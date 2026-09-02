@@ -259,6 +259,7 @@ def sentinel_connection_pool(
     url: str,
     *,
     decode_responses: bool,
+    protocol: int | None = None,
     socket_timeout: float | None,
     socket_connect_timeout: float | None,
 ) -> ConnectionPool:
@@ -273,6 +274,8 @@ def sentinel_connection_pool(
     Args:
         url: The redis+sentinel:// or rediss+sentinel:// URL.
         decode_responses: If True, decode Redis responses from bytes to strings.
+        protocol: The RESP version to negotiate, or None to leave redis-py's
+            default alone.
         socket_timeout: The read timeout for data-node connections.
         socket_connect_timeout: The TCP connect timeout for data-node
             connections.
@@ -293,4 +296,8 @@ def sentinel_connection_pool(
         "socket_keepalive_options": SENTINEL_SOCKET_KEEPALIVE_OPTIONS,
         **config.connection_kwargs,
     }
+    # redis-py 5 and 6 send ``HELLO None`` for an explicit ``protocol=None``, so
+    # the key is only present when a version is set.
+    if protocol is not None:
+        pool_kwargs["protocol"] = protocol
     return OwnedSentinelConnectionPool(config.service_name, sentinel, **pool_kwargs)

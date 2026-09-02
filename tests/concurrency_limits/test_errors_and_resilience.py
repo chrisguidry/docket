@@ -141,10 +141,15 @@ async def test_worker_concurrency_refresh_handles_redis_errors(docket: Docket):
     error_count = 0
     original_redis = docket.redis
 
+    # The third client the worker asks for is the one its heartbeat opens, the
+    # first client a background loop takes after startup.  Failing it exercises
+    # the reconnect path while the task itself still runs to completion.
+    HEARTBEAT_CLIENT = 2
+
     @asynccontextmanager
     async def flaky_redis():
         nonlocal error_count
-        if error_count == 1:
+        if error_count == HEARTBEAT_CLIENT:
             error_count += 1
             raise ConnectionError("Simulated Redis error")
         error_count += 1
