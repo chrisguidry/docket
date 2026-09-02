@@ -328,8 +328,7 @@ class Worker:
         self._stack.callback(lambda: delattr(self, "_tasks_by_key"))
 
         # The heartbeat task is owned by each processing attempt, not the
-        # Worker context.  It starts with that attempt's session and ends
-        # with it.
+        # Worker context.  It starts only after that attempt can claim work.
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._stack.callback(lambda: delattr(self, "_heartbeat_task"))
         self._processing_session: _ProcessingSession | None = None
@@ -757,15 +756,6 @@ class Worker:
 
         disconnect: Disconnected | None = None
         try:
-            # The heartbeat says the worker is alive, not that it is ready to
-            # claim work, so it starts with the session and stops with it.  A
-            # worker that reconnects and then waits on its cancellation
-            # subscription is alive, and the fleet has to see that.
-            self._heartbeat_task = asyncio.create_task(
-                self._heartbeat(session),
-                name=f"{self.docket.name} - heartbeat",
-            )
-
             async with AsyncExitStack() as dependency_stack:
                 # Each Dependency class used by a registered task may declare
                 # a ``worker_lifecycle`` classmethod that returns an async
@@ -815,6 +805,10 @@ class Worker:
                         infra.create_task(
                             self._renew_leases(redis, active_tasks),
                             name=f"{self.docket.name} - lease renewal",
+                        )
+                        self._heartbeat_task = asyncio.create_task(
+                            self._heartbeat(),
+                            name=f"{self.docket.name} - heartbeat",
                         )
                         has_work: bool = True
                         while (
@@ -1300,7 +1294,11 @@ class Worker:
                 extra=self._log_context(),
             )
 
-    async def _heartbeat(self, session: _ProcessingSession) -> None:
+    async def _heartbeat(self) -> None:
+        session = self._processing_session
+        if session is None:
+            return  # pragma: no cover
+
         while not session.stopping.is_set():  # pragma: no branch
             try:
                 now = datetime.now(timezone.utc).timestamp()

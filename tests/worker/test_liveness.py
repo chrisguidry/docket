@@ -32,15 +32,9 @@ async def test_worker_context_without_processing_loop_is_not_announced(
     assert {worker.name for worker in snapshot.workers} == set()
 
 
-async def test_worker_is_announced_before_it_can_claim_work(
+async def test_worker_waits_for_cancellation_readiness_before_announcement(
     docket: Docket,
 ):
-    """A worker announces itself as soon as it has a processing session.
-
-    The workers set is liveness, not readiness.  A worker waiting on its
-    cancellation subscription is alive, and a fleet that could not see it
-    would treat it as dead.
-    """
     heartbeat = timedelta(milliseconds=20)
     docket.heartbeat_interval = heartbeat
     docket.missed_heartbeats = 3
@@ -81,7 +75,7 @@ async def test_worker_is_announced_before_it_can_claim_work(
                 worker_run.cancel()
                 await asyncio.gather(worker_run, return_exceptions=True)
 
-    assert {worker.name for worker in snapshot.workers} == {"not-ready-worker"}
+    assert {worker.name for worker in snapshot.workers} == set()
     assert task_complete
 
 
@@ -100,7 +94,7 @@ async def test_context_exit_cancels_blocked_processing_heartbeat(docket: Docket)
             scheduling_resolution=timedelta(milliseconds=5),
         ) as worker:
 
-            async def blocked_heartbeat(session: _ProcessingSession) -> None:
+            async def blocked_heartbeat() -> None:
                 heartbeat_started.set()
                 try:
                     await asyncio.Event().wait()
@@ -232,7 +226,7 @@ async def test_heartbeat_recovers_from_connection_error(docket: Docket):
         worker._processing_session = session  # pyright: ignore[reportPrivateUsage]
         with patch.object(Docket, "redis", flaky_redis):
             heartbeat_task = asyncio.create_task(
-                worker._heartbeat(session)  # pyright: ignore[reportPrivateUsage]
+                worker._heartbeat()  # pyright: ignore[reportPrivateUsage]
             )
             try:
                 await wait_until(

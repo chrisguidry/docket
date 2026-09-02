@@ -133,13 +133,13 @@ async def test_worker_stops_when_the_docket_connection_closes(docket: Docket):
 
 
 async def test_heartbeat_resumes_after_reconnect(docket: Docket):
-    """The worker keeps heartbeating after it reconnects.
+    """The worker heartbeats again once it has reconnected and is ready.
 
-    The heartbeat is the worker's liveness, not its readiness.  A worker that
-    reconnects but stops heartbeating leaves the workers set, so
-    `docket.workers()` and every decision that reads that set treat a live
-    worker as dead.  Here the cancellation listener cannot resubscribe after
-    the reconnect, which is the slowest the second pass can be to claim work.
+    A worker leaves the workers set while it drains after a disconnect, and
+    it must come back once it can claim work again, or `docket.workers()` and
+    every decision that reads that set treat a live worker as dead.  Here the
+    cancellation listener fails once to resubscribe after the reconnect, so
+    the worker is announced again only after that second attempt succeeds.
     """
     docket.heartbeat_interval = timedelta(milliseconds=20)
 
@@ -147,6 +147,7 @@ async def test_heartbeat_resumes_after_reconnect(docket: Docket):
     read_failed = asyncio.Event()
     read_ok = asyncio.Event()
     fail_pubsub = asyncio.Event()
+    pubsub_failed = asyncio.Event()
 
     class FailNextRead:
         def __init__(self, wrapped: Any):
@@ -173,7 +174,8 @@ async def test_heartbeat_resumes_after_reconnect(docket: Docket):
 
     @asynccontextmanager
     async def flaky_pubsub(self: Docket) -> AsyncGenerator[Any, None]:
-        if fail_pubsub.is_set():
+        if fail_pubsub.is_set() and not pubsub_failed.is_set():
+            pubsub_failed.set()
             raise ConnectionError("Simulated server loss on PSUBSCRIBE")
         async with original_pubsub(self) as pubsub:
             yield pubsub
