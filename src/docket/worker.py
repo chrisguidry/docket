@@ -37,7 +37,7 @@ from opentelemetry.trace import Status, StatusCode, Tracer
 from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task
 from ._lua import Arg, Key, redis_script
 from ._redelivery import RedeliverySweep, renew_leases
-from ._redis import RedisClient
+from ._redis import DISCONNECTED, Disconnected, RedisClient
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, LockError, ResponseError
@@ -63,6 +63,7 @@ from .dependencies import (
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
 )
+from .dependencies._perpetual import perpetual_is_live
 from .dependencies._resolution import (
     detect_single_conflicts,
     validate_worker_dependencies,
@@ -327,7 +328,8 @@ class Worker:
         self._stack.callback(lambda: delattr(self, "_tasks_by_key"))
 
         # The heartbeat task is owned by each processing attempt, not the
-        # Worker context.  It starts only after that attempt can claim work.
+        # Worker context.  It starts with that attempt's session and ends
+        # with it.
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._stack.callback(lambda: delattr(self, "_heartbeat_task"))
         self._processing_session: _ProcessingSession | None = None
@@ -568,7 +570,7 @@ class Worker:
                 try:
                     async with self.docket.redis() as redis:
                         return await self._worker_loop(redis, forever=forever)
-                except ConnectionError:
+                except DISCONNECTED:
                     if stopping.is_set():
                         return
                     if not self.docket._redis.is_connected:
@@ -753,8 +755,17 @@ class Worker:
                 if not execution._acked:
                     await execution.mark_as_failed(error=None)
 
-        disconnect: ConnectionError | None = None
+        disconnect: Disconnected | None = None
         try:
+            # The heartbeat says the worker is alive, not that it is ready to
+            # claim work, so it starts with the session and stops with it.  A
+            # worker that reconnects and then waits on its cancellation
+            # subscription is alive, and the fleet has to see that.
+            self._heartbeat_task = asyncio.create_task(
+                self._heartbeat(session),
+                name=f"{self.docket.name} - heartbeat",
+            )
+
             async with AsyncExitStack() as dependency_stack:
                 # Each Dependency class used by a registered task may declare
                 # a ``worker_lifecycle`` classmethod that returns an async
@@ -782,73 +793,80 @@ class Worker:
                         session.stopping.set()
                         return
                     if self.schedule_automatic_tasks:
-                        await self._schedule_all_automatic_perpetual_tasks()
-                        infra.create_task(
-                            self._reseed_automatic_perpetual_tasks_loop(),
-                            name=f"{self.docket.name} - automatic perpetual reseed",
-                        )
-                    infra.create_task(
-                        self._scheduler_loop(redis),
-                        name=f"{self.docket.name} - scheduler",
-                    )
-                    infra.create_task(
-                        self._renew_leases(redis, active_tasks),
-                        name=f"{self.docket.name} - lease renewal",
-                    )
-                    self._heartbeat_task = asyncio.create_task(
-                        self._heartbeat(),
-                        name=f"{self.docket.name} - heartbeat",
-                    )
-                    has_work: bool = True
-                    while (
-                        forever or has_work or active_tasks
-                    ) and not stopping.is_set():
-                        await process_completed_tasks()
-                        available_slots = self.concurrency - len(active_tasks)
-                        if available_slots <= 0:
-                            await asyncio.sleep(
-                                self.minimum_check_interval.total_seconds()
-                            )
-                            continue
                         try:
-                            sources = [get_new_deliveries]
-                            with self._maybe_suppress_instrumentation():
-                                sweep_due = await redelivery_sweep.due(redis)
-                            if sweep_due:
-                                sources.insert(0, get_redeliveries)
-                            for source in sources:
-                                for stream_key, messages in await source(redis):
-                                    is_redelivery = stream_key == b"__redelivery__"
-                                    for message_id, message in messages:
-                                        if not message:  # pragma: no cover
-                                            continue
-
-                                        await start_task(
-                                            message_id, message, is_redelivery
-                                        )
-
-                                if available_slots <= 0:
-                                    break
-
-                            if not forever and not active_tasks:
-                                has_work = await check_for_work()
-                        except ConnectionError as error:
-                            # The worker's own polling read lost its connection --
-                            # a failover or a server restart drops a blocked
-                            # XREADGROUP this way.  Stop the loop and let _run
-                            # reconnect; in-flight tasks still drain in the finally
-                            # below.  A ConnectionError raised by a task body
-                            # surfaces through process_completed_tasks instead,
-                            # which stays outside this guard so it keeps its
-                            # die-and-redeliver behavior.
+                            await self._schedule_all_automatic_perpetual_tasks()
+                        except DISCONNECTED as error:
+                            # Seeding lost Redis.  An error escaping the
+                            # TaskGroup body comes back wrapped in an
+                            # ExceptionGroup, which _run's `except DISCONNECTED`
+                            # does not match, so hold it, skip the rest of the
+                            # startup, and re-raise it bare below.
                             disconnect = error
-                            break
+                        else:
+                            infra.create_task(
+                                self._reseed_automatic_perpetual_tasks_loop(),
+                                name=f"{self.docket.name} - automatic perpetual reseed",
+                            )
+                    if disconnect is None:
+                        infra.create_task(
+                            self._scheduler_loop(redis),
+                            name=f"{self.docket.name} - scheduler",
+                        )
+                        infra.create_task(
+                            self._renew_leases(redis, active_tasks),
+                            name=f"{self.docket.name} - lease renewal",
+                        )
+                        has_work: bool = True
+                        while (
+                            forever or has_work or active_tasks
+                        ) and not stopping.is_set():
+                            await process_completed_tasks()
+                            available_slots = self.concurrency - len(active_tasks)
+                            if available_slots <= 0:
+                                await asyncio.sleep(
+                                    self.minimum_check_interval.total_seconds()
+                                )
+                                continue
+                            try:
+                                sources = [get_new_deliveries]
+                                with self._maybe_suppress_instrumentation():
+                                    sweep_due = await redelivery_sweep.due(redis)
+                                if sweep_due:
+                                    sources.insert(0, get_redeliveries)
+                                for source in sources:
+                                    for stream_key, messages in await source(redis):
+                                        is_redelivery = stream_key == b"__redelivery__"
+                                        for message_id, message in messages:
+                                            if not message:  # pragma: no cover
+                                                continue
+
+                                            await start_task(
+                                                message_id, message, is_redelivery
+                                            )
+
+                                    if available_slots <= 0:
+                                        break
+
+                                if not forever and not active_tasks:
+                                    has_work = await check_for_work()
+                            except DISCONNECTED as error:
+                                # The worker's own polling read lost Redis -- a
+                                # failover, a server restart, or a server too busy
+                                # to answer drops a blocked XREADGROUP this way.
+                                # Stop the loop and let _run reconnect; in-flight
+                                # tasks still drain in the finally below.  A
+                                # disconnection raised by a task body surfaces
+                                # through process_completed_tasks instead, which
+                                # stays outside this guard so it keeps its
+                                # die-and-redeliver behavior.
+                                disconnect = error
+                                break
 
                     session.stopping.set()
 
-            # A disconnection in the poll loop above leaves the TaskGroup intact
-            # (no exception escaped it), so re-raise it here as a bare
-            # ConnectionError for _run to catch and reconnect on.
+            # A disconnection caught above leaves the TaskGroup intact (no
+            # exception escaped it), so re-raise it here on its own for _run
+            # to catch and reconnect on.
             if disconnect is not None:
                 raise disconnect
         except asyncio.CancelledError:
@@ -999,24 +1017,13 @@ class Worker:
                             # iterator advances on every call, so reseeding a
                             # healthy cron would drift its schedule into the
                             # future.  Only touch a task once its chain is gone.
-                            if await self._automatic_perpetual_is_live(redis, key):
+                            if await perpetual_is_live(self.docket, redis, key):
                                 continue
                             await self.docket.add(
                                 task_function, when=perpetual.initial_when, key=key
                             )()
             except LockError:  # pragma: no cover
                 return
-
-    async def _automatic_perpetual_is_live(self, redis: RedisClient, key: str) -> bool:
-        """Whether an automatic perpetual already has a live schedule entry.
-
-        Mirrors the dedup in the scheduling script: a task is live when it's
-        parked or queued (``known`` is set) or currently running.
-        """
-        runs_key = self.docket.runs_key(key)
-        if (await redis.hget(runs_key, "known")) is not None:
-            return True
-        return (await redis.hget(runs_key, "state")) == b"running"
 
     async def _delete_known_task(self, redis: Redis, execution: Execution) -> None:
         logger.debug("Deleting known task", extra=self._log_context())
@@ -1293,11 +1300,7 @@ class Worker:
                 extra=self._log_context(),
             )
 
-    async def _heartbeat(self) -> None:
-        session = self._processing_session
-        if session is None:
-            return  # pragma: no cover
-
+    async def _heartbeat(self, session: _ProcessingSession) -> None:
         while not session.stopping.is_set():  # pragma: no branch
             try:
                 now = datetime.now(timezone.utc).timestamp()
@@ -1345,7 +1348,7 @@ class Worker:
 
             except asyncio.CancelledError:  # pragma: no cover
                 return
-            except ConnectionError:
+            except DISCONNECTED:
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.exception(
                     "Error sending worker heartbeat",

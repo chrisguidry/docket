@@ -39,7 +39,7 @@ from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
 from redis.asyncio.connection import Connection, SSLConnection
-from redis.exceptions import ConnectionError
+from redis.exceptions import ConnectionError, TimeoutError
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -71,6 +71,13 @@ CONNECT_TIMEOUT: float = 10.0
 # https://github.com/redis/hiredis-py/issues/235
 # https://github.com/redis/hiredis-py/pull/239
 PUBSUB_RESP_VERSION: int = 2
+
+# Losing Redis reaches a caller two ways: the socket breaks, or a read or a
+# connect runs out of time.  redis-py raises ConnectionError for the first and
+# TimeoutError for the second, and neither is a subclass of the other, so the
+# code that reconnects catches both.
+Disconnected: TypeAlias = ConnectionError | TimeoutError
+DISCONNECTED = (ConnectionError, TimeoutError)
 
 
 # ---------------------------------------------------------------------------
