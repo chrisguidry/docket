@@ -24,7 +24,7 @@ from ._docket_snapshot import DocketSnapshot as DocketSnapshot
 from ._docket_snapshot import DocketSnapshotMixin
 from ._docket_snapshot import RunningExecution as RunningExecution
 from ._docket_snapshot import WorkerInfo as WorkerInfo
-from ._lua import Arg, Key, redis_script
+from ._execution_scripts import _cancel_task
 from ._redis import (
     PubSubClient,
     RedisClient,
@@ -63,61 +63,6 @@ from .strikelist import (
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: trace.Tracer = trace.get_tracer(__name__)
-
-
-@redis_script
-async def _cancel_task(
-    redis: RedisClient,
-    *,
-    stream_key: Key[str],
-    known_key: Key[str],
-    parked_key: Key[str],
-    queue_key: Key[str],
-    stream_id_key: Key[str],
-    runs_key: Key[str],
-    progress_key: Key[str],
-    task_key: Arg[str],
-    completed_at: Arg[str],
-) -> bytes:
-    """
-    -- TODO: Remove known_key / parked_key / stream_id_key handling in
-    -- v0.14.0 (legacy key locations).
-
-    -- Get stream ID (check new location first, then legacy)
-    local message_id = redis.call('HGET', runs_key, 'stream_id')
-
-    -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
-    if not message_id then
-        message_id = redis.call('GET', stream_id_key)
-    end
-
-    -- Delete from stream if message ID exists
-    if message_id then
-        redis.call('XDEL', stream_key, message_id)
-    end
-
-    -- Clean up legacy keys and parked data
-    redis.call('DEL', known_key, parked_key, stream_id_key)
-    redis.call('ZREM', queue_key, task_key)
-
-    -- Drop the per-task progress hash that ``Execution.claim``
-    -- creates -- without a TTL of its own, it would otherwise
-    -- leak when a task is cancelled after being claimed but
-    -- before it completes (e.g. parked on a side channel).
-    redis.call('DEL', progress_key)
-
-    -- Clear scheduling markers so add() can reschedule this key
-    redis.call('HDEL', runs_key, 'known', 'stream_id')
-
-    -- Only set CANCELLED if not already in a terminal state
-    local current_state = redis.call('HGET', runs_key, 'state')
-    if current_state ~= 'completed' and current_state ~= 'failed' and current_state ~= 'cancelled' then
-        redis.call('HSET', runs_key, 'state', 'cancelled', 'completed_at', completed_at)
-    end
-
-    return 'OK'
-    """
-    ...
 
 
 P = ParamSpec("P")
@@ -478,6 +423,25 @@ class Docket(DocketSnapshotMixin):
             prior schedule for ``key``), or ``Disposition.STRUCK`` if a strike
             rule blocked the call.
         """
+        return self._replace(function, when, key)
+
+    def _replace(
+        self,
+        function: Callable[P, Awaitable[R]] | str,
+        when: datetime,
+        key: str,
+        expected_generation: int = 0,
+    ) -> Callable[..., Awaitable[Execution]]:
+        """Replace a task, optionally only while the caller still holds the key.
+
+        ``expected_generation`` is the generation the caller believes holds
+        ``key``.  When it is non-zero and Redis holds a newer one, the schedule
+        script leaves the key alone and the returned execution's disposition is
+        ``Disposition.SUPERSEDED``.  ``Perpetual`` passes the generation of the
+        attempt that just finished, so its reschedule and its supersession
+        check are one round-trip.  ``Docket.replace`` passes 0, which skips the
+        check entirely.
+        """
         function_name: str | None = None
         if isinstance(function, str):
             function_name = function
@@ -512,7 +476,9 @@ class Docket(DocketSnapshotMixin):
                     return execution
 
                 # Schedule atomically (includes state record write)
-                await execution.schedule(replace=True)
+                await execution.schedule(
+                    replace=True, expected_generation=expected_generation
+                )
                 span.set_attribute("docket.disposition", execution.disposition.value)
 
             self._record_schedule_metrics(execution, replace=True)
@@ -693,10 +659,11 @@ class Docket(DocketSnapshotMixin):
         """Increment the scheduling counters for one non-stricken execution,
         exactly as the single-call ``add`` / ``replace`` paths always have.
 
-        Executions whose Redis command failed during a batch don't count:
-        nothing was added, replaced, or scheduled for them.
+        Executions whose Redis command failed during a batch don't count, and
+        neither do those a newer generation superseded: nothing was added,
+        replaced, or scheduled for them.
         """
-        if execution.disposition is Disposition.FAILED:
+        if execution.disposition in (Disposition.FAILED, Disposition.SUPERSEDED):
             return
 
         labels = {**self.labels(), **execution.general_labels()}

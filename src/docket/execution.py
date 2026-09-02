@@ -35,7 +35,7 @@ from uncalled_for.introspection import (
 )
 
 from ._execution_progress import ExecutionProgress, ProgressEvent, StateEvent
-from ._lua import Arg, Args, Key, redis_script
+from ._execution_scripts import _claim, _schedule, _terminal
 from ._redis import RedisClient, confirm_subscriptions, is_cluster_client
 from .annotations import Logged
 from .instrumentation import CACHE_SIZE, message_getter, message_setter
@@ -56,191 +56,10 @@ TaskFunction = Callable[..., Awaitable[Any]]
 Message = dict[bytes, bytes]
 
 
-@redis_script
-async def _schedule(
-    redis: RedisClient,
-    *,
-    stream_key: Key[str],
-    known_key: Key[str],
-    parked_key: Key[str],
-    queue_key: Key[str],
-    stream_id_key: Key[str],
-    runs_key: Key[str],
-    state_channel: Key[str],
-    task_key: Arg[str],
-    when_timestamp: Arg[float],
-    is_immediate: Arg[bool],
-    replace: Arg[bool],
-    reschedule_message_id: Arg[bytes],
-    worker_group_name: Arg[str],
-    state_payload: Arg[str],
-    message: Args[dict[bytes, bytes]],
-) -> bytes | str:
-    """
-    -- TODO: Remove known_key / parked_key / queue_key / stream_id_key
-    -- handling in v0.14.0 (legacy key locations).
-
-    -- Extract message fields
-    local message = {}
-    local function_name = nil
-    local args_data = nil
-    local kwargs_data = nil
-    local generation_index = nil
-
-    for i = message_start, #ARGV, 2 do
-        local field_name = ARGV[i]
-        local field_value = ARGV[i + 1]
-        message[#message + 1] = field_name
-        message[#message + 1] = field_value
-
-        -- Extract task data fields for runs hash
-        if field_name == 'function' then
-            function_name = field_value
-        elseif field_name == 'args' then
-            args_data = field_value
-        elseif field_name == 'kwargs' then
-            kwargs_data = field_value
-        elseif field_name == 'generation' then
-            generation_index = #message
-        end
-    end
-
-    -- Handle rescheduling from stream: atomically ACK the original message and
-    -- re-route the task.  Prevents both task loss (ACK before reschedule) and
-    -- duplicate execution (reschedule before ACK with slow reschedule causing
-    -- redelivery).  Honors is_immediate so a retry with delay=0 lands in the
-    -- stream right away instead of waiting for the scheduler poll.  Sets
-    -- 'known' so a concurrent docket.add() for the same key dedups against
-    -- this rescheduled task.
-    if reschedule_message_id ~= '' then
-        -- Acknowledge and delete the message from the stream
-        redis.call('XACK', stream_key, worker_group_name, reschedule_message_id)
-        redis.call('XDEL', stream_key, reschedule_message_id)
-
-        -- Increment generation counter
-        local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
-        if generation_index then
-            message[generation_index] = tostring(new_gen)
-        end
-
-        if is_immediate then
-            -- Add directly to stream for immediate execution
-            local new_message_id = redis.call('XADD', stream_key, '*', unpack(message))
-            redis.call('HSET', runs_key,
-                'state', 'queued',
-                'when', when_timestamp,
-                'known', when_timestamp,
-                'stream_id', new_message_id,
-                'function', function_name,
-                'args', args_data,
-                'kwargs', kwargs_data
-            )
-        else
-            -- Park task data for future execution
-            redis.call('HSET', parked_key, unpack(message))
-            redis.call('ZADD', queue_key, when_timestamp, task_key)
-            redis.call('HSET', runs_key,
-                'state', 'scheduled',
-                'when', when_timestamp,
-                'known', when_timestamp,
-                'function', function_name,
-                'args', args_data,
-                'kwargs', kwargs_data
-            )
-            redis.call('HDEL', runs_key, 'stream_id')
-        end
-
-        -- Clear fields written by the previous attempt's ``_claim`` so the
-        -- runs hash describes the rescheduled (queued/scheduled) attempt,
-        -- not the worker and start-time of the attempt that just failed.
-        redis.call('HDEL', runs_key, 'worker', 'started_at')
-
-        redis.call('PUBLISH', state_channel, state_payload)
-
-        return 'OK'
-    end
-
-    -- Handle replacement: cancel existing task if needed
-    if replace then
-        -- Get stream ID from runs hash (check new location first)
-        local existing_message_id = redis.call('HGET', runs_key, 'stream_id')
-
-        -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
-        if not existing_message_id then
-            existing_message_id = redis.call('GET', stream_id_key)
-        end
-
-        if existing_message_id then
-            redis.call('XDEL', stream_key, existing_message_id)
-        end
-
-        redis.call('ZREM', queue_key, task_key)
-        redis.call('DEL', parked_key)
-
-        -- TODO: Remove in next breaking release (v0.14.0) - clean up legacy keys
-        redis.call('DEL', known_key, stream_id_key)
-
-        -- Note: runs_key is updated below, not deleted
-    else
-        -- Check if task already exists (check new location first, then legacy)
-        local known_exists = redis.call('HEXISTS', runs_key, 'known') == 1
-        if not known_exists then
-            -- Check if task is currently running (known field deleted at claim time)
-            local state = redis.call('HGET', runs_key, 'state')
-            if state == 'running' then
-                return 'EXISTS'
-            end
-            -- TODO: Remove in next breaking release (v0.14.0) - check legacy location
-            known_exists = redis.call('EXISTS', known_key) == 1
-        end
-        if known_exists then
-            return 'EXISTS'
-        end
-    end
-
-    -- Increment generation counter
-    local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
-    if generation_index then
-        message[generation_index] = tostring(new_gen)
-    end
-
-    if is_immediate then
-        -- Add to stream for immediate execution
-        local message_id = redis.call('XADD', stream_key, '*', unpack(message))
-
-        -- Store state and metadata in runs hash
-        redis.call('HSET', runs_key,
-            'state', 'queued',
-            'when', when_timestamp,
-            'known', when_timestamp,
-            'stream_id', message_id,
-            'function', function_name,
-            'args', args_data,
-            'kwargs', kwargs_data
-        )
-    else
-        -- Park task data for future execution
-        redis.call('HSET', parked_key, unpack(message))
-
-        -- Add to sorted set queue
-        redis.call('ZADD', queue_key, when_timestamp, task_key)
-
-        -- Store state and metadata in runs hash
-        redis.call('HSET', runs_key,
-            'state', 'scheduled',
-            'when', when_timestamp,
-            'known', when_timestamp,
-            'function', function_name,
-            'args', args_data,
-            'kwargs', kwargs_data
-        )
-    end
-
-    redis.call('PUBLISH', state_channel, state_payload)
-
-    return 'OK'
-    """
-    ...
+def _hash_reply(flat: Sequence[bytes]) -> Message:
+    """Pair up a hash that a Lua script returned as a flat field/value array."""
+    fields = iter(flat)
+    return dict(zip(fields, fields))
 
 
 async def schedule_many(
@@ -330,158 +149,6 @@ async def schedule_many(
                 execution._apply_schedule_reply(reply, is_immediate)  # pyright: ignore[reportPrivateUsage]
 
 
-@redis_script
-async def _claim(
-    redis: RedisClient,
-    *,
-    runs_key: Key[str],
-    progress_key: Key[str],
-    known_key: Key[str],
-    stream_id_key: Key[str],
-    state_channel: Key[str],
-    stream_key: Key[str],
-    worker: Arg[str],
-    started_at: Arg[str],
-    generation: Arg[int],
-    state_payload: Arg[str],
-    worker_group_name: Arg[str],
-    message_id: Arg[bytes],
-) -> bytes:
-    """
-    -- TODO: Remove known_key / stream_id_key handling in v0.14.0
-    -- (legacy key locations).
-
-    -- Check supersession: generation > 0 means tracking is active.  When the
-    -- claim is for a stale message we still ACK and XDEL it so the stream
-    -- entry doesn't linger -- nothing else will clean it up.
-    if generation > 0 then
-        local current = redis.call('HGET', runs_key, 'generation')
-        if not current then
-            -- Runs hash was cleaned up (execution_ttl=0 after
-            -- a newer generation completed).  This message is stale.
-            if message_id ~= '' then
-                redis.call('XACK', stream_key, worker_group_name, message_id)
-                redis.call('XDEL', stream_key, message_id)
-            end
-            return 'SUPERSEDED'
-        end
-        if tonumber(current) > generation then
-            if message_id ~= '' then
-                redis.call('XACK', stream_key, worker_group_name, message_id)
-                redis.call('XDEL', stream_key, message_id)
-            end
-            return 'SUPERSEDED'
-        end
-    end
-
-    -- Update execution state to running
-    redis.call('HSET', runs_key,
-        'state', 'running',
-        'worker', worker,
-        'started_at', started_at
-    )
-
-    -- Initialize progress tracking, tagged with the claimer's generation so
-    -- a stale predecessor finishing later can tell whether the progress hash
-    -- is still ours to clean up (see _terminal SUPERSEDED branch).  Also
-    -- drop any ``message``/``updated_at`` left behind by the previous
-    -- generation -- HSET doesn't remove optional fields, so without this
-    -- HDEL the successor's progress view would surface stale metadata.
-    redis.call('HSET', progress_key,
-        'current', '0',
-        'total', '100',
-        'generation', generation
-    )
-    redis.call('HDEL', progress_key, 'message', 'updated_at')
-
-    -- Delete known/stream_id fields to allow task rescheduling
-    redis.call('HDEL', runs_key, 'known', 'stream_id')
-
-    -- TODO: Remove in next breaking release (v0.14.0) - legacy key cleanup
-    redis.call('DEL', known_key, stream_id_key)
-
-    redis.call('PUBLISH', state_channel, state_payload)
-
-    return 'OK'
-    """
-    ...
-
-
-@redis_script
-async def _terminal(
-    redis: RedisClient,
-    *,
-    runs_key: Key[str],
-    state_channel: Key[str],
-    progress_key: Key[str],
-    stream_key: Key[str],
-    generation: Arg[int],
-    state: Arg[str],
-    completed_at: Arg[str],
-    ttl_seconds: Arg[int],
-    state_payload: Arg[str],
-    worker_group_name: Arg[str],
-    message_id: Arg[bytes],
-    extra_fields: Args[list[str]],
-) -> bytes:
-    """
-    -- Check supersession (generation 0 = pre-tracking, always write).  Two
-    -- supersession shapes, both handled the same way:
-    --   * runs hash missing entirely -- a newer generation already completed
-    --     and its execution_ttl expired (or it was 0).
-    --   * runs hash present but its generation is newer -- a successor is in
-    --     flight or has just finished within its execution_ttl window.
-    -- In both cases we still publish the terminal-state event so subscribers
-    -- waiting on completion don't deadlock, and we still clean up this
-    -- execution's progress hash and stream entry.  We do NOT recreate or
-    -- mutate the runs hash on a supersession -- the successor owns it.
-    if generation > 0 then
-        local current = redis.call('HGET', runs_key, 'generation')
-        if not current or tonumber(current) > generation then
-            redis.call('PUBLISH', state_channel, state_payload)
-            -- Only DEL the progress hash if it belongs to us (matching
-            -- generation tag) or is untagged (pre-fix / pre-tracking data,
-            -- preserve the prior unconditional-DEL behaviour).  A newer
-            -- generation's tag means the successor is actively reporting
-            -- against the hash and we must not clobber its state.
-            local progress_gen = redis.call('HGET', progress_key, 'generation')
-            if not progress_gen or tonumber(progress_gen) <= generation then
-                redis.call('DEL', progress_key)
-            end
-            if message_id ~= '' then
-                redis.call('XACK', stream_key, worker_group_name, message_id)
-                redis.call('XDEL', stream_key, message_id)
-            end
-            return 'SUPERSEDED'
-        end
-    end
-
-    -- Build HSET args: state + completed_at + any extras
-    local hset_args = {'state', state, 'completed_at', completed_at}
-    for i = extra_fields_start, #ARGV, 2 do
-        hset_args[#hset_args + 1] = ARGV[i]
-        hset_args[#hset_args + 1] = ARGV[i + 1]
-    end
-    redis.call('HSET', runs_key, unpack(hset_args))
-
-    if ttl_seconds > 0 then
-        redis.call('EXPIRE', runs_key, ttl_seconds)
-    else
-        redis.call('DEL', runs_key)
-    end
-
-    redis.call('PUBLISH', state_channel, state_payload)
-    redis.call('DEL', progress_key)
-    if message_id ~= '' then
-        redis.call('XACK', stream_key, worker_group_name, message_id)
-        redis.call('XDEL', stream_key, message_id)
-    end
-
-    return 'OK'
-    """
-    ...
-
-
 def get_signature(function: Callable[..., Any]) -> inspect.Signature:
     signature = _uncalled_for_get_signature(function)
     CACHE_SIZE.set(len(_signature_cache), {"cache": "signature"})
@@ -534,6 +201,12 @@ class Disposition(enum.Enum):
 
     STRUCK = "struck"
     """A strike rule blocked the call before any Redis state was touched."""
+
+    SUPERSEDED = "superseded"
+    """A newer schedule already holds this key, so the attempt left it alone.
+    Only possible when the caller states the generation it expects, which
+    ``Perpetual`` does when it reschedules the attempt that just finished;
+    ``Docket.add`` and ``Docket.replace`` never produce it."""
 
     FAILED = "failed"
     """The Redis command scheduling this task returned an error.  Only
@@ -699,7 +372,14 @@ class Execution:
         redelivered: bool = False,
         fallback_task: TaskFunction | None = None,
         message_id: "RedisMessageID | None" = None,
+        sync: bool = True,
     ) -> Self:
+        """Rebuild an execution from the stream message that carries it.
+
+        ``sync`` reads the current lifecycle state back from Redis.  A worker
+        about to claim the task passes ``sync=False``, because ``claim()``
+        fills in the same attributes from its own reply a moment later.
+        """
         function_name = message[b"function"].decode()
         if not (function := docket.tasks.get(function_name)):
             if fallback_task is None:
@@ -722,7 +402,8 @@ class Execution:
             generation=int(message.get(b"generation", b"0")),
             message_id=message_id,
         )
-        await instance.sync()
+        if sync:
+            await instance.sync()
         return instance
 
     def general_labels(self) -> Mapping[str, str]:
@@ -770,7 +451,10 @@ class Execution:
         return [trace.Link(initiating_context)] if initiating_context.is_valid else []
 
     async def schedule(
-        self, replace: bool = False, reschedule_message: "RedisMessageID | None" = None
+        self,
+        replace: bool = False,
+        reschedule_message: "RedisMessageID | None" = None,
+        expected_generation: int = 0,
     ) -> Disposition:
         """Schedule this task atomically in Redis.
 
@@ -794,18 +478,21 @@ class Execution:
             reschedule_message: If provided, atomically acknowledges and deletes
                     this stream message ID before rescheduling the task to the queue.
                     Used when a task needs to be rescheduled from an active stream message.
+            expected_generation: The generation the caller believes holds this
+                    key.  When it is non-zero and Redis holds a newer one, the
+                    script leaves the key alone.  0 skips the check.
 
         Returns:
             ``Disposition.SCHEDULED`` if the task was placed on the queue/stream,
-            or ``Disposition.ALREADY_SCHEDULED`` if a task with the same key was
+            ``Disposition.ALREADY_SCHEDULED`` if a task with the same key was
             already known and ``replace=False`` (in which case the existing
-            schedule is preserved and no local state changes are published).
+            schedule is preserved and no local state changes are published),
+            or ``Disposition.SUPERSEDED`` if ``expected_generation`` was stale.
             Sets ``self.disposition`` to the same value.
         """
         script_args, is_immediate = self._schedule_script_args(
-            replace, reschedule_message
+            replace, reschedule_message, expected_generation
         )
-
         async with self.docket.redis() as redis:
             reply = await _schedule(redis, **script_args)
 
@@ -815,6 +502,7 @@ class Execution:
         self,
         replace: bool,
         reschedule_message: "RedisMessageID | None" = None,
+        expected_generation: int = 0,
     ) -> tuple[dict[str, Any], bool]:
         """Build the keyword arguments for one ``_schedule`` script invocation.
 
@@ -863,6 +551,7 @@ class Execution:
             "is_immediate": is_immediate,
             "replace": replace,
             "reschedule_message_id": reschedule_message or b"",
+            "expected_generation": expected_generation,
             "worker_group_name": self.docket.worker_group_name,
             "state_payload": state_payload,
             "message": message,
@@ -876,6 +565,12 @@ class Execution:
         reschedule_message: "RedisMessageID | None" = None,
     ) -> Disposition:
         """Fold one ``_schedule`` script reply back into this execution."""
+        if reply in (b"SUPERSEDED", "SUPERSEDED"):
+            # A newer generation holds the key and the script left it alone,
+            # so this execution never became real anywhere.
+            self.disposition = Disposition.SUPERSEDED
+            return self.disposition
+
         if reply in (b"EXISTS", "EXISTS"):
             # An existing schedule for this key remains untouched; leave local
             # state alone and do not publish a misleading state event.
@@ -906,6 +601,15 @@ class Execution:
         - Initializes progress tracking (current=0, total=100)
         - Deletes known/stream_id fields to allow task rescheduling
         - Cleans up legacy keys for backwards compatibility
+        - Reads the runs hash and the progress hash back
+
+        The script returns those two hashes as they stand when it finishes, so
+        the claim leaves this execution's lifecycle attributes exactly where a
+        ``sync()`` would.  That holds on both paths: a claimed task reports its
+        own running state and reset progress, and a refused one reports what
+        the newer generation left on the key (or the ``sync()`` defaults, if
+        the key is gone).  Callers on the delivery path can therefore skip the
+        ``sync()`` in ``from_message`` and let the claim fill the attributes in.
 
         Args:
             worker: Name of the worker claiming the task
@@ -930,7 +634,7 @@ class Execution:
 
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
-                result = await _claim(
+                status, runs_data, progress_data = await _claim(
                     redis,
                     runs_key=self._redis_key,
                     progress_key=self.progress._redis_key,
@@ -946,18 +650,15 @@ class Execution:
                     message_id=self.message_id or b"",
                 )
 
-        if result == b"SUPERSEDED":
+        self._apply_runs_data(_hash_reply(runs_data))
+        self.progress._apply(_hash_reply(progress_data))  # pyright: ignore[reportPrivateUsage]
+
+        if status == b"SUPERSEDED":
             # The `_claim` Lua XACKed and XDELed the stale stream message
             # before returning SUPERSEDED (skipping the ack when message_id
             # is empty -- harmless either way).
             self._acked = True
             return False
-
-        self.state = ExecutionState.RUNNING
-        self.worker = worker
-        self.started_at = started_at
-        self.progress.current = 0
-        self.progress.total = 100
 
         return True
 
@@ -1170,27 +871,18 @@ class Execution:
         # No result stored - task returned None
         return None
 
-    async def sync(self) -> None:
-        """Synchronize instance attributes with current execution data from Redis.
+    def _apply_runs_data(self, data: Mapping[bytes, bytes]) -> None:
+        """Take the lifecycle attributes from one read of the runs hash.
 
-        Updates self.state, execution metadata, and progress data from Redis.
-        Sets attributes to None if no data exists.  No branch sits between the
-        two reads, so the runs hash and the progress hash go out together.
+        An empty hash means Redis holds nothing for this key, so everything
+        goes back to the defaults of a task that has not started.  A hash
+        without a ``state`` field leaves the current state alone.
         """
-        with self._maybe_suppress_instrumentation():
-            async with self.docket.redis() as redis:
-                async with redis.pipeline() as pipe:
-                    pipe.hgetall(self._redis_key)
-                    self.progress._read(pipe)  # pyright: ignore[reportPrivateUsage]
-                    data, progress_data = await pipe.execute()
-
         if data:
-            # Update state
             state_value = data.get(b"state")
             if state_value:
                 self.state = ExecutionState(state_value.decode())
 
-            # Update metadata
             self.worker = data[b"worker"].decode() if b"worker" in data else None
             self.started_at = (
                 datetime.fromisoformat(data[b"started_at"].decode())
@@ -1207,7 +899,6 @@ class Execution:
                 data[b"result_key"].decode() if b"result_key" in data else None
             )
         else:
-            # No data exists - reset to defaults
             self.state = ExecutionState.SCHEDULED
             self.worker = None
             self.started_at = None
@@ -1215,6 +906,21 @@ class Execution:
             self.error = None
             self.result_key = None
 
+    async def sync(self) -> None:
+        """Synchronize instance attributes with current execution data from Redis.
+
+        Updates self.state, execution metadata, and progress data from Redis.
+        Sets attributes to None if no data exists.  No branch sits between the
+        two reads, so the runs hash and the progress hash go out together.
+        """
+        with self._maybe_suppress_instrumentation():
+            async with self.docket.redis() as redis:
+                async with redis.pipeline() as pipe:
+                    pipe.hgetall(self._redis_key)
+                    self.progress._read(pipe)  # pyright: ignore[reportPrivateUsage]
+                    data, progress_data = await pipe.execute()
+
+        self._apply_runs_data(data)
         self.progress._apply(progress_data)  # pyright: ignore[reportPrivateUsage]
 
     async def is_superseded(self) -> bool:
