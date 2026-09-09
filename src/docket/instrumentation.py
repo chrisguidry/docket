@@ -106,7 +106,10 @@ TASKS_RUNNING = meter.create_up_down_counter(
 
 REDIS_DISRUPTIONS = meter.create_counter(
     "docket_redis_disruptions",
-    description="How many times the Redis connection has been disrupted",
+    description=(
+        "How many times Redis dropped, timed out, or refused a command "
+        "that the worker then retried"
+    ),
     unit="1",
 )
 

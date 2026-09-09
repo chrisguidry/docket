@@ -1,8 +1,9 @@
-"""Tests for how the worker survives losing its Redis connection.
+"""Tests for how the worker survives Redis trouble.
 
-redis-py reports a lost server two ways: a ConnectionError when the socket
-breaks, and a TimeoutError when a read or a connect runs out of time.  Neither
-is a subclass of the other, so these tests cover both.
+redis-py reports trouble three ways: a ConnectionError when the socket breaks,
+a TimeoutError when a read or a connect runs out of time, and a ResponseError
+when the server refuses a command.  None is a subclass of another, and only
+some refusals get their own class, so these tests cover a sample of each.
 """
 
 import asyncio
@@ -14,7 +15,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from docket._redis import RedisClient
-from redis.exceptions import ConnectionError, TimeoutError
+from docket.execution import Execution
+from redis.exceptions import (
+    ConnectionError,
+    ReadOnlyError,
+    ResponseError,
+    TimeoutError,
+)
 
 if sys.version_info < (3, 11):  # pragma: no cover
     from exceptiongroup import ExceptionGroup
@@ -28,12 +35,35 @@ else:  # pragma: no cover
 from docket import Docket, Perpetual, Worker
 from tests.conftest import wait_until
 
+# One of each way redis-py reports Redis trouble.  NOREPLICAS and MISCONF are
+# plain ResponseErrors that redis-py does not type, so the worker has to treat
+# the whole family as Redis being unavailable, not pick out known codes.
+REDIS_ERRORS = [
+    pytest.param(ConnectionError("Connection closed by server."), id="connection"),
+    pytest.param(TimeoutError("Timeout reading from socket"), id="timeout"),
+    pytest.param(
+        ResponseError("NOREPLICAS Not enough good replicas to write."),
+        id="noreplicas",
+    ),
+    pytest.param(
+        ResponseError(
+            "MISCONF Redis is configured to save RDB snapshots, but it's "
+            "currently unable to persist to disk."
+        ),
+        id="misconf",
+    ),
+    pytest.param(
+        ReadOnlyError("You can't write against a read only replica."),
+        id="readonly",
+    ),
+]
 
-@pytest.mark.parametrize("error", [ConnectionError, TimeoutError])
+
+@pytest.mark.parametrize("error", REDIS_ERRORS)
 async def test_worker_reconnects_when_connection_is_lost(
-    docket: Docket, the_task: AsyncMock, error: type[Exception]
+    docket: Docket, the_task: AsyncMock, error: Exception
 ):
-    """The worker should reconnect when the connection is lost"""
+    """The worker should reconnect when Redis fails it"""
     worker = Worker(docket, reconnection_delay=timedelta(milliseconds=100))
 
     # Mock the _worker_loop method to fail once then succeed
@@ -44,7 +74,7 @@ async def test_worker_reconnects_when_connection_is_lost(
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise error("Simulated connection error")
+            raise error
         return await original_worker_loop(redis, forever=forever)  # type: ignore[arg-type]
 
     worker._worker_loop = mock_worker_loop  # type: ignore[protected-access]
@@ -58,18 +88,19 @@ async def test_worker_reconnects_when_connection_is_lost(
         the_task.assert_called_once()
 
 
-@pytest.mark.parametrize("error", [ConnectionError, TimeoutError])
+@pytest.mark.parametrize("error", REDIS_ERRORS)
 async def test_worker_reconnects_when_main_loop_read_disconnects(
-    docket: Docket, the_task: AsyncMock, error: type[Exception]
+    docket: Docket, the_task: AsyncMock, error: Exception
 ):
-    """A connection error raised by the worker's own blocking read should
+    """A Redis error raised by the worker's own blocking read should
     reconnect, not kill the worker.
 
     The main poll loop runs inside a TaskGroup, which re-raises a body
     exception wrapped in an ExceptionGroup. A failover, a plain server
-    restart, or a Redis too busy to answer drops a blocked XREADGROUP; the
-    worker must treat that as a disconnection and reconnect rather than dying
-    with an unhandled ExceptionGroup.
+    restart, or a Redis too busy to answer drops a blocked XREADGROUP, and a
+    Redis that cannot persist or reach its replicas refuses it; the worker
+    must wait and reconnect rather than dying with an unhandled
+    ExceptionGroup.
 
     The fault is injected by wrapping the client the worker actually uses, so
     this exercises the real reconnect path on every backend -- standalone,
@@ -88,7 +119,7 @@ async def test_worker_reconnects_when_main_loop_read_disconnects(
         async def xreadgroup(self, *args: Any, **kwargs: Any) -> Any:
             reads["count"] += 1
             if reads["count"] == 1:
-                raise error("Simulated server loss mid-XREADGROUP")
+                raise error
             return await self._wrapped.xreadgroup(*args, **kwargs)
 
     original_redis = Docket.redis
@@ -108,6 +139,73 @@ async def test_worker_reconnects_when_main_loop_read_disconnects(
 
     the_task.assert_called_once()
     assert reads["count"] >= 2
+
+
+async def test_worker_reconnects_when_an_ack_is_refused(
+    docket: Docket, the_task: AsyncMock
+):
+    """A refused acknowledgement reconnects the worker and redelivers the task.
+
+    Redis refusing writes hits a finishing task at its acknowledgement, which
+    surfaces through the completed-task bookkeeping rather than the polling
+    read.  A refused completion is handled as a task failure first, so Redis
+    refuses that acknowledgement too, the way a real outage would.  The worker
+    must wait and reconnect there, and the message whose acks failed stays
+    pending until the redelivery sweep claims it again, so the task runs a
+    second time and is acknowledged then."""
+    acks = {"count": 0}
+    original_ack = Execution._mark_as_terminal  # type: ignore[protected-access]
+
+    async def refused_acks(self: Execution, *args: Any, **kwargs: Any) -> None:
+        acks["count"] += 1
+        if acks["count"] <= 2:
+            raise ResponseError("NOREPLICAS Not enough good replicas to write.")
+        await original_ack(self, *args, **kwargs)
+
+    await docket.add(the_task)()
+
+    with patch.object(Execution, "_mark_as_terminal", refused_acks):
+        async with Worker(
+            docket,
+            reconnection_delay=timedelta(milliseconds=50),
+            redelivery_timeout=timedelta(milliseconds=200),
+        ) as worker:
+            await worker.run_until_finished()
+
+    assert the_task.call_count == 2
+    assert acks["count"] == 3
+
+
+async def test_worker_reconnects_when_an_infrastructure_task_fails_on_redis(
+    docket: Docket, the_task: AsyncMock
+):
+    """A Redis error escaping a background loop reconnects instead of killing.
+
+    The scheduler, lease renewal, and cancellation listener each run as tasks
+    in the worker's TaskGroup.  An error that escapes one of them arrives at
+    the reconnect loop wrapped in an ExceptionGroup, and the worker has to see
+    through the wrapper when every error inside is Redis trouble."""
+    runs = {"count": 0}
+    original_scheduler_loop = Worker._scheduler_loop  # type: ignore[protected-access]
+
+    async def flaky_scheduler_loop(self: Worker, redis: Any) -> None:
+        runs["count"] += 1
+        if runs["count"] == 1:
+            raise ResponseError("NOREPLICAS Not enough good replicas to write.")
+        await original_scheduler_loop(self, redis)
+
+    await docket.add(the_task)()
+
+    with patch.object(Worker, "_scheduler_loop", flaky_scheduler_loop):
+        async with Worker(
+            docket,
+            reconnection_delay=timedelta(milliseconds=50),
+            redelivery_timeout=timedelta(milliseconds=200),
+        ) as worker:
+            await worker.run_until_finished()
+
+    the_task.assert_called_once()
+    assert runs["count"] == 2
 
 
 async def test_worker_stops_when_the_docket_connection_closes(docket: Docket):
@@ -227,16 +325,16 @@ async def test_heartbeat_resumes_after_reconnect(docket: Docket):
                     await worker_run
 
 
-@pytest.mark.parametrize("error", [ConnectionError, TimeoutError])
+@pytest.mark.parametrize("error", REDIS_ERRORS)
 async def test_worker_reconnects_when_automatic_seeding_disconnects(
-    docket: Docket, error: type[Exception]
+    docket: Docket, error: Exception
 ):
-    """Losing Redis while seeding automatic perpetuals should reconnect.
+    """Redis failing the seeding of automatic perpetuals should reconnect.
 
     The worker seeds its automatic perpetuals inside the TaskGroup that runs
-    its infrastructure, so an error there comes back wrapped in an
-    ExceptionGroup that `except DISCONNECTED` cannot match.  The worker has to
-    reconnect and seed again, not die on its first blip."""
+    its infrastructure, so an error there would come back wrapped in an
+    ExceptionGroup.  The worker has to reconnect and seed again, not die on
+    its first blip."""
     calls = 0
 
     async def automatic_task(
@@ -254,7 +352,7 @@ async def test_worker_reconnects_when_automatic_seeding_disconnects(
         nonlocal seedings
         seedings += 1
         if seedings == 1:
-            raise error("Simulated server loss while seeding automatic perpetuals")
+            raise error
         await original_seeding(self)
 
     with patch.object(Worker, "_schedule_all_automatic_perpetual_tasks", flaky_seeding):
@@ -272,9 +370,9 @@ async def test_worker_reconnects_when_automatic_seeding_disconnects(
 async def test_worker_fails_when_automatic_seeding_raises_a_real_error(docket: Docket):
     """A bug in seeding still fails the worker.
 
-    Only a lost connection earns a reconnect.  Anything else has to reach the
-    caller, so the worker cannot swallow real errors while it handles a lost
-    connection."""
+    Only a Redis error earns a reconnect.  Anything else has to reach the
+    caller, so the worker cannot swallow real errors while it waits out Redis
+    trouble."""
 
     async def automatic_task(
         perpetual: Perpetual = Perpetual(every=timedelta(seconds=30), automatic=True),

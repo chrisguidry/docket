@@ -152,8 +152,8 @@ def worker(
         typer.Option(
             parser=duration,
             help=(
-                "How long to wait before reconnecting to the Redis server after "
-                "a connection error"
+                "How long to wait before reconnecting to Redis after it drops, "
+                "times out, or refuses a command"
             ),
             envvar="DOCKET_WORKER_RECONNECTION_DELAY",
         ),

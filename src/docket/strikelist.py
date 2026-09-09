@@ -556,9 +556,9 @@ class StrikeList:
                         last_id, initial_load_complete = await self._read_strikes(
                             r, last_id, initial_load_complete, STRIKES_IN_EFFECT
                         )
-            except redis.exceptions.ConnectionError:  # pragma: no cover
+            except redis.exceptions.RedisError:  # pragma: no cover
                 REDIS_DISRUPTIONS.add(1, {"docket": self.name})
-                logger.warning("Connection error, sleeping for 1 second...")
+                logger.warning("Redis is unavailable, sleeping for 1 second...")
                 await asyncio.sleep(1)
             except Exception:  # pragma: no cover
                 logger.exception("Error monitoring strikes")

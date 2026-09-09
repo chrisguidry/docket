@@ -26,7 +26,7 @@ from typing import (
 import cloudpickle
 
 if sys.version_info < (3, 11):
-    from exceptiongroup import ExceptionGroup  # pragma: no cover
+    from exceptiongroup import BaseExceptionGroup, ExceptionGroup  # pragma: no cover
     from taskgroup import TaskGroup  # pragma: no cover
 else:
     from asyncio import TaskGroup  # pragma: no cover
@@ -37,10 +37,10 @@ from opentelemetry.trace import Status, StatusCode, Tracer
 from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task
 from ._lua import Arg, Key, redis_script
 from ._redelivery import RedeliverySweep, renew_leases
-from ._redis import DISCONNECTED, Disconnected, RedisClient
+from ._redis import RedisClient, redis_is_unavailable
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
-from redis.exceptions import ConnectionError, LockError, ResponseError
+from redis.exceptions import LockError, RedisError, ResponseError
 from typing_extensions import Self
 
 from .dependencies import (
@@ -569,7 +569,13 @@ class Worker:
                 try:
                     async with self.docket.redis() as redis:
                         return await self._worker_loop(redis, forever=forever)
-                except DISCONNECTED:
+                except (RedisError, BaseExceptionGroup) as error:
+                    # Redis trouble never ends the worker: it logs, counts
+                    # the disruption, waits out the delay, and tries again
+                    # for as long as the outage lasts.  Only a bug, a
+                    # non-Redis error, reaches the caller.
+                    if not redis_is_unavailable(error):
+                        raise
                     if stopping.is_set():
                         return
                     if not self.docket._redis.is_connected:
@@ -582,7 +588,7 @@ class Worker:
                         return
                     REDIS_DISRUPTIONS.add(1, self.labels())
                     logger.warning(
-                        "Error connecting to redis, retrying in %s...",
+                        "Redis is unavailable, retrying in %s...",
                         self.reconnection_delay,
                         exc_info=True,
                     )
@@ -754,7 +760,7 @@ class Worker:
                 if not execution._acked:
                     await execution.mark_as_failed(error=None)
 
-        disconnect: Disconnected | None = None
+        redis_error: RedisError | None = None
         try:
             async with AsyncExitStack() as dependency_stack:
                 # Each Dependency class used by a registered task may declare
@@ -785,19 +791,18 @@ class Worker:
                     if self.schedule_automatic_tasks:
                         try:
                             await self._schedule_all_automatic_perpetual_tasks()
-                        except DISCONNECTED as error:
-                            # Seeding lost Redis.  An error escaping the
-                            # TaskGroup body comes back wrapped in an
-                            # ExceptionGroup, which _run's `except DISCONNECTED`
-                            # does not match, so hold it, skip the rest of the
-                            # startup, and re-raise it bare below.
-                            disconnect = error
+                        except RedisError as error:
+                            # Seeding could not use Redis.  Hold the error,
+                            # skip the rest of the startup so no infrastructure
+                            # task starts against a Redis that just failed,
+                            # and re-raise it bare below for _run to retry.
+                            redis_error = error
                         else:
                             infra.create_task(
                                 self._reseed_automatic_perpetual_tasks_loop(),
                                 name=f"{self.docket.name} - automatic perpetual reseed",
                             )
-                    if disconnect is None:
+                    if redis_error is None:
                         infra.create_task(
                             self._scheduler_loop(redis),
                             name=f"{self.docket.name} - scheduler",
@@ -814,14 +819,14 @@ class Worker:
                         while (
                             forever or has_work or active_tasks
                         ) and not stopping.is_set():
-                            await process_completed_tasks()
-                            available_slots = self.concurrency - len(active_tasks)
-                            if available_slots <= 0:
-                                await asyncio.sleep(
-                                    self.minimum_check_interval.total_seconds()
-                                )
-                                continue
                             try:
+                                await process_completed_tasks()
+                                available_slots = self.concurrency - len(active_tasks)
+                                if available_slots <= 0:
+                                    await asyncio.sleep(
+                                        self.minimum_check_interval.total_seconds()
+                                    )
+                                    continue
                                 sources = [get_new_deliveries]
                                 with self._maybe_suppress_instrumentation():
                                     sweep_due = await redelivery_sweep.due(redis)
@@ -843,26 +848,25 @@ class Worker:
 
                                 if not forever and not active_tasks:
                                     has_work = await check_for_work()
-                            except DISCONNECTED as error:
-                                # The worker's own polling read lost Redis -- a
-                                # failover, a server restart, or a server too busy
-                                # to answer drops a blocked XREADGROUP this way.
-                                # Stop the loop and let _run reconnect; in-flight
-                                # tasks still drain in the finally below.  A
-                                # disconnection raised by a task body surfaces
-                                # through process_completed_tasks instead, which
-                                # stays outside this guard so it keeps its
-                                # die-and-redeliver behavior.
-                                disconnect = error
+                            except RedisError as error:
+                                # Redis dropped, timed out, or refused one of
+                                # the worker's own calls: the polling read, the
+                                # redelivery sweep, or the acknowledgement of a
+                                # finished task.  Stop the loop and let _run
+                                # wait and reconnect; in-flight tasks still
+                                # drain in the finally below, and a message
+                                # whose acknowledgement failed stays pending
+                                # until the redelivery sweep claims it again.
+                                redis_error = error
                                 break
 
                     session.stopping.set()
 
-            # A disconnection caught above leaves the TaskGroup intact (no
+            # A Redis error caught above leaves the TaskGroup intact (no
             # exception escaped it), so re-raise it here on its own for _run
-            # to catch and reconnect on.
-            if disconnect is not None:
-                raise disconnect
+            # to catch and retry on.
+            if redis_error is not None:
+                raise redis_error
         except asyncio.CancelledError:
             if active_tasks:  # pragma: no cover
                 logger.info(
@@ -1279,12 +1283,12 @@ class Worker:
                     pipeline.zrem(self.task_workers_set(task_name), self.name)
                 pipeline.delete(self.worker_tasks_set(self.name))
                 await pipeline.execute()
-        except ConnectionError:
+        except RedisError:
             # A worker that loses Redis on the way out ages out on its own:
             # every other heartbeat prunes members older than the missed
             # heartbeat window, and the worker's task set carries a TTL.
             logger.debug(
-                "Could not clear worker heartbeat, connection is gone",
+                "Could not clear worker heartbeat, Redis is unavailable",
                 extra=self._log_context(),
             )
         except Exception:
@@ -1346,7 +1350,7 @@ class Worker:
 
             except asyncio.CancelledError:  # pragma: no cover
                 return
-            except DISCONNECTED:
+            except RedisError:
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.exception(
                     "Error sending worker heartbeat",
@@ -1389,12 +1393,12 @@ class Worker:
                             # the subscription, so cancellations published
                             # from here on will be delivered.
                             session.cancellation_ready.set()
-            except ConnectionError:
+            except RedisError:
                 if session.stopping.is_set():
                     return  # pragma: no cover
                 REDIS_DISRUPTIONS.add(1, self.labels())
                 logger.warning(
-                    "Redis connection error in cancellation listener, reconnecting...",
+                    "Redis error in cancellation listener, reconnecting...",
                     extra=log_context,
                 )
                 if await _wait_for_event(session.stopping, 1):

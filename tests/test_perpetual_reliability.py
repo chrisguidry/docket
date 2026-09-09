@@ -73,13 +73,33 @@ async def test_chain_survives_worker_death_during_task_body(docket: Docket):
         assert len(executions) >= 3  # chain ran on worker_b after redelivery
 
 
+def flaky_on_complete(
+    failures: int,
+) -> Callable[[Perpetual, Execution, TaskOutcome], Awaitable[bool]]:
+    """Build an ``on_complete`` that loses Redis on its first ``failures`` calls
+    and then behaves normally, the shape of a Redis outage that ends."""
+    original_on_complete = Perpetual.on_complete
+    attempts = {"count": 0}
+
+    async def on_complete(
+        self: Perpetual, execution: Execution, outcome: TaskOutcome
+    ) -> bool:
+        attempts["count"] += 1
+        if attempts["count"] <= failures:
+            raise ConnectionError("simulated Redis blip during on_complete")
+        return await original_on_complete(self, execution, outcome)
+
+    return on_complete
+
+
 async def test_chain_survives_on_complete_failure_in_success_path(docket: Docket):
     """When ``Perpetual.on_complete`` raises after a successful task body
     (and the in-``_execute`` recovery's repeat call also fails — simulating a
     Redis outage long enough to defeat the in-place recovery), the worker
-    dies. The message stays in the consumer-group pending list; a fresh
-    worker reclaims it via XAUTOCLAIM, the body runs again, ``on_complete``
-    now succeeds, the chain continues."""
+    treats it as Redis trouble: it waits, reconnects, and keeps going. The
+    message stays in the consumer-group pending list; the redelivery sweep
+    reclaims it via XAUTOCLAIM, the body runs again, ``on_complete`` now
+    succeeds, the chain continues on the same worker."""
     executions: list[int] = []
 
     async def perpetual_task(
@@ -89,26 +109,15 @@ async def test_chain_survives_on_complete_failure_in_success_path(docket: Docket
 
     await docket.add(perpetual_task, key="perpetual")()
 
-    async def crashing_on_complete(
-        self: Perpetual, execution: Execution, outcome: TaskOutcome
-    ) -> bool:
-        raise ConnectionError("simulated Redis blip during on_complete")
-
     async with Worker(
-        docket, redelivery_timeout=timedelta(milliseconds=200)
-    ) as worker_a:
-        with patch.object(Perpetual, "on_complete", crashing_on_complete):
-            with pytest.raises(ExceptionGroup):
-                await worker_a.run_until_finished()
-        assert len(executions) == 1  # body ran once on worker_a before on_complete
+        docket,
+        redelivery_timeout=timedelta(milliseconds=200),
+        reconnection_delay=timedelta(milliseconds=50),
+    ) as worker:
+        with patch.object(Perpetual, "on_complete", flaky_on_complete(failures=2)):
+            await worker.run_at_most({"perpetual": 3})
 
-    await asyncio.sleep(0.25)
-
-    async with Worker(
-        docket, redelivery_timeout=timedelta(milliseconds=200)
-    ) as worker_b:
-        await worker_b.run_at_most({"perpetual": 3})
-        assert len(executions) >= 3  # body ran again on worker_b, chain continued
+    assert len(executions) >= 3  # body ran again after redelivery, chain continued
 
 
 async def test_chain_survives_on_complete_failure_in_failure_path_no_retry(
@@ -116,9 +125,10 @@ async def test_chain_survives_on_complete_failure_in_failure_path_no_retry(
 ):
     """When the task body raises (no ``Retry`` configured) and
     ``Perpetual.on_complete`` raises while being called from the
-    failure-handling branch, the worker dies. Redelivery saves the chain:
-    a fresh worker reclaims, the body raises again, ``on_complete`` runs from
-    the failure path with the patch gone, and the chain continues.
+    failure-handling branch, the worker waits and reconnects. Redelivery
+    saves the chain: the sweep reclaims the message, the body raises again,
+    ``on_complete`` runs from the failure path with Redis back, and the chain
+    continues.
 
     This directly refutes the claim that ``Retry`` is needed for reliability:
     a Perpetual whose body fails AND whose ``on_complete`` fails still
@@ -133,36 +143,24 @@ async def test_chain_survives_on_complete_failure_in_failure_path_no_retry(
 
     await docket.add(perpetual_task, key="perpetual")()
 
-    async def crashing_on_complete(
-        self: Perpetual, execution: Execution, outcome: TaskOutcome
-    ) -> bool:
-        raise ConnectionError("simulated Redis blip during on_complete")
-
     async with Worker(
-        docket, redelivery_timeout=timedelta(milliseconds=200)
-    ) as worker_a:
-        with patch.object(Perpetual, "on_complete", crashing_on_complete):
-            with pytest.raises(ExceptionGroup):
-                await worker_a.run_until_finished()
-        assert len(executions) == 1
+        docket,
+        redelivery_timeout=timedelta(milliseconds=200),
+        reconnection_delay=timedelta(milliseconds=50),
+    ) as worker:
+        with patch.object(Perpetual, "on_complete", flaky_on_complete(failures=1)):
+            await worker.run_at_most({"perpetual": 3})
 
-    await asyncio.sleep(0.25)
-
-    async with Worker(
-        docket, redelivery_timeout=timedelta(milliseconds=200)
-    ) as worker_b:
-        await worker_b.run_at_most({"perpetual": 3})
-        assert len(executions) >= 3  # chain continued despite repeated body failures
+    assert len(executions) >= 3  # chain continued despite repeated body failures
 
 
 async def test_chain_survives_replace_failure_inside_on_complete(docket: Docket):
     """A more targeted failure than patching ``on_complete`` itself: simulate
     a Redis outage on the ``Docket._replace`` call that ``Perpetual.on_complete``
-    makes to schedule the next run. Because ``replace`` fails on every call
-    during worker_a's run, both the success-path ``on_complete`` and the
-    in-place recovery's repeat call fail, the worker dies; redelivery brings
-    the message back; once the patch is gone, ``replace`` works and the chain
-    continues."""
+    makes to schedule the next run. ``replace`` fails for both the success-path
+    ``on_complete`` and the in-place recovery's repeat call, so the worker
+    waits and reconnects; redelivery brings the message back; with Redis back,
+    ``replace`` works and the chain continues."""
     executions: list[int] = []
 
     async def perpetual_task(
@@ -172,30 +170,30 @@ async def test_chain_survives_replace_failure_inside_on_complete(docket: Docket)
 
     await docket.add(perpetual_task, key="perpetual")()
 
-    def crashing_replace(
+    original_replace = Docket._replace  # pyright: ignore[reportPrivateUsage]
+    attempts = {"count": 0}
+
+    def flaky_replace(
         self: Docket,
         function: TaskFunction | str,
         when: datetime,
         key: str,
         expected_generation: int = 0,
     ) -> Callable[..., Awaitable[Execution]]:
-        raise ConnectionError("simulated Redis blip during docket.replace")
+        attempts["count"] += 1
+        if attempts["count"] <= 2:
+            raise ConnectionError("simulated Redis blip during docket.replace")
+        return original_replace(self, function, when, key, expected_generation)
 
     async with Worker(
-        docket, redelivery_timeout=timedelta(milliseconds=200)
-    ) as worker_a:
-        with patch.object(Docket, "_replace", crashing_replace):
-            with pytest.raises(ExceptionGroup):
-                await worker_a.run_until_finished()
-        assert len(executions) == 1
+        docket,
+        redelivery_timeout=timedelta(milliseconds=200),
+        reconnection_delay=timedelta(milliseconds=50),
+    ) as worker:
+        with patch.object(Docket, "_replace", flaky_replace):
+            await worker.run_at_most({"perpetual": 3})
 
-    await asyncio.sleep(0.25)
-
-    async with Worker(
-        docket, redelivery_timeout=timedelta(milliseconds=200)
-    ) as worker_b:
-        await worker_b.run_at_most({"perpetual": 3})
-        assert len(executions) >= 3
+    assert len(executions) >= 3
 
 
 async def test_chain_survives_mark_as_completed_failure_via_in_execute_recovery(

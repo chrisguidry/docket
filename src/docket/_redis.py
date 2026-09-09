@@ -14,6 +14,7 @@ this module only detects those schemes and dispatches there.
 from __future__ import annotations
 
 import logging
+import sys
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta
 from types import TracebackType
@@ -35,11 +36,14 @@ from typing import (
 )
 from urllib.parse import ParseResult, urlparse, urlunparse
 
+if sys.version_info < (3, 11):
+    from exceptiongroup import BaseExceptionGroup  # pragma: no cover
+
 from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
 from redis.asyncio.connection import Connection, SSLConnection
-from redis.exceptions import ConnectionError, TimeoutError
+from redis.exceptions import ConnectionError, RedisError
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -71,13 +75,6 @@ CONNECT_TIMEOUT: float = 10.0
 # https://github.com/redis/hiredis-py/issues/235
 # https://github.com/redis/hiredis-py/pull/239
 PUBSUB_RESP_VERSION: int = 2
-
-# Losing Redis reaches a caller two ways: the socket breaks, or a read or a
-# connect runs out of time.  redis-py raises ConnectionError for the first and
-# TimeoutError for the second, and neither is a subclass of the other, so the
-# code that reconnects catches both.
-Disconnected: TypeAlias = ConnectionError | TimeoutError
-DISCONNECTED = (ConnectionError, TimeoutError)
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +576,27 @@ class RedisClient(Protocol):
 
 class MemoryRedisClient(RedisClient, AsyncCloseable, Protocol):
     """Protocol for the in-process Redis client used by memory:// URLs."""
+
+
+def redis_is_unavailable(error: BaseException) -> bool:
+    """Whether ``error`` is Redis trouble a caller should wait out and retry.
+
+    redis-py reports trouble three ways: ``ConnectionError`` when the socket
+    breaks, ``TimeoutError`` when a read or a connect runs out of time, and
+    ``ResponseError`` when the server refuses a command (``NOREPLICAS`` and
+    ``MISCONF`` when it cannot persist, ``READONLY`` after a failover,
+    ``UNBLOCKED`` when a blocked read's node is demoted).  None is a subclass
+    of another, and redis-py gives only some refusals their own class, so the
+    whole ``RedisError`` family counts as Redis being unavailable.
+
+    An error that escapes a TaskGroup arrives wrapped in an ExceptionGroup, so
+    a group counts when every error inside it is a RedisError.  Anything else
+    is a bug that has to reach the caller.
+    """
+    if isinstance(error, BaseExceptionGroup):
+        _, other_errors = error.split(RedisError)
+        return other_errors is None
+    return isinstance(error, RedisError)
 
 
 def is_cluster_client(redis: RedisClient) -> bool:
