@@ -198,8 +198,14 @@ persist, `READONLY` after a failover), the worker logs a warning, increments
 `reconnection_delay`, and reconnects. It repeats that for as long as the outage
 lasts and never exits because of Redis. A task whose acknowledgement failed
 during the outage stays pending and runs again after `redelivery_timeout`, the
-same at-least-once delivery you get when a worker crashes. Only a non-Redis
-error, a bug, stops the worker.
+same at-least-once delivery you get when a worker crashes.
+
+This covers every error redis-py raises, including ones that will not clear on
+their own, such as a wrong password or host in the URL, or a key of the wrong
+type under the docket's prefix. Those show up as the same warning with a
+traceback on every retry, from the first poll onward, so alert on
+`docket_redis_disruptions` to catch them. Only an error from outside redis-py,
+a bug in docket or in a dependency, stops a running worker.
 
 ### Authentication
 
