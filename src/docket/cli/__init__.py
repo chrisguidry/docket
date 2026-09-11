@@ -177,8 +177,9 @@ def worker(
     schedule_automatic_tasks: Annotated[
         bool,
         typer.Option(
-            "--schedule-automatic-tasks",
+            "--schedule-automatic-tasks/--no-schedule-automatic-tasks",
             help="Schedule automatic tasks",
+            envvar="DOCKET_WORKER_SCHEDULE_AUTOMATIC_TASKS",
         ),
     ] = True,
     enable_internal_instrumentation: Annotated[

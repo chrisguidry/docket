@@ -75,6 +75,26 @@ def test_message_batch_option_reaches_the_worker(monkeypatch: pytest.MonkeyPatch
     assert passed["message_batch"] == 17
 
 
+def test_no_schedule_automatic_tasks_flag_reaches_the_worker(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--no-schedule-automatic-tasks` disables automatic task scheduling."""
+    from docket.cli import worker as worker_cli_command
+
+    passed: dict[str, object] = {}
+
+    class RecordingWorker:
+        @staticmethod
+        async def run(**kwargs: object) -> None:
+            passed.update(kwargs)
+
+    monkeypatch.setattr("docket.cli.Worker", RecordingWorker)
+
+    worker_cli_command(schedule_automatic_tasks=False)
+
+    assert passed["schedule_automatic_tasks"] is False
+
+
 async def test_message_batch_below_one_is_rejected():
     """The CLI fails at startup rather than running a worker that reads no
     messages."""
@@ -85,6 +105,20 @@ async def test_message_batch_below_one_is_rejected():
 
     assert result.exit_code != 0
     assert "--message-batch" in result.output
+
+
+async def test_no_schedule_automatic_tasks_flag_is_accepted(docket: Docket):
+    """`--no-schedule-automatic-tasks` should be a recognized CLI flag."""
+    result = await run_cli(
+        "worker",
+        "--until-finished",
+        "--no-schedule-automatic-tasks",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+    )
+    assert result.exit_code == 0, result.output
 
 
 async def test_worker_command(
