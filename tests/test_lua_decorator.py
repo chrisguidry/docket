@@ -362,9 +362,7 @@ def test_missing_docstring_is_rejected_at_decoration_time() -> None:
     with pytest.raises(TypeError, match="needs a Lua body"):
 
         @redis_script
-        async def no_doc(  # pyright: ignore[reportUnusedFunction]
-            redis: RedisClient, *, key: Key[str]
-        ) -> bytes: ...
+        async def no_doc(redis: RedisClient, *, key: Key[str]) -> bytes: ...
 
 
 def test_missing_redis_parameter_is_rejected_at_decoration_time() -> None:
@@ -373,7 +371,7 @@ def test_missing_redis_parameter_is_rejected_at_decoration_time() -> None:
         # so this invalid shape is now also a static error -- keep the runtime
         # check covered anyway.
         @redis_script  # pyright: ignore[reportArgumentType]
-        async def no_redis(*, key: Key[str]) -> bytes:  # pyright: ignore[reportUnusedFunction]
+        async def no_redis(*, key: Key[str]) -> bytes:
             """return 'x'"""
             ...
 
@@ -382,7 +380,7 @@ def test_untagged_parameter_is_rejected_at_decoration_time() -> None:
     with pytest.raises(TypeError, match="must be annotated as Key"):
 
         @redis_script
-        async def untagged(  # pyright: ignore[reportUnusedFunction]
+        async def untagged(
             redis: RedisClient,
             *,
             key: Key[str],
@@ -396,7 +394,7 @@ def test_missing_key_parameter_is_rejected_at_decoration_time() -> None:
     with pytest.raises(TypeError, match="at least one Key"):
 
         @redis_script
-        async def keyless(  # pyright: ignore[reportUnusedFunction]
+        async def keyless(
             redis: RedisClient,
             *,
             something: Arg[str],
@@ -464,7 +462,7 @@ def test_arg_after_args_is_rejected_at_decoration_time() -> None:
     with pytest.raises(TypeError, match="must be the last parameter"):
 
         @redis_script
-        async def trailing(  # pyright: ignore[reportUnusedFunction]
+        async def trailing(
             redis: RedisClient,
             *,
             key: Key[str],
