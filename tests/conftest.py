@@ -270,7 +270,7 @@ def redis_url(redis_port: int, acl_credentials: ACLCredentials) -> str:
 
 
 @pytest.fixture(autouse=True)
-async def _fresh_memory_server() -> AsyncGenerator[None, None]:  # pyright: ignore[reportUnusedFunction]
+async def _fresh_memory_server() -> AsyncGenerator[None, None]:
     """Close BurnerRedis instances between tests so Tokio background tasks
     don't hold stale event-loop refs across pytest-asyncio loop teardowns.
 
