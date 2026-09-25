@@ -27,6 +27,7 @@ import cloudpickle
 import redis.exceptions
 from redis.asyncio import Redis
 from redis.asyncio.cluster import RedisCluster
+from redis.credentials import CredentialProvider
 from typing_extensions import Self
 
 from ._cancellation import CANCEL_MSG_CLEANUP, cancel_task
@@ -180,6 +181,7 @@ class StrikeList:
         url: str | None = None,
         name: str = "strikelist",
         enable_internal_instrumentation: bool = False,
+        credential_provider: CredentialProvider | None = None,
     ) -> None:
         """Initialize a StrikeList.
 
@@ -190,6 +192,8 @@ class StrikeList:
                   if you want to receive strikes from that Docket).
             enable_internal_instrumentation: If True, allows OpenTelemetry spans
                 for internal Redis operations. Default False suppresses these spans.
+            credential_provider: A redis-py CredentialProvider for the Redis
+                connection, in place of credentials in the URL.
         """
         self.url = url
         self.name = name
@@ -197,7 +201,7 @@ class StrikeList:
         self.task_strikes = {}
         self.parameter_strikes = {}
         self._conditions = [self._matches_task_or_parameter_strike]
-        self._redis = RedisConnection(url) if url else None
+        self._redis = RedisConnection(url, credential_provider) if url else None
         self._monitor_task = None
         self._strikes_loaded = None
 

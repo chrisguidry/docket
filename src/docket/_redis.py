@@ -43,6 +43,7 @@ from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
 from redis.asyncio.connection import Connection, SSLConnection
+from redis.credentials import CredentialProvider
 from redis.exceptions import ConnectionError, RedisError
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -673,16 +674,30 @@ class RedisConnection:
     _parsed: ParseResult
     _stack: AsyncExitStack
 
-    def __init__(self, url: str) -> None:
+    def __init__(
+        self, url: str, credential_provider: CredentialProvider | None = None
+    ) -> None:
         """Initialize a Redis connection manager.
 
         Args:
             url: Redis URL (redis://, rediss://, redis+sentinel://,
                 redis+cluster://, or memory://)
+            credential_provider: A redis-py CredentialProvider that supplies the
+                username and password for every Redis connection, in place of
+                credentials in the URL.  Use it for rotating credentials such as
+                Azure Entra ID tokens.  Ignored for memory:// URLs.
         """
         from ._redis_sentinel import is_sentinel_url, urlparse_multihost
 
         self.url = url
+        # Passed to every pool and client, including the clients that wrap a
+        # pool: redis-py only re-authenticates pooled connections when a
+        # StreamingCredentialProvider rotates if the client is given it too.
+        self._credential_kwargs: dict[str, CredentialProvider] = (
+            {"credential_provider": credential_provider}
+            if credential_provider is not None
+            else {}
+        )
         # Sentinel URLs list several daemons in the netloc, which urlparse can't
         # handle when a bracketed IPv6 member follows another; carve those by
         # hand and leave standalone, cluster, and memory URLs to urlparse.
@@ -717,7 +732,9 @@ class RedisConnection:
                 close_resource, self._node_pool, "node pool"
             )
 
-            self._node_client = Redis(connection_pool=self._node_pool)
+            self._node_client = Redis(
+                connection_pool=self._node_pool, **self._credential_kwargs
+            )
             self._stack.callback(lambda: setattr(self, "_node_client", None))
             self._stack.push_async_callback(
                 close_resource, self._node_client, "node client"
@@ -737,7 +754,9 @@ class RedisConnection:
             # Closing a client that was handed a pool releases the client's own
             # connection and leaves the pool alone, so the pool callback above
             # is still what closes the pool.
-            self._client = Redis(connection_pool=self._connection_pool)
+            self._client = Redis(
+                connection_pool=self._connection_pool, **self._credential_kwargs
+            )
             self._stack.callback(lambda: setattr(self, "_client", None))
             self._stack.push_async_callback(close_resource, self._client, "client")
 
@@ -839,6 +858,7 @@ class RedisConnection:
             self._normalized_url(),
             socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
             socket_connect_timeout=CONNECT_TIMEOUT,
+            **self._credential_kwargs,
         )
         await client.initialize()
         return client
@@ -861,8 +881,13 @@ class RedisConnection:
         return ConnectionPool(
             host=node.host,
             port=int(node.port),
-            username=self._parsed.username,
-            password=self._parsed.password,
+            **(
+                self._credential_kwargs
+                or {
+                    "username": self._parsed.username,
+                    "password": self._parsed.password,
+                }
+            ),
             connection_class=SSLConnection
             if self._parsed.scheme == "rediss+cluster"
             else Connection,
@@ -901,6 +926,7 @@ class RedisConnection:
                 self.url,
                 decode_responses=decode_responses,
                 **protocol_kwargs,
+                **self._credential_kwargs,
                 socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
                 socket_connect_timeout=CONNECT_TIMEOUT,
             )
@@ -908,6 +934,7 @@ class RedisConnection:
             self.url,
             decode_responses=decode_responses,
             **protocol_kwargs,
+            **self._credential_kwargs,
             socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
             socket_connect_timeout=CONNECT_TIMEOUT,
         )
@@ -948,7 +975,10 @@ class RedisConnection:
             finally:
                 await ps.aclose()
         else:
-            async with Redis(connection_pool=require_open(self._pubsub_pool)) as r:
+            async with Redis(
+                connection_pool=require_open(self._pubsub_pool),
+                **self._credential_kwargs,
+            ) as r:
                 async with r.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
                     yield cast(PubSubClient, pubsub)
 

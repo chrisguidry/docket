@@ -18,6 +18,7 @@ from typing import (
 import redis.exceptions
 from key_value.aio.protocols.key_value import AsyncKeyValue
 from opentelemetry import trace
+from redis.credentials import CredentialProvider
 from typing_extensions import Self
 
 from ._docket_snapshot import DocketSnapshot as DocketSnapshot
@@ -102,6 +103,7 @@ class Docket(DocketSnapshotMixin):
         execution_ttl: timedelta = timedelta(minutes=15),
         result_storage: AsyncKeyValue | None = None,
         enable_internal_instrumentation: bool = False,
+        credential_provider: CredentialProvider | None = None,
     ) -> None:
         """
         Args:
@@ -123,6 +125,11 @@ class Docket(DocketSnapshotMixin):
             enable_internal_instrumentation: Whether to enable OpenTelemetry spans
                 for internal Redis polling operations like strike stream monitoring.
                 Defaults to False.
+            credential_provider: A redis-py ``CredentialProvider`` that supplies
+                the username and password for every Redis connection, in place of
+                credentials in the URL.  Use it for rotating credentials such as
+                Azure Entra ID tokens from ``redis-entraid``.  Ignored for
+                "memory://" URLs.
         """
         self.name = name
         self.url = url
@@ -131,7 +138,8 @@ class Docket(DocketSnapshotMixin):
         self.execution_ttl = execution_ttl
         self.enable_internal_instrumentation = enable_internal_instrumentation
         self._user_result_storage = result_storage
-        self._redis = RedisConnection(url)
+        self.credential_provider = credential_provider
+        self._redis = RedisConnection(url, credential_provider)
 
         from .tasks import standard_tasks
 
@@ -171,6 +179,7 @@ class Docket(DocketSnapshotMixin):
             url=self.url,
             name=self.name,
             enable_internal_instrumentation=self.enable_internal_instrumentation,
+            credential_provider=self.credential_provider,
         )
 
         # Connect to Redis (handles cluster vs standalone)
