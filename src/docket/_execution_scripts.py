@@ -7,8 +7,8 @@ takes it for a worker, ``_terminal`` records how it finished, and
 ``generation`` counter in the runs hash, so a stale attempt can never
 overwrite a newer one, and ``_claim`` also refuses a key that was cancelled.
 Whenever one of the four writes the task's state, it publishes the new state
-in the same step, and ``_mark_and_read`` gives a new subscriber its starting
-point in those events.
+in the same step, with the generation of the run it changed, and
+``_mark_and_read`` gives a new subscriber its starting point in those events.
 
 ``Execution`` and ``Docket`` call these; the scripts hold no Python logic of
 their own.
@@ -40,10 +40,22 @@ async def _schedule(
     worker_group_name: Arg[str],
     state_payload: Arg[str],
     message: Args[dict[bytes, bytes]],
-) -> bytes | str:
+) -> bytes | str | int:
     """
     -- TODO: Remove known_key / parked_key / queue_key / stream_id_key
     -- handling in v0.14.0 (legacy key locations).
+
+    -- Returns the generation this schedule gives the task, or 'EXISTS' or
+    -- 'SUPERSEDED' when it leaves the key alone.
+
+    -- The caller builds the state payload before this script assigns the new
+    -- generation, so the script adds it as the payload's last field.
+    -- get_result() compares it with its execution's generation, so that a
+    -- waiter on a newer run ignores the finish of an older one.
+    local function publish_state(generation)
+        redis.call('PUBLISH', state_channel,
+            string.sub(state_payload, 1, -2) .. ',"generation":' .. generation .. '}')
+    end
 
     -- A caller that is rescheduling on behalf of the attempt it just ran
     -- (Perpetual's on_complete) passes the generation it holds, so the
@@ -138,9 +150,9 @@ async def _schedule(
         -- not the worker and start-time of the attempt that just failed.
         redis.call('HDEL', runs_key, 'worker', 'started_at')
 
-        redis.call('PUBLISH', state_channel, state_payload)
+        publish_state(new_gen)
 
-        return 'OK'
+        return new_gen
     end
 
     -- Handle replacement: cancel existing task if needed
@@ -219,9 +231,9 @@ async def _schedule(
         )
     end
 
-    redis.call('PUBLISH', state_channel, state_payload)
+    publish_state(new_gen)
 
-    return 'OK'
+    return new_gen
     """
     ...
 
@@ -413,10 +425,21 @@ async def _cancel_task(
     completed_at: Arg[str],
     ttl_seconds: Arg[int],
     state_payload: Arg[str],
+    leave_running: Arg[bool],
 ) -> bytes:
     """
     -- TODO: Remove known_key / parked_key / stream_id_key handling in
     -- v0.14.0 (legacy key locations).
+
+    -- Perpetual.on_complete sets leave_running when its task called
+    -- perpetual.cancel().  It runs before the worker records how the run
+    -- ended, to remove any successor that has not started.  A running task
+    -- keeps running, because this call sends no cancel signal, so marking it
+    -- cancelled would wake its waiters with a false CANCELLED.
+    local current_state = redis.call('HGET', runs_key, 'state')
+    if leave_running and current_state == 'running' then
+        return 'OK'
+    end
 
     -- Get stream ID (check new location first, then legacy)
     local message_id = redis.call('HGET', runs_key, 'stream_id')
@@ -445,11 +468,14 @@ async def _cancel_task(
     redis.call('HDEL', runs_key, 'known', 'stream_id')
 
     -- Only set CANCELLED if not already in a terminal state
-    local current_state = redis.call('HGET', runs_key, 'state')
     local cancelling = current_state ~= 'completed' and current_state ~= 'failed' and current_state ~= 'cancelled'
     if cancelling then
         redis.call('HSET', runs_key, 'state', 'cancelled', 'completed_at', completed_at)
     end
+
+    -- Read the generation of the run being cancelled before the DEL below
+    -- can remove it.  0 means the key has no generation to report.
+    local generation = redis.call('HGET', runs_key, 'generation') or '0'
 
     -- Keep the tombstone for execution_ttl, or drop it now when that is 0
     if ttl_seconds > 0 then
@@ -460,9 +486,12 @@ async def _cancel_task(
 
     -- Publish last, so a get_result() waiter that wakes on this event reads
     -- the runs hash as this script left it.  Without the event, a waiter on
-    -- a task that never started would wait until its timeout.
+    -- a task that never started would wait until its timeout.  The caller
+    -- builds the payload without the generation, so the script adds it as
+    -- the payload's last field.
     if cancelling then
-        redis.call('PUBLISH', state_channel, state_payload)
+        redis.call('PUBLISH', state_channel,
+            string.sub(state_payload, 1, -2) .. ',"generation":' .. generation .. '}')
     end
 
     return 'OK'

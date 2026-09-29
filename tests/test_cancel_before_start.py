@@ -9,12 +9,12 @@ tests/test_cancellation.py.
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import AsyncGenerator, Callable
+from typing import Callable
 
 import pytest
 
 from docket import Docket, Execution, ExecutionCancelled, ExecutionState, Worker
-from docket.execution import ProgressEvent, StateEvent
+from docket.execution import StateEvent
 from tests.conftest import wait_until
 
 
@@ -143,25 +143,6 @@ async def test_cancelling_a_task_that_has_not_started_publishes_its_state(
     assert events[-1]["completed_at"] is not None
 
 
-@pytest.fixture
-def subscribed(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
-    """Set once an Execution.subscribe() call has read the task's current state.
-
-    get_result() subscribes internally, so a test cannot pass its own ``ready``
-    event.  This fixture passes one on its behalf.
-    """
-    event = asyncio.Event()
-    original_subscribe = Execution.subscribe
-
-    def subscribe(
-        execution: Execution, *, ready: asyncio.Event | None = None
-    ) -> AsyncGenerator[StateEvent | ProgressEvent, None]:
-        return original_subscribe(execution, ready=event)
-
-    monkeypatch.setattr(Execution, "subscribe", subscribe)
-    return event
-
-
 @pytest.mark.parametrize(
     "delay", [timedelta(0), timedelta(hours=1)], ids=["queued", "scheduled"]
 )
@@ -178,6 +159,23 @@ async def test_cancel_wakes_a_get_result_waiter(
 
     await asyncio.wait_for(subscribed.wait(), timeout=5)
     await docket.cancel(execution.key)
+
+    with pytest.raises(ExecutionCancelled):
+        await waiter
+
+
+async def test_cancel_wakes_a_get_result_waiter_when_execution_ttl_is_zero(
+    zero_ttl_docket: Docket, subscribed: asyncio.Event, now: Callable[[], datetime]
+):
+    """With execution_ttl=0 the cancel deletes the task's record, and a
+    get_result() waiter still raises ExecutionCancelled."""
+    execution = await zero_ttl_docket.add(
+        unstarted_task, when=now() + timedelta(hours=1)
+    )()
+    waiter = asyncio.create_task(execution.get_result(timeout=timedelta(seconds=5)))
+
+    await asyncio.wait_for(subscribed.wait(), timeout=5)
+    await zero_ttl_docket.cancel(execution.key)
 
     with pytest.raises(ExecutionCancelled):
         await waiter

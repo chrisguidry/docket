@@ -18,7 +18,7 @@ from ._lua import Arg, Args, Key, redis_script
 from ._redis import Pipeline, RedisClient, confirm_subscriptions
 
 from ._telemetry import suppress_instrumentation
-from typing_extensions import Self
+from typing_extensions import NotRequired, Self
 
 if TYPE_CHECKING:
     from .docket import Docket
@@ -69,6 +69,10 @@ class StateEvent(TypedDict):
     started_at: str | None
     completed_at: str | None
     error: str | None
+    # The generation of the run that published the event.  It is 0 when the
+    # publisher has no generation for the run, and older docket versions
+    # leave it out.
+    generation: NotRequired[int]
 
 
 class ExecutionProgress:

@@ -2,7 +2,7 @@
 
 ``_stream_due_tasks`` moves every task whose time has come from the queue
 to the stream in one atomic step, marks each one queued, and publishes
-that state.
+that state with the task's generation.
 """
 
 from ._lua import Arg, Key, redis_script
@@ -49,6 +49,7 @@ async def _stream_due_tasks(
                     task[task_data[j]] = task_data[j+1]
                 end
 
+                local generation = task['generation'] or '0'
                 local message_id = redis.call('XADD', stream_key, '*',
                     'key', task['key'],
                     'when', task['when'],
@@ -56,7 +57,7 @@ async def _stream_due_tasks(
                     'args', task['args'],
                     'kwargs', task['kwargs'],
                     'attempt', task['attempt'],
-                    'generation', task['generation'] or '0'
+                    'generation', generation
                 )
                 redis.call('DEL', hash_key)
 
@@ -67,7 +68,7 @@ async def _stream_due_tasks(
 
                 -- Publish state change event to pub/sub
                 local channel = docket_prefix .. ":state:" .. task['key']
-                local payload = '{"type":"state","key":"' .. json_escape(task['key']) .. '","state":"queued","when":"' .. task['when'] .. '"}'
+                local payload = '{"type":"state","key":"' .. json_escape(task['key']) .. '","state":"queued","when":"' .. task['when'] .. '","generation":' .. generation .. '}'
                 redis.call('PUBLISH', channel, payload)
 
                 due_work = due_work + 1

@@ -77,9 +77,9 @@ async def schedule_many(
     round-trip apiece.  Each script invocation is still individually atomic
     in Redis, so per-key dedup/replace semantics are identical to the
     single-call path; there is intentionally no atomicity *across* the
-    batch.  Each execution's ``disposition`` and ``state`` are updated from
-    its own reply, and a per-command Redis error marks just that execution
-    ``Disposition.FAILED`` (with the exception attached as
+    batch.  Each execution's ``disposition``, ``state``, and ``generation``
+    are updated from its own reply, and a per-command Redis error marks just
+    that execution ``Disposition.FAILED`` (with the exception attached as
     ``Execution.schedule_exception``) rather than aborting the rest of the
     batch.  Connection-level failures still raise; executions in chunks
     that never reached Redis keep ``Disposition.LOADED``.
@@ -347,7 +347,12 @@ class Execution:
 
     @property
     def generation(self) -> int:
-        """Scheduling generation counter for supersession detection."""
+        """Scheduling generation counter for supersession detection.
+
+        ``schedule()`` sets it to the generation it gave the task.  0 means the
+        execution has none, as with a message that predates generation
+        tracking.
+        """
         return self._generation
 
     @contextmanager
@@ -494,7 +499,8 @@ class Execution:
             already known and ``replace=False`` (in which case the existing
             schedule is preserved and no local state changes are published),
             or ``Disposition.SUPERSEDED`` if ``expected_generation`` was stale.
-            Sets ``self.disposition`` to the same value.
+            Sets ``self.disposition`` to the same value, and when the task
+            was placed, sets ``self.generation`` to the generation it got.
         """
         script_args, is_immediate = self._schedule_script_args(
             replace, reschedule_message, expected_generation
@@ -525,11 +531,11 @@ class Execution:
         when = self.when
         is_immediate = when <= datetime.now(timezone.utc)
 
-        # The Lua takes the payload as a pre-formatted string so it can just
-        # call PUBLISH; cjson isn't available on the in-memory backend.  State
-        # is QUEUED when the task lands directly on the stream (any
-        # is_immediate path, including immediate retries), SCHEDULED when it's
-        # parked for a future time.
+        # The Lua takes the payload as a pre-formatted string, because cjson
+        # isn't available on the in-memory backend, and adds the generation
+        # it gives the task as the last field.  State is QUEUED when the task
+        # lands directly on the stream (any is_immediate path, including
+        # immediate retries), SCHEDULED when it's parked for a future time.
         published_state = (
             ExecutionState.QUEUED.value
             if is_immediate
@@ -566,7 +572,7 @@ class Execution:
 
     def _apply_schedule_reply(
         self,
-        reply: bytes | str,
+        reply: bytes | str | int,
         is_immediate: bool,
         reschedule_message: "RedisMessageID | None" = None,
     ) -> Disposition:
@@ -582,6 +588,11 @@ class Execution:
             # state alone and do not publish a misleading state event.
             self.disposition = Disposition.ALREADY_SCHEDULED
             return self.disposition
+
+        # Any other reply is the generation the script gave the task.
+        # get_result() compares it with the generation of each finish it
+        # receives, so that it ignores the finish of an older run.
+        self._generation = int(reply)
 
         if is_immediate:
             self.state = ExecutionState.QUEUED
@@ -629,8 +640,8 @@ class Execution:
         started_at = datetime.now(timezone.utc)
         started_at_iso = started_at.isoformat()
 
-        # Pre-build the running-state payload; Lua only publishes it on the
-        # non-SUPERSEDED path.
+        # Pre-build the running-state payload; Lua publishes it only when the
+        # claim succeeds.
         state_payload = json.dumps(
             {
                 "type": "state",
@@ -638,6 +649,7 @@ class Execution:
                 "state": ExecutionState.RUNNING.value,
                 "worker": worker,
                 "started_at": started_at_iso,
+                "generation": self._generation,
             }
         )
 
@@ -709,12 +721,14 @@ class Execution:
         )
 
         # Pre-build the terminal-state payload; the Lua publishes it on both
-        # the success and supersession paths.
-        state_payload_data: dict[str, str] = {
+        # the success and supersession paths.  Its generation lets
+        # get_result() on a successor ignore this finish.
+        state_payload_data: dict[str, str | int] = {
             "type": "state",
             "key": self.key,
             "state": state.value,
             "completed_at": completed_at,
+            "generation": self._generation,
         }
         if error:
             state_payload_data["error"] = error
@@ -831,12 +845,22 @@ class Execution:
 
                 async def wait_for_completion():
                     async for event in self.subscribe():  # pragma: no branch
-                        if event["type"] == "state":
-                            state = ExecutionState(event["state"])
-                            if state in _TERMINAL_STATES:
-                                # Sync to get latest data including result key
-                                await self.sync()
-                                break
+                        if event["type"] != "state":
+                            continue
+                        state = ExecutionState(event["state"])
+                        if state not in _TERMINAL_STATES or (
+                            self._is_from_a_superseded_run(event)
+                        ):
+                            continue
+                        # Sync to get latest data including result key.  With
+                        # execution_ttl=0 a cancel deletes the record before it
+                        # publishes, so the event is all that shows the cancel.
+                        # A completed or failed run stores no result or
+                        # exception with execution_ttl=0, and get_result()
+                        # returns None for it.
+                        if not await self._sync() and state is ExecutionState.CANCELLED:
+                            self.state = state
+                        break
 
                 # Use asyncio.wait_for to enforce timeout
                 await asyncio.wait_for(wait_for_completion(), timeout=timeout_seconds)
@@ -916,6 +940,10 @@ class Execution:
         Sets attributes to None if no data exists.  No branch sits between the
         two reads, so the runs hash and the progress hash go out together.
         """
+        await self._sync()
+
+    async def _sync(self) -> bool:
+        """Do what ``sync()`` does, and return whether Redis held a runs hash."""
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
                 async with redis.pipeline() as pipe:
@@ -925,6 +953,20 @@ class Execution:
 
         self._apply_runs_data(data)
         self.progress._apply(progress_data)  # pyright: ignore[reportPrivateUsage]
+        return bool(data)
+
+    def _is_from_a_superseded_run(self, event: StateEvent) -> bool:
+        """Whether a state event came from a run older than this execution.
+
+        A replace() or a Perpetual reschedule starts a new run under the key
+        with a higher generation.  An event with a lower generation than this
+        execution's came from an older run that a newer one superseded.  A
+        retry or a concurrency limit raises the generation of this same run,
+        so a higher generation does not mean another run.  A generation of 0,
+        or none at all, means the publisher had none to report.
+        """
+        generation = event.get("generation") or 0
+        return 0 < generation < self._generation
 
     async def is_superseded(self) -> bool:
         """Check whether a newer schedule has superseded this execution.
@@ -953,12 +995,16 @@ class Execution:
 
         Subscribes to the task's state and progress channels, then emits the
         current state and the current progress as the first two events, then
-        real-time updates via Redis pub/sub.  A change that lands while the
-        subscription starts appears once: in the first two events if it
-        happened before the current state was read, or as a real-time update
-        if it happened after.  A finish that the current state cannot show,
-        such as a run superseded by its successor or one whose record
-        ``execution_ttl=0`` removed, arrives as a real-time update.
+        real-time updates via Redis pub/sub.  Each real-time state event
+        carries the ``generation`` of the run that published it.
+
+        A change that lands while the subscription starts appears once: in
+        the first two events if it happened before the current state was
+        read, or as a real-time update if it happened after.  Some finishes
+        in that window do not show in the current state: this execution's own
+        finish after a successor superseded it, or after ``execution_ttl=0``
+        removed its record.  These still arrive as real-time updates, but a
+        finish in that window from an older run under the same key does not.
 
         Args:
             ready: Optional ``asyncio.Event`` that is ``set()`` once the
@@ -968,7 +1014,8 @@ class Execution:
 
         Yields:
             Dict containing state or progress update events with a 'type' field:
-            - For state events: type="state", state, worker, timestamps, error
+            - For state events: type="state", state, worker, timestamps, error,
+              and generation on real-time events
             - For progress events: type="progress", current, total, message, updated_at
         """
         state_channel = self.docket.key(f"state:{self.key}")
@@ -1040,10 +1087,13 @@ class Execution:
                 # not show: a run superseded by its successor, or one whose
                 # record execution_ttl=0 removed, never reaches the runs hash,
                 # and a waiter would otherwise never hear of it.
+                # Drop the finish of an older run, though, so that
+                # get_result() on this run does not stop waiting on it.
                 if not marker_seen and not (
                     message_data["type"] == "state"
                     and message_data["state"] in _TERMINAL_STATES
                     and message_data["state"] != initial_state["state"]
+                    and not self._is_from_a_superseded_run(message_data)
                 ):
                     continue
                 yield message_data

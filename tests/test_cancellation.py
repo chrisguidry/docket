@@ -1,6 +1,7 @@
 """Tests for cancellation of running tasks."""
 
 import asyncio
+import contextlib
 from datetime import timedelta
 
 import pytest
@@ -469,3 +470,31 @@ async def test_get_result_raises_execution_cancelled_for_cancelled_task(
 
     with pytest.raises(ExecutionCancelled):
         await execution.get_result()
+
+
+async def test_cancel_wakes_a_get_result_waiter_while_the_task_still_runs(
+    docket: Docket, worker: Worker, subscribed: asyncio.Event
+):
+    """docket.cancel() on a running task wakes a get_result() waiter at once,
+    before the task stops."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def keeps_running_after_cancel() -> None:
+        started.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.sleep(60)
+        await release.wait()
+
+    execution = await docket.add(keeps_running_after_cancel)()
+    waiter = asyncio.create_task(execution.get_result(timeout=timedelta(seconds=5)))
+    await asyncio.wait_for(subscribed.wait(), timeout=5)
+    run = asyncio.create_task(worker.run_until_finished())
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    await docket.cancel(execution.key)
+
+    with pytest.raises(ExecutionCancelled):
+        await waiter
+    release.set()
+    await asyncio.wait_for(run, timeout=5)

@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Awaitable, Callable
 
 import pytest
 
@@ -87,6 +87,32 @@ async def test_failed_task_with_ttl_zero(zero_ttl_docket: Docket) -> None:
         deadline = datetime.now(timezone.utc) + timedelta(seconds=0.1)
         with pytest.raises(TimeoutError):  # pragma: no branch
             await execution.get_result(deadline=deadline)
+
+
+async def returns_a_value() -> str:
+    return "not stored"
+
+
+async def raises_an_error() -> str:
+    raise ValueError("not stored")
+
+
+@pytest.mark.parametrize("task", [returns_a_value, raises_an_error])
+async def test_get_result_returns_none_when_the_task_stores_nothing(
+    zero_ttl_docket: Docket,
+    subscribed: asyncio.Event,
+    task: Callable[[], Awaitable[str]],
+) -> None:
+    """With execution_ttl=0 a task stores no result or exception, so a
+    get_result() waiter returns None whether the task succeeded or failed."""
+    execution = await zero_ttl_docket.add(task)()
+    waiter = asyncio.create_task(execution.get_result(timeout=timedelta(seconds=5)))
+
+    await asyncio.wait_for(subscribed.wait(), timeout=5)
+    async with Worker(docket=zero_ttl_docket) as worker:
+        await worker.run_until_finished()
+
+    assert await waiter is None
 
 
 async def test_mixed_ttl_workload(

@@ -104,7 +104,7 @@ async def _acquire_or_park(
     redis.call('XDEL', stream_key, message_id)
 
     -- Bump generation so stale redeliveries of this task are superseded on wake,
-    -- and splice the new value into the message as we forward it.
+    -- and splice the new value into the forwarded message and the state event.
     local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
     local message = {}
     local function_name, args_data, kwargs_data
@@ -138,7 +138,7 @@ async def _acquire_or_park(
     )
     redis.call('HDEL', runs_key, 'stream_id')
 
-    redis.call('PUBLISH', state_channel, state_payload)
+    redis.call('PUBLISH', state_channel, string.sub(state_payload, 1, -2) .. ',"generation":' .. new_gen .. '}')
 
     return 0
     """
@@ -249,7 +249,7 @@ async def _release_and_wake(
                 redis.call('DEL', parked_prefix .. safeguard_key)
                 redis.call('DEL', runs_prefix .. safeguard_key)
 
-                local payload = '{"type":"state","key":"' .. json_escape(waiter_task_key) .. '","state":"queued"}'
+                local payload = '{"type":"state","key":"' .. json_escape(waiter_task_key) .. '","state":"queued","generation":' .. new_gen .. '}'
                 redis.call('PUBLISH', state_prefix .. waiter_task_key, payload)
             end
         end
@@ -361,7 +361,7 @@ async def _scavenge_and_wake(
             redis.call('DEL', parked_prefix .. safeguard_key)
             redis.call('DEL', runs_prefix .. safeguard_key)
 
-            local payload = '{"type":"state","key":"' .. json_escape(waiter_task_key) .. '","state":"queued"}'
+            local payload = '{"type":"state","key":"' .. json_escape(waiter_task_key) .. '","state":"queued","generation":' .. new_gen .. '}'
             redis.call('PUBLISH', state_prefix .. waiter_task_key, payload)
             woken = woken + 1
         end

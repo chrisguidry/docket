@@ -841,6 +841,8 @@ class Docket(DocketSnapshotMixin):
                 key=key,
                 when=when,
                 attempt=1,
+                # get_result() uses it to ignore the finish of an older run
+                generation=int(data.get(b"generation", b"0")),
             )
 
             # Sync with current state from Redis
@@ -904,7 +906,9 @@ class Docket(DocketSnapshotMixin):
             if "BUSYGROUP" not in str(e):
                 raise  # pragma: no cover
 
-    async def _cancel(self, redis: RedisClient, key: str) -> None:
+    async def _cancel(
+        self, redis: RedisClient, key: str, *, leave_running: bool = False
+    ) -> None:
         """Cancel a task atomically.
 
         Handles cancellation regardless of task location:
@@ -913,6 +917,10 @@ class Docket(DocketSnapshotMixin):
         - Cleans up all associated metadata keys
         - Unless the task already finished, leaves a CANCELLED tombstone for
           ``execution_ttl`` and publishes the cancelled state
+
+        With ``leave_running``, a running task is left alone, and its worker
+        records how it ends.  ``Perpetual`` uses this to remove a successor
+        without marking its own run cancelled.
 
         Dependencies that park tasks on side channels (e.g. ConcurrencyLimit's
         waiter streams) clean up via the cancel pub/sub channel published by
@@ -925,6 +933,7 @@ class Docket(DocketSnapshotMixin):
         ttl_seconds = (
             int(self.execution_ttl.total_seconds()) if self.execution_ttl else 0
         )
+        # The script adds the generation of the run it cancels to this payload.
         state_payload = json.dumps(
             {
                 "type": "state",
@@ -948,6 +957,7 @@ class Docket(DocketSnapshotMixin):
             completed_at=completed_at,
             ttl_seconds=ttl_seconds,
             state_payload=state_payload,
+            leave_running=leave_running,
         )
 
     async def strike(

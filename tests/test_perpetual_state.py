@@ -2,7 +2,7 @@
 
 import asyncio
 import contextlib
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import AsyncGenerator, Callable
 
 import pytest
@@ -240,3 +240,72 @@ async def test_perpetual_publishes_completed_event(pubsub_docket: Docket):
     assert ExecutionState.COMPLETED in states, (
         f"Expected COMPLETED in pub/sub state events, got {states}"
     )
+
+
+async def stops_itself(perpetual: Perpetual = Perpetual()) -> str:
+    perpetual.cancel()
+    return "done"
+
+
+async def test_a_perpetual_task_that_cancels_itself_is_reported_completed(
+    docket: Docket, worker: Worker
+):
+    """A perpetual task that cancels itself ends COMPLETED, and a subscriber
+    sees that finish with no CANCELLED state before it."""
+    execution = await docket.add(stops_itself)()
+    ready = asyncio.Event()
+    states: list[ExecutionState] = []
+
+    async def collect_until_finished() -> None:
+        async for event in execution.subscribe(ready=ready):  # pragma: no branch
+            if event["type"] == "state":
+                states.append(ExecutionState(event["state"]))
+                if states[-1] in (ExecutionState.COMPLETED, ExecutionState.CANCELLED):
+                    break
+
+    collector = asyncio.create_task(collect_until_finished())
+    await asyncio.wait_for(ready.wait(), timeout=5)
+    await worker.run_until_finished()
+    await asyncio.wait_for(collector, timeout=5)
+
+    assert states == [
+        ExecutionState.QUEUED,
+        ExecutionState.RUNNING,
+        ExecutionState.COMPLETED,
+    ]
+
+
+async def test_get_result_returns_the_result_of_a_perpetual_task_that_cancels_itself(
+    docket: Docket, worker: Worker, subscribed: asyncio.Event
+):
+    """get_result() on a perpetual task that cancels itself returns its result."""
+    execution = await docket.add(stops_itself)()
+    waiter = asyncio.create_task(execution.get_result(timeout=timedelta(seconds=5)))
+
+    await asyncio.wait_for(subscribed.wait(), timeout=5)
+    await worker.run_until_finished()
+
+    assert await waiter == "done"
+
+
+async def test_a_perpetual_task_that_cancels_itself_removes_its_successor(
+    docket: Docket, worker: Worker, now: Callable[[], datetime]
+):
+    """A replace() that lands while a perpetual task runs schedules a successor
+    under its key, and the task removes that successor when it cancels itself."""
+    runs: list[str] = []
+
+    async def replaced_while_running(
+        execution: Execution = CurrentExecution(),
+        perpetual: Perpetual = Perpetual(),
+    ) -> None:
+        runs.append(execution.key)
+        later = now() + timedelta(hours=1)
+        await docket.replace(replaced_while_running, later, execution.key)()
+        perpetual.cancel()
+
+    await docket.add(replaced_while_running, key="replaced-while-running")()
+    await worker.run_until_finished()
+
+    assert runs == ["replaced-while-running"]
+    assert (await docket.snapshot()).future == []

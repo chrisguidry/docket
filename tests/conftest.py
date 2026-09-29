@@ -14,7 +14,8 @@ from uuid import uuid4
 
 import pytest
 
-from docket import Docket, Worker
+from docket import Docket, Execution, Worker
+from docket.execution import ProgressEvent, StateEvent
 from tests._container import (
     ACL_ENABLED,
     ACLCredentials,
@@ -335,6 +336,25 @@ async def worker(docket: Docket) -> AsyncGenerator[Worker, None]:
         scheduling_resolution=timedelta(milliseconds=5),
     ) as worker:
         yield worker
+
+
+@pytest.fixture
+def subscribed(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
+    """Set once an Execution.subscribe() call has read the task's current state.
+
+    get_result() subscribes internally, so a test cannot pass its own ``ready``
+    event.  This fixture passes one on its behalf.
+    """
+    event = asyncio.Event()
+    original_subscribe = Execution.subscribe
+
+    def subscribe(
+        execution: Execution, *, ready: asyncio.Event | None = None
+    ) -> AsyncGenerator[StateEvent | ProgressEvent, None]:
+        return original_subscribe(execution, ready=event)
+
+    monkeypatch.setattr(Execution, "subscribe", subscribe)
+    return event
 
 
 @pytest.fixture

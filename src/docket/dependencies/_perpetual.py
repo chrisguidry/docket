@@ -116,9 +116,12 @@ class Perpetual(CompletionHandler["Perpetual"]):
     async def on_complete(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle completion by scheduling the next execution."""
         if self.cancelled:
+            # Remove any successor that has not started, such as one that a
+            # replace() scheduled during this run.  This run keeps its running
+            # state, and the worker records how it ended.
             docket = current_docket.get()
             async with docket.redis() as redis:
-                await docket._cancel(redis, execution.key)
+                await docket._cancel(redis, execution.key, leave_running=True)
             return False
 
         docket = current_docket.get()
