@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from docket import Docket, Execution, ExecutionState, Progress, Worker
+from docket._redis import PubSubClient, confirm_subscriptions
 from docket.execution import ExecutionProgress, ProgressEvent, StateEvent
 
 
@@ -147,6 +148,66 @@ async def test_run_subscribe_both_state_and_progress(execution: Execution):
 
     increment_event = next(e for e in progress_events if e.get("current") == 5)
     assert increment_event["current"] == 5
+
+
+async def test_subscribe_reports_a_change_during_setup_once(
+    execution: Execution, monkeypatch: pytest.MonkeyPatch
+):
+    """A state change that lands while subscribe() sets up appears once, in the
+    first event, and is not repeated as a live event."""
+
+    async def confirm_then_claim(pubsub: PubSubClient, count: int) -> None:
+        await confirm_subscriptions(pubsub, count)
+        await execution.claim("worker-1")
+
+    monkeypatch.setattr("docket.execution.confirm_subscriptions", confirm_then_claim)
+
+    subscribed = asyncio.Event()
+    states: list[ExecutionState] = []
+
+    async def collect_states():
+        async for event in execution.subscribe(ready=subscribed):  # pragma: no branch
+            if event["type"] == "state":
+                states.append(ExecutionState(event["state"]))
+                if event["state"] == ExecutionState.COMPLETED:
+                    break
+
+    subscriber_task = asyncio.create_task(collect_states())
+    await asyncio.wait_for(subscribed.wait(), timeout=2.0)
+    await execution.mark_as_completed()
+    await asyncio.wait_for(subscriber_task, timeout=2.0)
+
+    assert states == [ExecutionState.RUNNING, ExecutionState.COMPLETED]
+
+
+async def test_subscribe_reports_a_finish_during_setup_that_left_no_record(
+    zero_ttl_docket: Docket, monkeypatch: pytest.MonkeyPatch
+):
+    """With execution_ttl=0, a task that finishes while subscribe() sets up
+    leaves no record to read, so its terminal event still arrives."""
+    execution = Execution(
+        zero_ttl_docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
+    )
+
+    async def confirm_then_finish(pubsub: PubSubClient, count: int) -> None:
+        await confirm_subscriptions(pubsub, count)
+        await execution.claim("worker-1")
+        await execution.mark_as_completed()
+
+    monkeypatch.setattr("docket.execution.confirm_subscriptions", confirm_then_finish)
+
+    states: list[ExecutionState] = []
+
+    async def collect_states():
+        async for event in execution.subscribe():  # pragma: no branch
+            if event["type"] == "state":
+                states.append(ExecutionState(event["state"]))
+                if event["state"] == ExecutionState.COMPLETED:
+                    break
+
+    await asyncio.wait_for(collect_states(), timeout=2.0)
+
+    assert states == [ExecutionState.SCHEDULED, ExecutionState.COMPLETED]
 
 
 async def test_completed_state_publishes_event(execution: Execution):

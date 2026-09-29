@@ -1,12 +1,15 @@
 """Tests for result retrieval, waiting, TTL, and concurrent operations."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from typing import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from docket import Docket, Worker
+from docket._redis import PubSubClient
 from docket.execution import Execution, ExecutionState
 
 
@@ -274,3 +277,32 @@ async def test_get_result_timeout_on_pending_task(docket: Docket, worker: Worker
 
     event.set()
     await worker_task
+
+
+async def test_get_result_for_a_task_that_finishes_while_subscribing(
+    docket: Docket, worker: Worker, monkeypatch: pytest.MonkeyPatch
+):
+    """get_result() returns the result of a task that finishes just as the
+    waiter opens its subscription, instead of waiting for an event it missed."""
+
+    async def returns_value() -> str:
+        return "done"
+
+    execution = await docket.add(returns_value)()
+
+    # The worker opens pub/sub connections of its own, so only the first
+    # connection, the waiter's, runs the task first.
+    original_pubsub = docket._pubsub  # pyright: ignore[reportPrivateUsage]
+    connections: list[str] = []
+
+    @asynccontextmanager
+    async def pubsub_after_the_task_finishes() -> AsyncGenerator[PubSubClient, None]:
+        connections.append("opened")
+        if len(connections) == 1:
+            await worker.run_until_finished()
+        async with original_pubsub() as pubsub:
+            yield pubsub
+
+    monkeypatch.setattr(docket, "_pubsub", pubsub_after_the_task_finishes)
+
+    assert await execution.get_result(timeout=timedelta(seconds=5)) == "done"

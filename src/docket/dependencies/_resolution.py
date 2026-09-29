@@ -235,7 +235,11 @@ async def resolved_dependencies(
 
                     annotations = get_annotation_dependencies(execution.function)
                     for parameter_name, dependencies in annotations.items():
-                        argument_value = execution.kwargs.get(
+                        # ``provided`` binds positional arguments to their
+                        # names too, so a per-argument key such as
+                        # Cooldown's reads the value whichever way the
+                        # caller passed it.
+                        argument_value = provided.get(
                             parameter_name, arguments.get(parameter_name)
                         )
                         for dependency in dependencies:

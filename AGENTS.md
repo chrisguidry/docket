@@ -129,7 +129,7 @@ Rich dependency injection supporting:
 
 ### Task Lifecycle
 
-1. Registration with `Docket.register()` or `@docket.task`
+1. Registration with `Docket.register()`, or implicitly when `Docket.add()` receives the function
 2. Scheduling: immediate → Redis stream, future → Redis sorted set
 3. Worker processing: scheduler moves due tasks, workers consume via consumer groups
 4. Execution: dependency injection, retry logic, acknowledgment

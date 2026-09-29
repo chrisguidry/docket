@@ -5,7 +5,10 @@ a single task: ``_schedule`` puts it on the stream or the queue, ``_claim``
 takes it for a worker, ``_terminal`` records how it finished, and
 ``_cancel_task`` takes it back off.  The first three each check the
 ``generation`` counter in the runs hash, so a stale attempt can never
-overwrite a newer one.
+overwrite a newer one, and ``_claim`` also refuses a key that was cancelled.
+Whenever one of the four writes the task's state, it publishes the new state
+in the same step, and ``_mark_and_read`` gives a new subscriber its starting
+point in those events.
 
 ``Execution`` and ``Docket`` call these; the scripts hold no Python logic of
 their own.
@@ -250,24 +253,36 @@ async def _claim(
     -- Redis holds once the script is done, so a refused claim reports the
     -- key as its winner left it.
 
-    -- Check supersession: generation > 0 means tracking is active.  When the
-    -- claim is for a stale message we still ACK and XDEL it so the stream
-    -- entry doesn't linger -- nothing else will clean it up.
-    if generation > 0 then
+    -- A worker that read the message before a cancel still holds its fields
+    -- after the cancel deletes the stream entry, so the 'cancelled' state is
+    -- what stops the task from running.  This check comes before the
+    -- generation check, so a refused claim reports CANCELLED whenever the
+    -- key's latest change was a cancel.
+    local refusal = nil
+    if redis.call('HGET', runs_key, 'state') == 'cancelled' then
+        refusal = 'CANCELLED'
+    elseif generation > 0 then
+        -- Check supersession: generation > 0 means tracking is active.
         local current = redis.call('HGET', runs_key, 'generation')
         if not current or tonumber(current) > generation then
             -- Either the runs hash was cleaned up (execution_ttl=0 after a
             -- newer generation completed) or a newer generation holds it.
-            if message_id ~= '' then
-                redis.call('XACK', stream_key, worker_group_name, message_id)
-                redis.call('XDEL', stream_key, message_id)
-            end
-            return {
-                'SUPERSEDED',
-                redis.call('HGETALL', runs_key),
-                redis.call('HGETALL', progress_key)
-            }
+            refusal = 'SUPERSEDED'
         end
+    end
+
+    -- A refused claim still ACKs and XDELs the message so the stream entry
+    -- doesn't linger -- nothing else will clean it up.
+    if refusal then
+        if message_id ~= '' then
+            redis.call('XACK', stream_key, worker_group_name, message_id)
+            redis.call('XDEL', stream_key, message_id)
+        end
+        return {
+            refusal,
+            redis.call('HGETALL', runs_key),
+            redis.call('HGETALL', progress_key)
+        }
     end
 
     -- Update execution state to running
@@ -393,8 +408,11 @@ async def _cancel_task(
     stream_id_key: Key[str],
     runs_key: Key[str],
     progress_key: Key[str],
+    state_channel: Key[str],
     task_key: Arg[str],
     completed_at: Arg[str],
+    ttl_seconds: Arg[int],
+    state_payload: Arg[str],
 ) -> bytes:
     """
     -- TODO: Remove known_key / parked_key / stream_id_key handling in
@@ -428,10 +446,46 @@ async def _cancel_task(
 
     -- Only set CANCELLED if not already in a terminal state
     local current_state = redis.call('HGET', runs_key, 'state')
-    if current_state ~= 'completed' and current_state ~= 'failed' and current_state ~= 'cancelled' then
+    local cancelling = current_state ~= 'completed' and current_state ~= 'failed' and current_state ~= 'cancelled'
+    if cancelling then
         redis.call('HSET', runs_key, 'state', 'cancelled', 'completed_at', completed_at)
     end
 
+    -- Keep the tombstone for execution_ttl, or drop it now when that is 0
+    if ttl_seconds > 0 then
+        redis.call('EXPIRE', runs_key, ttl_seconds)
+    else
+        redis.call('DEL', runs_key)
+    end
+
+    -- Publish last, so a get_result() waiter that wakes on this event reads
+    -- the runs hash as this script left it.  Without the event, a waiter on
+    -- a task that never started would wait until its timeout.
+    if cancelling then
+        redis.call('PUBLISH', state_channel, state_payload)
+    end
+
     return 'OK'
+    """
+    ...
+
+
+@redis_script
+async def _mark_and_read(
+    redis: RedisClient,
+    *,
+    runs_key: Key[str],
+    progress_key: Key[str],
+    marker_channel: Key[str],
+) -> list[Any]:
+    """
+    -- A new subscriber calls this once it listens on the task's state and
+    -- progress channels and on a marker channel of its own.  Publishing the
+    -- marker and reading both hashes in one atomic step splits what the
+    -- subscriber receives: every message before the marker was published
+    -- before this read, so the hashes already include it, and every message
+    -- after the marker is a change the hashes do not show.
+    redis.call('PUBLISH', marker_channel, '')
+    return {redis.call('HGETALL', runs_key), redis.call('HGETALL', progress_key)}
     """
     ...

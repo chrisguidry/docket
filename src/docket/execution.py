@@ -17,6 +17,7 @@ from typing import (
     Mapping,
     Sequence,
 )
+from uuid import uuid4
 
 import cloudpickle
 import opentelemetry.context
@@ -35,7 +36,7 @@ from uncalled_for.introspection import (
 )
 
 from ._execution_progress import ExecutionProgress, ProgressEvent, StateEvent
-from ._execution_scripts import _claim, _schedule, _terminal
+from ._execution_scripts import _claim, _mark_and_read, _schedule, _terminal
 from ._redis import RedisClient, confirm_subscriptions, is_cluster_client
 from .annotations import Logged
 from .instrumentation import CACHE_SIZE, message_getter, message_setter
@@ -177,6 +178,11 @@ class ExecutionState(enum.Enum):
     """Task was explicitly cancelled before completion."""
 
 
+_TERMINAL_STATES = frozenset(
+    {ExecutionState.COMPLETED, ExecutionState.FAILED, ExecutionState.CANCELLED}
+)
+
+
 class Disposition(enum.Enum):
     """Outcome of a scheduling attempt for an Execution.
 
@@ -272,9 +278,9 @@ class Execution:
         self.message_id = message_id
 
         # True once the stream message identified by ``message_id`` has been
-        # XACKed (by ``_terminal``, ``_claim`` on SUPERSEDED, or ``_schedule``
-        # when re-routing this same message).  The worker uses this as a
-        # safety-net signal: anything that calls a ``FailureHandler`` whose
+        # XACKed (by ``_terminal``, ``_claim`` when it refuses the claim, or
+        # ``_schedule`` when re-routing this same message).  The worker uses
+        # this as a safety-net signal: anything that calls a ``FailureHandler`` whose
         # ``handle_failure`` returns True without rescheduling will leave this
         # False, and the worker can ack defensively.
         self._acked: bool = False
@@ -596,6 +602,7 @@ class Execution:
 
         This consolidates worker operations when claiming a task into a single
         atomic Lua script that:
+        - Refuses the claim if the task was cancelled
         - Checks if the task has been superseded by a newer generation
         - Sets state to RUNNING with worker name and timestamp
         - Initializes progress tracking (current=0, total=100)
@@ -607,15 +614,17 @@ class Execution:
         the claim leaves this execution's lifecycle attributes exactly where a
         ``sync()`` would.  That holds on both paths: a claimed task reports its
         own running state and reset progress, and a refused one reports what
-        the newer generation left on the key (or the ``sync()`` defaults, if
-        the key is gone).  Callers on the delivery path can therefore skip the
-        ``sync()`` in ``from_message`` and let the claim fill the attributes in.
+        the cancel or the newer generation left on the key (or the ``sync()``
+        defaults, if the key is gone).  Callers on the delivery path can
+        therefore skip the ``sync()`` in ``from_message`` and let the claim
+        fill the attributes in.
 
         Args:
             worker: Name of the worker claiming the task
 
         Returns:
-            True if the task was claimed, False if it was superseded.
+            True if the task was claimed, False if it was cancelled or
+            superseded.
         """
         started_at = datetime.now(timezone.utc)
         started_at_iso = started_at.isoformat()
@@ -653,10 +662,10 @@ class Execution:
         self._apply_runs_data(_hash_reply(runs_data))
         self.progress._apply(_hash_reply(progress_data))  # pyright: ignore[reportPrivateUsage]
 
-        if status == b"SUPERSEDED":
-            # The `_claim` Lua XACKed and XDELed the stale stream message
-            # before returning SUPERSEDED (skipping the ack when message_id
-            # is empty -- harmless either way).
+        if status in (b"CANCELLED", b"SUPERSEDED"):
+            # The `_claim` Lua XACKed and XDELed the stream message before
+            # refusing the claim (skipping the ack when message_id is empty --
+            # harmless either way).
             self._acked = True
             return False
 
@@ -805,14 +814,8 @@ class Execution:
         if timeout is not None:
             deadline = datetime.now(timezone.utc) + timeout
 
-        terminal_states = (
-            ExecutionState.COMPLETED,
-            ExecutionState.FAILED,
-            ExecutionState.CANCELLED,
-        )
-
         # Wait for execution to complete if not already done
-        if self.state not in terminal_states:
+        if self.state not in _TERMINAL_STATES:
             # Calculate timeout duration if absolute deadline provided
             timeout_seconds = None
             if deadline is not None:
@@ -830,7 +833,7 @@ class Execution:
                     async for event in self.subscribe():  # pragma: no branch
                         if event["type"] == "state":
                             state = ExecutionState(event["state"])
-                            if state in terminal_states:
+                            if state in _TERMINAL_STATES:
                                 # Sync to get latest data including result key
                                 await self.sync()
                                 break
@@ -948,67 +951,102 @@ class Execution:
     ) -> AsyncGenerator[StateEvent | ProgressEvent, None]:
         """Subscribe to both state and progress updates for this task.
 
-        Emits the current state as the first event, then subscribes to real-time
-        state and progress updates via Redis pub/sub.
+        Subscribes to the task's state and progress channels, then emits the
+        current state and the current progress as the first two events, then
+        real-time updates via Redis pub/sub.  A change that lands while the
+        subscription starts appears once: in the first two events if it
+        happened before the current state was read, or as a real-time update
+        if it happened after.  A finish that the current state cannot show,
+        such as a run superseded by its successor or one whose record
+        ``execution_ttl=0`` removed, arrives as a real-time update.
 
         Args:
             ready: Optional ``asyncio.Event`` that is ``set()`` once the
-                Redis ``SUBSCRIBE`` has been acknowledged.  Lets callers
-                deterministically wait until the subscription is live
-                before publishing -- avoids the race where early events
-                are dropped because the subscriber hadn't connected yet.
+                subscription is live and the current state has been read.
+                Every change published after that arrives as a real-time
+                update, so callers can wait on it before publishing.
 
         Yields:
             Dict containing state or progress update events with a 'type' field:
             - For state events: type="state", state, worker, timestamps, error
             - For progress events: type="progress", current, total, message, updated_at
         """
-        # First, emit the current state
-        await self.sync()
-
-        # Build initial state event from current attributes
-        initial_state: StateEvent = {
-            "type": "state",
-            "key": self.key,
-            "state": self.state,
-            "when": self.when.isoformat(),
-            "worker": self.worker,
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": (
-                self.completed_at.isoformat() if self.completed_at else None
-            ),
-            "error": self.error,
-        }
-
-        yield initial_state
-
-        progress_event: ProgressEvent = {
-            "type": "progress",
-            "key": self.key,
-            "current": self.progress.current,
-            "total": self.progress.total,
-            "message": self.progress.message,
-            "updated_at": self.progress.updated_at.isoformat()
-            if self.progress.updated_at
-            else None,
-        }
-
-        yield progress_event
-
-        # Then subscribe to real-time updates
         state_channel = self.docket.key(f"state:{self.key}")
         progress_channel = self.docket.key(f"progress:{self.key}")
+        # Only this subscriber listens on the marker channel.  _mark_and_read
+        # publishes to it in the same atomic step as the read, so a message
+        # that arrives before the marker is already part of the first two
+        # events, and yielding it again would repeat a change.
+        marker_channel = f"{state_channel}:{uuid4()}"
         async with self.docket._pubsub() as pubsub:
-            await pubsub.subscribe(state_channel, progress_channel)
-            await confirm_subscriptions(pubsub, 2)
+            await pubsub.subscribe(state_channel, progress_channel, marker_channel)
+            await confirm_subscriptions(pubsub, 3)
+
+            with self._maybe_suppress_instrumentation():
+                async with self.docket.redis() as redis:
+                    runs_data, progress_data = await _mark_and_read(
+                        redis,
+                        runs_key=self._redis_key,
+                        progress_key=self.progress._redis_key,
+                        marker_channel=marker_channel,
+                    )
+            self._apply_runs_data(_hash_reply(runs_data))
+            self.progress._apply(_hash_reply(progress_data))  # pyright: ignore[reportPrivateUsage]
+
             if ready is not None:
                 ready.set()
+
+            initial_state: StateEvent = {
+                "type": "state",
+                "key": self.key,
+                "state": self.state,
+                "when": self.when.isoformat(),
+                "worker": self.worker,
+                "started_at": self.started_at.isoformat() if self.started_at else None,
+                "completed_at": (
+                    self.completed_at.isoformat() if self.completed_at else None
+                ),
+                "error": self.error,
+            }
+
+            yield initial_state
+
+            progress_event: ProgressEvent = {
+                "type": "progress",
+                "key": self.key,
+                "current": self.progress.current,
+                "total": self.progress.total,
+                "message": self.progress.message,
+                "updated_at": self.progress.updated_at.isoformat()
+                if self.progress.updated_at
+                else None,
+            }
+
+            yield progress_event
+
+            markers = (marker_channel, marker_channel.encode())
+            marker_seen = False
             async for message in pubsub.listen():  # pragma: no cover
-                if message["type"] == "message":
-                    message_data = json.loads(message["data"])
-                    if message_data["type"] == "state":
-                        message_data["state"] = ExecutionState(message_data["state"])
-                    yield message_data
+                if message["type"] != "message":
+                    continue
+                if message["channel"] in markers:
+                    marker_seen = True
+                    continue
+                message_data = json.loads(message["data"])
+                if message_data["type"] == "state":
+                    message_data["state"] = ExecutionState(message_data["state"])
+                # Before the marker, drop the changes the first two events
+                # already include.  Keep a finish that the current state does
+                # not show: a run superseded by its successor, or one whose
+                # record execution_ttl=0 removed, never reaches the runs hash,
+                # and a waiter would otherwise never hear of it.
+                if not marker_seen and not (
+                    message_data["type"] == "state"
+                    and message_data["state"] in _TERMINAL_STATES
+                    and message_data["state"] != initial_state["state"]
+                ):
+                    continue
+                yield message_data
 
 
 def compact_signature(signature: inspect.Signature) -> str:

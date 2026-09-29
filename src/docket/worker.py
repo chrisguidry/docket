@@ -35,9 +35,9 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
 from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task
-from ._lua import Arg, Key, redis_script
 from ._redelivery import RedeliverySweep, renew_leases
 from ._redis import RedisClient, redis_is_unavailable
+from ._scheduler import _stream_due_tasks
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import LockError, RedisError, ResponseError
@@ -75,7 +75,7 @@ from .docket import (
     RedisMessageID,
     RedisReadGroupResponse,
 )
-from .execution import TaskFunction, compact_signature, get_signature
+from .execution import ExecutionState, TaskFunction, compact_signature, get_signature
 from .instrumentation import (
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
@@ -149,80 +149,6 @@ async def default_fallback_task(
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
-
-
-@redis_script
-async def _stream_due_tasks(
-    redis: RedisClient,
-    *,
-    queue_key: Key[str],
-    stream_key: Key[str],
-    now_timestamp: Arg[float],
-    docket_prefix: Arg[str],
-) -> tuple[int, int]:
-    """
-    -- Inline JSON-string escaper for the common cases (`\\`, `"`, and the
-    -- three named whitespace controls).  Task keys are user-supplied: if a
-    -- caller passes a key containing other control characters (NUL, BEL,
-    -- VT, FF, ESC, etc.) the published payload will not parse as strict
-    -- JSON.  GIGO -- callers should give us readable keys.
-    local function json_escape(s)
-        s = s:gsub('\\\\', '\\\\\\\\')
-        s = s:gsub('"', '\\\\"')
-        s = s:gsub('\\n', '\\\\n')
-        s = s:gsub('\\r', '\\\\r')
-        s = s:gsub('\\t', '\\\\t')
-        return s
-    end
-
-    local total_work = redis.call('ZCARD', queue_key)
-    local due_work = 0
-
-    if total_work > 0 then
-        local tasks = redis.call('ZRANGEBYSCORE', queue_key, 0, now_timestamp)
-
-        for i, key in ipairs(tasks) do
-            local hash_key = docket_prefix .. ":" .. key
-            local task_data = redis.call('HGETALL', hash_key)
-
-            if #task_data > 0 then
-                local task = {}
-                for j = 1, #task_data, 2 do
-                    task[task_data[j]] = task_data[j+1]
-                end
-
-                redis.call('XADD', stream_key, '*',
-                    'key', task['key'],
-                    'when', task['when'],
-                    'function', task['function'],
-                    'args', task['args'],
-                    'kwargs', task['kwargs'],
-                    'attempt', task['attempt'],
-                    'generation', task['generation'] or '0'
-                )
-                redis.call('DEL', hash_key)
-
-                -- Set run state to queued
-                local run_key = docket_prefix .. ":runs:" .. task['key']
-                redis.call('HSET', run_key, 'state', 'queued')
-
-                -- Publish state change event to pub/sub
-                local channel = docket_prefix .. ":state:" .. task['key']
-                local payload = '{"type":"state","key":"' .. json_escape(task['key']) .. '","state":"queued","when":"' .. task['when'] .. '"}'
-                redis.call('PUBLISH', channel, payload)
-
-                due_work = due_work + 1
-            end
-        end
-    end
-
-    if due_work > 0 then
-        redis.call('ZREMRANGEBYSCORE', queue_key, 0, now_timestamp)
-    end
-
-    return {total_work, due_work}
-    """
-    ...
 
 
 class Worker:
@@ -723,6 +649,18 @@ class Worker:
                 message_id = active_tasks.pop(task)
                 execution = task_executions.pop(task)
                 self._tasks_by_key.pop(execution.key, None)
+                if task.cancelled():
+                    # The cancel signal from docket.cancel() reached this task
+                    # before _execute got to the task body, which handles its
+                    # own cancellation.  Awaiting the task would raise the
+                    # CancelledError here and end the worker loop.  The
+                    # terminal script acks the message whether or not the
+                    # claim ran.
+                    await execution.mark_as_cancelled()
+                    logger.info(
+                        "✗ %s (cancelled)", execution.call_repr(), extra=log_context
+                    )
+                    continue
                 try:
                     await task
                 except AdmissionBlocked as e:
@@ -1049,10 +987,15 @@ class Worker:
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
             return
 
-        # Atomically check supersession and claim task in a single round-trip
+        # Atomically check supersession and claim task in a single round-trip.
+        # A refused claim leaves the key's state on the execution, and
+        # CANCELLED there means docket.cancel() reached the key first.
         if not await execution.claim(self.name):
-            logger.info("↬ %s (superseded)", call, extra=log_context)
-            TASKS_SUPERSEDED.add(1, counter_labels | {"docket.where": "worker"})
+            if execution.state is ExecutionState.CANCELLED:
+                logger.info("✗ %s (cancelled)", call, extra=log_context)
+            else:
+                logger.info("↬ %s (superseded)", call, extra=log_context)
+                TASKS_SUPERSEDED.add(1, counter_labels | {"docket.where": "worker"})
             return
 
         if execution.key in self._execution_counts:

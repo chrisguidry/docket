@@ -25,6 +25,8 @@ async with Worker(
 
 `redelivery_timeout` sets when a task becomes eligible for redelivery, not when redelivery happens. Each worker sweeps for eligible tasks on a timer at a quarter of the timeout, jittered 0.75–1.25×. A task therefore waits up to about 31% past the timeout before another worker claims it, and usually less. A sweep walks a very long pending list in bounded steps, one per poll pass, so that walk can add time beyond that.
 
+`minimum_check_interval` is how long each read waits for new messages, and how long a worker with no free slots sleeps before it checks again. Its default depends on how you start the worker: `Worker(...)` uses 250 ms, and `Worker.run()` and the `docket worker` CLI use 100 ms.
+
 `message_batch` caps how many messages one Redis command may claim, for both the delivery read and the redelivery sweep. A larger batch costs fewer round trips. It also makes Redis serialize that many whole messages into one reply, and makes each sweep read about ten times the batch in pending-list entries. A burst larger than one batch still drains in full, because the worker reads again while slots stay free.
 
 ### Environment Variable Configuration
@@ -259,10 +261,10 @@ ACL SETUSER docket-user on >secure-password \
 
 ### Valkey Support
 
-Docket also works with Valkey (Redis fork):
+Docket also works with Valkey (Redis fork). Valkey implements the Redis protocol, so connect with a `redis://` or `rediss://` URL:
 
 ```bash
-export DOCKET_URL=valkey://valkey.prod.com:6379/0
+export DOCKET_URL=redis://valkey.prod.com:6379/0
 ```
 
 ## State and Result Storage
@@ -529,7 +531,7 @@ Supported operators include `==`, `!=`, `<`, `<=`, `>`, `>=`.
 Target very specific scenarios:
 
 ```python
-# Block only high-value orders for a specific customer
+# Block orders from a specific customer, and all high-value orders
 await docket.strike(process_order, "customer_id", "==", "12345")
 await docket.strike(process_order, "amount", ">", 1000)
 
@@ -539,9 +541,14 @@ await docket.add(process_order)(customer_id="12345", amount=500)
 # This order won't run (blocked customer AND high amount)
 await docket.add(process_order)(customer_id="12345", amount=2000)
 
-# This order WILL run (different customer)
+# This order won't run (high amount)
 await docket.add(process_order)(customer_id="67890", amount=2000)
+
+# This order WILL run (different customer, low amount)
+await docket.add(process_order)(customer_id="67890", amount=500)
 ```
+
+A task that matches any one strike does not run, so these two strikes block every order from customer 12345 and every order above 1000.
 
 ### Striking from the CLI
 

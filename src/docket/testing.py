@@ -3,7 +3,7 @@
 Example usage:
     from docket import Docket, testing
 
-    docket = Docket("redis://localhost:6379/0")
+    docket = Docket(url="redis://localhost:6379/0")
 
     # Schedule a task
     await docket.add(my_task)("arg1", kwarg1="value1")

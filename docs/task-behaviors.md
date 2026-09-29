@@ -292,11 +292,10 @@ The `Progress()` dependency provides access to the current task's progress track
 
 ```python
 from docket import Progress
-from docket.execution import ExecutionProgress
 
 async def import_records(
     file_path: str,
-    progress: ExecutionProgress = Progress()
+    progress: Progress = Progress()
 ) -> None:
     records = await load_records(file_path)
 
@@ -324,12 +323,11 @@ Progress updates are:
 - **Observable**: Can be monitored with `docket watch` CLI or programmatically
 - **Ephemeral**: Progress data is automatically deleted when the task completes
 
-The `ExecutionProgress` object provides these methods:
+The `Progress` object provides these methods:
 
 - `set_total(total: int)`: Set the target/total value for progress tracking
 - `increment(amount: int = 1)`: Atomically increment the current progress value
 - `set_message(message: str)`: Update the status message
-- `sync()`: Refresh local state from Redis
 
 For more details on progress monitoring patterns and real-time observation, see [Task Observability](observability.md).
 
@@ -434,13 +432,16 @@ Concurrency limits are enforced using Redis sorted sets, so you can monitor them
 async def monitor_concurrency_usage() -> None:
     async with docket.redis() as redis:
         # Check how many tasks are running for a specific limit
-        active_count = await redis.scard("docket:concurrency:customer_id:1001")
+        active_count = await redis.zcard("docket:concurrency:customer_id:1001")
         print(f"Customer 1001 has {active_count} active tasks")
 
-        # List all active concurrency keys
+        # List all active concurrency keys.  While tasks wait for a slot, a
+        # limit also has a ":waiters" stream, which ZCARD rejects.
         keys = await redis.keys("docket:concurrency:*")
         for key in keys:
-            count = await redis.scard(key)
+            if key.endswith(b":waiters"):
+                continue
+            count = await redis.zcard(key)
             print(f"{key}: {count} active tasks")
 ```
 
