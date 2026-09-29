@@ -1,4 +1,5 @@
 import importlib
+import json
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -42,6 +43,7 @@ from ._uuid7 import uuid7
 from .execution import (
     Disposition,
     Execution,
+    ExecutionState,
     TaskCall,
     TaskFunction,
     schedule_many,
@@ -909,15 +911,24 @@ class Docket(DocketSnapshotMixin):
         - From the stream (using stored message ID)
         - From the queue (scheduled tasks)
         - Cleans up all associated metadata keys
+        - Publishes the cancelled state for a task that has not started
 
         Dependencies that park tasks on side channels (e.g. ConcurrencyLimit's
-        waiter streams) clean up via the state-transition pub/sub channel
+        waiter streams) clean up via the cancel pub/sub channel
         published by ``Docket.cancel`` -- Docket itself stays unaware of any
         dependency-specific storage.
         """
         # Create tombstone with CANCELLED state
         completed_at = datetime.now(timezone.utc).isoformat()
         task_runs_key = self.runs_key(key)
+        state_payload = json.dumps(
+            {
+                "type": "state",
+                "key": key,
+                "state": ExecutionState.CANCELLED.value,
+                "completed_at": completed_at,
+            }
+        )
 
         # Execute the cancellation script
         await _cancel_task(
@@ -929,8 +940,10 @@ class Docket(DocketSnapshotMixin):
             stream_id_key=self.stream_id_key(key),
             runs_key=task_runs_key,
             progress_key=self.key(f"progress:{key}"),
+            state_channel=self.key(f"state:{key}"),
             task_key=key,
             completed_at=completed_at,
+            state_payload=state_payload,
         )
 
         # Apply TTL or delete tombstone based on execution_ttl
