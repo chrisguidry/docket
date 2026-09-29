@@ -54,8 +54,13 @@ async def test_standalone_pools_and_clients_get_the_provider():
     async with RedisConnection("redis://localhost:6379/0", provider) as connection:
         assert connection._connection_pool is not None
         assert connection._pubsub_pool is not None
-        assert connection._connection_pool.connection_kwargs["credential_provider"] is provider
-        assert connection._pubsub_pool.connection_kwargs["credential_provider"] is provider
+        assert (
+            connection._connection_pool.connection_kwargs["credential_provider"]
+            is provider
+        )
+        assert (
+            connection._pubsub_pool.connection_kwargs["credential_provider"] is provider
+        )
         assert len(provider.callbacks) == 1
 
         async with connection.pubsub():
