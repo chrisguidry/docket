@@ -204,12 +204,17 @@ class ExponentialRetry(Retry):
         retry.attempt = execution.attempt
 
         if execution.attempt > 1:
-            backoff_factor = 2 ** (execution.attempt - 1)
-            calculated_delay = self.delay * backoff_factor
-
-            if calculated_delay > self.maximum_delay:
+            exponent = execution.attempt - 1
+            # Cap before constructing a huge integer or overflowing timedelta.
+            if (
+                self.delay > timedelta(0)
+                and exponent >= (self.maximum_delay // self.delay).bit_length()
+            ):
                 retry.delay = self.maximum_delay
             else:
-                retry.delay = calculated_delay
+                calculated_delay = (
+                    self.delay * (2**exponent) if self.delay else self.delay
+                )
+                retry.delay = min(calculated_delay, self.maximum_delay)
 
         return retry
