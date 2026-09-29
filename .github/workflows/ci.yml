@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     name: Core, Python ${{ matrix.python-version }}, ${{ matrix.backend.name }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 4
     strategy:
       fail-fast: false
@@ -110,7 +110,7 @@ jobs:
 
   test-cli:
     name: CLI, Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 4
     strategy:
       fail-fast: false
@@ -204,7 +204,7 @@ jobs:
 
   test-redis-py:
     name: redis-py ${{ matrix.redis-py.name }}, Python 3.14, Redis 8.6
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 4
     strategy:
       fail-fast: false
@@ -257,7 +257,7 @@ jobs:
 
   prek:
     name: Prek checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
