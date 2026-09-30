@@ -6,7 +6,7 @@ from typing import AsyncGenerator, Callable
 
 import pytest
 
-from docket import Docket, ExecutionState, Worker
+from docket import Docket, Execution, ExecutionState, Worker
 from tests.conftest import wait_until
 
 
@@ -83,3 +83,47 @@ async def test_cancelled_key_runs_when_added_again(
     await execution.sync()
     assert ran.is_set()
     assert execution.state == ExecutionState.COMPLETED
+
+
+async def test_cancel_during_claim_leaves_the_worker_running(
+    docket: Docket,
+    one_slot_worker: Worker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ran: list[str] = []
+
+    async def record(name: str) -> None:
+        ran.append(name)
+
+    real_claim = Execution.claim
+
+    async def cancel_during_claim(self: Execution, worker: str) -> bool:
+        # The first claim cancels its own task and then waits, so the
+        # worker's cancellation listener cancels the task while _execute
+        # still awaits claim().  It puts the real claim back first, so every
+        # later task claims as usual.
+        monkeypatch.setattr(Execution, "claim", real_claim)
+        await docket.cancel(self.key)
+        await asyncio.sleep(10)
+        return await real_claim(self, worker)  # pragma: no cover
+
+    monkeypatch.setattr(Execution, "claim", cancel_during_claim)
+
+    # The worker has one slot, so it reads the second task only after it
+    # is done with the first.
+    first = await docket.add(record)("first")
+    await docket.add(record)("second")
+    await asyncio.wait_for(one_slot_worker.run_until_finished(), timeout=5.0)
+
+    assert ran == ["second"]
+
+    await first.sync()
+    assert first.state == ExecutionState.CANCELLED
+
+    # docket.cancel() cannot acknowledge a message that the worker has read,
+    # so the worker has to.
+    async with docket.redis() as redis:
+        pending_info = await redis.xpending(
+            name=docket.stream_key, groupname=docket.worker_group_name
+        )
+    assert pending_info["pending"] == 0

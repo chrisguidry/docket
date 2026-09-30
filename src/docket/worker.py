@@ -723,6 +723,17 @@ class Worker:
                 message_id = active_tasks.pop(task)
                 execution = task_executions.pop(task)
                 self._tasks_by_key.pop(execution.key, None)
+                if task.cancelled():
+                    # _execute handles a cancel only after its claim, so a
+                    # cancel that arrives earlier ends the task cancelled.
+                    # Awaiting the task would raise that CancelledError here,
+                    # and this loop would stop as if it were shut down.
+                    # Marking the task cancelled acknowledges its message,
+                    # which would otherwise stay pending.  It also publishes
+                    # the cancelled state, which docket.cancel() leaves to the
+                    # worker once the claim has run.
+                    await execution.mark_as_cancelled()
+                    continue
                 try:
                     await task
                 except AdmissionBlocked as e:
