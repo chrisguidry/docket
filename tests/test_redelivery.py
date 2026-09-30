@@ -9,6 +9,7 @@ import asyncio
 import inspect
 import sys
 from datetime import timedelta
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -20,7 +21,7 @@ from redis.asyncio.cluster import RedisCluster
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Perpetual, Retry, Timeout, Worker
-from tests.conftest import skip_memory
+from tests.conftest import skip_memory, wait_until
 
 
 @pytest.fixture
@@ -63,6 +64,46 @@ async def test_redelivery_from_abandoned_worker(docket: Docket, the_task: AsyncM
         await worker_b.run_until_finished()
 
     the_task.assert_awaited_once_with()
+
+
+async def test_task_interrupted_by_loop_shutdown_is_redelivered(docket: Docket):
+    """A task interrupted by event loop shutdown runs again on another worker.
+
+    Nobody called docket.cancel(), so the worker should leave the message
+    pending for redelivery instead of marking the task cancelled.
+    """
+    started: list[asyncio.Task[Any]] = []
+    release = asyncio.Event()
+
+    async def long_task() -> None:
+        started.append(cast(asyncio.Task[Any], asyncio.current_task()))
+        await release.wait()
+
+    await docket.add(long_task)()
+
+    async with Worker(
+        docket, redelivery_timeout=timedelta(milliseconds=200)
+    ) as worker_a:
+        run = asyncio.create_task(worker_a.run_until_finished())
+        await wait_until(lambda: len(started) == 1)
+
+        # Before asyncio.run() returns or raises, for example after a task
+        # calls sys.exit(), it cancels every task still running and waits for
+        # all of them.  Here those are the task that runs the worker and the
+        # task that runs long_task.
+        run.cancel()
+        started[0].cancel()
+        await asyncio.gather(run, started[0], return_exceptions=True)
+
+    release.set()
+    await asyncio.sleep(0.25)  # longer than the redelivery timeout
+
+    async with Worker(
+        docket, redelivery_timeout=timedelta(milliseconds=200)
+    ) as worker_b:
+        await worker_b.run_until_finished()
+
+    assert len(started) == 2
 
 
 async def test_long_running_task_not_duplicated(docket: Docket):
