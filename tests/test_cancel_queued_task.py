@@ -101,10 +101,11 @@ async def test_cancel_during_claim_leaves_the_worker_running(
         # The first claim cancels its own task and then waits, so the
         # worker's cancellation listener cancels the task while _execute
         # still awaits claim().  It puts the real claim back first, so every
-        # later task claims as usual.
+        # later task claims as usual.  The cancel and the wait run in one
+        # gather, because the listener's cancel can arrive before
+        # docket.cancel() returns.
         monkeypatch.setattr(Execution, "claim", real_claim)
-        await docket.cancel(self.key)
-        await asyncio.sleep(10)
+        await asyncio.gather(docket.cancel(self.key), asyncio.sleep(10))
         return await real_claim(self, worker)  # pragma: no cover
 
     monkeypatch.setattr(Execution, "claim", cancel_during_claim)
