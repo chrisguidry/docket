@@ -31,6 +31,32 @@ async def test_get_result_waits_for_completion(docket: Docket, worker: Worker):
     await worker_task
 
 
+async def test_get_result_when_task_finishes_while_subscribing(
+    docket: Docket, worker: Worker, monkeypatch: pytest.MonkeyPatch
+):
+    """Test that get_result returns when the task finishes right after subscribe() reads its state."""
+
+    async def returns_value() -> int:
+        return 42
+
+    docket.register(returns_value)
+    execution = await docket.add(returns_value)()
+
+    # get_result() waits on subscribe(), which calls sync() to read the task's
+    # state.  This wrapper restores the real sync(), does that read, and then
+    # runs the worker, so the task finishes right after the read.  Timing alone
+    # cannot put the finish there on every run.
+    async def sync_then_finish_task() -> None:
+        monkeypatch.undo()
+        await execution.sync()
+        await worker.run_until_finished()
+
+    monkeypatch.setattr(execution, "sync", sync_then_finish_task)
+
+    result = await execution.get_result(timeout=timedelta(seconds=5))
+    assert result == 42
+
+
 async def test_get_result_timeout(docket: Docket, worker: Worker):
     """Test that get_result respects timeout."""
     event = asyncio.Event()  # Never set, simulates hung task
