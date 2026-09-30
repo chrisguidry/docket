@@ -69,6 +69,25 @@ async def test_per_parameter_cooldown_blocks_same_value(docket: Docket, worker: 
     assert results.count(1) == 1
 
 
+async def test_per_parameter_cooldown_allows_different_positional_values(
+    docket: Docket, worker: Worker
+):
+    """Per-parameter cooldown reads the value of a positional argument."""
+    results: list[int] = []
+
+    async def cooled_task(
+        customer_id: Annotated[int, Cooldown(timedelta(seconds=5))],
+    ):
+        results.append(customer_id)
+
+    await docket.add(cooled_task)(1)
+    await docket.add(cooled_task)(2)
+
+    await worker.run_until_finished()
+
+    assert sorted(results) == [1, 2]
+
+
 async def test_multiple_cooldowns_on_different_parameters(
     docket: Docket, worker: Worker
 ):
