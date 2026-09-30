@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import re
 from datetime import datetime, timedelta
 from typing import AsyncGenerator, Callable
 
@@ -20,8 +22,12 @@ async def one_slot_worker(docket: Docket) -> AsyncGenerator[Worker, None]:
 
 
 async def test_future_task_cancelled_after_it_is_queued_does_not_run(
-    docket: Docket, one_slot_worker: Worker, now: Callable[[], datetime]
+    docket: Docket,
+    one_slot_worker: Worker,
+    now: Callable[[], datetime],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.INFO)
     blocker_started = asyncio.Event()
     ran = asyncio.Event()
 
@@ -57,6 +63,8 @@ async def test_future_task_cancelled_after_it_is_queued_does_not_run(
     await execution.sync()
     assert not ran.is_set()
     assert execution.state == ExecutionState.CANCELLED
+    assert re.search(r"✗ future_task\(\)\S* \(cancelled\)", caplog.text)
+    assert "(superseded)" not in caplog.text
 
 
 async def test_cancelled_key_runs_when_added_again(
