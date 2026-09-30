@@ -272,8 +272,8 @@ class Execution:
         self.message_id = message_id
 
         # True once the stream message identified by ``message_id`` has been
-        # XACKed (by ``_terminal``, ``_claim`` on SUPERSEDED, or ``_schedule``
-        # when re-routing this same message).  The worker uses this as a
+        # XACKed (by ``_terminal``, ``_claim`` on SUPERSEDED or CANCELLED, or
+        # ``_schedule`` when re-routing this same message).  The worker uses this as a
         # safety-net signal: anything that calls a ``FailureHandler`` whose
         # ``handle_failure`` returns True without rescheduling will leave this
         # False, and the worker can ack defensively.
@@ -607,15 +607,17 @@ class Execution:
         the claim leaves this execution's lifecycle attributes exactly where a
         ``sync()`` would.  That holds on both paths: a claimed task reports its
         own running state and reset progress, and a refused one reports what
-        the newer generation left on the key (or the ``sync()`` defaults, if
-        the key is gone).  Callers on the delivery path can therefore skip the
-        ``sync()`` in ``from_message`` and let the claim fill the attributes in.
+        the newer generation or the cancel left on the key (or the ``sync()``
+        defaults, if the key is gone).  Callers on the delivery path can
+        therefore skip the ``sync()`` in ``from_message`` and let the claim
+        fill the attributes in.
 
         Args:
             worker: Name of the worker claiming the task
 
         Returns:
-            True if the task was claimed, False if it was superseded.
+            True if the task was claimed, False if it was superseded or
+            cancelled.
         """
         started_at = datetime.now(timezone.utc)
         started_at_iso = started_at.isoformat()
@@ -653,10 +655,10 @@ class Execution:
         self._apply_runs_data(_hash_reply(runs_data))
         self.progress._apply(_hash_reply(progress_data))  # pyright: ignore[reportPrivateUsage]
 
-        if status == b"SUPERSEDED":
-            # The `_claim` Lua XACKed and XDELed the stale stream message
-            # before returning SUPERSEDED (skipping the ack when message_id
-            # is empty -- harmless either way).
+        if status in (b"SUPERSEDED", b"CANCELLED"):
+            # The `_claim` Lua XACKed and XDELed the stream message before
+            # returning SUPERSEDED or CANCELLED.  It skips both when
+            # message_id is empty, which is harmless.
             self._acked = True
             return False
 
@@ -948,61 +950,65 @@ class Execution:
     ) -> AsyncGenerator[StateEvent | ProgressEvent, None]:
         """Subscribe to both state and progress updates for this task.
 
-        Emits the current state as the first event, then subscribes to real-time
-        state and progress updates via Redis pub/sub.
+        Subscribes to the task's state and progress channels, then reads the
+        current state and progress and emits them as the first two events.
+        After those, it emits real-time updates from Redis pub/sub.  Because it
+        subscribes before it reads, every change after the read arrives as a
+        real-time update.  A change between the subscription and the read can
+        appear twice: once in the first two events and once as a real-time
+        update.
 
         Args:
-            ready: Optional ``asyncio.Event`` that is ``set()`` once the
-                Redis ``SUBSCRIBE`` has been acknowledged.  Lets callers
-                deterministically wait until the subscription is live
-                before publishing -- avoids the race where early events
-                are dropped because the subscriber hadn't connected yet.
+            ready: Optional ``asyncio.Event``.  ``subscribe()`` sets it after
+                Redis acknowledges the ``SUBSCRIBE`` and after it reads the
+                current state.  A change after that arrives only as a
+                real-time update, so a caller that waits on it before
+                publishing receives each change once.
 
         Yields:
             Dict containing state or progress update events with a 'type' field:
             - For state events: type="state", state, worker, timestamps, error
             - For progress events: type="progress", current, total, message, updated_at
         """
-        # First, emit the current state
-        await self.sync()
-
-        # Build initial state event from current attributes
-        initial_state: StateEvent = {
-            "type": "state",
-            "key": self.key,
-            "state": self.state,
-            "when": self.when.isoformat(),
-            "worker": self.worker,
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": (
-                self.completed_at.isoformat() if self.completed_at else None
-            ),
-            "error": self.error,
-        }
-
-        yield initial_state
-
-        progress_event: ProgressEvent = {
-            "type": "progress",
-            "key": self.key,
-            "current": self.progress.current,
-            "total": self.progress.total,
-            "message": self.progress.message,
-            "updated_at": self.progress.updated_at.isoformat()
-            if self.progress.updated_at
-            else None,
-        }
-
-        yield progress_event
-
-        # Then subscribe to real-time updates
         state_channel = self.docket.key(f"state:{self.key}")
         progress_channel = self.docket.key(f"progress:{self.key}")
         async with self.docket._pubsub() as pubsub:
             await pubsub.subscribe(state_channel, progress_channel)
             await confirm_subscriptions(pubsub, 2)
+
+            await self.sync()
             if ready is not None:
                 ready.set()
+
+            # Build initial state event from current attributes
+            initial_state: StateEvent = {
+                "type": "state",
+                "key": self.key,
+                "state": self.state,
+                "when": self.when.isoformat(),
+                "worker": self.worker,
+                "started_at": self.started_at.isoformat() if self.started_at else None,
+                "completed_at": (
+                    self.completed_at.isoformat() if self.completed_at else None
+                ),
+                "error": self.error,
+            }
+
+            yield initial_state
+
+            progress_event: ProgressEvent = {
+                "type": "progress",
+                "key": self.key,
+                "current": self.progress.current,
+                "total": self.progress.total,
+                "message": self.progress.message,
+                "updated_at": self.progress.updated_at.isoformat()
+                if self.progress.updated_at
+                else None,
+            }
+
+            yield progress_event
+
             async for message in pubsub.listen():  # pragma: no cover
                 if message["type"] == "message":
                     message_data = json.loads(message["data"])

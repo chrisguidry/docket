@@ -72,6 +72,25 @@ async def test_per_parameter_rate_limit_independent_scopes(
     assert results.count(1) == 1
 
 
+async def test_per_parameter_rate_limit_allows_different_positional_values(
+    docket: Docket, worker: Worker
+):
+    """Per-parameter rate limit reads the value of a positional argument."""
+    results: list[int] = []
+
+    async def rated_task(
+        customer_id: Annotated[int, RateLimit(1, per=timedelta(seconds=5), drop=True)],
+    ):
+        results.append(customer_id)
+
+    await docket.add(rated_task)(1)
+    await docket.add(rated_task)(2)
+
+    await worker.run_until_finished()
+
+    assert sorted(results) == [1, 2]
+
+
 async def test_drop_true_drops_excess(docket: Docket, worker: Worker):
     """With drop=True, excess tasks are quietly dropped instead of rescheduled."""
     results: list[str] = []

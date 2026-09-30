@@ -66,6 +66,25 @@ async def test_per_parameter_debounce_independent_windows(
     assert results.count(1) == 1
 
 
+async def test_per_parameter_debounce_allows_different_positional_values(
+    docket: Docket, worker: Worker
+):
+    """Per-parameter debounce reads the value of a positional argument."""
+    results: list[int] = []
+
+    async def debounced_task(
+        customer_id: Annotated[int, Debounce(timedelta(milliseconds=50))],
+    ):
+        results.append(customer_id)
+
+    await docket.add(debounced_task)(1)
+    await docket.add(debounced_task)(2)
+
+    await worker.run_until_finished()
+
+    assert sorted(results) == [1, 2]
+
+
 async def test_multiple_debounces_rejected(docket: Docket):
     """Only one Debounce is allowed per task."""
     with pytest.raises(ValueError, match="Only one Debounce"):

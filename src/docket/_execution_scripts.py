@@ -270,6 +270,22 @@ async def _claim(
         end
     end
 
+    -- A cancel does not change the generation.  It also cannot XDEL an entry
+    -- the scheduler moved from the queue, because the runs hash has no
+    -- stream_id for it.  So refuse a cancelled key here, and ACK and XDEL
+    -- its message.
+    if redis.call('HGET', runs_key, 'state') == 'cancelled' then
+        if message_id ~= '' then
+            redis.call('XACK', stream_key, worker_group_name, message_id)
+            redis.call('XDEL', stream_key, message_id)
+        end
+        return {
+            'CANCELLED',
+            redis.call('HGETALL', runs_key),
+            redis.call('HGETALL', progress_key)
+        }
+    end
+
     -- Update execution state to running
     redis.call('HSET', runs_key,
         'state', 'running',
@@ -393,8 +409,10 @@ async def _cancel_task(
     stream_id_key: Key[str],
     runs_key: Key[str],
     progress_key: Key[str],
+    state_channel: Key[str],
     task_key: Arg[str],
     completed_at: Arg[str],
+    state_payload: Arg[str],
 ) -> bytes:
     """
     -- TODO: Remove known_key / parked_key / stream_id_key handling in
@@ -430,6 +448,14 @@ async def _cancel_task(
     local current_state = redis.call('HGET', runs_key, 'state')
     if current_state ~= 'completed' and current_state ~= 'failed' and current_state ~= 'cancelled' then
         redis.call('HSET', runs_key, 'state', 'cancelled', 'completed_at', completed_at)
+    end
+
+    -- No worker holds a task that has not started, so this script publishes
+    -- its cancelled state.  A running task's worker publishes the terminal
+    -- state itself, and Perpetual cancels its own key before the worker
+    -- marks the run completed.
+    if current_state == 'scheduled' or current_state == 'queued' then
+        redis.call('PUBLISH', state_channel, state_payload)
     end
 
     return 'OK'

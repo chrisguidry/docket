@@ -75,7 +75,7 @@ from .docket import (
     RedisMessageID,
     RedisReadGroupResponse,
 )
-from .execution import TaskFunction, compact_signature, get_signature
+from .execution import ExecutionState, TaskFunction, compact_signature, get_signature
 from .instrumentation import (
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
@@ -1049,8 +1049,12 @@ class Worker:
             TASKS_STRICKEN.add(1, counter_labels | {"docket.where": "worker"})
             return
 
-        # Atomically check supersession and claim task in a single round-trip
+        # Atomically check supersession and claim task in a single round-trip.
+        # docket.cancel() already counted a cancelled task, so skip the counter.
         if not await execution.claim(self.name):
+            if execution.state is ExecutionState.CANCELLED:
+                logger.info("✗ %s (cancelled)", call, extra=log_context)
+                return
             logger.info("↬ %s (superseded)", call, extra=log_context)
             TASKS_SUPERSEDED.add(1, counter_labels | {"docket.where": "worker"})
             return
