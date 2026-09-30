@@ -1216,6 +1216,7 @@ class Worker:
                 span.set_status(Status(StatusCode.OK))
                 raise
             except asyncio.CancelledError:
+                duration = log_context["duration"] = time.time() - start
                 # cancelling() counts the cancel() requests on this task, so
                 # it is 0 when the body raised CancelledError itself.  When
                 # something other than docket.cancel() cancelled the task,
@@ -1224,7 +1225,6 @@ class Worker:
                 task = cast("Task[None]", asyncio.current_task())
                 if task.cancelling() and task not in self._cancelled_by_docket:
                     raise
-                duration = log_context["duration"] = time.time() - start
                 span.set_status(Status(StatusCode.OK))
                 await execution.mark_as_cancelled()
                 logger.info(
