@@ -60,7 +60,7 @@ async def test_task_duration_is_measured(
 
 
 @pytest.fixture
-def TASK_PUNCTUALITY(monkeypatch: pytest.MonkeyPatch) -> Mock:
+def TASK_PUNCTUALITY(monkeypatch: pytest.MonkeyPatch) -> Mock:  # pragma: no cover
     """Mock for the TASK_PUNCTUALITY histogram."""
     mock_obj = Mock(spec=Histogram.record)
     monkeypatch.setattr("docket.instrumentation.TASK_PUNCTUALITY.record", mock_obj)
@@ -70,7 +70,7 @@ def TASK_PUNCTUALITY(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.mark.skipif(
     sys.platform == "win32", reason="Timing-sensitive: unreliable on Windows"
 )
-async def test_task_punctuality_is_measured(
+async def test_task_punctuality_is_measured(  # pragma: no cover
     docket: Docket,
     worker: Worker,
     the_task: AsyncMock,

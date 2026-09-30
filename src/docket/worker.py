@@ -1384,12 +1384,12 @@ class Worker:
             try:
                 async with self.docket._pubsub() as pubsub:
                     await pubsub.psubscribe(cancel_pattern)
-                    while not session.stopping.is_set():
+                    while not session.stopping.is_set():  # pragma: no branch
                         message = await pubsub.get_message(
                             ignore_subscribe_messages=False, timeout=0.1
                         )
                         if message is None:
-                            continue
+                            continue  # pragma: no cover - CPython gh-106749
                         if message["type"] == "pmessage":
                             await self._handle_cancellation(message)
                         else:
