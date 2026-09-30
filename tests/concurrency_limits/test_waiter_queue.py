@@ -284,14 +284,47 @@ async def test_cancel_of_parked_task_prevents_wake_and_run(
         assert safeguard_key not in queue_keys, queue_keys
 
 
+async def test_cancel_of_parked_task_removes_waiter_entry_before_release(
+    docket: Docket, worker: Worker
+):
+    """The cancel subscriber removes a cancelled task's waiter entry while
+    the holder still has the slot.  No release runs before the check, so
+    only the subscriber could have removed the entry."""
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def holder(
+        customer_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id", max_concurrent=1
+        ),
+    ):
+        holder_entered.set()
+        # The worker's shutdown waits for this task.  The timeout ends it if
+        # the test fails before it sets release_holder.
+        await asyncio.wait_for(release_holder.wait(), timeout=10)
+
+    await docket.add(holder)(customer_id=1)
+    worker_task = asyncio.create_task(worker.run_until_finished())
+    await asyncio.wait_for(holder_entered.wait(), timeout=5)
+
+    parked = await docket.add(holder)(customer_id=1)
+    waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
+    await _wait_for_xlen(docket, waiters_stream, 1)
+
+    await docket.cancel(parked.key)
+    await _wait_for_xlen(docket, waiters_stream, 0)
+
+    release_holder.set()
+    await asyncio.wait_for(worker_task, timeout=5)
+
+
 async def test_cancel_cleanup_script_drains_waiter_entry(docket: Docket):
     """Directly exercise the ``_cancel_cleanup`` wrapper.
 
     The wrapper is normally invoked from
-    ``ConcurrencyLimit._cleanup_cancelled_waiter``, which the
-    ``memory://`` backend can't actually drive end-to-end (its in-process
-    Redis shim is missing ``hmget``).  Drive the script directly here to
-    keep the optimisation honestly tested on every backend.
+    ``ConcurrencyLimit._cleanup_cancelled_waiter`` when a parked task is
+    cancelled.  Driving the script directly tests it without a worker.
     """
     from docket.dependencies._concurrency import _cancel_cleanup  # pyright: ignore[reportPrivateUsage]
 
