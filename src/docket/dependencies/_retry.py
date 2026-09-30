@@ -33,11 +33,9 @@ class Retry(FailureHandler["Retry"]):
     Examples:
 
     ```python
-    @task
     async def my_task(retry: Retry = Retry(attempts=3)) -> None:
         ...
 
-    @task
     async def critical_task(retry: Retry = Retry.forever(delay=timedelta(minutes=5))) -> None:
         ...
     ```
@@ -67,7 +65,6 @@ class Retry(FailureHandler["Retry"]):
         Example:
 
         ```python
-        @task
         async def my_task(retry: Retry = Retry.forever(delay=timedelta(minutes=5))) -> None:
             ...
         ```
@@ -138,11 +135,9 @@ class ExponentialRetry(Retry):
     Examples:
 
     ```python
-    @task
     async def my_task(retry: ExponentialRetry = ExponentialRetry(attempts=3)) -> None:
         ...
 
-    @task
     async def critical_task(
         retry: Retry = ExponentialRetry.forever(delay=timedelta(seconds=1))
     ) -> None:
@@ -181,7 +176,6 @@ class ExponentialRetry(Retry):
         Example:
 
         ```python
-        @task
         async def my_task(
             retry: Retry = ExponentialRetry.forever(
                 delay=timedelta(seconds=1),

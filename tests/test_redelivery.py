@@ -351,7 +351,7 @@ async def test_worker_joining_doesnt_steal_renewed_lease(docket: Docket):
 
 
 @skip_memory  # test monkeypatches Redis methods which can't be patched on BurnerRedis
-async def test_lease_renewal_recovers_from_redis_error(
+async def test_lease_renewal_recovers_from_redis_error(  # pragma: no cover
     docket: Docket, caplog: pytest.LogCaptureFixture
 ):
     """Lease renewal should recover from transient Redis errors.

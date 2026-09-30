@@ -48,8 +48,7 @@ class Logged(Annotation):
     Example:
 
     ```python
-    @task
-    def setup_new_customer(
+    async def setup_new_customer(
         customer_id: Annotated[int, Logged],
         addresses: Annotated[list[Address], Logged(length_only=True)],
         password: str,
@@ -57,10 +56,10 @@ class Logged(Annotation):
         ...
     ```
 
-    In the logs, you's see the task referenced as:
+    In the logs, you'd see the task referenced as:
 
     ```
-    setup_new_customer(customer_id=123, addresses[len 2], password=...)
+    setup_new_customer(customer_id=123, addresses=[len 2], password=...){01a0f2f9-399a-7158-a103-01181827f840}
     ```
     """
 

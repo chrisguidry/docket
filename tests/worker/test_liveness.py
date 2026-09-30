@@ -195,7 +195,7 @@ async def test_worker_draining_after_disconnect_is_not_announced(docket: Docket)
                 )
             finally:
                 worker_run.cancel()
-                with suppress(asyncio.CancelledError):
+                with suppress(asyncio.CancelledError):  # pragma: no branch
                     await worker_run
 
 

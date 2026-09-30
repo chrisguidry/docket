@@ -68,7 +68,7 @@ For tasks with known steps, use `set_total()` and `increment()`:
 ```python
 async def process_batch(
     batch_id: int,
-    progress: ExecutionProgress = Progress()
+    progress: Progress = Progress()
 ) -> None:
     items = await fetch_batch_items(batch_id)
     await progress.set_total(len(items))
@@ -85,7 +85,7 @@ For fine-grained work, batch progress updates to reduce Redis calls:
 ```python
 async def process_large_dataset(
     dataset_id: str,
-    progress: ExecutionProgress = Progress()
+    progress: Progress = Progress()
 ) -> None:
     records = await load_dataset(dataset_id)
     await progress.set_total(len(records))
@@ -111,7 +111,7 @@ Break down complex tasks into subtasks with their own progress:
 ```python
 async def data_migration(
     source_db: str,
-    progress: ExecutionProgress = Progress()
+    progress: Progress = Progress()
 ) -> None:
     # Define major phases
     phases = [
@@ -132,8 +132,11 @@ async def data_migration(
         async for update in phase_func(source_db):
             # Each phase returns progress from 0-100
             delta = update - phase_progress
-            await progress.increment(delta)
-            phase_progress = update
+            # increment() rejects amounts below 1, so skip any update
+            # that is not higher than the last one
+            if delta > 0:
+                await progress.increment(delta)
+                phase_progress = update
 ```
 
 ## Retrieving Task Results

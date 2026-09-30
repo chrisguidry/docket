@@ -321,7 +321,7 @@ async def test_heartbeat_resumes_after_reconnect(docket: Docket):
                 )
             finally:
                 worker_run.cancel()
-                with suppress(asyncio.CancelledError):
+                with suppress(asyncio.CancelledError):  # pragma: no branch
                     await worker_run
 
 
@@ -390,7 +390,7 @@ async def test_worker_fails_when_automatic_seeding_raises_a_real_error(docket: D
         async with Worker(
             docket, reconnection_delay=timedelta(milliseconds=50)
         ) as worker:
-            with pytest.raises(ExceptionGroup) as caught:
+            with pytest.raises(ExceptionGroup) as caught:  # pragma: no branch
                 await worker.run_until_finished()
 
     assert [type(error) for error in caught.value.exceptions] == [ValueError]

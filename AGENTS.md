@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 pytest
 
 # Run specific test
-pytest tests/test_docket.py::test_specific_function
+pytest tests/fundamentals/test_scheduling.py::test_immediate_task_execution
 ```
 
 The project REQUIRES 100% test coverage
@@ -109,7 +109,7 @@ prose ride along to a PR. Only switch into the skill's standalone
 
 - **`Execution`** (`src/docket/execution.py`): Task execution context with metadata
 
-### Dependencies System (`src/docket/dependencies.py`)
+### Dependencies System (`src/docket/dependencies/`)
 
 Rich dependency injection supporting:
 
@@ -129,7 +129,7 @@ Rich dependency injection supporting:
 
 ### Task Lifecycle
 
-1. Registration with `Docket.register()` or `@docket.task`
+1. Registration with `Docket.register()`, or implicitly when `add()`, `replace()`, or `call()` receives a function
 2. Scheduling: immediate → Redis stream, future → Redis sorted set
 3. Worker processing: scheduler moves due tasks, workers consume via consumer groups
 4. Execution: dependency injection, retry logic, acknowledgment
@@ -143,9 +143,9 @@ Rich dependency injection supporting:
   - `docket.py` - Core Docket class
   - `worker.py` - Worker implementation
   - `execution.py` - Task execution context
-  - `dependencies.py` - Dependency injection system
+  - `dependencies/` - Dependency injection system
   - `tasks.py` - Built-in utility tasks
-  - `cli.py` - Command-line interface
+  - `cli/` - Command-line interface
 
 ### Testing and Examples
 

@@ -399,7 +399,7 @@ async def test_worker_recovers_from_redis_errors(
                 )
             finally:
                 run.cancel()
-                with suppress(asyncio.CancelledError):
+                with suppress(asyncio.CancelledError):  # pragma: no branch
                     await run
 
 

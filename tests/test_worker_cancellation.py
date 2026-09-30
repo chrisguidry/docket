@@ -78,7 +78,7 @@ async def _wait_for_worker_readiness(worker: Worker) -> None:
         if session is not None and session.cancellation_ready.is_set():
             return
         await asyncio.sleep(0)
-    raise TimeoutError("worker never became ready")
+    raise TimeoutError("worker never became ready")  # pragma: no cover
 
 
 @pytest.mark.parametrize("offset", OFFSETS)

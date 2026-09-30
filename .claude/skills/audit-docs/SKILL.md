@@ -15,7 +15,7 @@ Any of these edits should make you re-read the affected docstring and any narrat
 
 - Editing the body of a function/method/class that has a docstring.
 - Changing a function or method signature: added, removed, or renamed parameters; changed defaults; changed return type or shape.
-- Changing a Lua script in `src/docket/execution.py` or `src/docket/_redis.py` — atomicity, ordering, and consistency claims in docstrings are usually pinned to the Lua, not the Python.
+- Changing a Lua script, which is the docstring of a `@redis_script` function in `src/docket/_execution_scripts.py`, `src/docket/_execution_progress.py`, `src/docket/_redelivery.py`, `src/docket/worker.py`, or `src/docket/dependencies/`. Atomicity, ordering, and consistency claims in docstrings are usually pinned to the Lua, not the Python.
 - Renaming or removing a public class, function, method, exception, or enum value.
 - Changing a public exception type, error message, or condition under which something is raised.
 - Changing a side effect on shared state (Redis keys, channels, sorted sets, streams).
@@ -34,7 +34,7 @@ When you've made one of the changes above:
    - Silence on a load-bearing contract a caller would be surprised by — idempotency on duplicate keys is the canonical example: `Docket.add()` is idempotent on duplicate keys (no-ops), but the docstring used to be silent on that, leading callers to either avoid the pattern or learn it the hard way.
 2. **Tests that pin the contract.** If a test exists for the changed behavior, the test is the contract. When the docstring and the test disagree, the test wins (or both are wrong, in which case raise that with the user — don't paper over it). Useful test directories:
    - `tests/fundamentals/` — core lifecycle, scheduling, retries, idempotency.
-   - `tests/concurrency_limits/`, `tests/cron/`, `tests/perpetual/`, `tests/debounce/`, `tests/cooldown/`, `tests/rate_limit/`, `tests/strike/` — corresponding dependency docstrings.
+   - For the dependency docstrings: `tests/concurrency_limits/`, `tests/fundamentals/test_cron.py`, `tests/fundamentals/test_perpetual.py`, `tests/test_perpetual_*.py`, `tests/test_debounce.py`, `tests/test_cooldown.py`, `tests/test_ratelimit.py`, and `tests/test_striking.py`.
 3. **Call sites.** If a method's docstring says it raises an exception but the only caller never inspects the return value, the "raises" claim is suspect.
 4. **Narrative docs.** Grep `docs/*.md` and `README.md` for the symbol you changed. For each hit, read the surrounding section and verify the prose still matches the code.
 

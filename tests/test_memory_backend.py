@@ -292,3 +292,14 @@ async def test_memory_url_with_path_isolation():
         assert db1_server is not None
         assert db2_server is not None
         assert db1_server is not db2_server
+
+
+async def test_memory_publish_reaches_a_subscriber():
+    """publish() on a memory:// connection delivers to its subscribers.
+
+    The explicit memory:// URL makes this run on every backend leg.
+    """
+    async with RedisConnection("memory://publish") as connection:
+        async with connection.pubsub() as pubsub:
+            await pubsub.subscribe("greetings")
+            assert await connection.publish("greetings", "hello") == 1

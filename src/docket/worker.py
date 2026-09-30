@@ -883,7 +883,7 @@ class Worker:
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
                 await process_completed_tasks()
-            if self._processing_session is session:
+            if self._processing_session is session:  # pragma: no branch
                 self._processing_session = None
 
     async def _scheduler_loop(self, redis: Redis) -> None:

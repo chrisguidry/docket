@@ -17,4 +17,5 @@ omit =
     tests/test_pubsub_resp_version.py
 
 [report]
-exclude_also = ["\\.\\.\\.$"]
+exclude_also =
+    \.\.\.$

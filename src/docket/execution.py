@@ -917,7 +917,7 @@ class Execution:
         """
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:
-                async with redis.pipeline() as pipe:
+                async with redis.pipeline() as pipe:  # pragma: no branch
                     pipe.hgetall(self._redis_key)
                     self.progress._read(pipe)  # pyright: ignore[reportPrivateUsage]
                     data, progress_data = await pipe.execute()

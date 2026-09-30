@@ -1,4 +1,4 @@
-"""Tests for built-in tasks (trace, fail)."""
+"""Tests for built-in tasks (trace, fail, sleep)."""
 
 import logging
 
@@ -31,3 +31,16 @@ async def test_all_dockets_have_a_fail_task(
         await worker.run_until_finished()
 
         assert "Hello, world!" in caplog.text
+
+
+async def test_all_dockets_have_a_sleep_task(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """All dockets should have a sleep task"""
+
+    await docket.add(tasks.sleep)(0.01)
+
+    with caplog.at_level(logging.INFO):
+        await worker.run_until_finished()
+
+        assert "Sleeping for 0.01 seconds" in caplog.text
