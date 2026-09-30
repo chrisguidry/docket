@@ -270,6 +270,22 @@ async def _claim(
         end
     end
 
+    -- A cancel does not change the generation.  It also cannot XDEL an entry
+    -- the scheduler moved from the queue, because the runs hash has no
+    -- stream_id for it.  So refuse a cancelled key here, and ACK and XDEL
+    -- its message.
+    if redis.call('HGET', runs_key, 'state') == 'cancelled' then
+        if message_id ~= '' then
+            redis.call('XACK', stream_key, worker_group_name, message_id)
+            redis.call('XDEL', stream_key, message_id)
+        end
+        return {
+            'CANCELLED',
+            redis.call('HGETALL', runs_key),
+            redis.call('HGETALL', progress_key)
+        }
+    end
+
     -- Update execution state to running
     redis.call('HSET', runs_key,
         'state', 'running',
