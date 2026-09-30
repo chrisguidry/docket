@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Collection, Sequence, cast
 
 import redis.exceptions
+from redis.utils import str_if_bytes
 
 from ._redis import RedisClient
 from .execution import Execution, ExecutionState
@@ -167,6 +168,13 @@ class DocketSnapshotMixin:
 
         total_tasks = total_stream_messages + total_schedule_messages
 
+        # The memory backend returns these entries with bytes keys.
+        pending_messages = [
+            cast(
+                "RedisStreamPendingMessage", {str_if_bytes(k): v for k, v in p.items()}
+            )
+            for p in pending_messages
+        ]
         pending_lookup: dict[RedisMessageID, RedisStreamPendingMessage] = {
             pending["message_id"]: pending for pending in pending_messages
         }
