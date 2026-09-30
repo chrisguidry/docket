@@ -70,8 +70,11 @@ async def test_interrupted_task_duration_is_measured(
 ):
     """A task that event loop shutdown interrupts records how long it ran."""
     runners: list[asyncio.Task[Any]] = []
+    started = 0.0
 
     async def the_task():
+        nonlocal started
+        started = time.time()
         runners.append(cast(asyncio.Task[Any], asyncio.current_task()))
         await asyncio.sleep(10)
 
@@ -85,6 +88,7 @@ async def test_interrupted_task_duration_is_measured(
     run = asyncio.create_task(worker.run_until_finished())
     await wait_until(lambda: len(runners) == 1)
     await asyncio.sleep(0.1)
+    elapsed = time.time() - started
 
     # Before asyncio.run() returns, it cancels every task that is still
     # running.  Here those are the task that runs the worker and the task
@@ -94,7 +98,7 @@ async def test_interrupted_task_duration_is_measured(
     await asyncio.gather(run, runners[0], return_exceptions=True)
 
     duration: float = TASK_DURATION.call_args.args[0]
-    assert duration >= 0.1
+    assert duration >= elapsed > 0
 
 
 @pytest.fixture
