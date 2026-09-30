@@ -950,61 +950,65 @@ class Execution:
     ) -> AsyncGenerator[StateEvent | ProgressEvent, None]:
         """Subscribe to both state and progress updates for this task.
 
-        Emits the current state as the first event, then subscribes to real-time
-        state and progress updates via Redis pub/sub.
+        Subscribes to the task's state and progress channels, then reads the
+        current state and progress and emits them as the first two events.
+        After those, it emits real-time updates from Redis pub/sub.  Because it
+        subscribes before it reads, every change after the read arrives as a
+        real-time update.  A change between the subscription and the read can
+        appear twice: once in the first two events and once as a real-time
+        update.
 
         Args:
-            ready: Optional ``asyncio.Event`` that is ``set()`` once the
-                Redis ``SUBSCRIBE`` has been acknowledged.  Lets callers
-                deterministically wait until the subscription is live
-                before publishing -- avoids the race where early events
-                are dropped because the subscriber hadn't connected yet.
+            ready: Optional ``asyncio.Event``.  ``subscribe()`` sets it after
+                Redis acknowledges the ``SUBSCRIBE`` and after it reads the
+                current state.  A change after that arrives only as a
+                real-time update, so a caller that waits on it before
+                publishing receives each change once.
 
         Yields:
             Dict containing state or progress update events with a 'type' field:
             - For state events: type="state", state, worker, timestamps, error
             - For progress events: type="progress", current, total, message, updated_at
         """
-        # First, emit the current state
-        await self.sync()
-
-        # Build initial state event from current attributes
-        initial_state: StateEvent = {
-            "type": "state",
-            "key": self.key,
-            "state": self.state,
-            "when": self.when.isoformat(),
-            "worker": self.worker,
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": (
-                self.completed_at.isoformat() if self.completed_at else None
-            ),
-            "error": self.error,
-        }
-
-        yield initial_state
-
-        progress_event: ProgressEvent = {
-            "type": "progress",
-            "key": self.key,
-            "current": self.progress.current,
-            "total": self.progress.total,
-            "message": self.progress.message,
-            "updated_at": self.progress.updated_at.isoformat()
-            if self.progress.updated_at
-            else None,
-        }
-
-        yield progress_event
-
-        # Then subscribe to real-time updates
         state_channel = self.docket.key(f"state:{self.key}")
         progress_channel = self.docket.key(f"progress:{self.key}")
         async with self.docket._pubsub() as pubsub:
             await pubsub.subscribe(state_channel, progress_channel)
             await confirm_subscriptions(pubsub, 2)
+
+            await self.sync()
             if ready is not None:
                 ready.set()
+
+            # Build initial state event from current attributes
+            initial_state: StateEvent = {
+                "type": "state",
+                "key": self.key,
+                "state": self.state,
+                "when": self.when.isoformat(),
+                "worker": self.worker,
+                "started_at": self.started_at.isoformat() if self.started_at else None,
+                "completed_at": (
+                    self.completed_at.isoformat() if self.completed_at else None
+                ),
+                "error": self.error,
+            }
+
+            yield initial_state
+
+            progress_event: ProgressEvent = {
+                "type": "progress",
+                "key": self.key,
+                "current": self.progress.current,
+                "total": self.progress.total,
+                "message": self.progress.message,
+                "updated_at": self.progress.updated_at.isoformat()
+                if self.progress.updated_at
+                else None,
+            }
+
+            yield progress_event
+
             async for message in pubsub.listen():  # pragma: no cover
                 if message["type"] == "message":
                     message_data = json.loads(message["data"])
