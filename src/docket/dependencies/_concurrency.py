@@ -729,9 +729,8 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         """
         runs_key = f"{docket.prefix}:runs:{task_key}"
         async with docket.redis() as redis:
-            waiter_stream_b, waiter_entry_id_b = await redis.hmget(  # type: ignore[misc]
-                runs_key, "waiter_stream", "waiter_entry_id"
-            )
+            waiter_stream_b = await redis.hget(runs_key, "waiter_stream")
+            waiter_entry_id_b = await redis.hget(runs_key, "waiter_entry_id")
             if not waiter_stream_b or not waiter_entry_id_b:
                 return
             waiter_stream = waiter_stream_b.decode()
