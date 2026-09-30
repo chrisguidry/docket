@@ -259,10 +259,10 @@ ACL SETUSER docket-user on >secure-password \
 
 ### Valkey Support
 
-Docket also works with Valkey (Redis fork):
+Docket also works with Valkey (Redis fork). Valkey uses the Redis protocol, so connect with a `redis://` or `rediss://` URL:
 
 ```bash
-export DOCKET_URL=valkey://valkey.prod.com:6379/0
+export DOCKET_URL=redis://valkey.prod.com:6379/0
 ```
 
 ## State and Result Storage
@@ -287,7 +287,8 @@ The `execution_ttl` controls:
 
 - How long state records persist in Redis after task completion
 - How long result data is retained (see Result Storage below)
-- How long progress information remains available
+
+It does not affect progress information, which Docket deletes when the task ends.
 
 ### Fire-and-Forget Mode
 
@@ -299,16 +300,16 @@ async with Docket(
     url="redis://localhost:6379/0",
     execution_ttl=timedelta(0)  # Disable state persistence
 ) as docket:
-    # No state records, no result storage, no progress tracking
+    # State records are deleted when each task ends, and results are not stored
     for event in events:
         await docket.add(process_event)(event)
 ```
 
 With `execution_ttl=0`:
 
-- **No state records**: State transitions are not written to Redis
+- **No state records after a task ends**: Docket writes a task's state record while it is scheduled, queued, or running, and deletes the record when the task ends
 - **No result storage**: Task return values are not persisted
-- **No progress tracking**: Progress updates are not recorded
+- **Progress tracking still works**: Docket writes progress updates while the task runs and deletes them when the task ends, the same as with any `execution_ttl`
 - **Maximum throughput**: Minimizes Redis operations per task
 - **get_result() unavailable**: Cannot retrieve task results
 
@@ -529,19 +530,21 @@ Supported operators include `==`, `!=`, `<`, `<=`, `>`, `>=`.
 Target very specific scenarios:
 
 ```python
-# Block only high-value orders for a specific customer
+# Block one customer's orders, and every high-value order
 await docket.strike(process_order, "customer_id", "==", "12345")
 await docket.strike(process_order, "amount", ">", 1000)
 
 # This order won't run (blocked customer)
 await docket.add(process_order)(customer_id="12345", amount=500)
 
-# This order won't run (blocked customer AND high amount)
-await docket.add(process_order)(customer_id="12345", amount=2000)
-
-# This order WILL run (different customer)
+# This order won't run (high amount, from any customer)
 await docket.add(process_order)(customer_id="67890", amount=2000)
+
+# This order WILL run (different customer, low amount)
+await docket.add(process_order)(customer_id="67890", amount=500)
 ```
+
+Any one strike blocks a task. Strikes do not combine into a single condition, so you cannot strike only the orders that match both the customer and the amount.
 
 ### Striking from the CLI
 

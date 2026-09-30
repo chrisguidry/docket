@@ -41,17 +41,14 @@ class Cron(Perpetual):
     ```python
     from zoneinfo import ZoneInfo
 
-    @task
     async def weekly_report(cron: Cron = Cron("0 9 * * 1")) -> None:
         # Runs every Monday at 9:00 AM UTC
         ...
 
-    @task
     async def daily_cleanup(cron: Cron = Cron("@daily")) -> None:
         # Runs every day at midnight UTC
         ...
 
-    @task
     async def morning_standup(
         cron: Cron = Cron("0 9 * * 1-5", tz=ZoneInfo("America/Los_Angeles"))
     ) -> None:

@@ -883,7 +883,7 @@ class Worker:
             if active_tasks:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
                 await process_completed_tasks()
-            if self._processing_session is session:
+            if self._processing_session is session:  # pragma: no branch
                 self._processing_session = None
 
     async def _scheduler_loop(self, redis: Redis) -> None:
@@ -1384,12 +1384,12 @@ class Worker:
             try:
                 async with self.docket._pubsub() as pubsub:
                     await pubsub.psubscribe(cancel_pattern)
-                    while not session.stopping.is_set():
+                    while not session.stopping.is_set():  # pragma: no branch
                         message = await pubsub.get_message(
                             ignore_subscribe_messages=False, timeout=0.1
                         )
                         if message is None:
-                            continue
+                            continue  # pragma: no cover - CPython gh-106749
                         if message["type"] == "pmessage":
                             await self._handle_cancellation(message)
                         else:

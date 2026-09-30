@@ -4,7 +4,7 @@ Docket includes utilities for testing background task systems in realistic ways 
 
 ## Using In-Memory Backend (No Redis Required)
 
-For the fastest tests and simplest setup, Docket supports an in-memory backend using [burner-redis](https://github.com/PrefectHQ/burner-redis). This is perfect for:
+For the fastest tests and simplest setup, Docket supports an in-memory backend using [burner-redis](https://github.com/prefectlabs/burner-redis). This is perfect for:
 
 - **CI/CD environments** - No need to spin up Redis containers
 - **Local development** - Test without installing/running Redis
@@ -235,20 +235,22 @@ async def test_perpetual_monitoring(test_docket: Docket, test_worker: Worker) ->
     test_docket.register(send_reports)
 
     # This would normally run forever
-    await test_docket.add(health_check_service)("https://api.example.com")
+    health_check = await test_docket.add(health_check_service)(
+        "https://api.example.com"
+    )
 
     # Also schedule some regular tasks
     await test_docket.add(process_data)(dataset="test")
     await test_docket.add(send_reports)()
 
     # Let health check run 3 times, everything else runs to completion
-    await test_worker.run_at_most({"health_check_service": 3})
+    await test_worker.run_at_most({health_check.key: 3})
 
     # Verify the health check ran the expected number of times
     assert health_check_call_count == 3
 ```
 
-The [`run_at_most()`](api-reference.md#docket.Worker.run_at_most) method takes a dictionary mapping task names to maximum execution counts. Tasks not in the dictionary run to completion as normal.
+The [`run_at_most()`](api-reference.md#docket.Worker.run_at_most) method takes a dictionary mapping task keys to maximum execution counts. A task added without a `key` gets a new UUID as its key, so take the key from the `Execution` that `add()` returns. Tasks whose keys are not in the dictionary run to completion as normal.
 
 ## Testing Self-Perpetuating Chains
 
@@ -395,30 +397,26 @@ async def test_idempotent_scheduling(test_docket: Docket) -> None:
 
 ### Test Timing-Sensitive Logic
 
-For tasks that depend on timing, use controlled time in tests:
+`run_until_finished()` also waits for tasks scheduled in the future, and runs each one when it comes due. To test what happens before a task's scheduled time, make your assertions before you run the worker. Keep the delays short, since the test waits for them:
 
 ```python
 from datetime import datetime, timedelta, timezone
-from unittest import mock
 
 async def test_scheduled_task_timing(test_docket: Docket, test_worker: Worker) -> None:
     """Test timing-sensitive task scheduling."""
     test_docket.register(send_reminder)
-    now = datetime.now(timezone.utc)
-    future_time = now + timedelta(seconds=10)
+    future_time = datetime.now(timezone.utc) + timedelta(seconds=1)
 
     await test_docket.add(send_reminder, when=future_time)(customer_id=123)
 
-    # Task should not run immediately
-    await test_worker.run_until_finished()
-
+    # Before the worker runs, the task waits on the docket
+    snapshot = await test_docket.snapshot()
+    assert len(snapshot.future) == 1
     assert not reminder_was_sent(123)
 
-    # Fast-forward time and test again
-    with mock.patch('docket.datetime') as mock_datetime:
-        mock_datetime.now.return_value = future_time + timedelta(seconds=1)
+    # This waits until the task is due, then runs it
+    await test_worker.run_until_finished()
 
-        await test_worker.run_until_finished()
-
-        assert reminder_was_sent(123)
+    assert reminder_was_sent(123)
+    assert datetime.now(timezone.utc) >= future_time
 ```

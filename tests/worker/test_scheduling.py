@@ -373,3 +373,27 @@ async def test_worker_run_classmethod_memory_backend() -> None:
         schedule_automatic_tasks=False,
         until_finished=True,
     )
+
+
+async def test_worker_run_loads_tasks_and_fallback_by_module_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Worker.run imports its task collections and its fallback task by path."""
+    url = f"memory://{uuid4()}"
+    docket_name = f"test-run-{uuid4()}"
+
+    async def not_on_the_worker(message: str) -> None: ...
+
+    async with Docket(name=docket_name, url=url) as docket:
+        await docket.add(not_on_the_worker)("handled by the fallback")
+
+    await Worker.run(
+        docket_name=docket_name,
+        url=url,
+        tasks=["docket.tasks:standard_tasks"],
+        fallback_task="docket.tasks:trace",
+        schedule_automatic_tasks=False,
+        until_finished=True,
+    )
+
+    assert "handled by the fallback:" in caplog.text

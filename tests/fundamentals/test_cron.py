@@ -131,7 +131,7 @@ async def test_automatic_cron_waits_for_scheduled_time(docket: Docket, worker: W
 @pytest.mark.skipif(
     sys.platform == "win32", reason="Timing-sensitive: unreliable on Windows"
 )
-async def test_cron_with_timezone(docket: Docket, worker: Worker):
+async def test_cron_with_timezone(docket: Docket, worker: Worker):  # pragma: no cover
     """Cron tasks can be scheduled in a specific timezone."""
     runs = 0
 

@@ -46,7 +46,6 @@ class Perpetual(CompletionHandler["Perpetual"]):
     Example:
 
     ```python
-    @task
     async def my_task(perpetual: Perpetual = Perpetual()) -> None:
         ...
     ```

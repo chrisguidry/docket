@@ -22,7 +22,6 @@ class Timeout(Runtime["Timeout"]):
     Example:
 
     ```python
-    @task
     async def my_task(timeout: Timeout = Timeout(timedelta(seconds=10))) -> None:
         ...
     ```
