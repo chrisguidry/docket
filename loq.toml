@@ -34,4 +34,4 @@ max_lines = 862
 
 [[rules]]
 path = "tests/instrumentation/test_counters.py"
-max_lines = 544
+max_lines = 552

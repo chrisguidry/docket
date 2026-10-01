@@ -468,9 +468,11 @@ def TASKS_SUPERSEDED(monkeypatch: pytest.MonkeyPatch) -> Mock:
     return mock_obj
 
 
+@pytest.mark.parametrize("newer_state", ["queued", "cancelled"])
 async def test_superseded_task_increments_superseded_counter(
     docket: Docket,
     worker: Worker,
+    newer_state: str,
     TASKS_STARTED: Mock,
     TASKS_COMPLETED: Mock,
     TASKS_RUNNING: Mock,
@@ -480,7 +482,9 @@ async def test_superseded_task_increments_superseded_counter(
 
     When claim() detects that a task has been superseded by a newer generation,
     the worker records TASKS_SUPERSEDED with docket.where=worker, but doesn't
-    touch TASKS_STARTED, TASKS_RUNNING, or TASKS_COMPLETED.
+    touch TASKS_STARTED, TASKS_RUNNING, or TASKS_COMPLETED.  When the newer
+    generation was cancelled, docket.cancel() counts only that generation, so the
+    worker still counts the older one as superseded.
     """
 
     async def superseded_task():
@@ -488,9 +492,13 @@ async def test_superseded_task_increments_superseded_counter(
 
     await docket.add(superseded_task, key="metrics-superseded")()
 
-    # Bump the generation so the worker sees the message as superseded
+    # Bump the generation so the claim refuses the message as superseded.
+    # Then write the newer generation's state, with the TTL that a cancel sets.
     async with docket.redis() as redis:
-        await redis.hincrby(docket.key("runs:metrics-superseded"), "generation", 1)
+        runs_key = docket.key("runs:metrics-superseded")
+        await redis.hincrby(runs_key, "generation", 1)
+        await redis.hset(runs_key, "state", newer_state)
+        await redis.expire(runs_key, docket.execution_ttl)
 
     await worker.run_until_finished()
 
