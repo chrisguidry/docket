@@ -80,8 +80,8 @@ async def test_interrupted_task_duration_is_measured(
 
     execution = await docket.add(the_task)()
 
-    # The interrupted task stays pending for redelivery, so its runs and
-    # progress hashes have no TTL yet.
+    # On Python 3.11 and later, the interrupted task stays pending for
+    # redelivery, so its runs and progress hashes have no TTL yet.
     key_leak_checker.add_exemption(docket.runs_key(execution.key))
     key_leak_checker.add_exemption(docket.key(f"progress:{execution.key}"))
 
