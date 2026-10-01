@@ -1,7 +1,9 @@
 """Tests for progress/state pub/sub events and monitoring."""
 
 import asyncio
+from contextlib import aclosing
 from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable
 from unittest.mock import AsyncMock
 
 import pytest
@@ -147,6 +149,57 @@ async def test_run_subscribe_both_state_and_progress(execution: Execution):
 
     increment_event = next(e for e in progress_events if e.get("current") == 5)
     assert increment_event["current"] == 5
+
+
+@pytest.fixture
+def other_execution(docket: Docket) -> Execution:
+    """A second Execution for the same task key, like the one a worker uses."""
+    return Execution(
+        docket, AsyncMock(), (), {}, "test-key", datetime.now(timezone.utc), 1
+    )
+
+
+async def change_state(execution: Execution) -> None:
+    await execution.claim("worker-1")
+
+
+async def change_progress(execution: Execution) -> None:
+    await execution.progress.set_total(50)
+
+
+@pytest.mark.parametrize(
+    "change, expected",
+    [
+        pytest.param(
+            change_state,
+            {"type": "state", "state": ExecutionState.RUNNING},
+            id="state",
+        ),
+        pytest.param(
+            change_progress,
+            {"type": "progress", "total": 50},
+            id="progress",
+        ),
+    ],
+)
+async def test_subscribe_yields_change_made_before_it_subscribes(
+    execution: Execution,
+    other_execution: Execution,
+    change: Callable[[Execution], Awaitable[None]],
+    expected: dict[str, Any],
+):
+    """subscribe() should yield a change made after its first read and before it subscribes.
+
+    Redis does not deliver a message published before the subscription, so
+    only the second read, after subscribing, finds this change.
+    """
+    async with aclosing(execution.subscribe()) as events:
+        await anext(events)
+        await anext(events)
+        await change(other_execution)
+        event = await asyncio.wait_for(anext(events), timeout=2.0)
+
+    assert dict(event).items() >= expected.items()
 
 
 async def test_completed_state_publishes_event(execution: Execution):
