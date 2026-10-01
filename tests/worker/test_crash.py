@@ -63,6 +63,8 @@ async def test_worker_crash_reaches_caller_when_listener_loses_its_cancel(
         with (
             patch.object(Execution, "mark_as_completed", crash),
             patch.object(Execution, "mark_as_failed", crash),
+            pytest.raises(ExceptionGroup) as caught,
         ):
-            with pytest.raises((ExceptionGroup, RuntimeError)):
-                await asyncio.wait_for(worker.run_until_finished(), timeout=5)
+            await asyncio.wait_for(worker.run_until_finished(), timeout=5)
+
+    assert any("simulated crash" in str(e) for e in caught.value.exceptions)
