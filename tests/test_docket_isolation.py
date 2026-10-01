@@ -21,6 +21,7 @@ from typing import AsyncGenerator, Callable
 
 import pytest
 from docket import Docket
+from docket._redis import confirm_subscriptions
 
 from tests.conftest import wait_for_event
 
@@ -110,6 +111,9 @@ async def test_state_pubsub_does_not_cross_dockets(
     ) -> None:
         async with target_docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
             await pubsub.subscribe(target_docket.key(f"state:{task_key}"))
+            # A PUBLISH that reaches Redis before the SUBSCRIBE goes to no one,
+            # so signal readiness only once Redis confirms the subscription.
+            await confirm_subscriptions(pubsub, 1)
             ready.set()
             async for message in pubsub.listen():
                 if message["type"] != "message":
