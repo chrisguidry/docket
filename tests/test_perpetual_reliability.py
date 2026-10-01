@@ -251,6 +251,11 @@ async def test_chain_survives_terminal_failure_after_on_complete_via_supersessio
         perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=20)),
     ):
         executions.append(1)
+        if len(executions) == 1:
+            # On a slow runner, a successor due 20 ms out is already due when
+            # this run ends, and worker_a runs it before it crashes.  A second
+            # keeps it out of the stream until worker_a has crashed.
+            perpetual.after(timedelta(seconds=1))
 
     await docket.add(perpetual_task, key="perpetual")()
 
