@@ -602,6 +602,7 @@ class Execution:
         This consolidates worker operations when claiming a task into a single
         atomic Lua script that:
         - Checks if the task has been superseded by a newer generation
+        - Refuses a cancelled task and publishes its cancelled state
         - Sets state to RUNNING with worker name and timestamp
         - Initializes progress tracking (current=0, total=100)
         - Deletes known/stream_id fields to allow task rescheduling
@@ -627,8 +628,11 @@ class Execution:
         started_at = datetime.now(timezone.utc)
         started_at_iso = started_at.isoformat()
 
-        # Pre-build the running-state payload; Lua only publishes it on the
-        # non-SUPERSEDED path.
+        # Pre-build the running-state payload, because cjson isn't available on
+        # the in-memory backend.  Lua publishes it when the claim succeeds.  A
+        # claim that refuses a cancelled key publishes the cancelled state, and
+        # Lua builds that payload from the runs hash.  So this passes the key
+        # already JSON-encoded, and Lua does no escaping of its own.
         state_payload = json.dumps(
             {
                 "type": "state",
@@ -653,6 +657,7 @@ class Execution:
                     started_at=started_at_iso,
                     generation=self._generation,
                     state_payload=state_payload,
+                    key_json=json.dumps(self.key),
                     worker_group_name=self.docket.worker_group_name,
                     message_id=self.message_id or b"",
                 )
@@ -995,14 +1000,17 @@ class Execution:
         second read.  A change after the subscription arrives as a real-time
         update.  A change between the subscription and the second read can
         appear twice: once from the second read and once as a real-time update.
+        A cancel can also arrive twice as real-time updates: once from
+        ``Docket.cancel()`` and once from a worker that refuses to claim the
+        cancelled task.
 
         Args:
             ready: Optional ``asyncio.Event``.  ``subscribe()`` sets it after
                 Redis acknowledges the ``SUBSCRIBE`` and after the second read.
                 Both happen only when the caller asks for a third event.  A
                 change after that arrives only as a real-time update, so a
-                caller that waits on it before publishing receives each change
-                once.
+                caller that waits on it before publishing does not also see
+                that change from a read.
 
         Yields:
             Dict containing state or progress update events with a 'type' field:

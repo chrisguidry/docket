@@ -237,6 +237,7 @@ async def _claim(
     started_at: Arg[str],
     generation: Arg[int],
     state_payload: Arg[str],
+    key_json: Arg[str],
     worker_group_name: Arg[str],
     message_id: Arg[bytes],
 ) -> list[Any]:
@@ -279,6 +280,23 @@ async def _claim(
             redis.call('XACK', stream_key, worker_group_name, message_id)
             redis.call('XDEL', stream_key, message_id)
         end
+        -- docket.cancel() leaves a running task's cancelled state to its
+        -- worker.  If that worker died, the redelivery sweep reclaims its
+        -- message for another worker, whose claim takes this branch.  So
+        -- this claim publishes the cancelled state.  Without it, a waiter in
+        -- get_result() waits until its timeout, or forever without one.  For
+        -- a task that was queued at the cancel, docket.cancel() published
+        -- the same event already, so a subscriber can receive it twice.
+        --
+        -- The event takes completed_at from the runs hash, so it matches what
+        -- sync() reads.  cjson isn't available on the in-memory backend, so
+        -- this builds the JSON with string concatenation.  Python passes the
+        -- key already JSON-encoded, and an ISO timestamp needs no escaping.
+        local completed_at = redis.call('HGET', runs_key, 'completed_at')
+            or started_at
+        redis.call('PUBLISH', state_channel,
+            '{"type": "state", "key": ' .. key_json ..
+            ', "state": "cancelled", "completed_at": "' .. completed_at .. '"}')
         return {
             'CANCELLED',
             redis.call('HGETALL', runs_key),
