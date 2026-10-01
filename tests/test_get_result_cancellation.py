@@ -6,7 +6,7 @@ from typing import Callable
 
 import pytest
 
-from docket import Docket, ExecutionCancelled, Perpetual, Worker
+from docket import Docket, Execution, ExecutionCancelled, Perpetual, Worker
 from tests.conftest import wait_until
 
 
@@ -74,6 +74,51 @@ async def test_cancel_wakes_get_result_on_a_running_task(
     with pytest.raises(ExecutionCancelled):
         await waiter
     await asyncio.wait_for(worker_task, timeout=5.0)
+
+
+async def claim_as_a_worker_that_dies(docket: Docket) -> None:
+    """Read and claim the next task as a worker that then dies.
+
+    A worker killed mid-run writes nothing more to Redis.  Its message stays
+    pending, and the runs hash says the task is running.
+    """
+    await docket._ensure_stream_and_group()  # pyright: ignore[reportPrivateUsage]
+    async with docket.redis() as redis:
+        reply = await redis.xreadgroup(
+            groupname=docket.worker_group_name,
+            consumername="dead-worker",
+            streams={docket.stream_key: ">"},
+            count=1,
+        )
+    assert reply
+    [(_, [(message_id, message)])] = reply
+    execution = await Execution.from_message(
+        docket, message, message_id=message_id, sync=False
+    )
+    assert await execution.claim("dead-worker")
+
+
+async def test_cancel_wakes_get_result_on_a_task_whose_worker_died(docket: Docket):
+    """The cancel leaves a running task's cancelled state to its worker.  When
+    that worker is dead, the redelivery sweep reclaims its message for another
+    worker, and that worker's claim refuses the cancelled key.  So the claim
+    has to publish the cancelled state."""
+
+    async def never_runs() -> None: ...
+
+    execution = await docket.add(never_runs)()
+    await claim_as_a_worker_that_dies(docket)
+
+    waiter = asyncio.create_task(execution.get_result(timeout=timedelta(seconds=3)))
+    await wait_for_subscriber(docket, execution.key)
+
+    await docket.cancel(execution.key)
+
+    async with Worker(docket, redelivery_timeout=timedelta(milliseconds=200)) as worker:
+        await worker.run_until_finished()
+
+    with pytest.raises(ExecutionCancelled):
+        await waiter
 
 
 async def test_a_perpetual_that_cancels_itself_still_returns_its_result(

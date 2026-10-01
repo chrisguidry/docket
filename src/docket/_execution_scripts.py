@@ -237,6 +237,7 @@ async def _claim(
     started_at: Arg[str],
     generation: Arg[int],
     state_payload: Arg[str],
+    cancelled_payload: Arg[str],
     worker_group_name: Arg[str],
     message_id: Arg[bytes],
 ) -> list[Any]:
@@ -279,6 +280,14 @@ async def _claim(
             redis.call('XACK', stream_key, worker_group_name, message_id)
             redis.call('XDEL', stream_key, message_id)
         end
+        -- docket.cancel() leaves a running task's cancelled state to its
+        -- worker.  If that worker died, the redelivery sweep reclaims its
+        -- message for another worker, whose claim takes this branch.  So
+        -- this claim publishes the cancelled state.  Without it, a waiter in
+        -- get_result() waits until its timeout, or forever without one.  For
+        -- a task that was queued at the cancel, docket.cancel() published
+        -- the state already, so a subscriber can receive it twice.
+        redis.call('PUBLISH', state_channel, cancelled_payload)
         return {
             'CANCELLED',
             redis.call('HGETALL', runs_key),
