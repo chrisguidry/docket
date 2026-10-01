@@ -109,9 +109,9 @@ if sys.platform != "win32" or TYPE_CHECKING:
     from docker.models.containers import Container
 
     from tests._container import (
-        allocate_cluster_ports,
         build_cluster_image,
         cleanup_stale_containers,
+        run_cluster_container,
         setup_acl,
         setup_cluster_acl,
         wait_for_cluster,
@@ -170,34 +170,16 @@ def redis_server(
 
     if CLUSTER_ENABLED:
         cluster_image = build_cluster_image(docker_client, base_image)
-        cluster_ports = allocate_cluster_ports()
-        port0, port1, port2 = cluster_ports
-        bus0, bus1, bus2 = port0 + 10000, port1 + 10000, port2 + 10000
-
-        container = with_image_retry(docker_client.containers.run)(
+        container, cluster_ports = run_cluster_container(
+            docker_client,
             cluster_image,
-            detach=True,
-            ports={
-                f"{port0}/tcp": port0,
-                f"{port1}/tcp": port1,
-                f"{port2}/tcp": port2,
-                f"{bus0}/tcp": bus0,
-                f"{bus1}/tcp": bus1,
-                f"{bus2}/tcp": bus2,
-            },
-            environment={
-                "CLUSTER_PORT_0": str(port0),
-                "CLUSTER_PORT_1": str(port1),
-                "CLUSTER_PORT_2": str(port2),
-            },
             labels={
                 "source": "docket-unit-tests",
                 "container_label": container_label,
             },
-            auto_remove=True,
         )
 
-        wait_for_cluster(port0)
+        wait_for_cluster(cluster_ports[0])
 
         if ACL_ENABLED:
             setup_cluster_acl(cluster_ports, acl_credentials)
