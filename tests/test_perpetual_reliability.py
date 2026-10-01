@@ -384,13 +384,10 @@ async def test_docket_cancel_on_scheduled_perpetual_stops_the_chain(
 async def test_cancelled_error_in_perpetual_body_stops_the_chain(
     docket: Docket, worker: Worker
 ):
-    """A Perpetual body that raises ``asyncio.CancelledError`` directly (not
-    received from ``docket.cancel``) hits the same ``except
-    asyncio.CancelledError:`` path: the chain stops.  The worker cannot
-    distinguish user-raised from cancel-driven, and the current behavior is
-    uniform — treat ``CancelledError`` as "this Perpetual is done."  Locking
-    this in keeps a future change to the cancellation handler from quietly
-    altering the contract."""
+    """A Perpetual body that raises ``asyncio.CancelledError`` itself, with no
+    ``docket.cancel()``, ends cancelled, and its chain stops, because nobody
+    called ``cancel()`` on its task.  Locking this in keeps a future change to
+    the cancellation handler from quietly altering the contract."""
     started_count = 0
 
     async def perpetual_body(
