@@ -17,6 +17,7 @@ caller, which must propagate.
 """
 
 import asyncio
+import sys
 from typing import Any
 
 # Sentinel message for internal cancellation during cleanup
@@ -59,3 +60,12 @@ async def cancel_task(task: "asyncio.Task[Any]", reason: str) -> None:
     await asyncio.wait([task])
     if not task.cancelled() and (error := task.exception()) is not None:
         raise error
+
+
+def cancelling(task: "asyncio.Task[Any] | None") -> int:
+    """Return how many cancel requests ``task`` has pending, as
+    Task.cancelling() does.  asyncio.Task counts them only from Python 3.11,
+    so on Python 3.10 this returns 0."""
+    if sys.version_info < (3, 11):
+        return 0  # pragma: no cover
+    return task.cancelling() if task else 0  # pragma: no cover

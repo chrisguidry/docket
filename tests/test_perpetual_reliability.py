@@ -385,8 +385,8 @@ async def test_cancelled_error_in_perpetual_body_stops_the_chain(
     docket: Docket, worker: Worker
 ):
     """A Perpetual body that raises ``asyncio.CancelledError`` itself, with no
-    ``docket.cancel()``, ends cancelled, and its chain stops, because nobody
-    called ``cancel()`` on its task.  Locking this in keeps a future change to
+    ``docket.cancel()``, ends cancelled, and its chain stops, because the
+    worker is not shutting down.  Locking this in keeps a future change to
     the cancellation handler from quietly altering the contract."""
     started_count = 0
 

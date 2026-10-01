@@ -28,18 +28,13 @@ import cloudpickle
 if sys.version_info < (3, 11):
     from exceptiongroup import BaseExceptionGroup, ExceptionGroup  # pragma: no cover
     from taskgroup import TaskGroup  # pragma: no cover
-    from taskgroup.tasks import Task  # pragma: no cover
-
-    # asyncio.Task has no cancelling() before Python 3.11, so the worker
-    # creates its tasks from the backport's Task, which counts cancel() requests.
-    create_task = Task  # pragma: no cover
 else:
-    from asyncio import Task, TaskGroup, create_task  # pragma: no cover
+    from asyncio import TaskGroup  # pragma: no cover
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
-from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task
+from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task, cancelling
 from ._lua import Arg, Key, redis_script
 from ._redelivery import RedeliverySweep, renew_leases
 from ._redis import RedisClient, redis_is_unavailable
@@ -136,6 +131,11 @@ class _ProcessingSession:
 
     stopping: asyncio.Event
     cancellation_ready: asyncio.Event
+    # The task that runs the worker loop, and its cancel requests when this session
+    # started.  A graceful shutdown leaves its request in place, so the count starts
+    # above zero when the same task runs the worker again.
+    loop_task: asyncio.Task[Any] | None = None
+    loop_task_cancelling: int = 0
 
 
 async def default_fallback_task(
@@ -331,8 +331,6 @@ class Worker:
         self._stack.callback(lambda: delattr(self, "_execution_counts"))
         self._tasks_by_key: dict[TaskKey, asyncio.Task[None]] = {}
         self._stack.callback(lambda: delattr(self, "_tasks_by_key"))
-        # The tasks that docket.cancel() cancelled.  A task that something else
-        # cancelled keeps its message pending for redelivery.
         self._cancelled_by_docket: set[asyncio.Task[None]] = set()
         self._stack.callback(lambda: delattr(self, "_cancelled_by_docket"))
 
@@ -650,6 +648,8 @@ class Worker:
         session = _ProcessingSession(
             stopping=asyncio.Event(),
             cancellation_ready=asyncio.Event(),
+            loop_task=asyncio.current_task(),
+            loop_task_cancelling=cancelling(asyncio.current_task()),
         )
         self._processing_session = session
         stopping = self._worker_stopping
@@ -715,8 +715,8 @@ class Worker:
                 sync=False,
             )
 
-            task = create_task(
-                self._execute(execution),
+            task = asyncio.create_task(
+                self._execute(execution, session),
                 name=f"{self.docket.name} - task:{execution.key}",
             )
             active_tasks[task] = message_id
@@ -735,16 +735,15 @@ class Worker:
                 cancelled_by_docket = task in self._cancelled_by_docket
                 self._cancelled_by_docket.discard(task)
                 if task.cancelled():
-                    # _execute handles only a docket.cancel() that arrives
-                    # after the claim, so any other cancel ends the task
-                    # cancelled.  Awaiting the task would raise that
-                    # CancelledError here, and this loop would stop as if it
-                    # were shut down.  For a docket.cancel(), marking the task
-                    # cancelled acknowledges its message.  It also publishes
-                    # the cancelled state, which docket.cancel() leaves to the
-                    # worker once the claim has run.  After any other cancel,
-                    # the loop writes nothing, and the message stays pending
-                    # for redelivery.
+                    # A cancel before the claim, or one during shutdown that
+                    # docket.cancel() did not send, ends the task cancelled.
+                    # Awaiting the task would raise that CancelledError here,
+                    # and this loop would stop as if it were shut down.  For a
+                    # docket.cancel(), marking the task cancelled acknowledges
+                    # its message.  It also publishes the cancelled state, which
+                    # docket.cancel() leaves to the worker once the claim has
+                    # run.  After any other cancel, the loop writes nothing, and
+                    # the message stays pending for redelivery.
                     if cancelled_by_docket:
                         await execution.mark_as_cancelled()
                     continue
@@ -1059,7 +1058,7 @@ class Worker:
         stream_id_key = self.docket.stream_id_key(execution.key)
         await redis.delete(known_task_key, stream_id_key)
 
-    async def _execute(self, execution: Execution) -> None:
+    async def _execute(self, execution: Execution, session: _ProcessingSession) -> None:
         log_context = {**self._log_context(), **execution.specific_labels()}
         counter_labels = {**self.labels(), **execution.general_labels()}
 
@@ -1217,13 +1216,14 @@ class Worker:
                 raise
             except asyncio.CancelledError:
                 duration = log_context["duration"] = time.time() - start
-                # cancelling() counts the cancel() requests on this task, so
-                # it is 0 when the body raised CancelledError itself.  When
-                # something other than docket.cancel() cancelled the task,
-                # such as asyncio.run() before it returns, the worker writes
-                # nothing, and the message stays pending for redelivery.
-                task = cast("Task[None]", asyncio.current_task())
-                if task.cancelling() and task not in self._cancelled_by_docket:
+                # A cancel during shutdown leaves the message pending for redelivery,
+                # unless docket.cancel() sent it.  asyncio.run() cancels the loop task
+                # and this task at once, before the drain starts.  Only Python 3.11 and
+                # later count cancel requests, so on 3.10 this task ends cancelled.
+                if asyncio.current_task() not in self._cancelled_by_docket and (
+                    session.stopping.is_set()
+                    or cancelling(session.loop_task) > session.loop_task_cancelling
+                ):
                     raise
                 span.set_status(Status(StatusCode.OK))
                 await execution.mark_as_cancelled()
