@@ -279,6 +279,11 @@ class Execution:
         # False, and the worker can ack defensively.
         self._acked: bool = False
 
+        # True when the last claim() refused this task as cancelled.  The worker
+        # reads it because a superseded task's state is also CANCELLED when the
+        # newer generation was cancelled.
+        self._refused_as_cancelled: bool = False
+
         # Lifecycle state (mutable)
         self.state: ExecutionState = ExecutionState.SCHEDULED
         self.worker: str | None = None
@@ -654,6 +659,7 @@ class Execution:
 
         self._apply_runs_data(_hash_reply(runs_data))
         self.progress._apply(_hash_reply(progress_data))  # pyright: ignore[reportPrivateUsage]
+        self._refused_as_cancelled = status == b"CANCELLED"
 
         if status in (b"SUPERSEDED", b"CANCELLED"):
             # The `_claim` Lua XACKed and XDELed the stream message before
