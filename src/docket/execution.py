@@ -628,12 +628,11 @@ class Execution:
         started_at = datetime.now(timezone.utc)
         started_at_iso = started_at.isoformat()
 
-        # Pre-build both state payloads, because cjson isn't available on the
-        # in-memory backend.  Lua publishes the running state when the claim
-        # succeeds, and the cancelled state when it refuses a cancelled key.
-        # The cancel's own completed_at is in the runs hash, and the claim
-        # reads that hash only inside the script.  So the cancelled payload
-        # uses the claim's time.
+        # Pre-build the running-state payload, because cjson isn't available on
+        # the in-memory backend.  Lua publishes it when the claim succeeds.  A
+        # claim that refuses a cancelled key publishes the cancelled state, and
+        # Lua builds that payload from the runs hash.  So this passes the key
+        # already JSON-encoded, and Lua does no escaping of its own.
         state_payload = json.dumps(
             {
                 "type": "state",
@@ -641,14 +640,6 @@ class Execution:
                 "state": ExecutionState.RUNNING.value,
                 "worker": worker,
                 "started_at": started_at_iso,
-            }
-        )
-        cancelled_payload = json.dumps(
-            {
-                "type": "state",
-                "key": self.key,
-                "state": ExecutionState.CANCELLED.value,
-                "completed_at": started_at_iso,
             }
         )
 
@@ -666,7 +657,7 @@ class Execution:
                     started_at=started_at_iso,
                     generation=self._generation,
                     state_payload=state_payload,
-                    cancelled_payload=cancelled_payload,
+                    key_json=json.dumps(self.key),
                     worker_group_name=self.docket.worker_group_name,
                     message_id=self.message_id or b"",
                 )

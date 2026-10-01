@@ -1,12 +1,22 @@
-"""What a waiting ``get_result()`` sees when its task is cancelled."""
+"""What a caller waiting on ``get_result()`` or ``subscribe()`` sees when its
+task is cancelled."""
 
 import asyncio
+from contextlib import aclosing
 from datetime import datetime, timedelta
-from typing import Callable
+from typing import AsyncIterator, Callable
 
 import pytest
 
-from docket import Docket, Execution, ExecutionCancelled, Perpetual, Worker
+from docket import (
+    Docket,
+    Execution,
+    ExecutionCancelled,
+    ExecutionState,
+    Perpetual,
+    Worker,
+)
+from docket.execution import ProgressEvent, StateEvent
 from tests.conftest import wait_until
 
 
@@ -76,11 +86,12 @@ async def test_cancel_wakes_get_result_on_a_running_task(
     await asyncio.wait_for(worker_task, timeout=5.0)
 
 
-async def claim_as_a_worker_that_dies(docket: Docket) -> None:
+async def claim_as_a_worker_that_dies(docket: Docket) -> Execution:
     """Read and claim the next task as a worker that then dies.
 
     A worker killed mid-run writes nothing more to Redis.  Its message stays
-    pending, and the runs hash says the task is running.
+    pending, and the runs hash says the task is running.  Returns the execution
+    it claimed, whose ``message_id`` is that message.
     """
     await docket._ensure_stream_and_group()  # pyright: ignore[reportPrivateUsage]
     async with docket.redis() as redis:
@@ -96,6 +107,7 @@ async def claim_as_a_worker_that_dies(docket: Docket) -> None:
         docket, message, message_id=message_id, sync=False
     )
     assert await execution.claim("dead-worker")
+    return execution
 
 
 async def test_cancel_wakes_get_result_on_a_task_whose_worker_died(docket: Docket):
@@ -119,6 +131,50 @@ async def test_cancel_wakes_get_result_on_a_task_whose_worker_died(docket: Docke
 
     with pytest.raises(ExecutionCancelled):
         await waiter
+
+
+async def next_cancelled_event(
+    events: AsyncIterator[StateEvent | ProgressEvent],
+) -> StateEvent:
+    """Return the next cancelled state event, and skip the events before it.
+
+    Those are the current state and progress, and on Redis Cluster also an
+    event published just before the subscription.  A PUBLISH reaches the
+    subscriber's node over the cluster bus, so it can arrive after the
+    subscription.
+    """
+    while True:
+        event = await anext(events)
+        if event["type"] == "state" and event["state"] == ExecutionState.CANCELLED:
+            return event
+
+
+async def test_a_refused_claim_publishes_the_stored_completed_at(docket: Docket):
+    """The claim's cancelled event has the completed_at that the cancel stored,
+    so a subscriber sees the same time that ``sync()`` reads.  The claim itself
+    can run minutes later, after the redelivery_timeout."""
+
+    async def never_runs() -> None: ...
+
+    execution = await docket.add(never_runs)()
+    redelivered = await claim_as_a_worker_that_dies(docket)
+
+    subscribed = asyncio.Event()
+    async with aclosing(execution.subscribe(ready=subscribed)) as events:
+        waiter = asyncio.create_task(next_cancelled_event(events))
+        await asyncio.wait_for(subscribed.wait(), timeout=5)
+        await docket.cancel(execution.key)
+        await redelivered.claim("next-worker")
+        cancelled = await asyncio.wait_for(waiter, timeout=5)
+
+    await execution.sync()
+    assert execution.completed_at is not None
+    assert cancelled == {
+        "type": "state",
+        "key": execution.key,
+        "state": ExecutionState.CANCELLED,
+        "completed_at": execution.completed_at.isoformat(),
+    }
 
 
 async def test_a_perpetual_that_cancels_itself_still_returns_its_result(
