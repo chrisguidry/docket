@@ -85,14 +85,7 @@ async def _refresh_lease(
     lease_key: Key[str],
     holder: Arg[str],
     duration_ms: Arg[int],
-) -> int:
-    """
-    if redis.call('GET', lease_key) == holder then
-        return redis.call('PEXPIRE', lease_key, duration_ms)
-    end
-    return 0
-    """
-    ...
+) -> int: ...
 
 
 async def renew_leases(

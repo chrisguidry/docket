@@ -15,7 +15,7 @@ Any of these edits should make you re-read the affected docstring and any narrat
 
 - Editing the body of a function/method/class that has a docstring.
 - Changing a function or method signature: added, removed, or renamed parameters; changed defaults; changed return type or shape.
-- Changing a Lua script, which is the docstring of a `@redis_script` function in `python/src/docket/_execution_scripts.py`, `python/src/docket/_execution_progress.py`, `python/src/docket/_redelivery.py`, `python/src/docket/worker.py`, or `python/src/docket/dependencies/`. Atomicity, ordering, and consistency claims in docstrings are usually pinned to the Lua, not the Python.
+- Changing a Lua script in `protocol/`, which the `@redis_script` stub of the same name runs from `python/src/docket/_execution_scripts.py`, `python/src/docket/_execution_progress.py`, `python/src/docket/_redelivery.py`, `python/src/docket/worker.py`, or `python/src/docket/dependencies/`. Atomicity, ordering, and consistency claims in docstrings are usually pinned to the Lua, not the Python.
 - Renaming or removing a public class, function, method, exception, or enum value.
 - Changing a public exception type, error message, or condition under which something is raised.
 - Changing a side effect on shared state (Redis keys, channels, sorted sets, streams).

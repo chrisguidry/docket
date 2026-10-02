@@ -32,23 +32,7 @@ async def _progress_write(
     payload: Arg[str],
     clear_message: Arg[bool],
     fields: Args[dict[str, str]],
-) -> bytes:
-    """
-    local hset_args = {}
-    for i = fields_start, #ARGV, 2 do
-        hset_args[#hset_args + 1] = ARGV[i]
-        hset_args[#hset_args + 1] = ARGV[i + 1]
-    end
-    if #hset_args > 0 then
-        redis.call('HSET', progress_key, unpack(hset_args))
-    end
-    if clear_message then
-        redis.call('HDEL', progress_key, 'message')
-    end
-    redis.call('PUBLISH', progress_key, payload)
-    return 'OK'
-    """
-    ...
+) -> bytes: ...
 
 
 class ProgressEvent(TypedDict):
