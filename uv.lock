@@ -10,6 +10,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "docket-conformance",
     "pydocket",
 ]
 
@@ -17,6 +18,7 @@ members = [
 dev = [
     { name = "codespell", specifier = ">=2.4.1" },
     { name = "docker", specifier = ">=7.1.0" },
+    { name = "docket-conformance", editable = "conformance" },
     { name = "ipython", specifier = ">=8.0.0" },
     { name = "loq", specifier = ">=0.1.0a3" },
     { name = "mkdocstrings", specifier = ">=1.0.2" },
@@ -505,6 +507,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/88/7f/731ff914b0255d3d065f45fd4e626d4b8c95dbcbaada049f337a6ac16410/docker-7.2.0.tar.gz", hash = "sha256:cebb93773d334f778e023a7ee352a8d6e13ab1bd3b863a4d4a59dec897df43ac", size = 118731, upload-time = "2026-07-09T14:53:46.39Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/75/23/529140fe1aab80fc6992f93a706deec709140a6397439139a054e1515c45/docker-7.2.0-py3-none-any.whl", hash = "sha256:a3f45fdeb9165e2d25d9a1d02ddf3bc70fb572cf5ebbf9b58558c22caf29b71f", size = 148775, upload-time = "2026-07-09T14:53:45.224Z" },
+]
+
+[[package]]
+name = "docket-conformance"
+version = "0"
+source = { editable = "conformance" }
+dependencies = [
+    { name = "docker" },
+    { name = "redis" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "docker", specifier = ">=7.1.0" },
+    { name = "redis", specifier = ">=6" },
 ]
 
 [[package]]

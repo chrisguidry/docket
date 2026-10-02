@@ -39,7 +39,8 @@ rust/          docket-rs
 go/            the Go module
 typescript/    @chrisguidry/docket
 protocol/      the canonical Lua scripts
-conformance/   the cross-language test driver, grown from chaos/
+conformance/   the cross-language test driver, grown from chaos/;
+               each language keeps its agent in <language>/conformance-agent/
 examples/      by concept: examples/perpetual/{python,rust,go,typescript}
 docs/          concept pages with a tab for each language
 ```

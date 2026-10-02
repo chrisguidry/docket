@@ -93,6 +93,9 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["src/docket"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["conformance-agent"]
+
 [tool.pytest.ini_options]
 addopts = [
     "--numprocesses=logical",
@@ -148,7 +151,9 @@ parallel = true
 exclude_also = ["\\.\\.\\.$"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "conformance-agent"]
+# The agent runs as a directory, so its modules import each other from there.
+executionEnvironments = [{ root = "conformance-agent" }]
 typeCheckingMode = "strict"
 venvPath = ".."
 venv = ".venv"

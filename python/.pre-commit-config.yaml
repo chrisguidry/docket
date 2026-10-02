@@ -9,8 +9,8 @@ repos:
         types: [python]
         pass_filenames: false
       - id: pyright
-        name: pyright (source and tests)
-        entry: uv run pyright tests
+        name: pyright (tests and conformance agent)
+        entry: uv run pyright tests conformance-agent
         language: system
         types: [python]
         pass_filenames: false

@@ -157,22 +157,34 @@ package and removes copies that have no source, and a second hook copies
 
 ## Step 5: Build the conformance driver
 
-`conformance/` is a workspace member that grows from `chaos/`.
+`conformance/` is a workspace member that replaces `chaos/`.  Its README
+holds the contract.
 
-- **The agent contract.**  Each language ships an agent program:
-  `<agent> produce|worker --scenario NAME --url URL --docket NAME`.
+- **The agent contract.**  Each language ships an agent program in its own
+  tree, such as `python/conformance-agent/` and later
+  `rust/conformance-agent/`:
+  `<agent> produce|worker --scenario NAME --url URL --docket NAME`.  The
+  Python agent runs `Worker.run`, which is what `docket worker` runs, so
+  signals stop it the way they stop a deployed worker.
 - **The events.**  Scenario tasks write to the stream
-  `conformance:{scenario}:events` with the task, key, attempt, worker, and
-  time.
+  `conformance:{scenario}:events` with the event, task, key, attempt,
+  worker, and time.
 - **The driver.**  It starts and kills agent processes, restarts Redis when
-  a scenario needs it, and asserts on the events.  It takes the language as
-  a parameter, so every scenario runs against every language.
-- **The first scenarios.**  Exponential backoff, an automatic perpetual
-  task, and a cancel before start.  The current chaos run, which mixes the
-  released version with the working tree while it kills workers, becomes a
-  Python scenario.
-- **CI.**  A `conformance` job runs each scenario against each language.
-  The two required chaos checks keep their names until the ruleset changes.
+  a scenario needs it, and makes assertions on the events and on the run
+  state that the Lua scripts keep.  It never imports docket.
+- **Implementations.**  The driver takes `--implementation language@version`.
+  Until a second language exists, `python@main` (the working tree) and
+  `python@release` (the newest tag, from PyPI) are the two implementations.
+  Both run the agent from the working tree, so the agent uses only the
+  public interface.  A port replaces `python@release` in the CI matrix.
+- **The scenarios.**  `backoff`, `perpetual`, `cancel-before-start`,
+  `graceful-drain` (which was `chaos/signals.py`), `concurrency-limit`,
+  `redelivery`, `perpetual-single-flight`, and `same-key` run on each
+  implementation.  `chaos` mixes both implementations while it kills
+  workers and restarts Redis.
+- **CI.**  `Conformance, python@main` and `Conformance, python@release` run
+  every scenario except `chaos`.  `Chaos tests` keeps its name.  The ruleset swaps
+  `Signal handling tests` for the two conformance checks.
 
 ## Step 6: Turn on docs tabs
 

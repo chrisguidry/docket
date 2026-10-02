@@ -1,8 +1,8 @@
-"""Shared Redis Docker container management for chaos tests."""
+"""A Redis server in Docker, which a scenario can restart."""
 
 import socket
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from docker import DockerClient
 from docker.models.containers import Container

@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The repository is a uv workspace.  The Python package lives in `python/`,
 and the tools that work across the repository (prek, loq, codespell, the
-docs, chaos, examples) live at the root.  Run `uv sync` once at the root;
+docs, the conformance driver, examples) live at the root.  Run `uv sync` once at the root;
 it installs everything.  Do not run `uv sync` inside `python/`, because it
 syncs only that member and removes the root tools from the shared `.venv`.
 `uv run` from any directory is safe.
@@ -162,7 +162,8 @@ Rich dependency injection supporting:
 
 - `python/tests/` - Comprehensive test suite
 - `examples/` - Usage examples
-- `chaos/` - Chaos testing framework
+- `conformance/` - Runs the same scenarios, and the chaos run, against each implementation; see its README
+- `python/conformance-agent/` - pydocket's agent for the conformance driver
 
 ## CLI Usage
 
