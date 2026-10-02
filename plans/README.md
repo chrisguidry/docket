@@ -149,12 +149,15 @@ Go has no branch coverage, and Rust's branch coverage is still unstable.
 
 Every language tests the same backends: `memory://`, Redis 6.2 (the oldest
 release docket supports), Redis 8.10 (the newest), Redis 8.10 in cluster
-mode, Redis 8.10 with ACL, Valkey 9.1, and Valkey 9.1 with ACL.  Sentinel is
-supported but not tested live.
+mode, Redis 8.10 with ACL, Valkey 8.0 (the oldest), Valkey 9.1 (the
+newest), and Valkey 9.1 with ACL.  Sentinel is supported but not tested
+live.
 
-Python runs the backends on every supported Python version, and a separate
-job runs each supported redis-py major.  Rust and Go test only the newest
-toolchain and the newest dependencies, so each runs one job per backend.
+Python runs most backends on every supported Python version.  The two ACL
+backends and Valkey 8.0 run only on the newest Python, because they check
+the server, not the language.  A separate job runs each supported redis-py
+major.  Rust and Go test only the newest toolchain and the newest
+dependencies, so each runs one job per backend.
 
 ### Command line
 

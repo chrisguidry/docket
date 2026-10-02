@@ -85,7 +85,7 @@ Docket requires [Redis](https://redis.io/) 6.2 or later, or
 [Valkey](https://valkey.io/) 8.0 or later. Docket is tested with:
 
 - Redis 6.2 and 8.10, and Redis 8.10 in cluster mode
-- Valkey 9.1
+- Valkey 8.0 and 9.1
 - In-memory backend via [burner-redis](https://github.com/prefectlabs/burner-redis) for testing
 
 For testing without Redis, use the in-memory backend:

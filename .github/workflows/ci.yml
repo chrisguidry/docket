@@ -73,6 +73,12 @@ jobs:
               name: "Valkey 9 with ACL"
               redis-version: "valkey-9.1-acl"
             pytest-args: ""
+          # The Valkey floor is a server-side check, so one Python covers it
+          - python-version: "3.14"
+            backend:
+              name: "Valkey 8"
+              redis-version: "valkey-8.0"
+            pytest-args: ""
 
     steps:
       - uses: actions/checkout@v7
