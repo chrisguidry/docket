@@ -188,7 +188,7 @@ async def create_user(user: User, docket: Annotated[Docket, Depends(get_docket)]
 async def main():
     """Run the FastAPI app with an embedded test Redis instance."""
     # Start a temporary Redis instance for testing
-    async with run_redis("7.4.2") as url:
+    async with run_redis("8.10") as url:
         global redis_url
         redis_url = url
 

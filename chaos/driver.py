@@ -160,7 +160,7 @@ async def main(
     base_python_command, main_python_command = await setup_environments(base_version)
 
     async with (
-        run_redis("7.4.2") as (redis_url, redis_container),
+        run_redis("8.10") as (redis_url, redis_container),
         Docket(
             name=f"test-docket-{uuid4()}",
             url=redis_url,

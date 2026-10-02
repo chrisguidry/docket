@@ -321,7 +321,7 @@ async def run_signal_test(
 
 async def main() -> None:
     """Run signal handling tests for both SIGTERM and SIGINT."""
-    async with run_redis("7.4.2") as (redis_url, _):
+    async with run_redis("8.10") as (redis_url, _):
         logger.info("Redis running at %s", redis_url)
 
         # Test SIGTERM

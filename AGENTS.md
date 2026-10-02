@@ -46,7 +46,7 @@ Environment variables:
 - `PYTHON_VERSION`: Python version (default: 3.10)
 - `CPU_LIMIT`: CPU cores fraction (default: 0.5)
 - `MEM_LIMIT`: Memory limit (default: 512M)
-- `REDIS_VERSION`: `memory` or version like `6.2`, `8.0`, `valkey-8.0` (default: memory)
+- `REDIS_VERSION`: `memory` or version like `6.2`, `8.10`, `valkey-9.1` (default: memory)
 
 ```bash
 # With real Redis

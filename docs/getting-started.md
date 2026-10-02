@@ -21,7 +21,7 @@ With `pip`:
 pip install pydocket
 ```
 
-You'll also need a [Redis](https://redis.io/) server with Streams support (Redis 5.0+). Docket is tested with Redis 6.2 and 8.10, and also works with [Valkey](https://valkey.io/) 9.1.
+You'll also need [Redis](https://redis.io/) 6.2 or later, or [Valkey](https://valkey.io/) 8.0 or later. Docket is tested with Redis 6.2 and 8.10, Redis 8.10 in cluster mode, and Valkey 9.1.
 
 To try docket without setting up Redis, you can use the in-memory backend — see [Testing with Docket](testing.md) for details.
 

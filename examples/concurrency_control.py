@@ -61,7 +61,7 @@ async def regular_task(task_id: int):
 
 
 async def main():
-    async with run_redis("7.4.2") as redis_url:
+    async with run_redis("8.10") as redis_url:
         async with Docket(name="concurrency-demo", url=redis_url) as docket:
             # Register tasks
             docket.register(process_customer_data)
