@@ -38,14 +38,14 @@ theme:
         name: Switch to light mode
 
 watch:
-  - src
+  - python/src
 
 plugins:
   - search
   - mkdocstrings:
       handlers:
         python:
-          paths: [src]
+          paths: [python/src]
           options:
             show_source: true
             show_root_heading: true

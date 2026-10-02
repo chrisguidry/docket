@@ -14,6 +14,9 @@ jobs:
     name: Core, Python ${{ matrix.python-version }}, ${{ matrix.backend.name }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: python
     strategy:
       fail-fast: false
       matrix:
@@ -79,7 +82,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
         run: uv sync --upgrade-package redis
@@ -107,6 +110,9 @@ jobs:
     name: CLI, Python ${{ matrix.python-version }}
     runs-on: ubuntu-26.04
     timeout-minutes: 4
+    defaults:
+      run:
+        working-directory: python
     strategy:
       fail-fast: false
       matrix:
@@ -119,7 +125,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
         run: uv sync --upgrade-package 'redis>=6'
@@ -156,6 +162,9 @@ jobs:
     name: Windows, Python ${{ matrix.python-version }}
     runs-on: windows-latest
     timeout-minutes: 6
+    defaults:
+      run:
+        working-directory: python
     strategy:
       fail-fast: false
       matrix:
@@ -168,7 +177,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
         run: uv sync --upgrade-package 'redis>=6'
@@ -201,6 +210,9 @@ jobs:
     name: redis-py ${{ matrix.redis-py.name }}, Python 3.14, Redis 8.10
     runs-on: ubuntu-26.04
     timeout-minutes: 4
+    defaults:
+      run:
+        working-directory: python
     strategy:
       fail-fast: false
       matrix:
@@ -220,7 +232,7 @@ jobs:
         with:
           python-version: "3.14"
           enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
         run: uv sync --upgrade-package 'redis${{ matrix.redis-py.spec }}'
@@ -261,7 +273,7 @@ jobs:
         with:
           python-version: "3.10"
           enable-cache: true
-          cache-dependency-glob: "pyproject.toml"
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
         run: uv sync

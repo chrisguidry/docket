@@ -8,6 +8,31 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
+[manifest]
+members = [
+    "pydocket",
+]
+
+[manifest.dependency-groups]
+dev = [
+    { name = "codespell", specifier = ">=2.4.1" },
+    { name = "docker", specifier = ">=7.1.0" },
+    { name = "ipython", specifier = ">=8.0.0" },
+    { name = "loq", specifier = ">=0.1.0a3" },
+    { name = "mkdocstrings", specifier = ">=1.0.2" },
+    { name = "mkdocstrings-python", specifier = ">=2.0.1" },
+    { name = "prek", specifier = ">=0.3.1" },
+    { name = "pydocket", editable = "python" },
+    { name = "pyright", specifier = ">=1.1.408" },
+    { name = "zensical", specifier = ">=0.0.32" },
+]
+examples = [
+    { name = "fastapi", specifier = ">=0.120.0" },
+    { name = "pydantic", specifier = ">=2.12.5" },
+    { name = "starlette", specifier = ">=0.49.1" },
+    { name = "uvicorn", specifier = ">=0.40.0" },
+]
+
 [[package]]
 name = "annotated-doc"
 version = "0.0.5"
@@ -1515,7 +1540,7 @@ wheels = [
 
 [[package]]
 name = "pydocket"
-source = { editable = "." }
+source = { editable = "python" }
 dependencies = [
     { name = "burner-redis" },
     { name = "cloudpickle" },
@@ -1541,13 +1566,7 @@ metrics = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "codespell" },
     { name = "docker" },
-    { name = "ipython", version = "8.39.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "ipython", version = "9.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "loq" },
-    { name = "mkdocstrings" },
-    { name = "mkdocstrings-python" },
     { name = "opentelemetry-distro" },
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-exporter-prometheus" },
@@ -1555,7 +1574,6 @@ dev = [
     { name = "opentelemetry-instrumentation-logging" },
     { name = "opentelemetry-instrumentation-redis" },
     { name = "opentelemetry-sdk" },
-    { name = "prek" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1567,13 +1585,6 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "urllib3" },
-    { name = "zensical" },
-]
-examples = [
-    { name = "fastapi" },
-    { name = "pydantic" },
-    { name = "starlette" },
-    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -1599,12 +1610,7 @@ provides-extras = ["metrics"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "codespell", specifier = ">=2.4.1" },
     { name = "docker", specifier = ">=7.1.0" },
-    { name = "ipython", specifier = ">=8.0.0" },
-    { name = "loq", specifier = ">=0.1.0a3" },
-    { name = "mkdocstrings", specifier = ">=1.0.2" },
-    { name = "mkdocstrings-python", specifier = ">=2.0.1" },
     { name = "opentelemetry-distro", specifier = ">=0.60b0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.33.0" },
     { name = "opentelemetry-exporter-prometheus", specifier = ">=0.60b0" },
@@ -1612,7 +1618,6 @@ dev = [
     { name = "opentelemetry-instrumentation-logging", specifier = ">=0.60b0" },
     { name = "opentelemetry-instrumentation-redis", specifier = ">=0.60b0" },
     { name = "opentelemetry-sdk", specifier = ">=1.33.0" },
-    { name = "prek", specifier = ">=0.3.1" },
     { name = "pyright", specifier = ">=1.1.408" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
@@ -1624,13 +1629,6 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.6.1" },
     { name = "ruff", specifier = ">=0.14.14" },
     { name = "urllib3", specifier = ">=2.6.3" },
-    { name = "zensical", specifier = ">=0.0.32" },
-]
-examples = [
-    { name = "fastapi", specifier = ">=0.120.0" },
-    { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "starlette", specifier = ">=0.49.1" },
-    { name = "uvicorn", specifier = ">=0.40.0" },
 ]
 
 [[package]]

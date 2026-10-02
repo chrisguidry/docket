@@ -1,76 +1,20 @@
-[build-system]
-requires = ["hatchling", "hatch-vcs"]
-build-backend = "hatchling.build"
+# The repository is a uv workspace.  Each language's package lives in its own
+# directory, and the tools that work across the whole repository live here.
+[tool.uv.workspace]
+members = ["python"]
 
-[project]
-name = "pydocket"
-dynamic = ["version"]
-description = "A distributed background task system for Python functions"
-readme = { file = "README.md", content-type = "text/markdown" }
-requires-python = ">=3.10"
-license = { file = "LICENSE" }
-authors = [{ name = "Chris Guidry", email = "guid@omg.lol" }]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Typing :: Typed",
-]
-dependencies = [
-    "cloudpickle>=3.1.1",
-    "cronsim>=2.6",
-    "exceptiongroup>=1.2.0; python_version < '3.11'",
-    "taskgroup>=0.2.2; python_version < '3.11'",
-    "burner-redis>=0.1.7",
-    "opentelemetry-api>=1.33.0",
-    "prometheus-client>=0.21.1",
-    "py-key-value-aio[memory,redis]>=0.3.0",
-    "python-json-logger>=2.0.7",
-    "redis>=6",
-    "rich>=13.9.4",
-    "typer>=0.15.1",
-    "typing_extensions>=4.12.0",
-    "tzdata>=2025.2; sys_platform == 'win32'",
-    "uncalled-for>=0.4.0",
-]
-
-[project.optional-dependencies]
-metrics = [
-    "opentelemetry-sdk>=1.33.0",
-]
+[tool.uv.sources]
+pydocket = { workspace = true }
 
 [dependency-groups]
 dev = [
+    "pydocket",
     "codespell>=2.4.1",
     "docker>=7.1.0",
-    # Security: urllib3 >=2.6.3 fixes decompression bomb vulnerabilities
-    "urllib3>=2.6.3",
     "ipython>=8.0.0",
     "loq>=0.1.0a3",
-    "opentelemetry-distro>=0.60b0",
-    "opentelemetry-exporter-otlp>=1.33.0",
-    "opentelemetry-exporter-prometheus>=0.60b0",
-    "opentelemetry-instrumentation>=0.60b0",
-    "opentelemetry-instrumentation-logging>=0.60b0",
-    "opentelemetry-instrumentation-redis>=0.60b0",
-    "opentelemetry-sdk>=1.33.0",
     "prek>=0.3.1",
     "pyright>=1.1.408",
-    "pytest>=9.0.2",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=6.0.0",
-    "pytest-flakefinder>=1.1.0",
-    "pytest-randomly>=4.0.0",
-    "pytest-repeat>=0.9.3",
-    "pytest-timeout>=2.4.0",
-    "pytest-xdist>=3.6.1",
-    "ruff>=0.14.14",
     "zensical>=0.0.32",
     "mkdocstrings>=1.0.2",
     "mkdocstrings-python>=2.0.1",
@@ -83,84 +27,11 @@ examples = [
     "uvicorn>=0.40.0",
 ]
 
-[project.scripts]
-docket = "docket.__main__:app"
-
-[project.urls]
-"Homepage" = "https://docket.lol/"
-"Documentation" = "https://docket.lol/en/latest/"
-"Repository" = "https://github.com/chrisguidry/docket"
-"Bug Tracker" = "https://github.com/chrisguidry/docket/issues"
-
-[tool.hatch.version]
-source = "vcs"
-
-[tool.hatch.metadata]
-allow-direct-references = true
-
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/docket"]
-
 [tool.ruff]
 target-version = "py310"
 
-[tool.pytest.ini_options]
-addopts = [
-    "--numprocesses=logical",
-    "--maxprocesses=4",
-    "--cov=src/docket",
-    "--cov=tests",
-    "--cov-report=term-missing:skip-covered",
-    "--cov-branch",
-    "--cov-fail-under=100",
-    "--timeout=30",
-    "--import-mode=importlib",
-]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-asyncio_default_test_loop_scope = "function"
-filterwarnings = [
-    "error",
-    # redis-py 7.2.0 deprecated lib_name/lib_version on Connection.__init__,
-    # but RedisCluster still passes lib_name="redis-py" internally (#341)
-    "ignore:Call to.*lib_name.*:DeprecationWarning",
-    # redis-py 8.0.0 deprecated setex; py-key-value-aio's RedisStore still
-    # calls it internally for standalone result storage (#425)
-    "ignore:Call to deprecated setex.*:DeprecationWarning:key_value.aio.stores.redis.store",
-    # On Python 3.10/3.11, importlib.metadata.entry_points() returns a
-    # SelectableGroups, and OpenTelemetry's _importlib_metadata shim consumes
-    # it via the deprecated dict interface during import. The shim is theirs
-    # to fix, so we scope the ignore to that module (#428).
-    "ignore:SelectableGroups dict interface is deprecated.*:DeprecationWarning:opentelemetry.util._importlib_metadata",
-]
-
-[tool.coverage.run]
-omit = [
-    # Entry point wrapper
-    "src/docket/__main__.py",
-    # Vendored uuid7 implementation
-    "src/docket/_uuid7.py",
-    # Vendored OpenTelemetry prometheus exporter
-    "src/docket/_prometheus_exporter.py",
-    # Cluster-only code paths not exercised in standalone tests
-    "src/docket/_result_store.py",
-    # Fixture branches vary by Redis config (cluster, ACL, memory, valkey)
-    "**/conftest.py",
-    # Test infrastructure with conditional branches for cluster/standalone
-    "tests/_key_leak_checker.py",
-    "tests/_container.py",
-    # Subprocess coverage hook, exercised by CLI tests only
-    "tests/sitecustomize.py",
-]
-branch = true
-parallel = true
-
-[tool.coverage.report]
-exclude_also = ["\\.\\.\\.$"]
-
 [tool.pyright]
-include = ["src", "tests", "chaos"]
+include = ["chaos"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"

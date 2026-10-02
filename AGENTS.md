@@ -8,16 +8,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Key Requirements**: Python 3.10+, Redis 6.2+ or Valkey 8.0+
 
+The repository is a uv workspace.  The Python package lives in `python/`,
+and the tools that work across the repository (prek, loq, codespell, the
+docs, chaos, examples) live at the root.  Run `uv sync` once at the root;
+it installs everything.  Do not run `uv sync` inside `python/`, because it
+syncs only that member and removes the root tools from the shared `.venv`.
+`uv run` from any directory is safe.
+
 ## Development Commands
 
 ### Testing
 
+Run the tests from `python/`:
+
 ```bash
+cd python
+
 # Run full test suite with coverage and parallel execution
-pytest
+uv run pytest
 
 # Run specific test
-pytest tests/fundamentals/test_scheduling.py::test_immediate_task_execution
+uv run pytest tests/fundamentals/test_scheduling.py::test_immediate_task_execution
 ```
 
 The project REQUIRES 100% test coverage
@@ -28,7 +39,7 @@ When debugging flaky CI tests that are hard to reproduce locally, use the Docker
 runner with CPU limits. CI failures often stem from timing issues that only manifest
 under CPU contention - throttling to 0.2 CPU can reproduce these locally.
 
-Use docker compose to run tests with CPU throttling, simulating slow CI environments:
+Use docker compose from the repository root to run tests with CPU throttling, simulating slow CI environments:
 
 ```bash
 # Run specific tests with CPU limit (default 0.5 = half a core)
@@ -67,8 +78,8 @@ This runs ruff, pyright, loq, and other checks in one command.
 ### Development Setup
 
 ```bash
-# Install development dependencies
-uv sync --group dev
+# Install development dependencies, from the repository root
+uv sync
 
 # Install prek hooks
 uv run prek install
@@ -81,7 +92,7 @@ uv run prek install
 
 ### Keeping docs honest as you edit
 
-While editing `src/docket/`, `docs/*.md`, or `README.md`, follow the
+While editing `python/src/docket/`, `docs/*.md`, or `README.md`, follow the
 **`audit-docs`** skill at `.claude/skills/audit-docs/SKILL.md`. It is a
 *habit*, not a deliverable: when you change a function body, signature,
 Lua script, or any public contract, re-read the affected docstring and
@@ -94,7 +105,7 @@ prose ride along to a PR. Only switch into the skill's standalone
 
 ### Key Classes
 
-- **`Docket`** (`src/docket/docket.py`): Central task registry and scheduler
+- **`Docket`** (`python/src/docket/docket.py`): Central task registry and scheduler
   - `add()`: Schedule tasks for execution
   - `replace()`: Replace existing scheduled tasks
   - `call()` + `add_many()`/`replace_many()`: Batch scheduling in one pipelined round-trip
@@ -102,14 +113,14 @@ prose ride along to a PR. Only switch into the skill's standalone
   - `strike()`/`restore()`: Conditionally block/unblock tasks
   - `snapshot()`: Get current state for observability
 
-- **`Worker`** (`src/docket/worker.py`): Task execution engine
+- **`Worker`** (`python/src/docket/worker.py`): Task execution engine
   - `run_forever()`/`run_until_finished()`: Main execution loops
   - Handles concurrency, retries, and dependency injection
   - Maintains heartbeat for liveness tracking
 
-- **`Execution`** (`src/docket/execution.py`): Task execution context with metadata
+- **`Execution`** (`python/src/docket/execution.py`): Task execution context with metadata
 
-### Dependencies System (`src/docket/dependencies/`)
+### Dependencies System (`python/src/docket/dependencies/`)
 
 Rich dependency injection supporting:
 
@@ -138,7 +149,7 @@ Rich dependency injection supporting:
 
 ### Source Code
 
-- `src/docket/` - Main package
+- `python/src/docket/` - Main package
   - `__init__.py` - Public API exports
   - `docket.py` - Core Docket class
   - `worker.py` - Worker implementation
@@ -149,7 +160,7 @@ Rich dependency injection supporting:
 
 ### Testing and Examples
 
-- `tests/` - Comprehensive test suite
+- `python/tests/` - Comprehensive test suite
 - `examples/` - Usage examples
 - `chaos/` - Chaos testing framework
 
