@@ -153,10 +153,12 @@ mode, Redis 8.10 with ACL, Valkey 8.0 (the oldest), Valkey 9.1 (the
 newest), and Valkey 9.1 with ACL.  Sentinel is supported but not tested
 live.
 
-Python runs most backends on every supported Python version.  The two ACL
-backends and Valkey 8.0 run only on the newest Python, because they check
-the server, not the language.  A separate job runs each supported redis-py
-major.  Rust and Go test only the newest toolchain and the newest
+Python does not run every backend on every Python version.  A bug that
+depends on the Python version shows up on any backend, and a bug that
+depends on the server shows up on any Python.  So every Python runs
+`memory://` and Redis 8.10.  Redis 6.2 and cluster mode run on the oldest
+and newest Python, and Valkey and the ACL backends run on the newest only.
+A separate job runs each supported redis-py major.  Rust and Go test only the newest toolchain and the newest
 dependencies, so each runs one job per backend.
 
 ### Command line
