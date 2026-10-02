@@ -10,6 +10,9 @@ permissions:
 jobs:
   ci:
     name: Run CI
+    # pydocket releases are tagged python/v0.27.0, or bare before the
+    # monorepo.  Another language's release does not publish to PyPI.
+    if: startsWith(github.event.release.tag_name, 'python/v') || !contains(github.event.release.tag_name, '/')
     uses: ./.github/workflows/ci.yml
 
   publish:
@@ -38,7 +41,7 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Build package
-        run: uv build
+        run: uv build --package pydocket
 
       - name: Publish to PyPI with PEP 740 attestations
         uses: pypa/gh-action-pypi-publish@release/v1
