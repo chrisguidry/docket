@@ -33,14 +33,10 @@ async def main(scenario: str, implementation_names: list[str], redis: str) -> bo
         logger.info("Running %s on %s with Redis %s", scenario, names, redis)
         try:
             await asyncio.wait_for(module.run(harness), module.TIMEOUT)
-        except (AssertionError, asyncio.TimeoutError) as error:
-            logger.error(
-                "%s failed on %s: %s\n%s",
-                scenario,
-                names,
-                str(error) or f"timed out after {module.TIMEOUT} s",
-                harness.report(),
-            )
+        except Exception:
+            # The traceback shows which assertion or wait failed, and the
+            # agents' logs show what they did up to then.
+            logger.exception("%s failed on %s\n%s", scenario, names, harness.report())
             return False
         finally:
             await harness.stop()

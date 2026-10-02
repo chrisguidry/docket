@@ -177,12 +177,13 @@ holds the contract.
   `python@release` (the newest tag, from PyPI) are the two implementations.
   Both run the agent from the working tree, so the agent uses only the
   public interface.  A port replaces `python@release` in the CI matrix.
-- **The scenarios.**  `backoff`, `perpetual`, `cancel-before-start`, and
-  `graceful-drain`, which was `chaos/signals.py`, run on each
+- **The scenarios.**  `backoff`, `perpetual`, `cancel-before-start`,
+  `graceful-drain` (which was `chaos/signals.py`), `concurrency-limit`,
+  `redelivery`, `perpetual-single-flight`, and `same-key` run on each
   implementation.  `chaos` mixes both implementations while it kills
   workers and restarts Redis.
 - **CI.**  `Conformance, python@main` and `Conformance, python@release` run
-  the four scenarios.  `Chaos tests` keeps its name.  The ruleset swaps
+  every scenario except `chaos`.  `Chaos tests` keeps its name.  The ruleset swaps
   `Signal handling tests` for the two conformance checks.
 
 ## Step 6: Turn on docs tabs

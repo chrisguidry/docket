@@ -19,6 +19,8 @@ from .implementations import Implementation
 
 Role = Literal["produce", "worker"]
 
+TERMINAL_STATES = {"completed", "failed", "cancelled"}
+
 
 @dataclass
 class Agent:
@@ -82,12 +84,13 @@ class Harness:
         self.agents.append(agent)
         return agent
 
-    async def produce(self, timeout: float = 30) -> None:
-        """Run one producer to the end."""
-        agent = await self.start("produce")
-        await self.exited([agent], timeout)
-        if agent.process.returncode != 0:
-            raise AssertionError(f"The producer exited with {agent.process.returncode}")
+    async def produce(self, count: int = 1, timeout: float = 30) -> None:
+        """Run producers at the same time, each one to the end."""
+        producers = [await self.start("produce") for _ in range(count)]
+        await self.exited(producers, timeout)
+        codes = [producer.process.returncode for producer in producers]
+        if any(codes):
+            raise AssertionError(f"Producers exited {codes}")
 
     async def exited(self, agents: list[Agent], timeout: float) -> None:
         try:
@@ -109,6 +112,20 @@ class Harness:
         """The state that docket's Lua scripts keep for each task."""
         state = await self.redis.hget(f"{self.docket}:runs:{key}", "state")
         return cast(str | None, state)
+
+    async def settled_state(self, key: str, timeout: float = 5) -> str | None:
+        """The run state once it is terminal, or the last state seen.
+
+        A task records its last event before its worker marks the run done,
+        so the state can lag the events by a moment.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        state = await self.run_state(key)
+        while state not in TERMINAL_STATES and loop.time() < deadline:
+            await asyncio.sleep(0.1)
+            state = await self.run_state(key)
+        return state
 
     async def stop(self) -> None:
         for agent in self.agents:

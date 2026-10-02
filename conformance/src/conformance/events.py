@@ -110,3 +110,15 @@ class Events:
 def stream_position(entry_id: str) -> tuple[int, int]:
     milliseconds, sequence = entry_id.split("-")
     return int(milliseconds), int(sequence)
+
+
+def most_at_once(starts: list[float], ends: list[float]) -> int:
+    """The most runs in progress at one time, from their start and end times."""
+    # At equal times, an end counts before a start, because a task records its
+    # end before its worker gives up its slot.
+    changes = sorted([(time, 1) for time in starts] + [(time, -1) for time in ends])
+    running = peak = 0
+    for _, change in changes:
+        running += change
+        peak = max(peak, running)
+    return peak

@@ -28,10 +28,14 @@ driver chooses one at random for each agent it starts.
 
 | Scenario | What it shows |
 |---|---|
-| `backoff` | A failing task retries four times with delays of 0.5 s, 1 s, and 2 s, then stops. |
+| `backoff` | A failing task makes four attempts, with delays of 0.5 s, 1 s, and 2 s between them, then stops. |
 | `perpetual` | An automatic perpetual task runs every 0.5 s, and a new worker takes it over after the first worker is killed. |
 | `cancel-before-start` | A future task cancelled before it is due never runs. |
 | `graceful-drain` | After SIGTERM, and again after SIGINT, workers finish their tasks and exit 0. |
+| `concurrency-limit` | Three workers never run more than two tasks under one `ConcurrencyLimit(max_concurrent=2)` at once, and they do reach two. |
+| `redelivery` | When a worker dies during a task, another worker runs the task again after the lease runs out.  The second run keeps attempt 1. |
+| `perpetual-single-flight` | Three workers share an automatic perpetual task.  Its runs never overlap, even when all the workers die during a run and new ones start. |
+| `same-key` | Two producers add and then replace the same key at about the same time, and the task runs once, at the time of the last replace. |
 | `chaos` | Every task added runs while workers die and Redis restarts. |
 
 ## The agent contract

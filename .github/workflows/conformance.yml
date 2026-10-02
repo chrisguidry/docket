@@ -48,6 +48,18 @@ jobs:
       - name: graceful-drain
         run: uv run python -m conformance graceful-drain --implementation ${{ matrix.implementation }}
 
+      - name: concurrency-limit
+        run: uv run python -m conformance concurrency-limit --implementation ${{ matrix.implementation }}
+
+      - name: redelivery
+        run: uv run python -m conformance redelivery --implementation ${{ matrix.implementation }}
+
+      - name: perpetual-single-flight
+        run: uv run python -m conformance perpetual-single-flight --implementation ${{ matrix.implementation }}
+
+      - name: same-key
+        run: uv run python -m conformance same-key --implementation ${{ matrix.implementation }}
+
   chaos:
     name: Chaos tests
     runs-on: ubuntu-26.04
