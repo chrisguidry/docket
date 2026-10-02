@@ -21,19 +21,30 @@ def listener_loses_cancels(docket: Docket):
     """On Python 3.10, redis-py bounds a pub/sub read with async_timeout.  When
     its timer fires in the same step as an outside cancel, async_timeout turns
     the one CancelledError into a TimeoutError, and redis-py returns None as if
-    the read just timed out.  This pub/sub loses every cancel the same way."""
+    the read just timed out.  This pub/sub loses every cancel the same way.
+
+    It reads from Redis until the PSUBSCRIBE confirmation, which the worker
+    waits for before it starts.  After that, each read waits until a cancel and
+    then returns None, so every cancel lands in a read and is lost."""
     original_pubsub = docket._pubsub  # pyright: ignore[reportPrivateUsage]
 
     @asynccontextmanager
     async def pubsub_that_loses_cancels() -> AsyncGenerator[Any, None]:
         async with original_pubsub() as pubsub:
             original_get_message = pubsub.get_message
+            subscribed = False
 
             async def get_message(**kwargs: Any) -> dict[str, Any] | None:
+                nonlocal subscribed
+                if not subscribed:
+                    message = await original_get_message(**kwargs)
+                    subscribed = message is not None and message["type"] == "psubscribe"
+                    return message
                 try:
-                    return await original_get_message(**kwargs)
+                    await asyncio.Event().wait()
                 except asyncio.CancelledError:
-                    return None
+                    pass
+                return None
 
             pubsub.get_message = get_message  # type: ignore[method-assign]
             yield pubsub
