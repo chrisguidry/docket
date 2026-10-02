@@ -219,6 +219,38 @@ docket_url = "redis://:password@redis.prod.com:6379/0"
 docket_url = "redis://myuser:mypassword@redis.prod.com:6379/0"
 ```
 
+#### Credential providers
+
+When the credentials rotate, as with Azure Entra ID tokens, a URL can't carry
+them. Pass a redis-py
+[`CredentialProvider`](https://redis.readthedocs.io/en/stable/examples/connection_examples.html)
+instead, and leave the credentials out of the URL:
+
+```python
+from redis_entraid.cred_provider import create_from_default_azure_credential
+
+from docket import Docket
+
+credential_provider = create_from_default_azure_credential(
+    ("https://redis.azure.com/.default",)
+)
+
+async with Docket(
+    name="orders",
+    url="rediss://my-cache.redis.azure.net:10000/0",
+    credential_provider=credential_provider,
+) as docket:
+    ...
+```
+
+Docket hands the provider to every connection it opens: the data and pub/sub
+connections, the result store, and the strike list. With a streaming provider,
+like `redis-entraid`'s, redis-py re-authenticates those long-lived connections
+when the token is refreshed. For Sentinel URLs the provider authenticates the
+data nodes, and the Sentinels keep the `sentinel_username`/`sentinel_password`
+from the URL. `memory://` ignores it, and the `docket` CLI doesn't expose it, so
+run workers from Python (see `Worker`) when you need it.
+
 ### ACL Configuration
 
 When using Redis ACLs with a restricted user, grant access to the key pattern matching your docket name.
