@@ -36,12 +36,19 @@ async def run(harness: Harness) -> None:
 
     while True:
         await harness.events.poll(0.25)
-        added = {event.key for event in harness.events.matching("added")}
-        ran = {event.key for event in harness.events.matching("ran")}
 
         failed = [p.process.returncode for p in producers if p.process.returncode]
         assert not failed, f"Producers exited {failed}"
-        if added and added <= ran and not any(p.running for p in producers):
+
+        # A poll reads only part of the stream.  Once the producers are done,
+        # every added event is in the stream, so read up to its end before
+        # comparing.  Otherwise a task added near the end could go unchecked.
+        producing = any(p.running for p in producers)
+        complete = not producing and await harness.events.read_to_end()
+
+        added = {event.key for event in harness.events.matching("added")}
+        ran = {event.key for event in harness.events.matching("ran")}
+        if complete and added and added <= ran:
             break
 
         if loop.time() >= next_report:

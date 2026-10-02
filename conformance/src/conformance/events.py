@@ -72,6 +72,26 @@ class Events:
                     )
                 )
 
+    async def read_to_end(self) -> bool:
+        """Read every event that is in the stream now.
+
+        Returns False when Redis is unreachable, because then the end of the
+        stream is unknown.
+        """
+        try:
+            newest = cast(
+                list[tuple[str, dict[str, str]]],
+                await self.redis.xrevrange(self.stream, count=1),
+            )
+        except redis.exceptions.ConnectionError:
+            return False
+
+        if newest:
+            end = newest[0][0]
+            while stream_position(self._last_id) < stream_position(end):
+                await self.poll(1.0)
+        return True
+
     async def wait_for(
         self, done: Callable[[], bool], timeout: float, waiting_for: str
     ) -> None:
@@ -85,3 +105,8 @@ class Events:
                     f"and saw {len(self.seen)} events on {self.stream}"
                 )
             await self.poll(min(remaining, 1.0))
+
+
+def stream_position(entry_id: str) -> tuple[int, int]:
+    milliseconds, sequence = entry_id.split("-")
+    return int(milliseconds), int(sequence)
