@@ -798,7 +798,14 @@ class Worker:
                     if cm is not None:
                         await dependency_stack.enter_async_context(cm)
 
-                async with TaskGroup() as infra:
+                async with TaskGroup() as infra, AsyncExitStack() as on_exit:
+                    # However this block ends, the infrastructure tasks see
+                    # session.stopping before the group waits for them.  They
+                    # must not depend on the group's cancel: on Python 3.10,
+                    # redis-py's read timeout can swallow a cancel that lands
+                    # in the same step, and the group would wait forever.
+                    on_exit.callback(session.stopping.set)
+
                     # Start cancellation listener and wait for it to be ready
                     infra.create_task(
                         self._cancellation_listener(),
@@ -810,7 +817,6 @@ class Worker:
                     ):
                         await _wait_for_event(session.cancellation_ready, 0.1)
                     if stopping.is_set():
-                        session.stopping.set()
                         return
                     if self.schedule_automatic_tasks:
                         try:
@@ -826,7 +832,9 @@ class Worker:
                                 self._reseed_automatic_perpetual_tasks_loop(),
                                 name=f"{self.docket.name} - automatic perpetual reseed",
                             )
-                    if redis_error is None:
+                    # The false branch jumps to the end of the async with,
+                    # and how coverage sees that exit varies across interpreters.
+                    if redis_error is None:  # pragma: no branch
                         infra.create_task(
                             self._scheduler_loop(redis),
                             name=f"{self.docket.name} - scheduler",
@@ -883,8 +891,6 @@ class Worker:
                                 # until the redelivery sweep claims it again.
                                 redis_error = error
                                 break
-
-                    session.stopping.set()
 
             # A Redis error caught above leaves the TaskGroup intact (no
             # exception escaped it), so re-raise it here on its own for _run
