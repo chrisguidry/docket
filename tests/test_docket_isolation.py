@@ -21,6 +21,7 @@ from typing import AsyncGenerator, Callable
 
 import pytest
 from docket import Docket
+from docket._redis import confirm_subscriptions
 
 from tests.conftest import wait_for_event
 
@@ -76,12 +77,11 @@ async def test_cancel_in_one_docket_does_not_touch_another(
     # The other docket's task must still exist and not be cancelled.
     other = await other_docket.get_execution("shared-name")
     assert other is not None, "other_docket's task must still exist after docket.cancel"
-    # And the original docket's task should now be tombstoned/cancelled.
+    # And the original docket's task is now a cancelled tombstone, which the
+    # fixture's non-zero execution_ttl keeps around.
     primary = await docket.get_execution("shared-name")
-    if primary is not None:
-        # With non-zero execution_ttl the tombstone hangs around with
-        # state=cancelled; with execution_ttl=0 it would be gone.
-        assert primary.state.value == "cancelled"
+    assert primary is not None
+    assert primary.state.value == "cancelled"
 
 
 async def test_state_pubsub_does_not_cross_dockets(
@@ -111,6 +111,9 @@ async def test_state_pubsub_does_not_cross_dockets(
     ) -> None:
         async with target_docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
             await pubsub.subscribe(target_docket.key(f"state:{task_key}"))
+            # A PUBLISH that reaches Redis before the SUBSCRIBE goes to no one,
+            # so signal readiness only once Redis confirms the subscription.
+            await confirm_subscriptions(pubsub, 1)
             ready.set()
             async for message in pubsub.listen():
                 if message["type"] != "message":

@@ -218,7 +218,9 @@ def allocate_cluster_ports() -> tuple[int, int, int]:
     """Allocate 3 free ports for cluster nodes.
 
     Ports must be < 55536 because Redis cluster bus ports are data_port + 10000,
-    and ports cannot exceed 65535.
+    and ports cannot exceed 65535.  The nodes share one container, and each binds
+    its data port and its bus port there.  So no two data ports can be equal, and
+    no data port can be another node's bus port.
     """
     max_port = 55535  # data port + 10000 must be <= 65535
     ports: list[int] = []
@@ -227,10 +229,53 @@ def allocate_cluster_ports() -> tuple[int, int, int]:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
-            if port <= max_port:
+            clashes = any(abs(port - other) in (0, 10000) for other in ports)
+            if port <= max_port and not clashes:
                 ports.append(port)
 
     return ports[0], ports[1], ports[2]
+
+
+def run_cluster_container(
+    client: DockerClient, image: str, labels: dict[str, str]
+) -> tuple[Container, tuple[int, int, int]]:
+    """Start the cluster container and return it with its three data ports.
+
+    Nothing holds a port between allocate_cluster_ports() releasing it and Docker
+    binding it.  Another xdist worker can take the port in that gap, and Docker
+    then refuses the container with a server error.  The function retries with
+    new ports, and raises Docker's error after the third failed start.
+    """
+    attempts = 0
+    while True:
+        ports = allocate_cluster_ports()
+        port0, port1, port2 = ports
+        try:
+            container = with_image_retry(client.containers.run)(
+                image,
+                detach=True,
+                # Only the data ports are published.  The bus ports (data port
+                # + 10000) stay inside the container, and every published port
+                # is one more that another worker's container can publish first.
+                ports={
+                    f"{port0}/tcp": port0,
+                    f"{port1}/tcp": port1,
+                    f"{port2}/tcp": port2,
+                },
+                environment={
+                    "CLUSTER_PORT_0": str(port0),
+                    "CLUSTER_PORT_1": str(port1),
+                    "CLUSTER_PORT_2": str(port2),
+                },
+                labels=labels,
+                auto_remove=True,
+            )
+        except docker.errors.APIError as error:
+            attempts += 1
+            if attempts == 3 or not error.is_server_error():
+                raise
+        else:
+            return container, ports
 
 
 def wait_for_cluster(port: int) -> None:

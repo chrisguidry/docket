@@ -251,6 +251,11 @@ async def test_chain_survives_terminal_failure_after_on_complete_via_supersessio
         perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=20)),
     ):
         executions.append(1)
+        if len(executions) == 1:
+            # On a slow runner, a successor due 20 ms out is already due when
+            # this run ends, and worker_a runs it before it crashes.  A second
+            # keeps it out of the stream until worker_a has crashed.
+            perpetual.after(timedelta(seconds=1))
 
     await docket.add(perpetual_task, key="perpetual")()
 
@@ -384,13 +389,10 @@ async def test_docket_cancel_on_scheduled_perpetual_stops_the_chain(
 async def test_cancelled_error_in_perpetual_body_stops_the_chain(
     docket: Docket, worker: Worker
 ):
-    """A Perpetual body that raises ``asyncio.CancelledError`` directly (not
-    received from ``docket.cancel``) hits the same ``except
-    asyncio.CancelledError:`` path: the chain stops.  The worker cannot
-    distinguish user-raised from cancel-driven, and the current behavior is
-    uniform — treat ``CancelledError`` as "this Perpetual is done."  Locking
-    this in keeps a future change to the cancellation handler from quietly
-    altering the contract."""
+    """A Perpetual body that raises ``asyncio.CancelledError`` itself, with no
+    ``docket.cancel()``, ends cancelled, and its chain stops, because the
+    worker is not shutting down.  Locking this in keeps a future change to
+    the cancellation handler from quietly altering the contract."""
     started_count = 0
 
     async def perpetual_body(

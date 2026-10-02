@@ -1,11 +1,8 @@
 """Tests for worker Redis cleanup, consumer groups, and bootstrap behavior."""
 
 import asyncio
-import logging
 from datetime import datetime, timedelta, timezone
 from typing import Callable
-
-from tests.conftest import skip_memory
 
 import pytest
 
@@ -245,24 +242,16 @@ async def test_worker_handles_nogroup_error_gracefully(
         assert task_executed, "Task should have been executed"
 
 
-@skip_memory  # test monkeypatches Redis methods which can't be patched on BurnerRedis
-async def test_worker_handles_nogroup_in_xreadgroup(
-    redis_url: str,
-    make_docket_name: Callable[[], str],
-    caplog: pytest.LogCaptureFixture,
+async def test_worker_creates_the_group_when_another_worker_holds_the_sweep(
+    redis_url: str, make_docket_name: Callable[[], str]
 ):
-    """Worker should handle NOGROUP error in xreadgroup and retry.
+    """A worker that skips the redelivery sweep still creates the consumer group.
 
-    Issue #206: Lazy stream/consumer group bootstrap.
-
-    This tests the rare case where xautoclaim succeeds but then xreadgroup
-    gets NOGROUP (e.g., if the group was deleted between the two calls).
+    Issue #206: Lazy stream/consumer group bootstrap.  The sweep usually
+    creates the group first, but a worker that finds another worker holding
+    the sweep lease skips the sweep.  Its first XREADGROUP then gets NOGROUP,
+    so the worker creates the group itself and reads again.
     """
-    from unittest.mock import patch
-
-    import redis.asyncio
-    from redis.exceptions import ResponseError
-
     docket = Docket(name=make_docket_name(), url=redis_url)
     task_executed = False
 
@@ -271,56 +260,15 @@ async def test_worker_handles_nogroup_in_xreadgroup(
         task_executed = True
 
     async with docket:
-        docket.register(simple_task)
-
-        # Add a task so the worker has something to process
         await docket.add(simple_task)()
+        async with docket.redis() as redis:
+            await redis.set(docket.redelivery_sweep_key, "another-worker", px=60_000)
 
-        # Ensure group exists first so xautoclaim won't hit NOGROUP
-        await docket._ensure_stream_and_group()  # pyright: ignore[reportPrivateUsage]
+        async with Worker(
+            docket,
+            minimum_check_interval=timedelta(milliseconds=5),
+            scheduling_resolution=timedelta(milliseconds=5),
+        ) as worker:
+            await worker.run_until_finished()
 
-        # Track how many times xreadgroup is called
-        call_count = 0
-        original_redis_xreadgroup = redis.asyncio.Redis.xreadgroup
-        original_cluster_xreadgroup = redis.asyncio.RedisCluster.xreadgroup
-
-        async def mock_redis_xreadgroup(  # pragma: no cover
-            self: redis.asyncio.Redis,
-            *args: object,
-            **kwargs: object,
-        ) -> object:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise ResponseError("NOGROUP No such key or consumer group")
-            return await original_redis_xreadgroup(self, *args, **kwargs)  # type: ignore[arg-type]
-
-        async def mock_cluster_xreadgroup(  # pragma: no cover
-            self: redis.asyncio.RedisCluster,
-            *args: object,
-            **kwargs: object,
-        ) -> object:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise ResponseError("NOGROUP No such key or consumer group")
-            return await original_cluster_xreadgroup(self, *args, **kwargs)  # type: ignore[arg-type]
-
-        with (
-            patch.object(redis.asyncio.Redis, "xreadgroup", mock_redis_xreadgroup),
-            patch.object(
-                redis.asyncio.RedisCluster, "xreadgroup", mock_cluster_xreadgroup
-            ),
-            caplog.at_level(logging.DEBUG),
-        ):
-            async with Worker(
-                docket,
-                minimum_check_interval=timedelta(milliseconds=5),
-                scheduling_resolution=timedelta(milliseconds=5),
-            ) as worker:
-                await worker.run_until_finished()
-
-        # Task should have executed after NOGROUP was handled
-        assert task_executed
-        # Should have called xreadgroup at least twice (once NOGROUP, then success)
-        assert call_count >= 2
+    assert task_executed

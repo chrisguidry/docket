@@ -7,6 +7,7 @@ import sys
 import time
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 from unittest import mock
 from unittest.mock import AsyncMock, Mock
 
@@ -16,6 +17,8 @@ from opentelemetry.metrics import _Gauge as Gauge
 
 from docket import Docket, Worker
 from docket.instrumentation import healthcheck_server, metrics_server
+from tests._key_leak_checker import KeyCountChecker
+from tests.conftest import wait_until
 
 
 @pytest.fixture
@@ -59,8 +62,47 @@ async def test_task_duration_is_measured(
     assert inner_elapsed <= duration <= inner_elapsed * 2
 
 
+async def test_interrupted_task_duration_is_measured(
+    docket: Docket,
+    worker: Worker,
+    TASK_DURATION: Mock,
+    key_leak_checker: KeyCountChecker,
+):
+    """A task that event loop shutdown interrupts records how long it ran."""
+    runners: list[asyncio.Task[Any]] = []
+    started = 0.0
+
+    async def the_task():
+        nonlocal started
+        started = time.time()
+        runners.append(cast(asyncio.Task[Any], asyncio.current_task()))
+        await asyncio.sleep(10)
+
+    execution = await docket.add(the_task)()
+
+    # On Python 3.11 and later, the interrupted task stays pending for
+    # redelivery, so its runs and progress hashes have no TTL yet.
+    key_leak_checker.add_exemption(docket.runs_key(execution.key))
+    key_leak_checker.add_exemption(docket.key(f"progress:{execution.key}"))
+
+    run = asyncio.create_task(worker.run_until_finished())
+    await wait_until(lambda: len(runners) == 1)
+    await asyncio.sleep(0.1)
+    elapsed = time.time() - started
+
+    # Before asyncio.run() returns, it cancels every task that is still
+    # running.  Here those are the task that runs the worker and the task
+    # that runs the_task.
+    run.cancel()
+    runners[0].cancel()
+    await asyncio.gather(run, runners[0], return_exceptions=True)
+
+    duration: float = TASK_DURATION.call_args.args[0]
+    assert duration >= elapsed > 0
+
+
 @pytest.fixture
-def TASK_PUNCTUALITY(monkeypatch: pytest.MonkeyPatch) -> Mock:
+def TASK_PUNCTUALITY(monkeypatch: pytest.MonkeyPatch) -> Mock:  # pragma: no cover
     """Mock for the TASK_PUNCTUALITY histogram."""
     mock_obj = Mock(spec=Histogram.record)
     monkeypatch.setattr("docket.instrumentation.TASK_PUNCTUALITY.record", mock_obj)
@@ -70,7 +112,7 @@ def TASK_PUNCTUALITY(monkeypatch: pytest.MonkeyPatch) -> Mock:
 @pytest.mark.skipif(
     sys.platform == "win32", reason="Timing-sensitive: unreliable on Windows"
 )
-async def test_task_punctuality_is_measured(
+async def test_task_punctuality_is_measured(  # pragma: no cover
     docket: Docket,
     worker: Worker,
     the_task: AsyncMock,
@@ -246,7 +288,6 @@ def test_metrics_server_raises_import_error_without_sdk(
 ):
     """Should raise ImportError with helpful message when SDK is not installed."""
     import builtins
-    from typing import Any
 
     original_import = builtins.__import__
 

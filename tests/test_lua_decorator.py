@@ -11,6 +11,8 @@ production wrapper relies on.
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import pytest
 
 from docket import Docket
@@ -228,7 +230,7 @@ async def test_enqueue_shares_one_pipelined_round_trip() -> None:
     async with Docket(name="enqueue-evalsha", url="memory://enqueue-evalsha") as docket:
         async with docket.redis() as redis:
             await redis.script_load(_echo_bool.lua)
-            async with redis.pipeline() as pipeline:
+            async with redis.pipeline() as pipeline:  # pragma: no branch
                 _echo_bool.enqueue(pipeline, key=_k(docket, "k"), flag=True)
                 _echo_bool.enqueue(pipeline, key=_k(docket, "k"), flag=False)
                 assert await pipeline.execute() == [b"1", b"0"]
@@ -324,6 +326,26 @@ async def test_empty_variadic_emits_no_argv_entries(docket: Docket) -> None:
         result = await _count_argv(redis, key=_k(docket, "k"), leading="solo", rest={})
 
     assert result == 1
+
+
+@redis_script
+async def _echo_described_key(
+    redis: RedisClient,
+    *,
+    key: Key[Annotated[str, "metadata of its own"]],
+) -> bytes:
+    """
+    return KEYS[1]
+    """
+    ...
+
+
+async def test_marker_is_found_past_other_annotated_metadata(docket: Docket) -> None:
+    """A ``Key`` whose type carries its own ``Annotated`` metadata is still a key."""
+    async with docket.redis() as redis:
+        result = await _echo_described_key(redis, key=_k(docket, "described"))
+
+    assert result == _k(docket, "described").encode()
 
 
 @skip_memory

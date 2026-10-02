@@ -19,7 +19,6 @@ class Progress(Dependency["Progress"]):
     Example:
 
     ```python
-    @task
     async def process_records(records: list, progress: Progress = Progress()) -> None:
         await progress.set_total(len(records))
         for i, record in enumerate(records):

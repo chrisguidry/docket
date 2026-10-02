@@ -80,12 +80,11 @@ class Docket(DocketSnapshotMixin):
     Example:
 
     ```python
-    @task
     async def my_task(greeting: str, recipient: str) -> None:
         print(f"{greeting}, {recipient}!")
 
     async with Docket() as docket:
-        docket.add(my_task)("Hello", recipient="world")
+        await docket.add(my_task)("Hello", recipient="world")
     ```
     """
 

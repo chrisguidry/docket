@@ -27,7 +27,6 @@ def CurrentWorker() -> Worker:
     Example:
 
     ```python
-    @task
     async def my_task(worker: Worker = CurrentWorker()) -> None:
         assert isinstance(worker, Worker)
     ```
@@ -46,7 +45,6 @@ def CurrentDocket() -> Docket:
     Example:
 
     ```python
-    @task
     async def my_task(docket: Docket = CurrentDocket()) -> None:
         assert isinstance(docket, Docket)
     ```
@@ -65,7 +63,6 @@ def CurrentExecution() -> Execution:
     Example:
 
     ```python
-    @task
     async def my_task(execution: Execution = CurrentExecution()) -> None:
         assert isinstance(execution, Execution)
     ```
@@ -84,7 +81,6 @@ def TaskKey() -> str:
     Example:
 
     ```python
-    @task
     async def my_task(key: str = TaskKey()) -> None:
         assert isinstance(key, str)
     ```
@@ -126,7 +122,6 @@ def TaskArgument(parameter: str | None = None, optional: bool = False) -> Any:
         ...look up the customer's name by ID...
         return "John Doe"
 
-    @task
     async def greet_customer(customer_id: int, name: str = Depends(customer_name)) -> None:
         print(f"Hello, {name}!")
     ```
@@ -156,7 +151,6 @@ def TaskLogger() -> logging.LoggerAdapter[logging.Logger]:
     Example:
 
     ```python
-    @task
     async def my_task(logger: "LoggerAdapter[Logger]" = TaskLogger()) -> None:
         logger.info("Hello, world!")
     ```

@@ -102,7 +102,6 @@ def Depends(dependency: DependencyFactory[R], **bindings: Any) -> R:
         finally:
             await conn.close()
 
-    @task
     async def my_task(
         params: dict = Depends(build_query_params),
         user: User = Depends(get_user),

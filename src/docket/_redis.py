@@ -974,7 +974,7 @@ class RedisConnection:
                 yield ps
             finally:
                 await ps.aclose()
-        else:
+        else:  # pragma: no cover - needs a standalone Redis server
             async with Redis(
                 connection_pool=require_open(self._pubsub_pool),
                 **self._credential_kwargs,
@@ -989,7 +989,7 @@ class RedisConnection:
             return cast(int, await node_client.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
         elif self._memory_client is not None:
             return await self._memory_client.publish(channel, message)
-        else:
+        else:  # pragma: no cover - needs a standalone Redis server
             client = require_open(self._client)
             return cast(int, await client.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
 
