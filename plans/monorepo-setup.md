@@ -111,7 +111,8 @@ paths.  The skill already has stale paths at lines 18 and 36-37.
 
 ## Step 4: Extract the Lua into `protocol/`
 
-The 13 scripts are docstrings of `@redis_script` stubs, 784 lines in all:
+The 13 scripts were docstrings of `@redis_script` stubs, 925 lines in all
+with their generated headers:
 
 | File | Scripts |
 |---|---|
@@ -120,36 +121,39 @@ The 13 scripts are docstrings of `@redis_script` stubs, 784 lines in all:
 | `_redelivery.py` | `_refresh_lease` |
 | `worker.py` | `_stream_due_tasks` |
 | `dependencies/_concurrency.py` | `_acquire_or_park`, `_release_and_wake`, `_scavenge_and_wake`, `_cancel_cleanup` |
-| `dependencies/_debounce.py` | the debounce script |
-| `dependencies/_ratelimit.py` | the rate limit script |
+| `dependencies/_debounce.py` | `_debounce` |
+| `dependencies/_ratelimit.py` | `_ratelimit` |
 
-**Each `.lua` file is a complete script.**  `_lua.py` builds a preamble from
-the stub's signature that binds `KEYS` and `ARGV` to local names
-(`_lua.py:199-222`).  In `protocol/`, each file starts with those bindings
-written out, such as `local stream_key = KEYS[1]`.  That header is the
-contract that every language follows when it calls the script.  Python's
-decorator loads the file, and a test checks that the stub's signature lists
-the same keys and arguments in the same order as the header.  The
-alternative is a body without the header, and each language would then
-rebuild the bindings on its own.
+**Each `.lua` file is a complete script.**  It starts with a header that
+binds `KEYS` and `ARGV` to local names, such as `local stream_key =
+KEYS[1]`, then a blank line, then the body.  That header is the contract
+that every language follows when it calls the script, and
+`protocol/README.md` describes it.
 
-**The extraction.**  Extract the string that Python sends at run time, not
-the source text.  Three docstrings are not raw strings and contain `\\`
-escapes (`_concurrency.py:176-186` and `:295-299`, `worker.py:164-174`), so
-their source differs from what Python sends.  During this step, a test
-asserts that each new file is exactly equal to the old preamble plus body
-for all 14 scripts.  The test is removed after the step.
+**The typed stubs stay.**  A stub keeps its typed signature, so pyright
+checks every call site, and its name picks its file: `_claim` runs
+`lua/claim.lua`.  When the module loads, the decorator builds the header
+that the signature implies and checks that the file starts with exactly
+that header and a blank line.  A header that drifts from its stub fails
+at import, on every run.  The decorator is a `ScriptDirectory`, so the
+decorator tests keep their own scripts in `tests/lua/`.
+
+**The extraction.**  The files hold the string that Python sent at run
+time, not the source text, because three docstrings were not raw strings
+and contained `\\` escapes.  A one-time check compared each loaded file
+with the old runtime string: all 13 matched, apart from the final newline
+that each file now ends with.
 
 **Loading.**  The decorator reads the file with
-`importlib.resources.files("docket")`.  The wheel already includes
-non-Python files under `src/docket`, so the copy at
-`python/src/docket/lua/` ships without new packaging settings.  EVALSHA,
-the NOSCRIPT retry, and the pipelined and cluster paths stay the same.
+`importlib.resources.files("docket")`.  The wheel includes non-Python files
+under `src/docket`, so the copy at `python/src/docket/lua/` ships without
+new packaging settings.  EVALSHA, the NOSCRIPT retry, and the pipelined and
+cluster paths stay the same.
 
-**The sync hook.**  A root prek hook copies `protocol/*.lua` and `LICENSE`
-into each package, and it fails when a copy was out of date.  CI runs
-`prek run --all-files`, so a stale copy fails CI.  `tests/test_lua_decorator.py`
-and `tests/test_task_cycle_round_trips.py` change to match.
+**The sync hook.**  A root prek hook copies `protocol/*.lua` into each
+package and removes copies that have no source, and a second hook copies
+`LICENSE`.  A hook that changes a file fails, and CI runs
+`prek run --all-files`, so a stale copy fails CI.
 
 ## Step 5: Build the conformance driver
 

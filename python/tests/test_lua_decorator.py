@@ -3,20 +3,23 @@
 These exercise the decorator in isolation -- partitioning of parameters
 into KEYS / ARGV, encoding of bool / int / float / str / bytes values,
 flattening of ``Args[dict]`` and spreading of ``Args[list]`` /
-``Args[tuple]``, and the NOSCRIPT-retry path that's load-bearing for the
-in-process memory backend.  Every Lua-backed code path in docket goes
-through this decorator, so these unit tests guard the contract every
-production wrapper relies on.
+``Args[tuple]``, the check of each script's header against its stub, and
+the NOSCRIPT-retry path that's load-bearing for the in-process memory
+backend.  Every Lua-backed code path in docket goes through this
+decorator, so these unit tests guard the contract every production
+wrapper relies on.  The scripts live in ``tests/lua/``, named after their
+stubs.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 import pytest
 
 from docket import Docket
-from docket._lua import Arg, Args, Key, redis_script
+from docket._lua import Arg, Args, Key, ScriptDirectory
 from docket._redis import RedisClient
 from tests.conftest import skip_cluster, skip_memory
 
@@ -29,6 +32,8 @@ from tests.conftest import skip_cluster, skip_memory
 # covered even when the test that uses them is skipped on a particular
 # backend.
 
+redis_script = ScriptDirectory(Path(__file__).parent / "lua")
+
 
 @redis_script
 async def _echo_keys_and_args(
@@ -38,11 +43,7 @@ async def _echo_keys_and_args(
     second_key: Key[str],
     first_arg: Arg[str],
     second_arg: Arg[str],
-) -> list[bytes]:
-    """
-    return {KEYS[1], KEYS[2], ARGV[1], ARGV[2]}
-    """
-    ...
+) -> list[bytes]: ...
 
 
 @redis_script
@@ -51,11 +52,7 @@ async def _echo_bool(
     *,
     key: Key[str],
     flag: Arg[bool],
-) -> bytes:
-    """
-    return ARGV[1]
-    """
-    ...
+) -> bytes: ...
 
 
 @redis_script
@@ -65,11 +62,7 @@ async def _echo_numbers(
     key: Key[str],
     count: Arg[int],
     ratio: Arg[float],
-) -> list[bytes]:
-    """
-    return {ARGV[1], ARGV[2]}
-    """
-    ...
+) -> list[bytes]: ...
 
 
 @redis_script
@@ -78,11 +71,7 @@ async def _echo_dict(
     *,
     key: Key[str],
     fields: Args[dict[str, str]],
-) -> list[bytes]:
-    """
-    return ARGV
-    """
-    ...
+) -> list[bytes]: ...
 
 
 @redis_script
@@ -91,11 +80,7 @@ async def _echo_list(
     *,
     key: Key[str],
     items: Args[list[str]],
-) -> list[bytes]:
-    """
-    return ARGV
-    """
-    ...
+) -> list[bytes]: ...
 
 
 @redis_script
@@ -104,11 +89,7 @@ async def _echo_tuple(
     *,
     key: Key[str],
     items: Args[tuple[str, ...]],
-) -> list[bytes]:
-    """
-    return ARGV
-    """
-    ...
+) -> list[bytes]: ...
 
 
 @redis_script
@@ -119,17 +100,7 @@ async def _calc(
     count: Arg[int],
     ratio: Arg[float],
     flag: Arg[bool],
-) -> list[int]:
-    """
-    -- Arithmetic / boolean ops on the typed locals the decorator emits
-    -- from Arg[int] / Arg[float] / Arg[bool].
-    local bumped = count + 1
-    local scaled = ratio * 10
-    local picked = 0
-    if flag then picked = 1 end
-    return {bumped, scaled, picked}
-    """
-    ...
+) -> list[int]: ...
 
 
 @redis_script
@@ -140,16 +111,7 @@ async def _join_variadic(
     leading: Arg[str],
     also_leading: Arg[str],
     items: Args[list[str]],
-) -> bytes:
-    """
-    -- items_start should be 3 (after leading + also_leading)
-    local pieces = {}
-    for i = items_start, #ARGV do
-        pieces[#pieces + 1] = ARGV[i]
-    end
-    return table.concat(pieces, '|')
-    """
-    ...
+) -> bytes: ...
 
 
 @redis_script
@@ -159,11 +121,7 @@ async def _count_argv(
     key: Key[str],
     leading: Arg[str],
     rest: Args[dict[str, str]],
-) -> int:
-    """
-    return #ARGV
-    """
-    ...
+) -> int: ...
 
 
 @redis_script
@@ -171,11 +129,7 @@ async def _noscript_echo(
     redis: RedisClient,
     *,
     key: Key[str],
-) -> bytes:
-    """
-    return 'hello'
-    """
-    ...
+) -> bytes: ...
 
 
 def _k(docket: Docket, suffix: str) -> str:
@@ -287,14 +241,13 @@ async def test_args_tuple_spreads_element_wise(docket: Docket) -> None:
     assert result == [b"a", b"b"]
 
 
-async def test_codegen_binds_typed_locals(docket: Docket) -> None:
-    """``Arg[int]`` / ``Arg[float]`` / ``Arg[bool]`` produce typed Lua locals.
+async def test_header_binds_typed_locals(docket: Docket) -> None:
+    """``Arg[int]`` / ``Arg[float]`` / ``Arg[bool]`` arrive as typed Lua locals.
 
     The script body refers to the parameters as locals (no ARGV indexing)
-    and does arithmetic / boolean ops on them.  If the decorator forgot
-    the ``tonumber`` wrapper, ``count + 1`` would be a string-concat
-    error; if it forgot the ``== '1'`` decode, ``if flag then`` would
-    always be truthy.
+    and does arithmetic / boolean ops on them.  Without the header's
+    ``tonumber`` wrapper, ``count + 1`` would be a string-concat error;
+    without its ``== '1'`` decode, ``if flag then`` would always be truthy.
     """
     async with docket.redis() as redis:
         result = await _calc(redis, key=_k(docket, "k"), count=41, ratio=2.5, flag=True)
@@ -302,12 +255,12 @@ async def test_codegen_binds_typed_locals(docket: Docket) -> None:
     assert result == [42, 25, 1]
 
 
-async def test_codegen_exposes_variadic_start_offset(docket: Docket) -> None:
-    """``Args[...]`` emits a ``<name>_start`` local at the right offset.
+async def test_header_exposes_variadic_start_offset(docket: Docket) -> None:
+    """``Args[...]`` binds a ``<name>_start`` local at the right offset.
 
-    Without the codegen the script body would have to hard-code the
-    1-indexed ARGV position where the variadic begins (after all the
-    scalar args).  The constant lets us iterate without that bookkeeping.
+    Without it the script body would have to hard-code the 1-indexed ARGV
+    position where the variadic begins (after all the scalar args).  The
+    constant lets us iterate without that bookkeeping.
     """
     async with docket.redis() as redis:
         result = await _join_variadic(
@@ -333,11 +286,7 @@ async def _echo_described_key(
     redis: RedisClient,
     *,
     key: Key[Annotated[str, "metadata of its own"]],
-) -> bytes:
-    """
-    return KEYS[1]
-    """
-    ...
+) -> bytes: ...
 
 
 async def test_marker_is_found_past_other_annotated_metadata(docket: Docket) -> None:
@@ -380,11 +329,22 @@ async def test_noscript_path_recovers_after_script_flush(  # pragma: no cover
         assert second == b"hello"
 
 
-def test_missing_docstring_is_rejected_at_decoration_time() -> None:
-    with pytest.raises(TypeError, match="needs a Lua body"):
+def test_a_header_that_decodes_differently_is_rejected() -> None:
+    """The header must decode each argument the way the stub types it."""
+    with pytest.raises(TypeError, match="must be exactly these lines"):
 
         @redis_script
-        async def no_doc(redis: RedisClient, *, key: Key[str]) -> bytes: ...
+        async def _misdecoded_flag(
+            redis: RedisClient, *, key: Key[str], flag: Arg[bool]
+        ) -> bytes: ...
+
+
+def test_a_binding_beyond_the_signature_is_rejected() -> None:
+    """The blank line ends the header, so an undeclared binding fails too."""
+    with pytest.raises(TypeError, match="must be exactly these lines"):
+
+        @redis_script
+        async def _extra_binding(redis: RedisClient, *, key: Key[str]) -> bytes: ...
 
 
 def test_missing_redis_parameter_is_rejected_at_decoration_time() -> None:
@@ -393,9 +353,7 @@ def test_missing_redis_parameter_is_rejected_at_decoration_time() -> None:
         # so this invalid shape is now also a static error -- keep the runtime
         # check covered anyway.
         @redis_script  # pyright: ignore[reportArgumentType]
-        async def no_redis(*, key: Key[str]) -> bytes:
-            """return 'x'"""
-            ...
+        async def no_redis(*, key: Key[str]) -> bytes: ...
 
 
 def test_untagged_parameter_is_rejected_at_decoration_time() -> None:
@@ -407,9 +365,7 @@ def test_untagged_parameter_is_rejected_at_decoration_time() -> None:
             *,
             key: Key[str],
             mystery: str,
-        ) -> bytes:
-            """return 'x'"""
-            ...
+        ) -> bytes: ...
 
 
 def test_missing_key_parameter_is_rejected_at_decoration_time() -> None:
@@ -420,9 +376,7 @@ def test_missing_key_parameter_is_rejected_at_decoration_time() -> None:
             redis: RedisClient,
             *,
             something: Arg[str],
-        ) -> bytes:
-            """return 'x'"""
-            ...
+        ) -> bytes: ...
 
 
 async def test_encode_scalar_rejects_none(docket: Docket) -> None:
@@ -477,9 +431,9 @@ def test_arg_after_args_is_rejected_at_decoration_time() -> None:
 
     A variadic ``Args[...]`` consumes an unknown number of ARGV slots at
     runtime, so any scalar ``Arg[...]`` declared after it would have an
-    indeterminate index in the generated Lua preamble (codegen would emit
-    the wrong ``ARGV[N]`` and the script would silently read the wrong
-    value).  Reject the signature at decoration time instead.
+    indeterminate index in the script's header (the header would bind the
+    wrong ``ARGV[N]`` and the script would silently read the wrong value).
+    Reject the signature at decoration time instead.
     """
     with pytest.raises(TypeError, match="must be the last parameter"):
 
@@ -490,6 +444,4 @@ def test_arg_after_args_is_rejected_at_decoration_time() -> None:
             key: Key[str],
             fields: Args[dict[str, str]],
             tail: Arg[str],
-        ) -> bytes:
-            """return 'x'"""
-            ...
+        ) -> bytes: ...

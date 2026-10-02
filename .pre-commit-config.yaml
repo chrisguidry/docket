@@ -22,6 +22,21 @@ repos:
 
   - repo: local
     hooks:
+      # Each package ships its own copy of the shared Lua scripts and the
+      # license, because every registry packages only its own directory.
+      # A copy that differs from the source fails the hook.
+      - id: sync-lua
+        name: sync protocol/ scripts into each package
+        entry: bash -c 'rm -f python/src/docket/lua/*.lua && cp protocol/*.lua python/src/docket/lua/'
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: sync-license
+        name: sync LICENSE into each package
+        entry: cp LICENSE python/LICENSE
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: loq
         name: loq (file size limits)
         entry: uv run loq

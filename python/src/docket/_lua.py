@@ -2,9 +2,11 @@
 
 The ``@redis_script`` decorator collapses each Lua-backed Redis operation
 into a single callable :class:`RedisScript` whose signature *is* the
-declared function's calling contract and whose docstring *is* the Lua
-source.  Compared with the hand-rolled ``redis.register_script`` +
-lazy-singleton pattern, every script gains:
+declared function's calling contract.  The Lua source lives in
+``protocol/`` at the repository root, shared by every language's docket,
+and a copy ships in this package's ``lua/`` directory.  Compared with the
+hand-rolled ``redis.register_script`` + lazy-singleton pattern, every
+script gains:
 
 * SHA1 computed once at decoration time and reused forever -- no
   per-call ``register_script`` hash work.
@@ -34,25 +36,36 @@ Authoring shape:
         worker: Arg[str],
         started_at: Arg[str],
         generation: Arg[int],
-    ) -> bytes:
-        \"\"\"
-        local runs_key = KEYS[1]
-        -- ... Lua body ...
-        return 'OK'
-        \"\"\"
-        ...
+    ) -> bytes: ...
 
-The trailing ``...`` is the standard Python stub idiom -- pyright
-recognises ``docstring + Ellipsis`` as a stub body and stops asking the
-function to ``return`` anything, so no per-function ``# type: ignore``
-is needed.
+The stub's name picks its script: ``_claim`` runs ``lua/claim.lua``.  Each
+script starts with a header that binds ``KEYS`` and ``ARGV`` to local
+names, then a blank line, then the body:
+
+.. code-block:: lua
+
+    local runs_key = KEYS[1]
+    local progress_key = KEYS[2]
+    local worker = ARGV[1]
+    local started_at = ARGV[2]
+    local generation = tonumber(ARGV[3])
+
+    -- ... Lua body ...
+    return 'OK'
+
+The header is the calling contract that every language follows, so the
+decorator checks it against the signature when the module loads, and a
+script whose header and signature disagree fails at import.
 """
 
 from __future__ import annotations
 
 import functools
 import inspect
+import sys
+from importlib.resources import files
 from typing import (
+    TYPE_CHECKING,
     Annotated,
     Any,
     Awaitable,
@@ -72,6 +85,12 @@ from typing import (
 from redis.commands.core import AsyncScript
 
 from ._redis import Pipeline, RedisClient
+
+if TYPE_CHECKING:
+    if sys.version_info >= (3, 11):
+        from importlib.resources.abc import Traversable
+    else:
+        from importlib.abc import Traversable
 
 
 # Marker classes used as ``Annotated`` metadata.  The class objects
@@ -323,23 +342,29 @@ class RedisScript(Generic[_P, _R]):
         pipeline.eval(self.lua, len(keys), *keys, *argv)
 
 
-def redis_script(
-    fn: Callable[Concatenate[RedisClient, _P], Awaitable[_R]],
-) -> RedisScript[_P, _R]:
-    """Wrap an async function declaring a Lua script as its docstring.
+class ScriptDirectory:
+    """A directory of Lua scripts, used as the ``@redis_script`` decorator.
 
-    Returns a :class:`RedisScript`: call it exactly like the declared
-    function to execute immediately, or use ``.enqueue(pipeline, ...)`` to
-    queue it on a pipeline.  See the module docstring for the authoring
-    contract and the encoding rules applied to ``Arg`` / ``Args``
-    parameters.
+    Decorating a stub returns a :class:`RedisScript` that runs the file
+    named after the stub, without its leading underscores: ``_claim`` runs
+    ``claim.lua``.  Call it exactly like the declared function to execute
+    immediately, or use ``.enqueue(pipeline, ...)`` to queue it on a
+    pipeline.  See the module docstring for the authoring contract and the
+    encoding rules applied to ``Arg`` / ``Args`` parameters.
     """
-    body = inspect.getdoc(fn)
-    if not body:
-        raise TypeError(
-            f"@redis_script function {fn.__qualname__} needs a Lua body in its docstring"
-        )
 
+    def __init__(self, directory: Traversable) -> None:
+        self._directory = directory
+
+    def __call__(
+        self, fn: Callable[Concatenate[RedisClient, _P], Awaitable[_R]]
+    ) -> RedisScript[_P, _R]:
+        return _wrap(fn, self._directory)
+
+
+def _wrap(
+    fn: Callable[Concatenate[RedisClient, _P], Awaitable[_R]], directory: Traversable
+) -> RedisScript[_P, _R]:
     sig = inspect.signature(fn)
     hints = get_type_hints(fn, include_extras=True)
 
@@ -390,10 +415,22 @@ def redis_script(
                     f"Args[...] must be the last parameter"
                 )
 
-    preamble = _generate_preamble(key_params, arg_params)
-    lua = f"{preamble}\n\n{body}" if preamble else body
+    # Every language binds KEYS and ARGV the way this header says, so a
+    # header that drifts from the signature would send values to the wrong
+    # slots.  The blank line ends the header, so an extra binding fails too.
+    script_name = fn.__name__.lstrip("_")
+    source = (directory / f"{script_name}.lua").read_text(encoding="utf-8")
+    header = _generate_preamble(key_params, arg_params)
+    if not source.startswith(f"{header}\n\n"):
+        raise TypeError(
+            f"@redis_script: the Lua header for {fn.__qualname__} must be "
+            f"exactly these lines, then a blank line:\n{header}"
+        )
 
-    return RedisScript(fn, lua, key_params, arg_params)
+    return RedisScript(fn, source, key_params, arg_params)
+
+
+redis_script = ScriptDirectory(files("docket") / "lua")
 
 
 __all__ = [
@@ -401,5 +438,6 @@ __all__ = [
     "Args",
     "Key",
     "RedisScript",
+    "ScriptDirectory",
     "redis_script",
 ]
