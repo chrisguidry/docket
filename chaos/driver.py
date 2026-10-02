@@ -112,7 +112,7 @@ async def setup_environments(
         "--python",
         str(main_venv / "bin" / "python"),
         "-e",
-        ".",
+        "python",
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -143,11 +143,17 @@ async def main(
             "describe",
             "--tags",
             "--abbrev=0",
+            # pydocket's releases are tagged python/v0.27.0, or bare before
+            # the monorepo; other languages' tags are not pydocket versions.
+            "--match",
+            "python/v*",
+            "--match",
+            "[0-9]*",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
         stdout, _ = await process.communicate()
-        base_version = stdout.decode("utf-8").strip()
+        base_version = stdout.decode("utf-8").strip().removeprefix("python/v")
 
     if not package_exists_on_pypi("pydocket", base_version):
         logger.error(
