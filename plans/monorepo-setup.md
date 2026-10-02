@@ -31,15 +31,21 @@ code.
 
 This step moves files and changes paths.  The diff has no behavior change.
 
-**Files that move.**  `src/`, `tests/`, and `pyproject.toml` move to
-`python/`.  hatchling rejects `../` paths for `readme` and `license`
+**Files that move.**  `src/`, `tests/`, `pyproject.toml`, and the two
+`.coveragerc` files move to `python/`.  hatchling rejects `../` paths for `readme` and `license`
 (`pyproject.toml:9,11`), and a symlink breaks the build from the sdist.  So
 `python/` gets its own `README.md`, which is the PyPI description, and a
 copy of `LICENSE`.  The root `README.md` becomes the overview of all
 languages.
 
 **The uv workspace.**  The root `pyproject.toml` becomes a virtual
-workspace root with `python/`, `docs/`, and `conformance/` as members.
+workspace root.  Step 3 adds `python/` as its first member, and steps 5 and
+6 add `conformance/` and `docs/`.  Until then, the root's `dev` group holds
+the repository tools (prek, loq, codespell, the docs, and chaos), and
+`python/`'s `dev` group holds the Python test and type tools.  `uv sync` at
+the root installs both.  `uv sync` inside `python/` syncs only that member
+and removes the root tools from the shared `.venv`, but `uv run` is safe
+from any directory.
 `uv.lock` stays at the root, and its editable path for pydocket changes
 from `.` to `python`.  Every member keeps `requires-python = ">=3.10"`,
 because the workspace uses the intersection of all members.  Members that
@@ -66,26 +72,29 @@ large files, codespell, and loq.  `python/.pre-commit-config.yaml` gets
 ruff and pyright.  Each port adds its own config later.
 
 **CI.**
-- The `main` ruleset requires 45 checks by name, and it requires branches to
+- The `main` ruleset requires 31 checks by name, and it requires branches to
   be up to date.  Every job keeps its name, because a renamed job is a new
   check.
-- A workflow-level `paths:` filter would leave required checks pending.  So
-  a first job computes which directories changed, and each job has an
-  `if:` on that result.  A skipped job satisfies a required check.
-- The Python jobs run when `python/**` or `protocol/**` changes.
+- The Python test jobs run with `working-directory: python`.
 - `cache-dependency-glob` changes from `pyproject.toml` to `uv.lock` in all
   9 places.
+- The changed-directory filter waits for the first port's scaffold.  With
+  one language, every pull request runs the Python jobs anyway.  A
+  workflow-level `paths:` filter would leave required checks pending, so
+  the filter is a first job that computes which directories changed, with
+  an `if:` on each job.  A skipped job satisfies a required check.
 
 **Tags and publishing.**
-- Push the bridge tag `python/v0.25.2` on 98f6cfb, where `0.25.2` is.
-- hatch-vcs gets `tag-pattern = "^python/v(?P<version>.+)$"`,
-  `raw-options.root = ".."`, and a `describe_command` with
-  `--match python/v*`.  A test build made `0.25.4.dev2+g...` from a
-  `python/v0.25.3` tag.  Without the `describe_command`, a nearer
-  `rust/v0.1.0` tag breaks the build.
-- `publish.yml` runs only for `python/v*` releases and builds with
-  `uv build --package pydocket`.  The file keeps its name, because PyPI's
-  trusted publisher names the workflow file.
+- New pydocket releases are tagged `python/v0.27.0`.  The old bare tags
+  stay, so no bridge tag is needed.
+- hatch-vcs gets `raw-options.root = ".."`, a `tag-pattern` that accepts
+  `python/v0.27.0` and `0.26.0`, and a `describe_command` with
+  `--match python/v* --match [0-9]*`.  A test with local tags showed that a
+  `rust/v0.1.0` tag leaves the version alone and a `python/v0.27.0` tag
+  gives `0.27.0`.
+- `publish.yml` runs only for a `python/v*` or bare release tag and builds
+  with `uv build --package pydocket`.  The file keeps its name, because
+  PyPI's trusted publisher names the workflow file.
 
 **chaos/.**  The chaos driver breaks in three places, and this step fixes
 them, so that its two required checks keep passing:
