@@ -1,0 +1,15 @@
+[project]
+name = "docket-conformance"
+version = "0"
+description = "Runs the same scenarios against every docket implementation"
+requires-python = ">=3.10"
+# The driver talks to Redis and the agents, never to docket, so that it stays
+# the same for every language.
+dependencies = ["docker>=7.1.0", "redis>=6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/conformance"]

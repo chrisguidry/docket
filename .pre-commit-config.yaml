@@ -43,8 +43,8 @@ repos:
         language: system
         pass_filenames: false
       - id: pyright
-        name: pyright (chaos tests)
-        entry: uv run pyright chaos
+        name: pyright (conformance driver)
+        entry: uv run pyright conformance
         language: system
         types: [python]
         pass_filenames: false

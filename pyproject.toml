@@ -1,14 +1,16 @@
 # The repository is a uv workspace.  Each language's package lives in its own
 # directory, and the tools that work across the whole repository live here.
 [tool.uv.workspace]
-members = ["python"]
+members = ["python", "conformance"]
 
 [tool.uv.sources]
 pydocket = { workspace = true }
+docket-conformance = { workspace = true }
 
 [dependency-groups]
 dev = [
     "pydocket",
+    "docket-conformance",
     "codespell>=2.4.1",
     "docker>=7.1.0",
     "ipython>=8.0.0",
@@ -31,7 +33,7 @@ examples = [
 target-version = "py310"
 
 [tool.pyright]
-include = ["chaos"]
+include = ["conformance"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
