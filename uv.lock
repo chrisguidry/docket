@@ -1587,7 +1587,7 @@ requires-dist = [
     { name = "prometheus-client", specifier = ">=0.21.1" },
     { name = "py-key-value-aio", extras = ["memory", "redis"], specifier = ">=0.3.0" },
     { name = "python-json-logger", specifier = ">=2.0.7" },
-    { name = "redis", specifier = ">=5" },
+    { name = "redis", specifier = ">=6" },
     { name = "rich", specifier = ">=13.9.4" },
     { name = "taskgroup", marker = "python_full_version < '3.11'", specifier = ">=0.2.2" },
     { name = "typer", specifier = ">=0.15.1" },

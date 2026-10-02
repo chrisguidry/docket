@@ -84,8 +84,8 @@ pip install pydocket
 Docket requires a [Redis](http://redis.io/) server with Streams support (which was
 introduced in Redis 5.0.0). Docket is tested with:
 
-- Redis 6.2, 7.4, and 8.6 (standalone and cluster modes)
-- [Valkey](https://valkey.io/) 8.1
+- Redis 6.2 and 8.10 (standalone and cluster modes)
+- [Valkey](https://valkey.io/) 9.1
 - In-memory backend via [burner-redis](https://github.com/prefectlabs/burner-redis) for testing
 
 For testing without Redis, use the in-memory backend:

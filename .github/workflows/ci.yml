@@ -26,20 +26,18 @@ jobs:
             redis-version: "memory"
           - name: "Redis 6"
             redis-version: "6.2"
-          - name: "Redis 7"
-            redis-version: "7.4"
           - name: "Redis 8"
-            redis-version: "8.6"
+            redis-version: "8.10"
           - name: "Redis 8 Cluster"
-            redis-version: "8.6-cluster"
-          - name: "Valkey 8"
-            redis-version: "valkey-8.1"
+            redis-version: "8.10-cluster"
+          - name: "Valkey 9"
+            redis-version: "valkey-9.1"
         include:
           # Debug hanging tests in 3.12 cluster mode
           - python-version: "3.12"
             backend:
               name: "Redis 8 Cluster"
-              redis-version: "8.6-cluster"
+              redis-version: "8.10-cluster"
             pytest-args: "-v -s -W ignore::ResourceWarning"
           # Cluster mode emits ResourceWarning about unclosed sockets during
           # test teardown. The warnings appear related to redis-py's cluster
@@ -47,33 +45,33 @@ jobs:
           - python-version: "3.10"
             backend:
               name: "Redis 8 Cluster"
-              redis-version: "8.6-cluster"
+              redis-version: "8.10-cluster"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.11"
             backend:
               name: "Redis 8 Cluster"
-              redis-version: "8.6-cluster"
+              redis-version: "8.10-cluster"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.13"
             backend:
               name: "Redis 8 Cluster"
-              redis-version: "8.6-cluster"
+              redis-version: "8.10-cluster"
             pytest-args: "-W ignore::ResourceWarning"
           - python-version: "3.14"
             backend:
               name: "Redis 8 Cluster"
-              redis-version: "8.6-cluster"
+              redis-version: "8.10-cluster"
             pytest-args: "-W ignore::ResourceWarning"
           # ACL variants only run on latest Python to save CI time
           - python-version: "3.14"
             backend:
               name: "Redis 8 with ACL"
-              redis-version: "8.6-acl"
+              redis-version: "8.10-acl"
             pytest-args: ""
           - python-version: "3.14"
             backend:
-              name: "Valkey 8 with ACL"
-              redis-version: "valkey-8.1-acl"
+              name: "Valkey 9 with ACL"
+              redis-version: "valkey-9.1-acl"
             pytest-args: ""
 
     steps:
@@ -127,11 +125,11 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: uv sync --upgrade-package 'redis>=5'
+        run: uv sync --upgrade-package 'redis>=6'
 
       - name: Run CLI tests
         env:
-          REDIS_VERSION: "8.6"
+          REDIS_VERSION: "8.10"
         run: >
           uv run pytest tests/cli/
           -o 'addopts=--import-mode=importlib'
@@ -176,7 +174,7 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: uv sync --upgrade-package 'redis>=5'
+        run: uv sync --upgrade-package 'redis>=6'
 
       - name: Run tests
         env:
@@ -203,7 +201,7 @@ jobs:
           report_type: test_results
 
   test-redis-py:
-    name: redis-py ${{ matrix.redis-py.name }}, Python 3.14, Redis 8.6
+    name: redis-py ${{ matrix.redis-py.name }}, Python 3.14, Redis 8.10
     runs-on: ubuntu-26.04
     timeout-minutes: 4
     strategy:
@@ -214,7 +212,6 @@ jobs:
         # real, standalone Redis is required since the bug this guards (#425)
         # is a client socket timeout.
         redis-py:
-          - { name: "5", spec: ">=5,<6" }
           - { name: "6", spec: ">=6,<7" }
           - { name: "7", spec: ">=7,<8" }
           - { name: "8", spec: ">=8" }
@@ -233,7 +230,7 @@ jobs:
 
       - name: Run tests
         env:
-          REDIS_VERSION: "8.6"
+          REDIS_VERSION: "8.10"
         run: >
           uv run pytest --ignore=tests/cli
           --cov-branch --cov-config=.coveragerc-core
