@@ -20,7 +20,7 @@ async def run_redis(version: str) -> AsyncGenerator[tuple[str, Container], None]
     """Start a Redis Docker container and yield (url, container).
 
     Args:
-        version: Redis Docker image tag (e.g., "7.4.2")
+        version: Redis Docker image tag (e.g., "8.10")
 
     Yields:
         Tuple of (redis_url, container) where redis_url is like "redis://localhost:PORT/0"

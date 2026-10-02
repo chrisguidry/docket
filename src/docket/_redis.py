@@ -884,7 +884,7 @@ class RedisConnection:
         Args:
             decode_responses: If True, decode Redis responses from bytes to strings
             protocol: The RESP version to negotiate, or None to leave redis-py's
-                default alone.  redis-py 5 and 6 send ``HELLO None`` when the
+                default alone.  redis-py 6 sends ``HELLO None`` when the
                 pool carries an explicit ``protocol=None``, so the key is only
                 passed when a version is set.
 

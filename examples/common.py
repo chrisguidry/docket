@@ -38,7 +38,7 @@ async def run_redis(version: str) -> AsyncGenerator[str, None]:
 
 
 async def run_example_workers(workers: int, concurrency: int, tasks: str):
-    async with run_redis("7.4.2") as redis_url:
+    async with run_redis("8.10") as redis_url:
         processes = [
             await asyncio.create_subprocess_exec(
                 "docket",

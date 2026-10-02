@@ -22,14 +22,14 @@ from redis import ConnectionPool, Redis
 from redis.cluster import RedisCluster
 
 # Parse REDIS_VERSION with suffix modifiers for easy typing:
-# - "7.4" - standalone Redis 7.4
-# - "7.4-acl" - standalone Redis with ACL
-# - "7.4-cluster" - Redis cluster
-# - "7.4-cluster-acl" - Redis cluster with ACL
-# - "valkey-8" - standalone Valkey
-# - "valkey-8-cluster" - Valkey cluster
+# - "8.10" - standalone Redis 8.10
+# - "8.10-acl" - standalone Redis with ACL
+# - "8.10-cluster" - Redis cluster
+# - "8.10-cluster-acl" - Redis cluster with ACL
+# - "valkey-9.1" - standalone Valkey
+# - "valkey-9.1-cluster" - Valkey cluster
 # - "memory" - in-memory backend
-REDIS_VERSION = os.environ.get("REDIS_VERSION", "8.0")
+REDIS_VERSION = os.environ.get("REDIS_VERSION", "8.10")
 CLUSTER_ENABLED = "-cluster" in REDIS_VERSION
 ACL_ENABLED = "-acl" in REDIS_VERSION
 BASE_VERSION = REDIS_VERSION.replace("-cluster", "").replace("-acl", "")

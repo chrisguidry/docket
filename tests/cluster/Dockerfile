@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=redis:7.4
+ARG BASE_IMAGE=redis:8.10
 FROM ${BASE_IMAGE}
 
 # Create config and data directories

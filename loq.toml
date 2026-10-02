@@ -1,6 +1,6 @@
 default_max_lines = 500
 respect_gitignore = true
-exclude = ["**/uv.lock", "**/.git/**", "**/docs/**"]
+exclude = ["**/uv.lock", "**/.git/**", "**/docs/**", "plans/**"]
 
 # Source files get a higher default limit (750)
 [[rules]]

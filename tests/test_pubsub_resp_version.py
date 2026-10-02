@@ -37,8 +37,8 @@ async def test_pubsub_connections_speak_resp2(docket: Docket):
 async def test_data_connections_keep_the_client_default_resp_version(docket: Docket):
     """Only pub/sub drops to RESP2; every other command keeps redis-py's default.
 
-    The data pool must not carry an explicit ``protocol`` at all: redis-py 5
-    and 6 turn ``protocol=None`` into a ``HELLO None`` handshake that fails on
+    The data pool must not carry an explicit ``protocol`` at all: redis-py 6
+    turns ``protocol=None`` into a ``HELLO None`` handshake that fails on
     every connection, which the newer versions mask by normalizing None.
     """
     assert docket._redis._connection_pool is not None
