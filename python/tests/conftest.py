@@ -7,7 +7,7 @@ import os
 import socket
 import sys
 from datetime import datetime, timedelta, timezone
-from functools import partial
+from functools import partial, wraps
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, Generator
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -15,14 +15,18 @@ from uuid import uuid4
 import pytest
 
 from docket import Docket, Worker
+from docket._redis import RedisConnection
+from docket.strikelist import StrikeList
 from tests._container import (
     ACL_ENABLED,
     ACLCredentials,
     BASE_VERSION,
     CLUSTER_ENABLED,
+    PROVIDER_ENABLED,
     sync_redis,
 )
 from tests._key_leak_checker import KeyCountChecker
+from tests._rotating_provider import RotatingProvider
 
 # Skip condition for tests that need Redis-specific features unavailable in
 # the in-memory backend (key enumeration via keys/scan_iter, TTL queries, etc.)
@@ -124,6 +128,45 @@ if sys.platform != "win32" or TYPE_CHECKING:
 def acl_credentials(worker_id: str) -> ACLCredentials:
     """Session-scoped ACL credentials for consistent test isolation."""
     return ACLCredentials(worker_id)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def credentials_from_a_provider(
+    acl_credentials: ACLCredentials, redis_port: int
+) -> Generator[None, None, None]:
+    """On the provider legs, every Docket, StrikeList, and RedisConnection that
+    a test builds for the test Redis without a credential provider gets this
+    one, as an application would pass it.  redis_url carries no credentials
+    there, so a connection that doesn't use the provider is refused.  URLs
+    with credentials, or for other hosts, keep whatever the test gave them."""
+    if not PROVIDER_ENABLED:
+        yield
+        return
+
+    provider = RotatingProvider(acl_credentials.username, acl_credentials.password)
+
+    def with_provider(init: Callable[..., None]) -> Callable[..., None]:
+        signature = inspect.signature(init)
+
+        @wraps(init)
+        def __init__(self: object, *args: Any, **kwargs: Any) -> None:
+            # Docket hands RedisConnection its provider positionally
+            bound = signature.bind(self, *args, **kwargs)
+            url = bound.arguments.get("url") or ""
+            for_the_test_redis = f"://localhost:{redis_port}" in url
+            if (
+                for_the_test_redis
+                and bound.arguments.get("credential_provider") is None
+            ):
+                bound.arguments["credential_provider"] = provider
+            init(*bound.args, **bound.kwargs)
+
+        return __init__
+
+    with pytest.MonkeyPatch.context() as patch:
+        for cls in (Docket, StrikeList, RedisConnection):
+            patch.setattr(cls, "__init__", with_provider(cls.__init__))
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -229,26 +272,25 @@ def redis_url(redis_port: int, acl_credentials: ACLCredentials) -> str:
     if BASE_VERSION == "memory":
         return "memory://"
 
-    if CLUSTER_ENABLED:
-        if ACL_ENABLED:
-            return (
-                f"redis+cluster://{acl_credentials.username}:{acl_credentials.password}"
-                f"@localhost:{redis_port}"
-            )
-        return f"redis+cluster://localhost:{redis_port}"
+    # On the provider legs the credentials come from credentials_from_a_provider
+    userinfo = (
+        f"{acl_credentials.username}:{acl_credentials.password}@" if ACL_ENABLED else ""
+    )
+    url_userinfo = "" if PROVIDER_ENABLED else userinfo
 
-    if ACL_ENABLED:
-        url = (
-            f"redis://{acl_credentials.username}:{acl_credentials.password}"
-            f"@localhost:{redis_port}/0"
-        )
-    else:
-        url = f"redis://localhost:{redis_port}/0"
+    if CLUSTER_ENABLED:
+        return f"redis+cluster://{url_userinfo}localhost:{redis_port}"
 
     # Each worker owns its Redis, so FLUSHALL is safe
-    with sync_redis(url) as r:
+    with sync_redis(f"redis://{userinfo}localhost:{redis_port}/0") as r:
         r.flushall()  # type: ignore
-    return url
+    return f"redis://{url_userinfo}localhost:{redis_port}/0"
+
+
+@pytest.fixture
+def credential_less_url(redis_url: str, redis_port: int) -> str:
+    """The test Redis without credentials in the URL (redis_url flushes it)."""
+    return f"redis://localhost:{redis_port}/0"
 
 
 @pytest.fixture(autouse=True)

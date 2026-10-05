@@ -17,6 +17,7 @@ from urllib.parse import ParseResult, parse_qs, unquote, urlencode, urlparse
 from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.connection import parse_url
 from redis.asyncio.sentinel import Sentinel, SentinelConnectionPool
+from redis.credentials import CredentialProvider
 
 from ._redis import close_resource
 
@@ -260,6 +261,7 @@ def sentinel_connection_pool(
     *,
     decode_responses: bool,
     protocol: int | None = None,
+    credential_provider: CredentialProvider | None = None,
     socket_timeout: float | None,
     socket_connect_timeout: float | None,
 ) -> ConnectionPool:
@@ -276,6 +278,8 @@ def sentinel_connection_pool(
         decode_responses: If True, decode Redis responses from bytes to strings.
         protocol: The RESP version to negotiate, or None to leave redis-py's
             default alone.
+        credential_provider: Supplies the data-node credentials in place of
+            the URL's, or None to use the URL's.
         socket_timeout: The read timeout for data-node connections.
         socket_connect_timeout: The TCP connect timeout for data-node
             connections.
@@ -300,4 +304,6 @@ def sentinel_connection_pool(
     # the key is only present when a version is set.
     if protocol is not None:
         pool_kwargs["protocol"] = protocol
+    if credential_provider is not None:
+        pool_kwargs["credential_provider"] = credential_provider
     return OwnedSentinelConnectionPool(config.service_name, sentinel, **pool_kwargs)

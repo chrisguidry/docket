@@ -219,6 +219,7 @@ class ResultStorage:
             )
             self._stack.callback(lambda: delattr(self, "_pool"))
             self._stack.push_async_callback(close_resource, self._pool, "pool")
+            self._stack.enter_context(self._redis._rotation.following_pool(self._pool))
 
             self._client = Redis(connection_pool=self._pool)
             self._stack.callback(lambda: delattr(self, "_client"))

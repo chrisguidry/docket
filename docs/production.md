@@ -219,6 +219,48 @@ docket_url = "redis://:password@redis.prod.com:6379/0"
 docket_url = "redis://myuser:mypassword@redis.prod.com:6379/0"
 ```
 
+#### Credential providers
+
+When the credentials rotate, as with Azure Entra ID tokens, a URL can't carry
+them. Pass a redis-py
+[`CredentialProvider`](https://redis.readthedocs.io/en/stable/examples/connection_examples.html)
+instead, and leave the credentials out of the URL:
+
+```python
+from redis_entraid.cred_provider import create_from_default_azure_credential
+
+from docket import Docket
+
+credential_provider = create_from_default_azure_credential(
+    ("https://redis.azure.com/.default",)
+)
+
+async with Docket(
+    name="orders",
+    url="rediss://my-cache.redis.azure.net:10000/0",
+    credential_provider=credential_provider,
+) as docket:
+    ...
+```
+
+Docket hands the provider to every connection it opens: the data and pub/sub
+connections, the result store, and the strike list. A URL with credentials and
+a provider together raise a `ValueError`. With a streaming provider, like
+`redis-entraid`'s, docket re-authenticates its open connections when the token
+is refreshed. A pub/sub connection can't re-authenticate while it is
+subscribed, so it keeps the token it connected with. If the server drops it
+when that token expires, docket sees the same lost connection as when Redis
+restarts.
+
+Give docket a provider of its own. A streaming provider like `redis-entraid`'s
+keeps one refresh callback, so a redis-py client of yours that shares the
+provider takes the refreshes away from docket.
+
+For Sentinel URLs the provider authenticates the data nodes, and the Sentinels
+keep the `sentinel_username`/`sentinel_password` from the URL. `memory://`
+ignores it, and the `docket` CLI doesn't expose it, so run workers from Python
+(see `Worker`) when you need it.
+
 ### ACL Configuration
 
 When using Redis ACLs with a restricted user, grant access to the key pattern matching your docket name.

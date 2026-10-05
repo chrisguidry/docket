@@ -10,11 +10,13 @@ omit =
     **/conftest.py
     tests/_key_leak_checker.py
     tests/_container.py
+    tests/_rotating_provider.py
     tests/sitecustomize.py
     tests/cli/*.py
     # real-Redis-only; skips on the memory and cluster legs
     tests/test_socket_timeout.py
     tests/test_pubsub_resp_version.py
+    tests/test_credential_rotation.py
 
 [report]
 exclude_also =

@@ -26,13 +26,18 @@ from redis.cluster import RedisCluster
 # - "8.10-acl" - standalone Redis with ACL
 # - "8.10-cluster" - Redis cluster
 # - "8.10-cluster-acl" - Redis cluster with ACL
+# - "8.10-provider" - standalone Redis with ACL, where the credentials come
+#   from a credential provider instead of the URL
 # - "valkey-9.1" - standalone Valkey
 # - "valkey-9.1-cluster" - Valkey cluster
 # - "memory" - in-memory backend
 REDIS_VERSION = os.environ.get("REDIS_VERSION", "8.10")
 CLUSTER_ENABLED = "-cluster" in REDIS_VERSION
-ACL_ENABLED = "-acl" in REDIS_VERSION
-BASE_VERSION = REDIS_VERSION.replace("-cluster", "").replace("-acl", "")
+PROVIDER_ENABLED = "-provider" in REDIS_VERSION
+ACL_ENABLED = "-acl" in REDIS_VERSION or PROVIDER_ENABLED
+BASE_VERSION = (
+    REDIS_VERSION.replace("-cluster", "").replace("-acl", "").replace("-provider", "")
+)
 
 
 class ACLCredentials:

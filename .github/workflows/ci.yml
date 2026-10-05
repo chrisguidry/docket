@@ -73,6 +73,12 @@ jobs:
             backend:
               name: "Valkey 9 with ACL"
               redis-version: "valkey-9.1-acl"
+          # The ACL server again, with the credentials from a credential
+          # provider instead of the URL
+          - python-version: "3.14"
+            backend:
+              name: "Redis 8 with credential provider"
+              redis-version: "8.10-provider"
 
     steps:
       - uses: actions/checkout@v7
