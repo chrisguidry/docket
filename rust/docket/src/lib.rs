@@ -17,6 +17,7 @@ mod memory;
 mod scripts;
 mod strikes;
 mod task;
+pub mod testing;
 mod wire;
 mod worker;
 

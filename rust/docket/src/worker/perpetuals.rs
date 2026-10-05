@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::Utc;
 use redis::AsyncCommands;
@@ -16,16 +15,13 @@ use crate::execution::Message;
 /// How long one worker holds the seeding lock.
 const LOCK_MILLIS: u64 = 10_000;
 
-/// How often a worker checks that its automatic tasks are still scheduled.
-const RESEED_INTERVAL: Duration = Duration::from_secs(60);
-
 /// Releases the lock only for the worker that holds it.
 const RELEASE: &str =
     "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0";
 
 pub(super) async fn reseed(worker: Arc<Shared>) {
     loop {
-        tokio::time::sleep(RESEED_INTERVAL).await;
+        tokio::time::sleep(worker.settings.automatic_tasks_interval).await;
         if let Err(error) = seed(&worker).await {
             tracing::warn!(%error, "scheduling automatic tasks failed");
         }

@@ -169,6 +169,23 @@ impl<O> Execution<O> {
         }
     }
 
+    /// An execution read back from the docket, which was added earlier.
+    pub(crate) fn found(
+        docket: Docket,
+        key: String,
+        function: String,
+        when: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            docket,
+            key,
+            function,
+            when,
+            disposition: Disposition::Scheduled,
+            output: PhantomData,
+        }
+    }
+
     /// The task's key.
     #[must_use]
     pub fn key(&self) -> &str {

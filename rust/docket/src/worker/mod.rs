@@ -42,6 +42,7 @@ pub(crate) struct Settings {
     pub minimum_check_interval: Duration,
     pub scheduling_resolution: Duration,
     pub schedule_automatic_tasks: bool,
+    pub automatic_tasks_interval: Duration,
     pub message_batch: usize,
 }
 
@@ -68,6 +69,7 @@ impl Worker {
                 minimum_check_interval: Duration::from_millis(250),
                 scheduling_resolution: Duration::from_millis(250),
                 schedule_automatic_tasks: true,
+                automatic_tasks_interval: Duration::from_mins(1),
                 message_batch: 1000,
             },
         }
@@ -124,6 +126,14 @@ impl Worker {
     #[must_use]
     pub fn schedule_automatic_tasks(mut self, schedule: bool) -> Self {
         self.settings.schedule_automatic_tasks = schedule;
+        self
+    }
+
+    /// How often the worker schedules its automatic tasks again, in case
+    /// one was cancelled or lost.  The default is 1 minute.
+    #[must_use]
+    pub fn automatic_tasks_interval(mut self, interval: Duration) -> Self {
+        self.settings.automatic_tasks_interval = interval;
         self
     }
 

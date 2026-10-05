@@ -1,3 +1,5 @@
+pub mod proxy;
+
 use std::time::Duration;
 
 use docket::{Docket, Task, Worker};
@@ -7,7 +9,9 @@ use serde::{Deserialize, Serialize};
 /// tests on the in-process engine never share data.
 pub fn url() -> String {
     std::env::var("DOCKET_TEST_URL")
-        .unwrap_or_else(|_| format!("memory://{}", uuid::Uuid::now_v7()))
+        .ok()
+        .filter(|url| !url.is_empty())
+        .unwrap_or_else(|| format!("memory://{}", uuid::Uuid::now_v7()))
 }
 
 /// A docket of the test's own.
@@ -61,4 +65,21 @@ pub async fn within<F: std::future::Future>(seconds: u64, future: F) -> F::Outpu
     tokio::time::timeout(Duration::from_secs(seconds), future)
         .await
         .expect("the test finishes in time")
+}
+
+/// A fault proxy in front of the test Redis, or `None` when the tests run
+/// against something a plain TCP proxy cannot stand in for, such as the
+/// in-process engine or a cluster.
+pub async fn proxy() -> Option<proxy::Proxy> {
+    let url = std::env::var("DOCKET_TEST_URL").ok()?;
+    let upstream = url.strip_prefix("redis://")?.split('/').next()?.to_owned();
+    Some(proxy::Proxy::start(upstream).await)
+}
+
+/// A docket of the test's own, through `proxy`.
+pub async fn docket_through(proxy: &proxy::Proxy) -> Docket {
+    Docket::builder(format!("docket-test-{}", uuid::Uuid::now_v7()), proxy.url())
+        .connect()
+        .await
+        .expect("the test docket connects")
 }

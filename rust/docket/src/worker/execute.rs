@@ -8,6 +8,7 @@ use std::time::Duration;
 use chrono::Utc;
 use futures::FutureExt;
 use redis::{AsyncCommands, Value};
+use tracing::Instrument;
 
 use super::session::{Active, Delivery, Shared};
 use crate::behaviors::{
@@ -35,8 +36,25 @@ struct Panicked(String);
 struct Cancelled;
 
 pub(super) async fn run(worker: Arc<Shared>, delivery: Delivery) -> Result<()> {
-    let active = worker.start(&delivery.id, &delivery.message.key);
-    let result = execute(&worker, &delivery, &active).await;
+    let message = &delivery.message;
+    // Logs inside the handler carry the task's name, key, and attempt, the
+    // way pydocket's TaskLogger adds them.
+    let span = tracing::info_span!(
+        "docket.task",
+        docket = worker.docket.name(),
+        task = %message.function,
+        key = %message.key,
+        attempt = message.attempt,
+        worker = %worker.settings.name,
+    );
+    let active = worker.start(&delivery.id, &message.key);
+    let started = tokio::time::Instant::now();
+    let result = execute(&worker, &delivery, &active)
+        .instrument(span.clone())
+        .await;
+    span.in_scope(
+        || tracing::info!(elapsed = ?started.elapsed(), ok = result.is_ok(), "task finished"),
+    );
     worker.finish(&delivery.id);
     result
 }

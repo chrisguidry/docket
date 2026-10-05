@@ -8,7 +8,7 @@ use redis::{AsyncCommands, RedisResult};
 
 use super::Docket;
 use crate::error::Result;
-use crate::execution::Message;
+use crate::execution::{Execution, Message, Status};
 use crate::keys::WORKER_GROUP;
 use crate::wire::seconds;
 
@@ -138,6 +138,26 @@ impl Docket {
             running,
             workers: self.workers().await?,
         })
+    }
+
+    /// The run of the task with this key, or `None` when the docket knows
+    /// nothing of it, for example after its state expired.
+    pub async fn execution(&self, key: &str) -> Result<Option<Execution>> {
+        let mut connection = self.connection().await?;
+        let runs: HashMap<String, String> = connection.hgetall(self.keys().runs(key)).await?;
+        let Some(function) = runs.get("function") else {
+            return Ok(None);
+        };
+        let status = Status::from_hash(&runs);
+        let when = status
+            .and_then(|status| status.when)
+            .unwrap_or_else(Utc::now);
+        Ok(Some(Execution::found(
+            self.clone(),
+            key.to_owned(),
+            function.clone(),
+            when,
+        )))
     }
 
     /// The workers that have reported recently.

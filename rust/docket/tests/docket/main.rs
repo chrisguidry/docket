@@ -6,6 +6,7 @@
 mod support;
 
 mod admission;
+mod faults;
 mod perpetual;
 mod results;
 mod retries;
