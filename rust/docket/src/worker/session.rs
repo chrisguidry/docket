@@ -189,6 +189,8 @@ async fn poll(
         while let Some(finished) = tasks.try_join_next() {
             collect(finished)?;
         }
+        // The waits below give way to shutdown by coming back here, so that
+        // every shutdown leaves the loop the same way.
         if shutdown.is_cancelled() {
             return Ok(());
         }
@@ -197,7 +199,7 @@ async fn poll(
         if available == 0 {
             tokio::select! {
                 Some(finished) = tasks.join_next() => collect(finished)?,
-                () = shutdown.cancelled() => return Ok(()),
+                () = shutdown.cancelled() => {}
             }
             continue;
         }
@@ -211,7 +213,7 @@ async fn poll(
             let read = read(worker, &mut reader, count - deliveries.len());
             let read = tokio::select! {
                 read = read => read?,
-                () = shutdown.cancelled() => return Ok(()),
+                () = shutdown.cancelled() => continue,
             };
             deliveries.extend(read);
         }
