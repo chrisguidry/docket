@@ -119,29 +119,6 @@ async def test_a_rotation_reauthenticates_every_connection_sharing_the_provider(
         assert await authenticated_as(admin, users, subscribed=False) == {new.name}
 
 
-async def test_a_rotation_reauthenticates_a_subscribed_connection(
-    credential_less_url: str, admin: Redis, users: tuple[User, User]
-):
-    """A worker's cancellation listener stays subscribed for the worker's whole
-    life, so it needs the new identity while it is subscribed."""
-    old, new = users
-    provider = RotatingProvider(*old)
-    async with RedisConnection(credential_less_url, provider) as connection:
-        async with connection.pubsub() as pubsub:
-            await pubsub.subscribe("rotation")
-            await wait_until(
-                lambda: subscribed_as(admin, users, old),
-                description="the subscriber to authenticate as the old user",
-            )
-
-            await provider.rotate(*new)
-
-            await wait_until(
-                lambda: subscribed_as(admin, users, new),
-                description="the subscriber to authenticate as the new user",
-            )
-
-
 async def subscribers(admin: Redis, users: tuple[User, User]) -> list[str]:
     """The user of each subscribed connection, one entry per connection."""
     names = {user.name for user in users}

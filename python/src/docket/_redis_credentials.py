@@ -6,7 +6,11 @@ only the newest callback, and docket opens many clients on one provider: the
 data and pub/sub clients, the result store, and the strike list.  So docket
 gives the provider only to its pools, which never register, and registers one
 callback for each provider here.  That callback re-authenticates every open
-pool, cluster, and subscription that uses the provider.
+pool and cluster that uses the provider.
+
+A subscribed RESP2 connection can't send AUTH, so it keeps the credentials it
+connected with.  Its reader owns its socket, and a reconnect from here would
+race the reader for it.
 """
 
 import logging
@@ -15,7 +19,6 @@ from typing import Generator, TypeVar
 from weakref import WeakKeyDictionary
 
 from redis.asyncio import ConnectionPool
-from redis.asyncio.client import PubSub
 from redis.asyncio.cluster import RedisCluster
 from redis.auth.token import TokenInterface
 from redis.credentials import CredentialProvider, StreamingCredentialProvider
@@ -35,13 +38,12 @@ def _member(members: set[T], member: T) -> Generator[None, None, None]:
 
 
 class Rotation:
-    """The open pools, clusters, and subscriptions that one provider's
-    refreshed credentials must reach."""
+    """The open pools and clusters that one provider's refreshed credentials
+    must reach."""
 
     def __init__(self) -> None:
         self._pools: set[ConnectionPool] = set()
         self._clusters: set[RedisCluster] = set()
-        self._subscriptions: set[PubSub] = set()
 
     def following_pool(self, pool: ConnectionPool) -> AbstractContextManager[None]:
         return _member(self._pools, pool)
@@ -51,27 +53,18 @@ class Rotation:
     ) -> AbstractContextManager[None]:  # pragma: no cover - needs a cluster
         return _member(self._clusters, cluster)
 
-    def following_subscription(self, pubsub: PubSub) -> AbstractContextManager[None]:
-        return _member(self._subscriptions, pubsub)
-
     async def reauthenticate(
         self, token: TokenInterface
     ) -> None:  # pragma: no cover - needs a real Redis
         # A pool sends AUTH on its idle connections now, and on each connection
-        # in use when that connection comes back to the pool.
+        # in use when that connection comes back to the pool.  A subscriber's
+        # connection is disconnected before it comes back, so it never gets
+        # that AUTH.
         for pool in list(self._pools):
             await pool.re_auth_callback(token)
         for cluster in list(self._clusters):
             for node in cluster.get_nodes():
                 await node.re_auth_callback(token)
-        # A RESP2 subscriber can't send AUTH, so it reconnects with the new
-        # credentials instead, and redis-py's PubSub.on_connect subscribes it
-        # again.  Messages published while it reconnects are lost, as they are
-        # when the server drops it.
-        for pubsub in list(self._subscriptions):
-            if pubsub.connection is not None:
-                await pubsub.connection.disconnect()
-                await pubsub.connect()
 
     async def log_error(
         self, error: Exception

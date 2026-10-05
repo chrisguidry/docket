@@ -1003,8 +1003,7 @@ class RedisConnection:
         else:  # pragma: no cover - needs a standalone Redis server
             async with Redis(connection_pool=require_open(self._pubsub_pool)) as r:
                 async with r.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
-                    with self._rotation.following_subscription(pubsub):
-                        yield cast(PubSubClient, pubsub)
+                    yield cast(PubSubClient, pubsub)
 
     async def publish(self, channel: str, message: str) -> int:
         """Publish a message to a pub/sub channel."""
@@ -1031,8 +1030,7 @@ class RedisConnection:
         """
         pubsub = require_open(self._node_client).pubsub()  # pyright: ignore[reportUnknownMemberType]
         try:
-            with self._rotation.following_subscription(pubsub):
-                yield pubsub
+            yield pubsub
         finally:
             try:
                 await pubsub.aclose()

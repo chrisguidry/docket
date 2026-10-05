@@ -248,8 +248,9 @@ connections, the result store, and the strike list. A URL with credentials and
 a provider together raise a `ValueError`. With a streaming provider, like
 `redis-entraid`'s, docket re-authenticates its open connections when the token
 is refreshed. A pub/sub connection can't re-authenticate while it is
-subscribed, so docket reconnects it with the new token instead, and messages
-published during that reconnect are lost.
+subscribed, so it keeps the token it connected with. If the server drops it
+when that token expires, docket sees the same lost connection as when Redis
+restarts.
 
 Give docket a provider of its own. A streaming provider like `redis-entraid`'s
 keeps one refresh callback, so a redis-py client of yours that shares the
