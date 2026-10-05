@@ -16,3 +16,4 @@ wheels/
 .claude/scheduled_tasks.lock
 coverage.xml
 junit.xml
+target/

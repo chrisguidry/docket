@@ -27,13 +27,13 @@ repos:
       # A copy that differs from the source fails the hook.
       - id: sync-lua
         name: sync protocol/ scripts into each package
-        entry: bash -c 'rm -f python/src/docket/lua/*.lua && cp protocol/*.lua python/src/docket/lua/'
+        entry: bash -c 'for d in python/src/docket/lua rust/docket/lua; do rm -f $d/*.lua && cp protocol/*.lua $d/; done'
         language: system
         pass_filenames: false
         always_run: true
       - id: sync-license
         name: sync LICENSE into each package
-        entry: cp LICENSE python/LICENSE
+        entry: bash -c 'for d in python rust/docket rust/docket-macros; do cp LICENSE $d/LICENSE; done'
         language: system
         pass_filenames: false
         always_run: true
