@@ -7,9 +7,11 @@ identity.  These need a real, standalone Redis: they read CLIENT LIST to see
 which user each connection is authenticated as.
 """
 
+import asyncio
 import gc
+from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import AsyncGenerator, Callable, NamedTuple
+from typing import Any, AsyncGenerator, Callable, NamedTuple
 from uuid import uuid4
 
 import pytest
@@ -138,6 +140,66 @@ async def test_a_rotation_reauthenticates_a_subscribed_connection(
                 lambda: subscribed_as(admin, users, new),
                 description="the subscriber to authenticate as the new user",
             )
+
+
+async def subscribers(admin: Redis, users: tuple[User, User]) -> list[str]:
+    """The user of each subscribed connection, one entry per connection."""
+    names = {user.name for user in users}
+    return sorted(
+        client["user"]
+        for client in await admin.client_list()  # type: ignore[reportUnknownMemberType]
+        if client["user"] in names and "P" in client["flags"]
+    )
+
+
+@asynccontextmanager
+async def reading(pubsub: Any) -> AsyncGenerator[list[bytes], None]:
+    """Read messages the way the worker's cancellation listener does, until
+    the context exits."""
+    received: list[bytes] = []
+
+    async def read() -> None:
+        while True:
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=0.1
+            )
+            if message is not None:
+                received.append(message["data"])
+
+    reader = asyncio.create_task(read())
+    try:
+        yield received
+    finally:
+        if reader.done():
+            reader.result()  # the reader's own error, if it failed
+        reader.cancel()
+        await asyncio.gather(reader, return_exceptions=True)
+
+
+async def test_a_rotation_leaves_a_reading_subscriber_alone(
+    credential_less_url: str, admin: Redis, users: tuple[User, User]
+):
+    """A RESP2 subscriber can't send AUTH, and its reader owns its socket, so a
+    rotation leaves it alone: one connection, still getting messages."""
+    old, new = users
+    provider = RotatingProvider(*old)
+    async with RedisConnection(credential_less_url, provider) as connection:
+        async with connection.pubsub() as pubsub:
+            await pubsub.subscribe("rotation")
+            async with reading(pubsub) as received:
+                await wait_until(
+                    lambda: subscribed_as(admin, users, old),
+                    description="the subscriber to authenticate as the old user",
+                )
+
+                await provider.rotate(*new)
+                await admin.publish("rotation", "after")  # type: ignore[reportUnknownMemberType]
+                await wait_until(
+                    lambda: b"after" in received,
+                    description="a message published after the rotation",
+                )
+
+                assert await subscribers(admin, users) == [old.name]
 
 
 async def test_a_rotation_after_close_opens_no_connections(
