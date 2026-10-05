@@ -244,12 +244,21 @@ async with Docket(
 ```
 
 Docket hands the provider to every connection it opens: the data and pub/sub
-connections, the result store, and the strike list. With a streaming provider,
-like `redis-entraid`'s, redis-py re-authenticates those long-lived connections
-when the token is refreshed. For Sentinel URLs the provider authenticates the
-data nodes, and the Sentinels keep the `sentinel_username`/`sentinel_password`
-from the URL. `memory://` ignores it, and the `docket` CLI doesn't expose it, so
-run workers from Python (see `Worker`) when you need it.
+connections, the result store, and the strike list. A URL with credentials and
+a provider together raise a `ValueError`. With a streaming provider, like
+`redis-entraid`'s, docket re-authenticates its open connections when the token
+is refreshed. A pub/sub connection can't re-authenticate while it is
+subscribed, so docket reconnects it with the new token instead, and messages
+published during that reconnect are lost.
+
+Give docket a provider of its own. A streaming provider like `redis-entraid`'s
+keeps one refresh callback, so a redis-py client of yours that shares the
+provider takes the refreshes away from docket.
+
+For Sentinel URLs the provider authenticates the data nodes, and the Sentinels
+keep the `sentinel_username`/`sentinel_password` from the URL. `memory://`
+ignores it, and the `docket` CLI doesn't expose it, so run workers from Python
+(see `Worker`) when you need it.
 
 ### ACL Configuration
 

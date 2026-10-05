@@ -70,6 +70,10 @@ async def authenticated_as(
     }
 
 
+async def no_connections(admin: Redis, users: tuple[User, User]) -> bool:
+    return await authenticated_as(admin, users, subscribed=False) == set()
+
+
 async def subscribed_as(admin: Redis, users: tuple[User, User], user: User) -> bool:
     return await authenticated_as(admin, users, subscribed=True) == {user.name}
 
@@ -146,6 +150,10 @@ async def test_a_rotation_after_close_opens_no_connections(
     async with RedisConnection(credential_less_url, provider) as connection:
         async with connection.client() as r:
             await r.exists("rotation")
+    await wait_until(
+        lambda: no_connections(admin, users),
+        description="the server to drop the closed connection",
+    )
 
     await provider.rotate(*new)
     reopened = await authenticated_as(admin, users, subscribed=False)

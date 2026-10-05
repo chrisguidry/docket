@@ -686,24 +686,39 @@ class RedisConnection:
                 username and password for every Redis connection, in place of
                 credentials in the URL.  Use it for rotating credentials such as
                 Azure Entra ID tokens.  Ignored for memory:// URLs.
+
+        Raises:
+            ValueError: If the URL has credentials and a provider is given too.
         """
+        from ._redis_credentials import rotation_for
         from ._redis_sentinel import is_sentinel_url, urlparse_multihost
 
         self.url = url
-        # Passed to every pool and client, including the clients that wrap a
-        # pool: redis-py only re-authenticates pooled connections when a
-        # StreamingCredentialProvider rotates if the client is given it too.
+        # Passed to every pool, and never to a client that wraps one, because a
+        # client would register its own re-auth callback with the provider.
+        # The Rotation re-authenticates the pools instead (see
+        # _redis_credentials).
+        self._credential_provider = credential_provider
         self._credential_kwargs: dict[str, CredentialProvider] = (
             {"credential_provider": credential_provider}
             if credential_provider is not None
             else {}
         )
+        self._rotation = rotation_for(credential_provider)
         # Sentinel URLs list several daemons in the netloc, which urlparse can't
         # handle when a bracketed IPv6 member follows another; carve those by
         # hand and leave standalone, cluster, and memory URLs to urlparse.
         self._parsed = (
             urlparse_multihost(url) if is_sentinel_url(url) else urlparse(url)
         )
+        # redis-py refuses both only at the first connection, far from the
+        # code that passed them.
+        if credential_provider is not None and (
+            self._parsed.username or self._parsed.password
+        ):
+            raise ValueError(
+                "Pass credentials in the URL or in credential_provider, not both"
+            )
         self._connection_pool = None
         self._client = None
         self._pubsub_pool = None
@@ -725,16 +740,18 @@ class RedisConnection:
             self._stack.push_async_callback(
                 close_resource, self._cluster_client, "cluster client"
             )
+            self._stack.enter_context(
+                self._rotation.following_cluster(self._cluster_client)
+            )
 
             self._node_pool = self._create_node_pool()
             self._stack.callback(lambda: setattr(self, "_node_pool", None))
             self._stack.push_async_callback(
                 close_resource, self._node_pool, "node pool"
             )
+            self._stack.enter_context(self._rotation.following_pool(self._node_pool))
 
-            self._node_client = Redis(
-                connection_pool=self._node_pool, **self._credential_kwargs
-            )
+            self._node_client = Redis(connection_pool=self._node_pool)
             self._stack.callback(lambda: setattr(self, "_node_client", None))
             self._stack.push_async_callback(
                 close_resource, self._node_client, "node client"
@@ -750,13 +767,14 @@ class RedisConnection:
             self._stack.push_async_callback(
                 close_resource, self._connection_pool, "connection pool"
             )
+            self._stack.enter_context(
+                self._rotation.following_pool(self._connection_pool)
+            )
 
             # Closing a client that was handed a pool releases the client's own
             # connection and leaves the pool alone, so the pool callback above
             # is still what closes the pool.
-            self._client = Redis(
-                connection_pool=self._connection_pool, **self._credential_kwargs
-            )
+            self._client = Redis(connection_pool=self._connection_pool)
             self._stack.callback(lambda: setattr(self, "_client", None))
             self._stack.push_async_callback(close_resource, self._client, "client")
 
@@ -767,6 +785,7 @@ class RedisConnection:
             self._stack.push_async_callback(
                 close_resource, self._pubsub_pool, "pub/sub pool"
             )
+            self._stack.enter_context(self._rotation.following_pool(self._pubsub_pool))
 
         return self
 
@@ -854,11 +873,18 @@ class RedisConnection:
         Returns:
             An initialized RedisCluster client ready for use
         """
+        from ._redis_credentials import WithoutRotation
+
+        credential_kwargs: dict[str, CredentialProvider] = (
+            {"credential_provider": WithoutRotation(self._credential_provider)}
+            if self._credential_provider is not None
+            else {}
+        )
         client: RedisCluster = RedisCluster.from_url(
             self._normalized_url(),
             socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
             socket_connect_timeout=CONNECT_TIMEOUT,
-            **self._credential_kwargs,
+            **credential_kwargs,
         )
         await client.initialize()
         return client
@@ -975,12 +1001,10 @@ class RedisConnection:
             finally:
                 await ps.aclose()
         else:  # pragma: no cover - needs a standalone Redis server
-            async with Redis(
-                connection_pool=require_open(self._pubsub_pool),
-                **self._credential_kwargs,
-            ) as r:
+            async with Redis(connection_pool=require_open(self._pubsub_pool)) as r:
                 async with r.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
-                    yield cast(PubSubClient, pubsub)
+                    with self._rotation.following_subscription(pubsub):
+                        yield cast(PubSubClient, pubsub)
 
     async def publish(self, channel: str, message: str) -> int:
         """Publish a message to a pub/sub channel."""
@@ -1007,7 +1031,8 @@ class RedisConnection:
         """
         pubsub = require_open(self._node_client).pubsub()  # pyright: ignore[reportUnknownMemberType]
         try:
-            yield pubsub
+            with self._rotation.following_subscription(pubsub):
+                yield pubsub
         finally:
             try:
                 await pubsub.aclose()

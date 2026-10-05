@@ -50,8 +50,8 @@ class CountingProvider(CredentialProvider):
 
 
 async def test_standalone_pools_and_clients_get_the_provider():
-    """Both pools carry the provider, and both clients register re-auth with it,
-    which redis-py only does when the client itself is given the provider."""
+    """Both pools carry the provider, and docket registers one re-auth callback
+    with it, however many clients it opens on those pools."""
     provider = StreamingProvider()
     async with RedisConnection("redis://localhost:6379/0", provider) as connection:
         assert connection._connection_pool is not None
@@ -67,7 +67,7 @@ async def test_standalone_pools_and_clients_get_the_provider():
 
         async with connection.pubsub():
             pass
-        assert len(provider.callbacks) == 2
+        assert len(provider.callbacks) == 1
 
 
 async def test_pubsub_adds_no_reauth_callbacks():
@@ -85,6 +85,17 @@ async def test_pubsub_adds_no_reauth_callbacks():
                 pass
 
         assert len(provider.callbacks) == registered
+
+
+async def test_connections_sharing_a_provider_register_one_callback():
+    """A Docket and its strike list share a provider, and a provider like
+    redis-entraid's keeps only the newest callback, so they must share one."""
+    provider = StreamingProvider()
+    async with (
+        RedisConnection("redis://localhost:6379/0", provider),
+        RedisConnection("redis://localhost:6379/0", provider),
+    ):
+        assert len(provider.callbacks) == 1
 
 
 def test_url_credentials_and_a_provider_are_refused_together():
