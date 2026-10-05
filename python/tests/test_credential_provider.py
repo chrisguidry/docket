@@ -38,11 +38,13 @@ class StreamingProvider(StreamingCredentialProvider):
 
 
 class CountingProvider(CredentialProvider):
-    def __init__(self, username: str, password: str) -> None:
+    """Only used by the real-Redis legs below."""
+
+    def __init__(self, username: str, password: str) -> None:  # pragma: no cover
         self.credentials = (username, password)
         self.calls = 0
 
-    async def get_credentials_async(self) -> tuple[str, str]:
+    async def get_credentials_async(self) -> tuple[str, str]:  # pragma: no cover
         self.calls += 1
         return self.credentials
 
