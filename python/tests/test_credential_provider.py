@@ -70,6 +70,30 @@ async def test_standalone_pools_and_clients_get_the_provider():
         assert len(provider.callbacks) == 2
 
 
+async def test_pubsub_adds_no_reauth_callbacks():
+    """The provider keeps every callback it is given, so a callback for each
+    pubsub() call is a leak: get_result(), progress, and concurrency limits all
+    open pub/sub."""
+    provider = StreamingProvider()
+    async with RedisConnection("redis://localhost:6379/0", provider) as connection:
+        async with connection.pubsub():
+            pass
+        registered = len(provider.callbacks)
+
+        for _ in range(10):
+            async with connection.pubsub():
+                pass
+
+        assert len(provider.callbacks) == registered
+
+
+def test_url_credentials_and_a_provider_are_refused_together():
+    """redis-py refuses the combination only at the first connection, far from
+    the code that made the mistake, so docket refuses it up front."""
+    with pytest.raises(ValueError):
+        RedisConnection("redis://user:pass@localhost:6379/0", StreamingProvider())
+
+
 async def test_no_provider_leaves_the_url_credentials_alone():
     async with RedisConnection("redis://user:pass@localhost:6379/0") as connection:
         assert connection._connection_pool is not None
@@ -84,12 +108,6 @@ async def test_sentinel_pool_gets_the_provider():
     pool = await connection._connection_pool_from_url()
     assert pool.connection_kwargs["credential_provider"] is provider
     await pool.aclose()
-
-
-@pytest.fixture
-def credential_less_url(redis_url: str, redis_port: int) -> str:
-    """The test Redis without credentials in the URL (redis_url flushes it)."""
-    return f"redis://localhost:{redis_port}/0"  # pragma: no cover
 
 
 def acl_provider(acl_credentials: ACLCredentials) -> CountingProvider:
