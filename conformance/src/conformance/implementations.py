@@ -3,7 +3,8 @@
 An implementation is named ``language@version``.  For Python, ``main`` is the
 working tree, ``release`` is the newest pydocket tag, and anything else is a
 version on PyPI.  Each one gets its own virtual environment, and all of them
-run the agent from the working tree.
+run the agent from the working tree.  For Rust, ``main`` is the working tree,
+built with Cargo.
 """
 
 import asyncio
@@ -27,9 +28,11 @@ class Implementation:
 
 async def prepare(name: str, workdir: Path) -> Implementation:
     language, _, version = name.partition("@")
-    if language != "python":
-        raise SystemExit(f"There is no {language} implementation yet")
-    return await prepare_python(version or "main", workdir)
+    if language == "python":
+        return await prepare_python(version or "main", workdir)
+    if language == "rust":
+        return await prepare_rust(version or "main")
+    raise SystemExit(f"There is no {language} implementation yet")
 
 
 async def prepare_python(version: str, workdir: Path) -> Implementation:
@@ -51,6 +54,24 @@ async def prepare_python(version: str, workdir: Path) -> Implementation:
 
     agent = str(REPOSITORY / "python" / "conformance-agent")
     return Implementation(f"python@{version}", [python, agent])
+
+
+async def prepare_rust(version: str) -> Implementation:
+    if version != "main":
+        raise SystemExit("docket-rs runs only from the working tree, as rust@main")
+    logger.info("Building docket-rs's agent")
+    await run(
+        "cargo",
+        "build",
+        "--quiet",
+        "--release",
+        "--manifest-path",
+        str(REPOSITORY / "rust" / "Cargo.toml"),
+        "--package",
+        "docket-conformance-agent",
+    )
+    agent = REPOSITORY / "rust" / "target" / "release" / "docket-conformance-agent"
+    return Implementation("rust@main", [str(agent)])
 
 
 async def newest_pydocket_tag() -> str:

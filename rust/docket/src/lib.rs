@@ -4,6 +4,8 @@
 //! It is the Rust implementation of [docket](https://github.com/chrisguidry/docket).
 
 pub mod behaviors;
+#[cfg(feature = "cli")]
+pub mod cli;
 mod connection;
 mod context;
 mod docket;

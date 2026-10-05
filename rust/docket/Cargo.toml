@@ -15,12 +15,15 @@ include = ["src/**", "lua/*.lua", "LICENSE", "README.md"]
 name = "docket"
 
 [features]
+# docket::cli: a worker's command-line options for an application's own CLI.
+cli = ["dep:clap", "tokio/signal"]
 # memory:// runs the in-process engine in src/memory, for users' test suites.
 memory = ["dep:mlua", "dep:parking_lot", "dep:bytes", "dep:ordered-float", "dep:sha1"]
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 chrono-tz = "0.10.4"
+clap = { version = "4.6.7", features = ["derive", "env"], optional = true }
 croner = "4.0.1"
 docket-rs-macros = { version = "=0.1.0", path = "../docket-macros" }
 redis = { version = "1.7.1", features = ["aio", "tokio-comp", "tokio-rustls-comp", "tls-rustls-webpki-roots", "script", "streams", "cluster-async", "sentinel"] }
