@@ -7,9 +7,10 @@ RUN pip install uv
 WORKDIR /app
 
 COPY . .
-RUN SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 uv pip install --system . && \
-    uv pip install --system --group dev
+RUN SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 uv pip install --system ./python && \
+    uv pip install --system --group python/pyproject.toml:dev
 
-ENV PYTHONPATH=/app/src
+WORKDIR /app/python
+ENV PYTHONPATH=/app/python/src
 
 ENTRYPOINT ["pytest", "--no-cov", "-p", "no:cacheprovider"]

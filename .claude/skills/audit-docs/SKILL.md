@@ -1,6 +1,6 @@
 ---
 name: audit-docs
-description: As you edit pydocket — change a function body, modify a signature, alter a Lua script, refactor a public method, rewrite a docs section — verify that the docstrings and narrative docs touching that change are still accurate, and fix them in the same edit. This is a habit, not a deliverable. Apply it continuously while working on `src/docket/`, `docs/*.md`, or `README.md`. Surface findings inline as you make changes; do not produce a separate "audit report" unless the user explicitly asks for one. Trigger phrases that mean the user wants the explicit audit-as-deliverable mode include "audit the docs", "check docstring drift", "produce an audit report", "are the docs still accurate".
+description: As you edit pydocket — change a function body, modify a signature, alter a Lua script, refactor a public method, rewrite a docs section — verify that the docstrings and narrative docs touching that change are still accurate, and fix them in the same edit. This is a habit, not a deliverable. Apply it continuously while working on `python/src/docket/`, `docs/*.md`, or `README.md`. Surface findings inline as you make changes; do not produce a separate "audit report" unless the user explicitly asks for one. Trigger phrases that mean the user wants the explicit audit-as-deliverable mode include "audit the docs", "check docstring drift", "produce an audit report", "are the docs still accurate".
 ---
 
 # Keep docs honest as you work
@@ -15,7 +15,7 @@ Any of these edits should make you re-read the affected docstring and any narrat
 
 - Editing the body of a function/method/class that has a docstring.
 - Changing a function or method signature: added, removed, or renamed parameters; changed defaults; changed return type or shape.
-- Changing a Lua script, which is the docstring of a `@redis_script` function in `src/docket/_execution_scripts.py`, `src/docket/_execution_progress.py`, `src/docket/_redelivery.py`, `src/docket/worker.py`, or `src/docket/dependencies/`. Atomicity, ordering, and consistency claims in docstrings are usually pinned to the Lua, not the Python.
+- Changing a Lua script in `protocol/`, which the `@redis_script` stub of the same name runs from `python/src/docket/_execution_scripts.py`, `python/src/docket/_execution_progress.py`, `python/src/docket/_redelivery.py`, `python/src/docket/worker.py`, or `python/src/docket/dependencies/`. Atomicity, ordering, and consistency claims in docstrings are usually pinned to the Lua, not the Python.
 - Renaming or removing a public class, function, method, exception, or enum value.
 - Changing a public exception type, error message, or condition under which something is raised.
 - Changing a side effect on shared state (Redis keys, channels, sorted sets, streams).
@@ -33,8 +33,8 @@ When you've made one of the changes above:
    - Behavior described in present tense that has actually changed.
    - Silence on a load-bearing contract a caller would be surprised by — idempotency on duplicate keys is the canonical example: `Docket.add()` is idempotent on duplicate keys (no-ops), but the docstring used to be silent on that, leading callers to either avoid the pattern or learn it the hard way.
 2. **Tests that pin the contract.** If a test exists for the changed behavior, the test is the contract. When the docstring and the test disagree, the test wins (or both are wrong, in which case raise that with the user — don't paper over it). Useful test directories:
-   - `tests/fundamentals/` — core lifecycle, scheduling, retries, idempotency.
-   - For the dependency docstrings: `tests/concurrency_limits/`, `tests/fundamentals/test_cron.py`, `tests/fundamentals/test_perpetual.py`, `tests/test_perpetual_*.py`, `tests/test_debounce.py`, `tests/test_cooldown.py`, `tests/test_ratelimit.py`, and `tests/test_striking.py`.
+   - `python/tests/fundamentals/` — core lifecycle, scheduling, retries, idempotency.
+   - For the dependency docstrings: `python/tests/concurrency_limits/`, `python/tests/fundamentals/test_cron.py`, `python/tests/fundamentals/test_perpetual.py`, `python/tests/test_perpetual_*.py`, `python/tests/test_debounce.py`, `python/tests/test_cooldown.py`, `python/tests/test_ratelimit.py`, and `python/tests/test_striking.py`.
 3. **Call sites.** If a method's docstring says it raises an exception but the only caller never inspects the return value, the "raises" claim is suspect.
 4. **Narrative docs.** Grep `docs/*.md` and `README.md` for the symbol you changed. For each hit, read the surrounding section and verify the prose still matches the code.
 
@@ -56,7 +56,7 @@ Make the smallest edit that restores accuracy:
 
 ## Where this habit applies
 
-- **`src/docket/`** — every public class, function, method, and module with a docstring. Skip names with a leading underscore in any segment of the qualified name (except dunders), and skip the vendored modules: `_prometheus_exporter.py`, `_telemetry.py`, `_uuid7.py`.
+- **`python/src/docket/`** — every public class, function, method, and module with a docstring. Skip names with a leading underscore in any segment of the qualified name (except dunders), and skip the vendored modules: `_prometheus_exporter.py`, `_telemetry.py`, `_uuid7.py`.
 - **`docs/*.md`** — every section, except `docs/api-reference.md` (auto-rendered from source docstrings via mkdocstrings; auditing it separately would double-count).
 - **`README.md`** — top-level overview claims.
 
@@ -82,7 +82,7 @@ Docstring edits shouldn't move the test suite — but the check is fast and catc
 
 If the user asks for a standalone audit ("audit the docs", "produce an audit report", "find every stale docstring"), switch styles:
 
-1. **Discover the surface.** `Glob` `src/docket/**/*.py` (skipping vendored modules) and walk each file for public docstrings. `Glob` `docs/*.md` and `README.md`, splitting markdown by `## ` headings.
+1. **Discover the surface.** `Glob` `python/src/docket/**/*.py` (skipping vendored modules) and walk each file for public docstrings. `Glob` `docs/*.md` and `README.md`, splitting markdown by `## ` headings.
 2. **Verify each item** using the rubric below — read the implementation, the embedded Lua where relevant, and at least one test before classifying as `stale` or `silent`.
 3. **Classify** each item:
    - `accurate` — consistent with the code (default when in doubt).
@@ -92,4 +92,4 @@ If the user asks for a standalone audit ("audit the docs", "produce an audit rep
 4. **Group findings by file** and present file:line + verdict + one-sentence explanation + suggested fix.
 5. **Offer to apply** only after the user has seen the report.
 
-The seed example for the report mode is `src/docket/execution.py` around `Execution.schedule`: the docstring says `replace=False` raises an error if the task already exists, but the Lua script returns `'EXISTS'`, the Python caller never inspects it, and `Docket.add` silently no-ops on duplicate keys (pinned by `tests/fundamentals/test_idempotency.py`). If a "find every stale docstring" run does *not* surface that item, the audit missed something.
+The seed example for the report mode is `python/src/docket/execution.py` around `Execution.schedule`: the docstring says `replace=False` raises an error if the task already exists, but the Lua script returns `'EXISTS'`, the Python caller never inspects it, and `Docket.add` silently no-ops on duplicate keys (pinned by `python/tests/fundamentals/test_idempotency.py`). If a "find every stale docstring" run does *not* surface that item, the audit missed something.

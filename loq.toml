@@ -1,37 +1,37 @@
 default_max_lines = 500
 respect_gitignore = true
-exclude = ["**/uv.lock", "**/.git/**", "**/docs/**"]
+exclude = ["**/uv.lock", "**/.git/**", "**/docs/**", "plans/**"]
 
 # Source files get a higher default limit (750)
 [[rules]]
-path = "src/**/*.py"
+path = "python/src/**/*.py"
 max_lines = 750
 
 # Source files that still need exceptions above 750
 [[rules]]
-path = "src/docket/worker.py"
-max_lines = 1465
+path = "python/src/docket/worker.py"
+max_lines = 1471
 
 [[rules]]
-path = "src/docket/cli/__init__.py"
+path = "python/src/docket/cli/__init__.py"
 max_lines = 969
 
 [[rules]]
-path = "src/docket/execution.py"
+path = "python/src/docket/execution.py"
 max_lines = 1336
 
 [[rules]]
-path = "src/docket/docket.py"
+path = "python/src/docket/docket.py"
 max_lines = 1105
 
 [[rules]]
-path = "src/docket/_redis.py"
+path = "python/src/docket/_redis.py"
 max_lines = 1015
 
 [[rules]]
-path = "src/docket/dependencies/_concurrency.py"
+path = "python/src/docket/dependencies/_concurrency.py"
 max_lines = 862
 
 [[rules]]
-path = "tests/instrumentation/test_counters.py"
+path = "python/tests/instrumentation/test_counters.py"
 max_lines = 552

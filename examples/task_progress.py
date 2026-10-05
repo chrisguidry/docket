@@ -79,7 +79,7 @@ async def main():
     """
     # Start a temporary Redis container for this example
     # In production, you'd connect to your existing Redis instance
-    async with run_redis("7.4.2") as redis_url:
+    async with run_redis("8.10") as redis_url:
         # Create a Docket connected to Redis
         async with Docket(name="task-progress", url=redis_url) as docket:
             # Start a Worker to execute tasks from the docket
