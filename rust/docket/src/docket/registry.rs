@@ -49,6 +49,33 @@ impl Registered {
             hooks: ErasedHooks::default(),
         }
     }
+
+    /// A handler for any task, which takes the arguments as JSON.
+    pub fn fallback<F, Fut, E>(handler: F) -> Self
+    where
+        F: Fn(Context, serde_json::Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<serde_json::Value, E>> + Send + 'static,
+        E: Into<BoxError>,
+    {
+        let handler: Handler = Arc::new(move |ctx: Context, args: &str| {
+            let called = serde_json::from_str(args).map(|args| {
+                handler(ctx, args).map(|outcome| outcome.map_err(Into::<BoxError>::into))
+            });
+            future::ready(called.map_err(BoxError::from))
+                .try_flatten()
+                .boxed()
+        });
+        Self {
+            handler,
+            hooks: ErasedHooks::default(),
+        }
+    }
+}
+
+impl std::fmt::Debug for Registered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Registered").finish_non_exhaustive()
+    }
 }
 
 #[derive(Default)]
@@ -147,3 +174,6 @@ fn register_safeguard(docket: &Docket, needed: bool) {
         docket.register(safeguard_wake);
     }
 }
+
+#[cfg(all(test, feature = "memory"))]
+mod tests;

@@ -440,3 +440,26 @@ async fn a_delivery_replaced_while_its_worker_was_dead_does_not_run() {
     assert_eq!(replaced.result().await.unwrap(), "new");
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn a_fallback_runs_tasks_that_have_no_handler() {
+    let docket = docket().await;
+    let execution = docket.add(Echo::new("orphan")).await.unwrap();
+
+    within(
+        10,
+        worker(&docket)
+            .fallback(|ctx: docket::Context, args: serde_json::Value| async move {
+                Ok::<_, std::io::Error>(serde_json::json!(format!(
+                    "{} {}",
+                    ctx.function(),
+                    args["text"]
+                )))
+            })
+            .run_until_finished(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(execution.result().await.unwrap(), "echo \"orphan\"");
+}

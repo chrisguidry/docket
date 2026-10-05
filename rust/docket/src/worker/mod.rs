@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::docket::Docket;
+use crate::docket::{Docket, Registered};
 use crate::error::{Error, Result};
 
 /// Runs the tasks in a docket.
@@ -45,6 +45,8 @@ pub(crate) struct Settings {
     pub schedule_automatic_tasks: bool,
     pub automatic_tasks_interval: Duration,
     pub message_batch: usize,
+    /// Runs tasks that have no handler.
+    pub fallback: Option<Registered>,
 }
 
 /// When a worker stops.
@@ -72,6 +74,7 @@ impl Worker {
                 schedule_automatic_tasks: true,
                 automatic_tasks_interval: Duration::from_mins(1),
                 message_batch: 1000,
+                fallback: None,
             },
         }
     }
@@ -142,6 +145,22 @@ impl Worker {
     #[must_use]
     pub fn message_batch(mut self, batch: usize) -> Self {
         self.settings.message_batch = batch;
+        self
+    }
+
+    /// Runs the tasks that no handler is registered for, such as tasks that
+    /// an older or newer version of the application added.  The handler gets
+    /// the arguments as JSON, and [`Context::function`](crate::Context::function)
+    /// names the task.  Without one, the worker logs a warning and completes
+    /// such a task.
+    #[must_use]
+    pub fn fallback<F, Fut, E>(mut self, handler: F) -> Self
+    where
+        F: Fn(crate::Context, serde_json::Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = std::result::Result<serde_json::Value, E>> + Send + 'static,
+        E: Into<crate::behaviors::BoxError>,
+    {
+        self.settings.fallback = Some(Registered::fallback(handler));
         self
     }
 

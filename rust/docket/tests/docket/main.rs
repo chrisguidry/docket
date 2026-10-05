@@ -11,6 +11,7 @@ mod behavior_faults;
 mod cancellation;
 mod concurrency;
 mod context;
+mod credentials;
 mod cron;
 mod events;
 mod faults;

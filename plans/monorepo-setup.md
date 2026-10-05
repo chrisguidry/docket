@@ -247,10 +247,15 @@ conformance workflow adds `Conformance, rust@main` and `Chaos tests,
 rust@main`.  `publish-rust.yml` publishes on a `rust/v*` release, after a
 first release by hand with a token.
 
-Not built yet, and not in pydocket's core contract: OpenTelemetry metrics
-(each task runs in a `tracing` span), a credential provider like pydocket's
-`credential_provider`, the `Agenda` helper, and a fallback handler for
-unknown tasks (a worker completes them with a warning).
+docket-rs also has pydocket's `Agenda` (`Agenda::scatter`), a fallback
+handler for tasks with no handler (`Worker::fallback`), and a credentials
+provider (`DocketBuilder::credentials_provider`, from redis-rs).  Command
+connections renew credentials from the provider; subscriptions take the
+credentials in force when they open, because redis-rs renews only command
+connections.
+
+Not built yet: OpenTelemetry metrics.  Each task runs in a `tracing` span
+with its name, key, and attempt.
 
 ## Steps 9 and 10: One scaffold per language
 

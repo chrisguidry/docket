@@ -239,3 +239,37 @@ async fn a_docket_that_keeps_nothing_reports_a_refused_delete() {
     let error = docket.cancel("k").await.unwrap_err();
     assert!(error.to_string().contains("injected failure"), "{error}");
 }
+
+#[tokio::test]
+async fn a_waiting_result_subscribes_again_when_its_subscription_drops() {
+    let Some(proxy) = proxy().await else { return };
+    let docket = docket_through(&proxy).await;
+    docket.register(|_ctx, args: Echo| async move { Ok::<_, std::io::Error>(args.text) });
+    let execution = docket
+        .add(Echo::new("later"))
+        .after(Duration::from_millis(500))
+        .await
+        .unwrap();
+    let waiting = tokio::spawn(async move { execution.result().await });
+    within(10, async {
+        while proxy.count("SUBSCRIBE") == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    let reads_before = proxy.count("HGETALL");
+    proxy.drop_subscribers();
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert_eq!(within(10, waiting).await.unwrap().unwrap(), "later");
+    // A wait that spun on the ended subscription would read the run state
+    // over and over until the task finished.
+    assert!(
+        proxy.count("HGETALL") - reads_before < 20,
+        "{}",
+        proxy.count("HGETALL") - reads_before
+    );
+}

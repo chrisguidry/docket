@@ -253,37 +253,35 @@ async fn status(docket: &Docket, key: &str) -> Result<Option<Status>> {
 
 /// Waits for the run of `key` to end, and returns its output.
 async fn output(docket: &Docket, key: &str) -> Result<serde_json::Value> {
-    let mut events = events::subscribe(docket, key).await?;
+    // A subscription starts with the state as it is now, and the terminal
+    // event carries the state and its error, so the events alone decide.
+    // When Redis drops the subscription, the stream ends, and a new
+    // subscription reads the state afresh, so no change falls between them.
     loop {
-        if let Some(status) = status(docket, key).await?
-            && status.state.is_terminal()
-        {
-            return outcome(docket, key, &status).await;
-        }
-        // Wait for the next state event before reading the status again,
-        // so that the final read sees the terminal state and its fields.
-        loop {
-            match events.next().await {
-                Some(Ok(Event::State(event))) if event.state.is_terminal() => break,
-                Some(Ok(_)) => {}
-                Some(Err(error)) => return Err(error),
-                None => break,
+        let mut events = events::subscribe(docket, key).await?;
+        while let Some(event) = events.next().await {
+            if let Event::State(event) = event?
+                && event.state.is_terminal()
+            {
+                return outcome(docket, key, event.state, event.error).await;
             }
         }
     }
 }
 
-async fn outcome(docket: &Docket, key: &str, status: &Status) -> Result<serde_json::Value> {
-    match status.state {
+async fn outcome(
+    docket: &Docket,
+    key: &str,
+    state: State,
+    error: Option<String>,
+) -> Result<serde_json::Value> {
+    match state {
         State::Cancelled => Err(Error::TaskCancelled {
             key: key.to_owned(),
         }),
         State::Failed => Err(Error::TaskFailed {
             key: key.to_owned(),
-            message: status
-                .error
-                .clone()
-                .unwrap_or_else(|| "the task failed".to_owned()),
+            message: error.unwrap_or_else(|| "the task failed".to_owned()),
         }),
         _ => {
             let stored: Option<String> = docket.handle().get(docket.keys().result(key)).await?;

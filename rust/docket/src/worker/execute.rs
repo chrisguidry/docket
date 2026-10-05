@@ -70,7 +70,10 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
     let Some(generation) = run.claim(&worker.settings.name).await? else {
         return Ok(());
     };
-    let Some(registered) = docket.registered(&message.function) else {
+    let registered = docket
+        .registered(&message.function)
+        .or_else(|| worker.settings.fallback.clone());
+    let Some(registered) = registered else {
         tracing::warn!(function = %message.function, key = %message.key, "no handler is registered for this task");
         return run.terminal(State::Completed, generation, Vec::new()).await;
     };

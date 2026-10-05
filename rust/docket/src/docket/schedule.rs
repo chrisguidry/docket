@@ -109,12 +109,7 @@ impl Docket {
         reason = "callers build the arguments in place, as with Docket::add"
     )]
     pub fn call<T: Task>(&self, args: T) -> Call {
-        Call {
-            function: T::NAME,
-            args: serde_json::to_string(&args).map_err(Error::from),
-            key: None,
-            when: None,
-        }
+        Call::new(&args)
     }
 
     /// Adds many tasks in one round trip to Redis.
@@ -174,7 +169,9 @@ impl Docket {
                 key: call.key.unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
                 when: call.when.unwrap_or_else(Utc::now),
                 function: call.function.to_owned(),
-                args: call.args?,
+                args: call
+                    .args
+                    .map_err(|error| Error::Json(serde::ser::Error::custom(error)))?,
                 attempt: 1,
                 generation: 0,
             });
@@ -279,14 +276,25 @@ impl<'a, T: Task> IntoFuture for Add<'a, T> {
 
 /// A task captured by [`Docket::call`], for a batch.
 #[must_use = "a call does nothing until it goes into a batch"]
+#[derive(Clone, Debug)]
 pub struct Call {
     function: &'static str,
-    args: Result<String>,
+    /// The arguments as JSON text, or why they did not convert.
+    args: std::result::Result<String, String>,
     key: Option<String>,
     when: Option<DateTime<Utc>>,
 }
 
 impl Call {
+    pub(crate) fn new<T: Task>(args: &T) -> Self {
+        Self {
+            function: T::NAME,
+            args: serde_json::to_string(args).map_err(|error| error.to_string()),
+            key: None,
+            when: None,
+        }
+    }
+
     /// Gives the task a key.
     pub fn key(mut self, key: impl Into<String>) -> Self {
         self.key = Some(key.into());

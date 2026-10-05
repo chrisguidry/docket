@@ -136,3 +136,36 @@ impl Context {
         &self.inner.delivery
     }
 }
+
+#[cfg(test)]
+impl Context {
+    /// A context for a run of `function` with empty arguments, for unit
+    /// tests of handlers and hooks.
+    pub(crate) fn for_tests(docket: &Docket, key: &str, function: &str) -> Self {
+        let args = serde_json::json!({});
+        let message = crate::execution::Message {
+            key: key.to_owned(),
+            when: chrono::Utc::now(),
+            function: function.to_owned(),
+            args: args.to_string(),
+            attempt: 1,
+            generation: 1,
+        };
+        Self::new(Run {
+            docket: docket.clone(),
+            worker: "worker".to_owned(),
+            key: message.key.clone(),
+            function: message.function.clone(),
+            attempt: message.attempt,
+            when: message.when,
+            args,
+            behaviors: Vec::new(),
+            delivery: Delivery {
+                message_id: "0-1".to_owned(),
+                message,
+                redelivered: false,
+                redelivery_timeout: std::time::Duration::from_millis(40),
+            },
+        })
+    }
+}

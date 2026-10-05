@@ -1,5 +1,6 @@
 //! Connections to the Redis behind a docket, whatever kind of server it is.
 
+mod credentials;
 #[cfg(test)]
 mod tests;
 mod url;
@@ -18,6 +19,7 @@ use redis::{
 use tokio::sync::Mutex;
 
 use crate::error::Result;
+pub(crate) use credentials::Provider;
 use url::Target;
 
 /// A connect that stalls, for example on dropped SYN packets, has no server
@@ -30,7 +32,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CLUSTER_RESPONSE_TIMEOUT: Duration = Duration::from_hours(24);
 
 /// How to reach the Redis behind a docket.
-pub(crate) enum Backend {
+pub(crate) struct Backend {
+    kind: Kind,
+    credentials: Option<Provider>,
+}
+
+enum Kind {
     Standalone(Client),
     Cluster {
         client: Box<ClusterClient>,
@@ -44,27 +51,27 @@ pub(crate) enum Backend {
 }
 
 impl Backend {
-    pub fn open(url: &str) -> Result<Self> {
-        let backend = match url::parse(url)? {
-            Target::Standalone(url) => Client::open(url).map(Self::Standalone),
-            Target::Cluster(node) => {
-                // Both clients read the same node URL, so they fail together.
-                ClusterClient::builder([node.as_str()])
+    pub fn open(url: &str, credentials: Option<Provider>) -> Result<Self> {
+        let kind = match url::parse(url)? {
+            Target::Standalone(url) => Client::open(url).map(Kind::Standalone),
+            Target::Cluster(node) => Client::open(node.as_str()).and_then(|pubsub| {
+                let builder = ClusterClient::builder([node.as_str()])
                     .connection_timeout(CONNECT_TIMEOUT)
-                    .response_timeout(CLUSTER_RESPONSE_TIMEOUT)
-                    .build()
-                    .and_then(|client| {
-                        Client::open(node).map(|pubsub| Self::Cluster {
-                            client: Box::new(client),
-                            pubsub,
-                        })
-                    })
-            }
+                    .response_timeout(CLUSTER_RESPONSE_TIMEOUT);
+                let builder = match &credentials {
+                    Some(provider) => builder.set_credentials_provider(provider.clone()),
+                    None => builder,
+                };
+                builder.build().map(|client| Kind::Cluster {
+                    client: Box::new(client),
+                    pubsub,
+                })
+            }),
             Target::Sentinel(sentinel) => {
-                sentinel_client(sentinel).map(|client| Self::Sentinel(Mutex::new(client)))
+                sentinel_client(sentinel).map(|client| Kind::Sentinel(Mutex::new(client)))
             }
             #[cfg(feature = "memory")]
-            Target::Memory(url) => Ok(Self::Memory(crate::memory::MemoryServer::open(&url))),
+            Target::Memory(url) => Ok(Kind::Memory(crate::memory::MemoryServer::open(&url))),
             #[cfg(not(feature = "memory"))]
             Target::Memory(url) => {
                 return Err(crate::Error::url(
@@ -72,16 +79,28 @@ impl Backend {
                     "memory:// needs docket's memory feature",
                 ));
             }
+        }?;
+        let url_credentials = match &kind {
+            Kind::Standalone(client) | Kind::Cluster { pubsub: client, .. } => {
+                credentials::has_credentials(client)
+            }
+            _ => false,
         };
-        Ok(backend?)
+        if credentials.is_some() && url_credentials {
+            return Err(crate::Error::url(
+                url,
+                "it carries credentials, and a credential provider gives them too",
+            ));
+        }
+        Ok(Self { kind, credentials })
     }
 
     /// The prefix of every key in the docket.  On a cluster it is a hash tag,
     /// so that every key of the docket lands in one slot and the Lua scripts
     /// can touch them together.
     pub fn prefix(&self, name: &str) -> String {
-        match self {
-            Self::Cluster { .. } => format!("{{{name}}}"),
+        match self.kind {
+            Kind::Cluster { .. } => format!("{{{name}}}"),
             _ => name.to_owned(),
         }
     }
@@ -92,15 +111,19 @@ impl Backend {
         let config = AsyncConnectionConfig::new()
             .set_connection_timeout(Some(CONNECT_TIMEOUT))
             .set_response_timeout(None);
-        match self {
-            Self::Standalone(client) => client
+        let config = match &self.credentials {
+            Some(provider) => config.set_credentials_provider(provider.clone()),
+            None => config,
+        };
+        match &self.kind {
+            Kind::Standalone(client) => client
                 .get_multiplexed_async_connection_with_config(&config)
                 .await
                 .map(Connection::Single),
-            Self::Cluster { client, .. } => {
+            Kind::Cluster { client, .. } => {
                 client.get_async_connection().await.map(Connection::Cluster)
             }
-            Self::Sentinel(client) => {
+            Kind::Sentinel(client) => {
                 // The master can move after a failover, so each new connection
                 // asks the sentinels where it is now.
                 let client = client.lock().await.async_get_client().await?;
@@ -110,7 +133,7 @@ impl Backend {
                     .map(Connection::Single)
             }
             #[cfg(feature = "memory")]
-            Self::Memory(server) => server.connection().await.map(Connection::Single),
+            Kind::Memory(server) => server.connection().await.map(Connection::Single),
         }
     }
 
@@ -128,23 +151,28 @@ impl Backend {
 
     /// Opens a connection for subscriptions.
     async fn pubsub(&self) -> RedisResult<PubSub> {
-        match self {
-            Self::Standalone(client) | Self::Cluster { pubsub: client, .. } => {
-                client.get_async_pubsub().await
-            }
-            Self::Sentinel(client) => {
-                let client = client.lock().await.async_get_client().await?;
-                client.get_async_pubsub().await
-            }
+        let client = match &self.kind {
+            Kind::Standalone(client) | Kind::Cluster { pubsub: client, .. } => client.clone(),
+            Kind::Sentinel(client) => client.lock().await.async_get_client().await?,
             #[cfg(feature = "memory")]
-            Self::Memory(server) => server.pubsub().await,
+            Kind::Memory(server) => return server.pubsub().await,
+        };
+        match &self.credentials {
+            Some(provider) => {
+                provider
+                    .authenticate(&client)
+                    .await?
+                    .get_async_pubsub()
+                    .await
+            }
+            None => client.get_async_pubsub().await,
         }
     }
 
     /// Whether this backend is a cluster, whose nodes cannot be trusted to
     /// keep a script loaded for pipelined `EVALSHA`.
     pub fn is_cluster(&self) -> bool {
-        matches!(self, Self::Cluster { .. })
+        matches!(self.kind, Kind::Cluster { .. })
     }
 }
 

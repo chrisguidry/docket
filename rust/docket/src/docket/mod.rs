@@ -12,7 +12,7 @@ use chrono::Utc;
 use redis::{AsyncCommands, Value};
 
 use crate::behaviors::BoxError;
-use crate::connection::{Backend, Handle, Shared};
+use crate::connection::{Backend, Handle, Provider, Shared};
 use crate::context::Context;
 use crate::error::Result;
 use crate::keys::Keys;
@@ -66,6 +66,7 @@ pub struct DocketBuilder {
     name: String,
     url: String,
     settings: Settings,
+    credentials: Option<Provider>,
 }
 
 impl DocketBuilder {
@@ -93,10 +94,25 @@ impl DocketBuilder {
         self
     }
 
+    /// Takes the username and password from `provider`, in place of the URL,
+    /// for servers whose passwords are tokens that rotate, such as Azure
+    /// Entra ID.  Command connections renew their credentials when the
+    /// provider gives new ones, and subscriptions take the credentials in
+    /// force when they open.  A URL that carries credentials of its own is
+    /// refused.
+    #[must_use]
+    pub fn credentials_provider(
+        mut self,
+        provider: impl redis::StreamingCredentialsProvider + 'static,
+    ) -> Self {
+        self.credentials = Some(Provider(Arc::new(provider)));
+        self
+    }
+
     /// Connects to the docket.  The connection itself opens on first use, so
     /// this fails only on a URL docket cannot use.
     pub async fn connect(self) -> Result<Docket> {
-        let backend = Arc::new(Backend::open(&self.url)?);
+        let backend = Arc::new(Backend::open(&self.url, self.credentials)?);
         let keys = Keys::new(backend.prefix(&self.name));
         let strikes: SharedStrikes = Arc::new(Strikes::default());
         let monitor = Monitor::start(Arc::clone(&backend), keys.strikes(), Arc::clone(&strikes));
@@ -135,6 +151,7 @@ impl Docket {
                 heartbeat_interval: Duration::from_secs(2),
                 missed_heartbeats: 5,
             },
+            credentials: None,
         }
     }
 

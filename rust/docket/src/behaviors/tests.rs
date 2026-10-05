@@ -3,7 +3,6 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::Utc;
 use rstest::rstest;
 use serde::{Deserialize, Serialize};
 use tracing::field::{Field, Visit};
@@ -15,9 +14,8 @@ use super::{
     AdmissionBlocked, Admitted, Behavior, ConcurrencyLimit, Cooldown, Debounce, ErasedHooks, Hooks,
     RateLimit,
 };
-use crate::context::{Context, Delivery, Run};
+use crate::context::Context;
 use crate::docket::Docket;
-use crate::execution::Message;
 
 #[derive(Serialize, Deserialize, docket_rs_macros::Task)]
 #[task(name = "noop", crate = crate)]
@@ -107,31 +105,7 @@ pub(super) async fn memory() -> Docket {
 /// The context of a first delivery of the noop task under `key`.  The short
 /// redelivery timeout makes a concurrency slot renew every 10 ms.
 pub(super) fn context(docket: &Docket, key: &str) -> Context {
-    let args = serde_json::json!({});
-    let message = Message {
-        key: key.to_owned(),
-        when: Utc::now(),
-        function: "noop".to_owned(),
-        args: args.to_string(),
-        attempt: 1,
-        generation: 1,
-    };
-    Context::new(Run {
-        docket: docket.clone(),
-        worker: "worker".to_owned(),
-        key: message.key.clone(),
-        function: message.function.clone(),
-        attempt: message.attempt,
-        when: message.when,
-        args,
-        behaviors: Vec::new(),
-        delivery: Delivery {
-            message_id: "0-1".to_owned(),
-            message,
-            redelivered: false,
-            redelivery_timeout: Duration::from_millis(40),
-        },
-    })
+    Context::for_tests(docket, key, "noop")
 }
 
 pub(super) type Attach = fn(&mut Hooks<'_, Noop>);

@@ -27,6 +27,10 @@ struct State {
     rules: Vec<Rule>,
     cut: bool,
     connections: JoinSet<()>,
+    /// How many of each command reached Redis, by upper-case name.
+    counts: std::collections::HashMap<String, usize>,
+    /// Ends every subscribed connection, and only those.
+    drop_subscribers: Arc<tokio::sync::Notify>,
 }
 
 impl State {
@@ -118,6 +122,22 @@ impl Proxy {
     pub fn heal(&self) {
         self.state.lock().unwrap().cut = false;
     }
+
+    /// Drops every connection that has subscribed to a channel, as if Redis
+    /// dropped only the subscriptions.
+    pub fn drop_subscribers(&self) {
+        self.state.lock().unwrap().drop_subscribers.notify_waiters();
+    }
+
+    /// How many commands named `command` reached the proxy, failed or not.
+    pub fn count(&self, command: &str) -> usize {
+        let state = self.state.lock().unwrap();
+        state
+            .counts
+            .get(&command.to_ascii_uppercase())
+            .copied()
+            .unwrap_or(0)
+    }
 }
 
 async fn accept(listener: TcpListener, upstream: String, state: Arc<Mutex<State>>) {
@@ -171,7 +191,19 @@ async fn relay(client: TcpStream, server: TcpStream, state: Arc<Mutex<State>>) {
         }
     });
     let replies = tokio::spawn(replies(server_read, Arc::clone(&connection)));
-    commands(client_read, server_write, &connection, &state).await;
+    let drop_subscribers = Arc::clone(&state.lock().unwrap().drop_subscribers);
+    let dropped = async {
+        loop {
+            drop_subscribers.notified().await;
+            if connection.transparent.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        () = commands(client_read, server_write, &connection, &state) => {}
+        () = dropped => {}
+    }
     replies.abort();
     writer.abort();
 }
@@ -222,6 +254,12 @@ async fn commands(
             if name == b"SUBSCRIBE" || name == b"PSUBSCRIBE" {
                 connection.transparent.store(true, Ordering::SeqCst);
             }
+            *state
+                .lock()
+                .unwrap()
+                .counts
+                .entry(String::from_utf8_lossy(&name).into_owned())
+                .or_default() += 1;
             if connection.transparent.load(Ordering::SeqCst)
                 || !state.lock().unwrap().should_fail(&args)
             {
