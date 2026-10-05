@@ -1,4 +1,5 @@
 [codespell]
 # `exat`/`pxat` are redis SET command flags exposed as parameters by redis-py.
-# `crate` is a Rust package, and `AtLeast` is a strike operator in the Go plan.
+# `crate` is a Rust package, `ser` is serde's serializer module, and
+# `AtLeast` is a strike operator in the Go plan.
 ignore-words-list = exat,pxat,crate,atleast,ser
