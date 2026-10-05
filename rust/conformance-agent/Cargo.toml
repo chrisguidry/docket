@@ -8,7 +8,15 @@ license.workspace = true
 publish = false
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.6.7", features = ["derive"] }
 docket-rs = { path = "../docket" }
+rand = "0.10.3"
+redis = { version = "1.7.1", features = ["aio", "tokio-comp"] }
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.2", features = ["full"] }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+uuid = { version = "1.27.0", features = ["v7"] }
 
 [lints]
 workspace = true
