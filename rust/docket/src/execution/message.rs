@@ -38,6 +38,20 @@ impl Message {
         .collect()
     }
 
+    /// The message in a stream entry, whose values Redis sends as bulk
+    /// strings.
+    pub fn from_entry(entry: &redis::streams::StreamId) -> Result<Self> {
+        let fields = entry
+            .map
+            .iter()
+            .map(|(field, value)| {
+                let bytes = redis::FromRedisValue::from_redis_value_ref(value).unwrap_or_default();
+                (field.clone(), bytes)
+            })
+            .collect();
+        Self::from_fields(&fields)
+    }
+
     pub fn from_fields(fields: &HashMap<String, Vec<u8>>) -> Result<Self> {
         let text = |field: &str| -> Result<String> {
             fields

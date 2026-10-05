@@ -74,16 +74,7 @@ impl Admission for Debounce {
             ttl_ms: settle_ms.saturating_mul(10),
         }
         .call();
-        let decision: redis::RedisResult<(i64, i64)> = async {
-            let mut connection = ctx
-                .docket()
-                .connection()
-                .await
-                .map_err(super::redis_error)?;
-            call.run(&mut connection).await
-        }
-        .await;
-        match decision {
+        match super::run_script::<(i64, i64)>(ctx.docket(), &call).await {
             Ok((PROCEED, _)) => Ok(Admitted::now()),
             Ok((RESCHEDULE, remaining)) => {
                 Err(AdmissionBlocked::new("waiting for calls to settle")

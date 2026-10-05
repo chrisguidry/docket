@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        implementation: [python@main, python@release]
+        implementation: [python@main, python@release, rust@main]
 
     steps:
       - uses: actions/checkout@v7
@@ -35,6 +35,16 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --dev --upgrade-package redis
+
+      - name: Install Rust
+        if: startsWith(matrix.implementation, 'rust')
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache the Rust build
+        if: startsWith(matrix.implementation, 'rust')
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
 
       - name: backoff
         run: uv run python -m conformance backoff --implementation ${{ matrix.implementation }}
@@ -82,3 +92,30 @@ jobs:
 
       - name: chaos
         run: uv run python -m conformance chaos --implementation python@main --implementation python@release
+
+  chaos-rust:
+    name: Chaos tests, rust@main
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv and set Python version
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: 3.12
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --dev --upgrade-package redis
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: chaos
+        run: uv run python -m conformance chaos --implementation rust@main

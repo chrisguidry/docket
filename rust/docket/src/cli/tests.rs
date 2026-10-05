@@ -110,3 +110,51 @@ async fn runs_a_worker_from_its_options() {
     assert_ne!(unnamed.worker(&docket).worker_name(), "from-cli");
     args.run(&docket).await.unwrap();
 }
+
+/// Signals reach every listener in the process, so the tests that send them
+/// take turns.
+#[cfg(all(unix, feature = "memory"))]
+static SIGNALS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Sends this process `signal` until `run` finishes.  The worker listens
+/// only once it starts, and a signal sent before then reaches no listener.
+#[cfg(all(unix, feature = "memory"))]
+async fn signal_until_finished(signal: &str, run: &tokio::task::JoinHandle<crate::Result<()>>) {
+    let pid = std::process::id().to_string();
+    let signalling = async {
+        while !run.is_finished() {
+            let status = std::process::Command::new("kill")
+                .args([format!("-{signal}").as_str(), pid.as_str()])
+                .status()
+                .unwrap();
+            assert!(status.success());
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), signalling)
+        .await
+        .expect("the worker stops on the signal");
+}
+
+#[cfg(all(unix, feature = "memory"))]
+#[rstest]
+#[case::terminate("TERM")]
+#[case::interrupt("INT")]
+#[tokio::test]
+async fn a_worker_stops_on_a_shutdown_signal(#[case] signal: &str) {
+    use tokio::signal::unix::{SignalKind, signal as listen};
+
+    let _turn = SIGNALS.lock().await;
+    // Listening before any signal is sent replaces the default action, which
+    // would end the test process.
+    let _terminate = listen(SignalKind::terminate()).unwrap();
+    let _interrupt = listen(SignalKind::interrupt()).unwrap();
+    let url = format!("memory://{}", uuid::Uuid::now_v7());
+    let args = parse(&["--url", &url]);
+    let docket = args.docket().await.unwrap();
+    let run = tokio::spawn(async move { args.run(&docket).await });
+
+    signal_until_finished(signal, &run).await;
+
+    run.await.unwrap().unwrap();
+}

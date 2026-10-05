@@ -75,14 +75,15 @@ async fn follow(
                 .flat_map(|reply| reply.keys)
                 .flat_map(|key| key.ids)
                 .collect::<Vec<_>>();
-            if entries.is_empty() {
-                loaded.send_replace(true);
-            }
-            for entry in entries {
-                if let Some((strike, restore)) = decode(&entry.map) {
-                    strikes.apply(&strike, restore);
+            match entries.last() {
+                Some(last) => last_id.clone_from(&last.id),
+                None => {
+                    loaded.send_replace(true);
                 }
-                last_id = entry.id;
+            }
+            // An entry that is not a strike instruction changes nothing.
+            for (strike, restore) in entries.iter().filter_map(|entry| decode(&entry.map)) {
+                strikes.apply(&strike, restore);
             }
         }
         tokio::time::sleep(RETRY_DELAY).await;

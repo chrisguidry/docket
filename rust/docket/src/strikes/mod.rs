@@ -82,7 +82,8 @@ impl Operator {
 
 fn compare(left: &Value, right: &Value) -> Option<Ordering> {
     match (left, right) {
-        (Value::Number(left), Value::Number(right)) => left.as_f64()?.partial_cmp(&right.as_f64()?),
+        // Without serde_json's arbitrary precision, every number has an f64.
+        (Value::Number(left), Value::Number(right)) => left.as_f64().partial_cmp(&right.as_f64()),
         (Value::String(left), Value::String(right)) => Some(left.cmp(right)),
         (Value::Bool(left), Value::Bool(right)) => Some(left.cmp(right)),
         _ => None,

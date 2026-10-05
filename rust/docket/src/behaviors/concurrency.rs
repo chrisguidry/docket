@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::subject::subject;
 use super::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks, Released};
+use crate::connection::Handle;
 use crate::context::Context;
 use crate::docket::Docket;
 use crate::keys::WORKER_GROUP;
@@ -103,17 +104,29 @@ impl Admission for ConcurrencyLimit {
         }
         .call();
 
-        let acquired: redis::RedisResult<i64> = async {
-            let mut connection = docket.connection().await.map_err(super::redis_error)?;
-            call.run(&mut connection).await
+        let acquired: crate::Result<(i64, Handle)> = async {
+            let mut connection = docket.connection().await?;
+            let acquired = call.run(&mut connection).await;
+            acquired
+                .map(|acquired| (acquired, connection))
+                .map_err(Into::into)
         }
         .await;
         match acquired {
-            Ok(1) => Ok(hold(
+            Ok((1, _)) => Ok(hold(
                 docket, slots, waiters, key, self.max, timeout, key_ttl,
             )),
-            Ok(_) => {
-                park(&docket, &slots, &waiters, &key, self.max, timeout).await;
+            Ok((_, mut connection)) => {
+                park(
+                    &docket,
+                    &mut connection,
+                    &slots,
+                    &waiters,
+                    &key,
+                    self.max,
+                    timeout,
+                )
+                .await;
                 Err(AdmissionBlocked::new("the concurrency limit is reached").handled())
             }
             Err(error) => Err(AdmissionBlocked::new(format!(
@@ -134,30 +147,21 @@ fn hold(
     timeout: Duration,
     key_ttl: i64,
 ) -> Admitted {
-    let renewal = tokio::spawn({
+    let renewal = Renewal(tokio::spawn({
         let docket = docket.clone();
         let slots = slots.clone();
         let key = key.clone();
         async move {
             loop {
                 tokio::time::sleep(timeout / 4).await;
-                if let Ok(mut connection) = docket.connection().await {
-                    let renewed: redis::RedisResult<()> = redis::pipe()
-                        .zadd(&slots, &key, seconds(Utc::now()))
-                        .ignore()
-                        .expire(&slots, key_ttl)
-                        .ignore()
-                        .query_async(&mut connection)
-                        .await;
-                    if let Err(error) = renewed {
-                        tracing::warn!(%error, "renewing a concurrency slot failed");
-                    }
+                if let Err(error) = renew(&docket, &slots, &key, key_ttl).await {
+                    tracing::warn!(%error, "renewing a concurrency slot failed");
                 }
             }
         }
-    });
+    }));
     Admitted::with_release(move |_: Released| async move {
-        renewal.abort();
+        drop(renewal);
         let keys = docket.keys();
         let call = scripts::ReleaseAndWake {
             slots_key: slots,
@@ -172,22 +176,48 @@ fn hold(
             parked_prefix: keys.parked_prefix(),
         }
         .call();
-        let released: crate::Result<()> = async {
-            let mut connection = docket.connection().await?;
-            call.run::<redis::Value, _>(&mut connection).await?;
-            Ok(())
-        }
-        .await;
-        if let Err(error) = released {
+        if let Err(error) = super::run_script::<redis::Value>(&docket, &call).await {
             tracing::warn!(%error, "releasing a concurrency slot failed");
         }
     })
 }
 
+/// Marks a held slot as alive, so that no waiter's safeguard frees it.
+async fn renew(docket: &Docket, slots: &str, key: &str, key_ttl: i64) -> crate::Result<()> {
+    let mut connection = docket.connection().await?;
+    redis::pipe()
+        .zadd(slots, key, seconds(Utc::now()))
+        .ignore()
+        .expire(slots, key_ttl)
+        .ignore()
+        .query_async(&mut connection)
+        .await
+        .map_err(Into::into)
+}
+
+/// The task that renews a held slot.  Dropping it stops the renewal, so a
+/// run that ends without its release, such as one whose worker is dropped
+/// mid-task, lets the slot go stale for the safeguard to free.
+struct Renewal(tokio::task::JoinHandle<()>);
+
+impl Drop for Renewal {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// After the script parks a task, schedules the safeguard that wakes the
 /// waiters if no release ever does, for example after every slot holder
 /// died.
-async fn park(docket: &Docket, slots: &str, waiters: &str, key: &str, max: u32, timeout: Duration) {
+async fn park(
+    docket: &Docket,
+    connection: &mut Handle,
+    slots: &str,
+    waiters: &str,
+    key: &str,
+    max: u32,
+    timeout: Duration,
+) {
     let safeguard = format!("{SAFEGUARD_PREFIX}{key}");
     let scheduled: crate::Result<()> = async {
         docket
@@ -199,19 +229,27 @@ async fn park(docket: &Docket, slots: &str, waiters: &str, key: &str, max: u32, 
             .key(&safeguard)
             .after(timeout)
             .await?;
-        // A release may have woken the task between the park and now; then
-        // the safeguard has nothing left to do.
-        let mut connection = docket.connection().await?;
         let state: Option<String> = connection.hget(docket.keys().runs(key), "state").await?;
-        if state.as_deref() != Some("scheduled") {
-            docket.cancel(&safeguard).await?;
-        }
-        Ok(())
+        cancel_unless_parked(docket, &safeguard, state.as_deref()).await
     }
     .await;
     if let Err(error) = scheduled {
         tracing::warn!(%error, "scheduling a concurrency safeguard failed");
     }
+}
+
+/// Cancels a task's safeguard unless the task is still parked.  A release
+/// can wake the task between the park and the safeguard's scheduling; then
+/// the safeguard has nothing left to do.
+async fn cancel_unless_parked(
+    docket: &Docket,
+    safeguard: &str,
+    state: Option<&str>,
+) -> crate::Result<()> {
+    if state == Some("scheduled") {
+        return Ok(());
+    }
+    docket.cancel(safeguard).await
 }
 
 /// Wakes the parked waiters of a concurrency limit, freeing slots whose
@@ -239,7 +277,10 @@ pub(crate) async fn safeguard_wake(ctx: Context, args: SafeguardWake) -> crate::
         parked_prefix: keys.parked_prefix(),
     }
     .call();
-    let mut connection = docket.connection().await?;
-    call.run::<redis::Value, _>(&mut connection).await?;
-    Ok(())
+    super::run_script::<redis::Value>(docket, &call)
+        .await
+        .map(drop)
 }
+
+#[cfg(all(test, feature = "memory"))]
+mod tests;

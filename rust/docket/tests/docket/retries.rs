@@ -152,3 +152,41 @@ async fn a_panicking_handler_fails_the_task() {
 fn explode() -> Result<(), std::io::Error> {
     panic!("the handler blew up")
 }
+
+#[tokio::test]
+async fn retry_waits_its_delay_between_attempts() {
+    let docket = docket().await;
+    let attempts = Arc::new(AtomicU32::new(0));
+    docket
+        .register(failing(&attempts, 2))
+        .with(Retry::attempts(2).delay(Duration::from_millis(200)));
+    docket.add(Noop).await.unwrap();
+
+    let started = tokio::time::Instant::now();
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert!(started.elapsed() >= Duration::from_millis(200));
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn exponential_retry_can_retry_forever() {
+    let docket = docket().await;
+    let attempts = Arc::new(AtomicU32::new(0));
+    docket
+        .register(failing(&attempts, 4))
+        .with(ExponentialRetry::forever().minimum_delay(Duration::from_millis(10)));
+    let execution = docket.add(Noop).await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 4);
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Completed
+    );
+}

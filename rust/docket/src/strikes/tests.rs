@@ -119,6 +119,8 @@ fn instructions_round_trip_through_fields() {
 #[case::no_direction(&[("function", "charge")])]
 #[case::bad_operator(&[("direction", "strike"), ("parameter", "x"), ("operator", "~"), ("value", "1")])]
 #[case::bad_value(&[("direction", "strike"), ("parameter", "x"), ("operator", "=="), ("value", "{")])]
+#[case::no_operator(&[("direction", "strike"), ("parameter", "x"), ("value", "1")])]
+#[case::no_value(&[("direction", "strike"), ("parameter", "x"), ("operator", "==")])]
 #[case::not_bulk(&[])]
 fn ignores_instructions_it_cannot_read(#[case] fields: &[(&str, &str)]) {
     let mut fields: std::collections::HashMap<String, redis::Value> = fields

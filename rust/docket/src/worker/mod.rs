@@ -9,6 +9,7 @@ mod sweep;
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -153,6 +154,14 @@ impl Worker {
     /// Runs tasks until `shutdown` completes, then lets the running tasks
     /// finish and returns.
     pub async fn run_until(self, shutdown: impl Future<Output = ()> + Send) -> Result<()> {
+        self.run_until_boxed(Box::pin(shutdown)).await
+    }
+
+    /// [`Worker::run_until`] for any shutdown future, compiled once.
+    async fn run_until_boxed(
+        self,
+        shutdown: Pin<Box<dyn Future<Output = ()> + Send + '_>>,
+    ) -> Result<()> {
         let token = CancellationToken::new();
         let run = self.run(Until::Shutdown(token.clone()), HashMap::new());
         tokio::pin!(run);

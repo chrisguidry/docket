@@ -148,9 +148,14 @@ async fn session(
     let shutdown = shutdown_token(until);
     let mut infrastructure = JoinSet::new();
     let result = async {
-        cancellation::start(worker, &mut infrastructure).await?;
+        cancellation::start(worker, &mut infrastructure).await;
         if worker.settings.schedule_automatic_tasks {
-            perpetuals::seed(worker).await?;
+            // Seeding waits for the strikes to load, which takes as long as
+            // Redis is unreachable, so a shutdown must not wait for it.
+            tokio::select! {
+                seeded = perpetuals::seed(worker) => seeded?,
+                () = shutdown.cancelled() => return Ok(()),
+            }
             infrastructure.spawn(perpetuals::reseed(Arc::clone(worker)));
         }
         infrastructure.spawn(scheduler(Arc::clone(worker)));
@@ -242,18 +247,33 @@ async fn read(worker: &Shared, reader: &mut Connection, count: usize) -> Result<
     let reply: RedisResult<Option<StreamReadReply>> = reader
         .xread_options(&[stream.as_str()], &[">"], &options)
         .await;
-    let reply = match reply {
-        Err(error) if error.code() == Some("NOGROUP") => {
-            docket.ensure_group(reader).await?;
-            return Ok(Vec::new());
-        }
-        reply => reply?,
-    };
-    let entries = reply
+    let entries = regrouping(docket, reply)
+        .await?
+        .flatten()
         .into_iter()
         .flat_map(|reply| reply.keys)
         .flat_map(|key| key.ids);
     Ok(deliveries(docket, entries, false).await)
+}
+
+/// The reply to a consumer group command, or `None` when Redis has no
+/// group, which happens after someone deletes the stream.  The group is
+/// created again, so the next command finds it.
+pub(super) async fn regrouping<T>(docket: &Docket, reply: RedisResult<T>) -> Result<Option<T>> {
+    regroup(docket, reply.as_ref().err()).await?;
+    Ok(reply.ok())
+}
+
+/// Creates the group again when `error` says Redis has none, and passes on
+/// any other error.
+async fn regroup(docket: &Docket, error: Option<&redis::RedisError>) -> Result<()> {
+    match error {
+        Some(error) if error.code() == Some("NOGROUP") => {
+            docket.ensure_group(&mut docket.handle()).await
+        }
+        Some(error) => Err(error.clone().into()),
+        None => Ok(()),
+    }
 }
 
 /// Turns stream entries into deliveries.  An entry that is not a task
@@ -265,15 +285,7 @@ pub(super) async fn deliveries(
 ) -> Vec<Delivery> {
     let mut deliveries = Vec::new();
     for entry in entries {
-        let fields: HashMap<String, Vec<u8>> = entry
-            .map
-            .iter()
-            .filter_map(|(field, value)| match value {
-                redis::Value::BulkString(bytes) => Some((field.clone(), bytes.clone())),
-                _ => None,
-            })
-            .collect();
-        match Message::from_fields(&fields) {
+        match Message::from_entry(&entry) {
             Ok(message) => deliveries.push(Delivery {
                 id: entry.id,
                 message,
@@ -281,14 +293,12 @@ pub(super) async fn deliveries(
             }),
             Err(error) => {
                 tracing::warn!(id = %entry.id, %error, "dropping a stream entry that is not a task");
-                if let Ok(mut connection) = docket.connection().await {
-                    let stream = docket.keys().stream();
-                    let _: RedisResult<()> = redis::pipe()
-                        .xack(&stream, WORKER_GROUP, &[&entry.id])
-                        .xdel(&stream, &[&entry.id])
-                        .query_async(&mut connection)
-                        .await;
-                }
+                let stream = docket.keys().stream();
+                let _: RedisResult<()> = redis::pipe()
+                    .xack(&stream, WORKER_GROUP, &[&entry.id])
+                    .xdel(&stream, &[&entry.id])
+                    .query_async(&mut docket.handle())
+                    .await;
             }
         }
     }
@@ -297,7 +307,7 @@ pub(super) async fn deliveries(
 
 /// Whether the docket holds any task, now or in the future.
 async fn has_work(docket: &Docket) -> Result<bool> {
-    let mut connection = docket.connection().await?;
+    let mut connection = docket.handle();
     let (stream, queue): (usize, usize) = redis::pipe()
         .xlen(docket.keys().stream())
         .zcard(docket.keys().queue())
@@ -338,9 +348,7 @@ async fn scheduler(worker: Arc<Shared>) {
             docket_prefix: keys.prefix().to_owned(),
         }
         .call();
-        if let Ok(mut connection) = docket.connection().await
-            && let Err(error) = call.run::<redis::Value, _>(&mut connection).await
-        {
+        if let Err(error) = call.run::<redis::Value, _>(&mut docket.handle()).await {
             tracing::warn!(%error, "moving due tasks failed");
         }
         tokio::time::sleep(worker.settings.scheduling_resolution).await;

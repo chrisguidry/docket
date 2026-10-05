@@ -1,5 +1,7 @@
 //! Connections to the Redis behind a docket, whatever kind of server it is.
 
+#[cfg(test)]
+mod tests;
 mod url;
 
 use std::sync::Arc;
@@ -43,20 +45,26 @@ pub(crate) enum Backend {
 
 impl Backend {
     pub fn open(url: &str) -> Result<Self> {
-        Ok(match url::parse(url)? {
-            Target::Standalone(url) => Self::Standalone(Client::open(url)?),
-            Target::Cluster(node) => Self::Cluster {
-                client: Box::new(
-                    ClusterClient::builder([node.as_str()])
-                        .connection_timeout(CONNECT_TIMEOUT)
-                        .response_timeout(CLUSTER_RESPONSE_TIMEOUT)
-                        .build()?,
-                ),
-                pubsub: Client::open(node)?,
-            },
-            Target::Sentinel(sentinel) => Self::Sentinel(Mutex::new(sentinel_client(sentinel)?)),
+        let backend = match url::parse(url)? {
+            Target::Standalone(url) => Client::open(url).map(Self::Standalone),
+            Target::Cluster(node) => {
+                // Both clients read the same node URL, so they fail together.
+                ClusterClient::builder([node.as_str()])
+                    .connection_timeout(CONNECT_TIMEOUT)
+                    .response_timeout(CLUSTER_RESPONSE_TIMEOUT)
+                    .build()
+                    .and_then(|client| {
+                        Client::open(node).map(|pubsub| Self::Cluster {
+                            client: Box::new(client),
+                            pubsub,
+                        })
+                    })
+            }
+            Target::Sentinel(sentinel) => {
+                sentinel_client(sentinel).map(|client| Self::Sentinel(Mutex::new(client)))
+            }
             #[cfg(feature = "memory")]
-            Target::Memory(url) => Self::Memory(crate::memory::MemoryServer::open(&url)),
+            Target::Memory(url) => Ok(Self::Memory(crate::memory::MemoryServer::open(&url))),
             #[cfg(not(feature = "memory"))]
             Target::Memory(url) => {
                 return Err(crate::Error::url(
@@ -64,7 +72,8 @@ impl Backend {
                     "memory:// needs docket's memory feature",
                 ));
             }
-        })
+        };
+        Ok(backend?)
     }
 
     /// The prefix of every key in the docket.  On a cluster it is a hash tag,
@@ -83,32 +92,42 @@ impl Backend {
         let config = AsyncConnectionConfig::new()
             .set_connection_timeout(Some(CONNECT_TIMEOUT))
             .set_response_timeout(None);
-        Ok(match self {
-            Self::Standalone(client) => Connection::Single(
-                client
-                    .get_multiplexed_async_connection_with_config(&config)
-                    .await?,
-            ),
+        match self {
+            Self::Standalone(client) => client
+                .get_multiplexed_async_connection_with_config(&config)
+                .await
+                .map(Connection::Single),
             Self::Cluster { client, .. } => {
-                Connection::Cluster(client.get_async_connection().await?)
+                client.get_async_connection().await.map(Connection::Cluster)
             }
             Self::Sentinel(client) => {
                 // The master can move after a failover, so each new connection
                 // asks the sentinels where it is now.
                 let client = client.lock().await.async_get_client().await?;
-                Connection::Single(
-                    client
-                        .get_multiplexed_async_connection_with_config(&config)
-                        .await?,
-                )
+                client
+                    .get_multiplexed_async_connection_with_config(&config)
+                    .await
+                    .map(Connection::Single)
             }
             #[cfg(feature = "memory")]
-            Self::Memory(server) => Connection::Single(server.connection().await?),
-        })
+            Self::Memory(server) => server.connection().await.map(Connection::Single),
+        }
+    }
+
+    /// Opens a connection subscribed to `channels`.
+    pub async fn subscribe(&self, channels: &[String]) -> RedisResult<PubSub> {
+        let mut pubsub = self.pubsub().await?;
+        pubsub.subscribe(channels).await.map(|()| pubsub)
+    }
+
+    /// Opens a connection subscribed to the channels that match `pattern`.
+    pub async fn psubscribe(&self, pattern: String) -> RedisResult<PubSub> {
+        let mut pubsub = self.pubsub().await?;
+        pubsub.psubscribe(pattern).await.map(|()| pubsub)
     }
 
     /// Opens a connection for subscriptions.
-    pub async fn pubsub(&self) -> RedisResult<PubSub> {
+    async fn pubsub(&self) -> RedisResult<PubSub> {
         match self {
             Self::Standalone(client) | Self::Cluster { pubsub: client, .. } => {
                 client.get_async_pubsub().await
@@ -129,7 +148,7 @@ impl Backend {
     }
 }
 
-fn sentinel_client(sentinel: url::SentinelUrl) -> Result<SentinelClient> {
+fn sentinel_client(sentinel: url::SentinelUrl) -> RedisResult<SentinelClient> {
     let tls = sentinel.tls.then_some(TlsMode::Secure);
     let addresses = sentinel
         .sentinels
@@ -143,27 +162,30 @@ fn sentinel_client(sentinel: url::SentinelUrl) -> Result<SentinelClient> {
             },
             None => ConnectionAddr::Tcp(host, port),
         });
-    let mut builder =
-        SentinelClientBuilder::new(addresses, sentinel.service, SentinelServerType::Master)?
-            .set_client_to_redis_db(sentinel.db);
-    if let Some(tls) = tls {
-        builder = builder
-            .set_client_to_redis_tls_mode(tls)
-            .set_client_to_sentinel_tls_mode(tls);
-    }
-    if let Some(username) = sentinel.username {
-        builder = builder.set_client_to_redis_username(username);
-    }
-    if let Some(password) = sentinel.password {
-        builder = builder.set_client_to_redis_password(password);
-    }
-    if let Some(username) = sentinel.daemon_username {
-        builder = builder.set_client_to_sentinel_username(username);
-    }
-    if let Some(password) = sentinel.daemon_password {
-        builder = builder.set_client_to_sentinel_password(password);
-    }
-    Ok(builder.build()?)
+    // Neither step fails for the addresses and TLS settings built here.
+    SentinelClientBuilder::new(addresses, sentinel.service, SentinelServerType::Master).and_then(
+        |builder| {
+            let mut builder = builder.set_client_to_redis_db(sentinel.db);
+            if let Some(tls) = tls {
+                builder = builder
+                    .set_client_to_redis_tls_mode(tls)
+                    .set_client_to_sentinel_tls_mode(tls);
+            }
+            if let Some(username) = sentinel.username {
+                builder = builder.set_client_to_redis_username(username);
+            }
+            if let Some(password) = sentinel.password {
+                builder = builder.set_client_to_redis_password(password);
+            }
+            if let Some(username) = sentinel.daemon_username {
+                builder = builder.set_client_to_sentinel_username(username);
+            }
+            if let Some(password) = sentinel.daemon_password {
+                builder = builder.set_client_to_sentinel_password(password);
+            }
+            builder.build()
+        },
+    )
 }
 
 /// One connection to a single server or to a cluster.
@@ -221,20 +243,28 @@ impl Shared {
         &self.backend
     }
 
-    /// A handle on the shared connection.
-    pub async fn get(self: &Arc<Self>) -> RedisResult<Handle> {
-        let mut current = self.current.lock().await;
-        let connection = if let Some(connection) = current.as_ref() {
-            connection.clone()
-        } else {
-            let connection = self.backend.connect().await?;
-            *current = Some(connection.clone());
-            connection
-        };
-        Ok(Handle {
+    /// A handle on the shared connection, which connects on its first
+    /// command.
+    pub fn handle(self: &Arc<Self>) -> Handle {
+        Handle {
             shared: Arc::clone(self),
-            connection,
-        })
+        }
+    }
+
+    /// A handle on the shared connection, once the connection is open.
+    pub async fn get(self: &Arc<Self>) -> RedisResult<Handle> {
+        self.connection().await?;
+        Ok(self.handle())
+    }
+
+    async fn connection(&self) -> RedisResult<Connection> {
+        let mut current = self.current.lock().await;
+        if let Some(connection) = current.as_ref() {
+            return Ok(connection.clone());
+        }
+        let connection = self.backend.connect().await?;
+        *current = Some(connection.clone());
+        Ok(connection)
     }
 
     async fn forget(&self) {
@@ -242,14 +272,16 @@ impl Shared {
     }
 }
 
-/// A clone of the shared connection.  When a command fails because the
-/// connection is gone, the next [`Shared::get`] opens a new one.
+/// A handle on the shared connection.  Each command runs on the connection
+/// the docket holds at that moment, so a handle kept across a Redis restart
+/// goes on working once Redis is back.
 pub(crate) struct Handle {
     shared: Arc<Shared>,
-    connection: Connection,
 }
 
 impl Handle {
+    /// Forgets the shared connection when a command fails because the
+    /// connection is gone, so that the next command opens a new one.
     async fn check<T>(&self, result: RedisResult<T>) -> RedisResult<T> {
         if let Err(error) = &result
             && (error.is_connection_dropped() || error.is_io_error())
@@ -263,7 +295,8 @@ impl Handle {
 impl ConnectionLike for Handle {
     fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
         Box::pin(async move {
-            let result = self.connection.req_packed_command(cmd).await;
+            let mut connection = self.shared.connection().await?;
+            let result = connection.req_packed_command(cmd).await;
             self.check(result).await
         })
     }
@@ -275,15 +308,21 @@ impl ConnectionLike for Handle {
         count: usize,
     ) -> RedisFuture<'a, Vec<Value>> {
         Box::pin(async move {
-            let result = self
-                .connection
+            let mut connection = self.shared.connection().await?;
+            let result = connection
                 .req_packed_commands(pipeline, offset, count)
                 .await;
             self.check(result).await
         })
     }
 
+    /// The database of the open connection, or 0 before one opens.
     fn get_db(&self) -> i64 {
-        self.connection.get_db()
+        self.shared
+            .current
+            .try_lock()
+            .ok()
+            .and_then(|current| current.as_ref().map(ConnectionLike::get_db))
+            .unwrap_or(0)
     }
 }

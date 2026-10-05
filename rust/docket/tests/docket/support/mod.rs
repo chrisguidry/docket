@@ -72,8 +72,12 @@ pub async fn within<F: std::future::Future>(seconds: u64, future: F) -> F::Outpu
 /// in-process engine or a cluster.
 pub async fn proxy() -> Option<proxy::Proxy> {
     let url = std::env::var("DOCKET_TEST_URL").ok()?;
-    let upstream = url.strip_prefix("redis://")?.split('/').next()?.to_owned();
-    Some(proxy::Proxy::start(upstream).await)
+    let authority = url.strip_prefix("redis://")?.split('/').next()?;
+    let (userinfo, upstream) = match authority.rsplit_once('@') {
+        Some((userinfo, upstream)) => (Some(userinfo.to_owned()), upstream),
+        None => (None, authority),
+    };
+    Some(proxy::Proxy::start(upstream.to_owned(), userinfo).await)
 }
 
 /// A docket of the test's own, through `proxy`.

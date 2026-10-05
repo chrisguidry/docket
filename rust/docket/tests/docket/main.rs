@@ -6,11 +6,24 @@
 mod support;
 
 mod admission;
+mod automatic;
+mod behavior_faults;
+mod cancellation;
+mod concurrency;
+mod context;
+mod cron;
+mod events;
 mod faults;
+mod logs;
 mod perpetual;
 mod results;
 mod retries;
 mod scheduling;
+mod snapshots;
 mod strikes;
+mod sweeping;
+mod testing_helpers;
 mod timeouts;
+mod unreachable;
+mod worker_faults;
 mod workers;

@@ -6,8 +6,9 @@ goal is an API that users of each language find idiomatic, and that still
 reads as one system across all four.
 
 The Python code is the real API, and this work does not change it.  Every
-Python snippet uses only the API that exists today.  The Rust, Go, and
-TypeScript code is a proposal.  Imports are left out, the Go snippets skip
+Python snippet uses only the API that exists today.  The Rust snippets use
+the API of docket-rs as built in `rust/`.  The Go and TypeScript code is a
+proposal.  Imports are left out, the Go snippets skip
 error checks, and names such as `Payments` and `cleanup` are placeholders.
 
 The questions where review helps most are in [Open questions](#open-questions).
@@ -20,7 +21,7 @@ These rules hold in every language.
   string, because queued tasks refer to it.  Renaming a type or a function
   must not strand the tasks that are already queued.
 - **The argument type carries the task's name.**  In Rust, the argument
-  type implements the `Task` trait.  In Go, it has a `TaskName()` method.
+  type derives the `Task` trait with `#[task(name = "...")]`.  In Go, it has a `TaskName()` method.
   In TypeScript, a declared type map connects each name to its argument and
   result types.  A producer needs only these definitions.  It does not
   compile or import the handler.
@@ -94,13 +95,13 @@ receipt = await execution.get_result()
 #[derive(Serialize, Deserialize)]
 pub struct Receipt { pub id: String }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Task)]
+#[task(name = "charge", output = Receipt)]
 pub struct Charge { pub customer: u64, pub cents: u64 }
-impl Task for Charge { const NAME: &'static str = "charge"; type Output = Receipt; }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Task)]
+#[task(name = "nightly-cleanup")]
 pub struct NightlyCleanup;
-impl Task for NightlyCleanup { const NAME: &'static str = "nightly-cleanup"; type Output = (); }
 
 // Worker.
 async fn charge(ctx: Context, args: Charge, payments: Payments) -> anyhow::Result<Receipt> {
@@ -116,7 +117,7 @@ docket
 docket
     .register(|_ctx, _: NightlyCleanup| cleanup())
     .with(Perpetual::every(Duration::from_secs(24 * 60 * 60)).automatic());
-Worker::new(docket.clone()).concurrency(20).run_until(tokio::signal::ctrl_c()).await?;
+Worker::new(docket.clone()).concurrency(20).run_until(docket::cli::shutdown_signal()).await?;
 
 // Producer.
 let execution = docket.add(Charge { customer: 7, cents: 1999 }).key("order-9").await?;
@@ -454,7 +455,9 @@ async def rebuild_index(timeout: Timeout = Timeout(timedelta(seconds=30))) -> No
 ```rust
 async fn rebuild_index(ctx: Context, _: RebuildIndex) -> anyhow::Result<()> {
     phase_one().await?;
-    ctx.timeout().extend(Duration::from_secs(30));
+    if let Some(timeout) = ctx.timeout() {
+        timeout.extend(Duration::from_secs(30));
+    }
     phase_two().await
 }
 
@@ -514,16 +517,17 @@ async def standup_reminder(
 
 ```rust
 async fn watch_deploy(ctx: Context, args: WatchDeploy) -> anyhow::Result<()> {
+    let next = ctx.perpetual().expect("the task is perpetual");
     match check_status(&args.deploy_id).await? {
-        Status::Done => ctx.perpetual().cancel(),
-        Status::Stuck => ctx.perpetual().after(Duration::from_secs(5 * 60)),
+        Status::Done => next.cancel(),
+        Status::Stuck => next.after(Duration::from_secs(5 * 60)),
         _ => {}
     }
     Ok(())
 }
 
 docket.register(watch_deploy).with(Perpetual::every(Duration::from_secs(30)));
-docket.register(standup_reminder).with(Cron::new("0 9 * * 1-5").timezone("America/Los_Angeles"));
+docket.register(standup_reminder).with(Cron::new("0 9 * * 1-5")?.timezone(chrono_tz::America::Los_Angeles));
 ```
 
 **Go**
@@ -559,7 +563,8 @@ docket.register("standup-reminder", () => remind(), {
 ```
 
 An automatic task needs arguments with a default.  Rust enforces this at
-compile time: `.automatic()` requires `Default`.  In Go, the default is the
+compile time: `Perpetual::automatic()` and `Cron` (automatic unless
+`.manual()`) attach only to tasks whose arguments implement `Default`.  In Go, the default is the
 zero value.  In TypeScript, the arguments are `void`.
 
 ## Admission control
@@ -623,7 +628,7 @@ dependencies from closures.  This table maps each Python injectable.
 | Python | Rust | Go | TypeScript |
 |---|---|---|---|
 | `TaskKey()` | `ctx.key()` | `docket.ExecutionFrom(ctx).Key` | `ctx.key` |
-| `CurrentExecution()` | `ctx.execution()` | `docket.ExecutionFrom(ctx)` | `ctx.execution` |
+| `CurrentExecution()` | `ctx.key()`, `ctx.function()`, `ctx.when()`, `ctx.args()` | `docket.ExecutionFrom(ctx)` | `ctx.execution` |
 | `CurrentDocket()` | `ctx.docket()` | `docket.From(ctx)` | `ctx.docket` |
 | `CurrentWorker()` | `ctx.worker()` | `docket.WorkerFrom(ctx)` | `ctx.worker` |
 | `TaskLogger()` | the task's `tracing` span | `docket.Logger(ctx)` | `ctx.logger` |
@@ -708,7 +713,7 @@ async fn import_rows(ctx: Context, args: ImportRows) -> anyhow::Result<()> {
     for _ in 0..args.rows {
         progress.increment(1).await?;
     }
-    progress.set_message("done").await?;
+    progress.set_message(Some("done")).await?;
     Ok(())
 }
 
@@ -838,16 +843,16 @@ async def payroll(gate: None = BusinessHoursOnly()) -> None: ...
 struct BusinessHoursOnly;
 
 impl Admission for BusinessHoursOnly {
-    async fn admit(&self, _ctx: &Context) -> Result<(), AdmissionBlocked> {
+    async fn admit(&self, _ctx: &Context) -> Result<Admitted, AdmissionBlocked> {
         match Local::now().hour() {
-            9..17 => Ok(()),
+            9..17 => Ok(Admitted::now()),
             _ => Err(AdmissionBlocked::new("after hours").retry_delay(Duration::from_secs(15 * 60))),
         }
     }
 }
 
-impl Behavior for BusinessHoursOnly {
-    fn attach(self, hooks: &mut Hooks) { hooks.admission(self); }
+impl<T: Task> Behavior<T> for BusinessHoursOnly {
+    fn attach(self, hooks: &mut Hooks<'_, T>) { hooks.admission(self); }
 }
 
 docket.register(payroll).with(BusinessHoursOnly);
@@ -886,7 +891,12 @@ docket.register("payroll", payroll, { behaviors: [businessHoursOnly] });
 ```
 
 Each behavior states which hooks it uses.  In Rust, `attach` puts the
-behavior into its hooks.  In Go, `Hooks()` returns a struct of hook
+behavior into its hooks, and `Behavior` is generic over the task, so a
+behavior can require more of the task's arguments.  An admission hook
+returns `Admitted::with_release(...)` when it holds something, such as a
+concurrency slot, that must be given back after the task.  A failure hook
+returns `AfterFailure::RetryAt(when)` or `Fail`, and a completion hook
+returns `AfterCompletion`; docket, not the behavior, calls the Lua scripts.  In Go, `Hooks()` returns a struct of hook
 functions.  In TypeScript, the behavior is an object with optional hook
 methods.  A behavior can use several hooks: a concurrency limit admits a
 task and also releases its slot when the task completes.  The runtime,
@@ -937,20 +947,28 @@ milliseconds, the same unit as `setTimeout`.
    JSON field as a string.  Rust and Go could take a typed function
    instead, such as `ConcurrencyLimit::per(|c: &Charge| c.customer, 1)`.
    That catches mistakes at compile time, but a strike from an admin tool
-   still needs a name.
+   still needs a name.  Decided for Rust: JSON field names, the same as
+   strikes.
 3. **Behavior handles.**  The context has one accessor for each built-in
    behavior, such as `ctx.perpetual()` and `ctx.timeout()`.  A custom
    behavior needs a general lookup, such as `ctx.behavior::<MyBehavior>()`.
    What should a lookup do when the task does not have that behavior?
+   Decided for Rust: every accessor returns an `Option`, and
+   `ctx.behavior::<T>()` returns `None` when the task lacks the behavior.
 4. **Rust task definitions.**  A hand-written `impl Task` is three lines.  A
    `#[derive(Task)]` is shorter, but a derive macro must ship as a second
-   crate on crates.io.
+   crate on crates.io.  Decided: `#[derive(Task)]` in docket-rs-macros,
+   re-exported by docket-rs the way serde re-exports its derives, with
+   `name` required so that renaming a type never strands queued tasks.
 5. **TypeScript durations.**  Milliseconds, strings such as `"5m"`, or
    `Temporal.Duration`?
 6. **TypeScript runtimes.**  Is Node enough, or do Bun and Deno need
    support?
 7. **A CLI helper for workers.**  Should Rust and Go offer a helper that
    gives a user's binary docket's standard worker flags and signal handling?
+   Decided for Rust: `docket::cli::WorkerArgs` behind the `cli` feature, a
+   clap struct to flatten, with pydocket's option names and environment
+   variables, and `docket::cli::shutdown_signal()`.
 8. **Words.**  This document keeps docket's words, such as `add`, `replace`,
    and `strike`, in every language.  Some libraries say `enqueue`.  Keeping
    docket's words makes the four APIs easier to compare.

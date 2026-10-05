@@ -3,11 +3,11 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use futures::FutureExt;
+use futures::{FutureExt, TryFutureExt, future};
 
 use super::Docket;
 use crate::behaviors::{
-    Behavior, BoxError, ErasedHooks, Hooks, SafeguardWake, TaskFuture, safeguard_wake,
+    Automatic, Behavior, BoxError, ErasedHooks, Hooks, SafeguardWake, TaskFuture, safeguard_wake,
 };
 use crate::context::Context;
 use crate::task::Task;
@@ -31,20 +31,19 @@ impl Registered {
         Fut: Future<Output = Result<T::Output, E>> + Send + 'static,
         E: Into<BoxError>,
     {
-        let handler: Handler = Arc::new(
-            move |ctx: Context, args: &str| match serde_json::from_str::<T>(args) {
-                Ok(args) => handler(ctx, args)
-                    .map(|outcome| {
-                        let output = outcome.map_err(Into::into)?;
-                        Ok(serde_json::to_value(output)?)
-                    })
-                    .boxed(),
-                Err(error) => {
-                    let error: BoxError = error.into();
-                    std::future::ready(Err(error)).boxed()
-                }
-            },
-        );
+        // Errors pass through the combinators untouched, so this code, which
+        // compiles once for every task, has no branch of its own.
+        let handler: Handler = Arc::new(move |ctx: Context, args: &str| {
+            let called = serde_json::from_str::<T>(args).map(|args| {
+                handler(ctx, args).map(|outcome| outcome.map_err(Into::<BoxError>::into))
+            });
+            future::ready(called.map_err(BoxError::from))
+                .try_flatten()
+                .and_then(|output| {
+                    future::ready(serde_json::to_value(output).map_err(BoxError::from))
+                })
+                .boxed()
+        });
         Self {
             handler,
             hooks: ErasedHooks::default(),
@@ -72,6 +71,20 @@ impl Registry {
                 .get_mut(name)
                 .expect("a registration changes only a registered task"),
         )
+    }
+
+    /// The automatic tasks, by name.
+    pub fn automatic(&self) -> Vec<(String, Automatic)> {
+        self.tasks
+            .iter()
+            .filter_map(|(name, registered)| {
+                registered
+                    .hooks
+                    .automatic
+                    .clone()
+                    .map(|automatic| (name.clone(), automatic))
+            })
+            .collect()
     }
 
     pub fn names(&self) -> Vec<String> {
@@ -122,9 +135,15 @@ impl<T: Task> Registration<T> {
             });
             registered.hooks.needs_safeguard
         });
-        if needs_safeguard && self.docket.registered(SafeguardWake::NAME).is_none() {
-            self.docket.register(safeguard_wake);
-        }
+        register_safeguard(&self.docket, needs_safeguard);
         self
+    }
+}
+
+/// Registers the task that wakes parked waiters, when a behavior needs it
+/// and it is not registered yet.
+fn register_safeguard(docket: &Docket, needed: bool) {
+    if needed && docket.registered(SafeguardWake::NAME).is_none() {
+        docket.register(safeguard_wake);
     }
 }

@@ -10,7 +10,7 @@
 use std::sync::LazyLock;
 
 use redis::aio::ConnectionLike;
-use redis::{Cmd, ErrorKind, FromRedisValue, Pipeline, RedisResult, Script, ServerErrorKind};
+use redis::{Cmd, FromRedisValue, Pipeline, RedisResult, Script};
 
 /// How a script's header decodes one `ARGV` slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,14 +79,14 @@ impl Call {
         &self,
         connection: &mut C,
     ) -> RedisResult<T> {
-        let evalsha = self.command("EVALSHA", self.script.get_hash());
-        match evalsha.query_async(connection).await {
-            Err(error) if error.kind() == ErrorKind::Server(ServerErrorKind::NoScript) => {
-                self.script.load_async(connection).await?;
-                evalsha.query_async(connection).await
-            }
-            result => result,
+        let mut invocation = self.script.prepare_invoke();
+        for key in &self.keys {
+            invocation.key(key);
         }
+        for arg in &self.args {
+            invocation.arg(arg);
+        }
+        invocation.invoke_async(connection).await
     }
 
     /// Queues an `EVALSHA` on a pipeline.  The caller loads the script

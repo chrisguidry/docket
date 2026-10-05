@@ -1,0 +1,61 @@
+name: Publish to crates.io
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Run the Rust workflow
+    # docket-rs releases are tagged rust/v0.1.0.
+    if: startsWith(github.event.release.tag_name, 'rust/v')
+    uses: ./.github/workflows/rust.yml
+    secrets: inherit
+
+  publish:
+    name: Publish docket-rs to crates.io
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    needs: rust
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/docket-rs
+    permissions:
+      id-token: write # Required for trusted publishing
+      contents: read
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Cargo takes the version from Cargo.toml, not from the tag, so the
+      # two must agree before anything is published.
+      - name: Check the version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "docket-rs") | .version')
+          if [ "rust/v$version" != "$TAG" ]; then
+            echo "The tag $TAG does not match docket-rs $version" >&2
+            exit 1
+          fi
+
+      # crates.io trusts this workflow only after the first release, which
+      # someone publishes by hand with a token.
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      # docket-rs depends on the exact version of docket-rs-macros, so the
+      # macros go first.
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          cargo publish --locked --package docket-rs-macros
+          cargo publish --locked --package docket-rs

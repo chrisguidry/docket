@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::{DateTime, Utc};
 use redis::AsyncCommands;
+use serde_json::{Map, Value};
 
+use crate::connection::Handle;
 use crate::docket::Docket;
 use crate::error::Result;
 use crate::scripts;
@@ -39,7 +41,7 @@ impl Progress {
         self.write(
             vec![("total", total.to_string()), ("updated_at", now.clone())],
             false,
-            serde_json::json!({ "total": total, "updated_at": now }),
+            object([("total", total.into()), ("updated_at", now.into())]),
         )
         .await
     }
@@ -54,7 +56,7 @@ impl Progress {
         self.write(
             fields,
             message.is_none(),
-            serde_json::json!({ "message": message, "updated_at": now }),
+            object([("message", message.into()), ("updated_at", now.into())]),
         )
         .await
     }
@@ -63,21 +65,22 @@ impl Progress {
     pub async fn increment(&self, amount: i64) -> Result<()> {
         let keys = self.docket.keys();
         let now = iso(Utc::now());
-        let mut connection = self.docket.connection().await?;
-        let (current,): (i64,) = redis::pipe()
+        let mut connection = self.docket.handle();
+        let (current, hash): (i64, HashMap<String, String>) = redis::pipe()
             .hincr(keys.progress(&self.key), "current", amount)
             .hset(keys.progress(&self.key), "updated_at", &now)
             .ignore()
+            .hgetall(keys.progress(&self.key))
             .query_async(&mut connection)
             .await?;
         self.current.store(current, Ordering::Relaxed);
-        let snapshot = read(&self.docket, &self.key).await?;
-        let payload = self.payload(serde_json::json!({
-            "current": current,
-            "total": snapshot.total,
-            "message": snapshot.message,
-            "updated_at": now,
-        }));
+        let snapshot = snapshot(&hash);
+        let payload = self.payload(object([
+            ("current", current.into()),
+            ("total", snapshot.total.into()),
+            ("message", snapshot.message.into()),
+            ("updated_at", now.into()),
+        ]));
         let _: i64 = connection
             .publish(keys.progress(&self.key), payload.to_string())
             .await?;
@@ -88,18 +91,17 @@ impl Progress {
         &self,
         fields: Vec<(&str, String)>,
         clear_message: bool,
-        changes: serde_json::Value,
+        changes: Map<String, Value>,
     ) -> Result<()> {
-        let snapshot = read(&self.docket, &self.key).await?;
-        let mut payload = serde_json::json!({
-            "current": self.current.load(Ordering::Relaxed),
-            "total": snapshot.total,
-            "message": snapshot.message,
-            "updated_at": snapshot.updated_at.map(iso),
-        });
-        if let (Some(payload), Some(changes)) = (payload.as_object_mut(), changes.as_object()) {
-            payload.extend(changes.clone());
-        }
+        let mut connection = self.docket.handle();
+        let snapshot = read(&mut connection, &self.docket, &self.key).await?;
+        let mut payload = object([
+            ("current", self.current.load(Ordering::Relaxed).into()),
+            ("total", snapshot.total.into()),
+            ("message", snapshot.message.into()),
+            ("updated_at", snapshot.updated_at.map(iso).into()),
+        ]);
+        payload.extend(changes);
         let call = scripts::ProgressWrite {
             progress_key: self.docket.keys().progress(&self.key),
             payload: self.payload(payload).to_string(),
@@ -110,18 +112,22 @@ impl Progress {
                 .collect(),
         }
         .call();
-        let mut connection = self.docket.connection().await?;
         call.run::<redis::Value, _>(&mut connection).await?;
         Ok(())
     }
 
-    fn payload(&self, mut fields: serde_json::Value) -> serde_json::Value {
-        if let Some(object) = fields.as_object_mut() {
-            object.insert("type".to_owned(), "progress".into());
-            object.insert("key".to_owned(), self.key.clone().into());
-        }
-        fields
+    fn payload(&self, mut fields: Map<String, Value>) -> Value {
+        fields.insert("type".to_owned(), "progress".into());
+        fields.insert("key".to_owned(), self.key.clone().into());
+        Value::Object(fields)
     }
+}
+
+fn object<const N: usize>(fields: [(&str, Value); N]) -> Map<String, Value> {
+    fields
+        .into_iter()
+        .map(|(field, value)| (field.to_owned(), value))
+        .collect()
 }
 
 /// A run's progress at one moment.
@@ -138,26 +144,34 @@ pub struct ProgressSnapshot {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-pub(crate) async fn read(docket: &Docket, key: &str) -> Result<ProgressSnapshot> {
-    let mut connection = docket.connection().await?;
+pub(crate) async fn read(
+    connection: &mut Handle,
+    docket: &Docket,
+    key: &str,
+) -> Result<ProgressSnapshot> {
     let hash: HashMap<String, String> = connection.hgetall(docket.keys().progress(key)).await?;
+    Ok(snapshot(&hash))
+}
+
+/// The progress in a run's progress hash.
+pub(crate) fn snapshot(hash: &HashMap<String, String>) -> ProgressSnapshot {
     if hash.is_empty() {
-        return Ok(ProgressSnapshot {
+        return ProgressSnapshot {
             current: None,
             total: DEFAULT_TOTAL,
             message: None,
             updated_at: None,
-        });
+        };
     }
     let number = |field: &str, default: i64| {
         hash.get(field)
             .and_then(|n| n.parse().ok())
             .unwrap_or(default)
     };
-    Ok(ProgressSnapshot {
+    ProgressSnapshot {
         current: Some(number("current", 0)),
         total: number("total", DEFAULT_TOTAL),
         message: hash.get("message").cloned(),
         updated_at: hash.get("updated_at").and_then(|text| parse_iso(text)),
-    })
+    }
 }

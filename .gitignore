@@ -17,3 +17,4 @@ wheels/
 coverage.xml
 junit.xml
 target/
+target-*/

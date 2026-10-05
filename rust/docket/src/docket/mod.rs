@@ -199,7 +199,7 @@ impl Docket {
             state_payload: payload.to_string(),
         }
         .call();
-        let mut connection = self.connection().await?;
+        let mut connection = self.handle();
         call.run::<Value, _>(&mut connection).await?;
         self.expire_runs(&mut connection, key).await?;
         let _: i64 = connection.publish(keys.cancel(key), key).await?;
@@ -218,7 +218,7 @@ impl Docket {
 
     async fn send_strike(&self, strike: Strike, restore: bool) -> Result<()> {
         let fields = crate::strikes::instruction(&strike, restore);
-        let mut connection = self.connection().await?;
+        let mut connection = self.handle();
         let _: String = connection
             .xadd(self.inner.keys.strikes(), "*", &fields)
             .await?;
@@ -248,6 +248,14 @@ impl Docket {
         &self.inner.strikes
     }
 
+    pub(crate) fn automatic_tasks(&self) -> Vec<(String, crate::behaviors::Automatic)> {
+        self.inner
+            .registry
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .automatic()
+    }
+
     pub(crate) fn registered(&self, function: &str) -> Option<Registered> {
         self.inner
             .registry
@@ -268,8 +276,15 @@ impl Docket {
             .change(function, change)
     }
 
+    /// A handle on the shared connection, once it is open.
     pub(crate) async fn connection(&self) -> Result<Handle> {
         Ok(self.inner.shared.get().await?)
+    }
+
+    /// A handle on the shared connection, which connects on its first
+    /// command.
+    pub(crate) fn handle(&self) -> Handle {
+        self.inner.shared.handle()
     }
 
     /// Lets a finished task's run state expire, or deletes it when the

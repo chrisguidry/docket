@@ -47,7 +47,7 @@ async fn once(worker: &Shared) -> crate::Result<()> {
     let ttl = i64::try_from(window.as_secs()).unwrap_or(i64::MAX).max(1);
     pipeline.expire(keys.worker_tasks(name), ttl).ignore();
 
-    let mut connection = docket.connection().await?;
+    let mut connection = docket.handle();
     let () = pipeline.query_async(&mut connection).await?;
     Ok(())
 }
@@ -63,7 +63,5 @@ pub(super) async fn remove(worker: &Shared) {
         pipeline.zrem(keys.task_workers(&task), name).ignore();
     }
     pipeline.del(keys.worker_tasks(name)).ignore();
-    if let Ok(mut connection) = docket.connection().await {
-        let _: RedisResult<()> = pipeline.query_async(&mut connection).await;
-    }
+    let _: RedisResult<()> = pipeline.query_async(&mut docket.handle()).await;
 }

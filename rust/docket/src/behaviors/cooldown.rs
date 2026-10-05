@@ -56,12 +56,8 @@ impl Admission for Cooldown {
         let window = u64::try_from(self.window.as_millis())
             .unwrap_or(u64::MAX)
             .max(1);
-        let set: redis::RedisResult<Option<String>> = async {
-            let mut connection = ctx
-                .docket()
-                .connection()
-                .await
-                .map_err(super::redis_error)?;
+        let set: crate::Result<Option<String>> = async {
+            let mut connection = ctx.docket().connection().await?;
             redis::cmd("SET")
                 .arg(&key)
                 .arg(1)
@@ -70,6 +66,7 @@ impl Admission for Cooldown {
                 .arg(window)
                 .query_async(&mut connection)
                 .await
+                .map_err(Into::into)
         }
         .await;
         match set {

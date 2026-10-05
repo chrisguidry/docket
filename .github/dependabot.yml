@@ -13,6 +13,14 @@ updates:
       all-dependencies:
         patterns:
           - "*"
+  - package-ecosystem: "cargo"
+    directory: "/rust"
+    schedule:
+      interval: "weekly"
+    groups:
+      all-crates:
+        patterns:
+          - "*"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

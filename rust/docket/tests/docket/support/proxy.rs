@@ -46,22 +46,32 @@ impl State {
 
 pub struct Proxy {
     address: SocketAddr,
+    /// The upstream URL's credentials, which docket still sends through
+    /// the proxy.
+    userinfo: Option<String>,
     state: Arc<Mutex<State>>,
 }
 
 impl Proxy {
     /// A proxy in front of the Redis at `upstream`, a `host:port`.
-    pub async fn start(upstream: String) -> Self {
+    pub async fn start(upstream: String, userinfo: Option<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let state = Arc::new(Mutex::new(State::default()));
         tokio::spawn(accept(listener, upstream, Arc::clone(&state)));
-        Self { address, state }
+        Self {
+            address,
+            userinfo,
+            state,
+        }
     }
 
     /// The URL of the proxy.
     pub fn url(&self) -> String {
-        format!("redis://{}/0", self.address)
+        match &self.userinfo {
+            Some(userinfo) => format!("redis://{userinfo}@{}/0", self.address),
+            None => format!("redis://{}/0", self.address),
+        }
     }
 
     /// Answers the next `times` commands named `command` with an error,

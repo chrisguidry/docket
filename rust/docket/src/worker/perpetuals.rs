@@ -30,14 +30,7 @@ pub(super) async fn reseed(worker: Arc<Shared>) {
 
 pub(super) async fn seed(worker: &Shared) -> Result<()> {
     let docket = &worker.docket;
-    let automatic: Vec<(String, crate::behaviors::Automatic)> = docket
-        .task_names()
-        .into_iter()
-        .filter_map(|name| {
-            let automatic = docket.registered(&name)?.hooks.automatic?;
-            Some((name, automatic))
-        })
-        .collect();
+    let automatic = docket.automatic_tasks();
     if automatic.is_empty() {
         return Ok(());
     }
@@ -46,7 +39,7 @@ pub(super) async fn seed(worker: &Shared) -> Result<()> {
     let keys = docket.keys();
     let lock = keys.perpetual_lock();
     let holder = format!("{}:{}", worker.settings.name, uuid::Uuid::now_v7());
-    let mut connection = docket.connection().await?;
+    let mut connection = docket.handle();
     let taken: Option<String> = redis::cmd("SET")
         .arg(&lock)
         .arg(&holder)

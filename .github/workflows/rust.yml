@@ -1,0 +1,166 @@
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # A skipped job counts as passed for a required check, so on a pull request
+  # the jobs below skip themselves when nothing they test changed, instead of
+  # the workflow not running at all.  Pushes and releases run everything.
+  changes:
+    name: Rust changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            rust:
+              - "rust/**"
+              - "protocol/**"
+              - "conformance/**"
+              - "python/tests/cluster/**"
+              - ".github/workflows/rust.yml"
+
+  lint:
+    name: Rust lints
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Build the docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked
+
+  test:
+    name: Rust, ${{ matrix.backend.name }}
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        backend:
+          - { name: Memory, image: "", mode: "" }
+          - { name: Redis 6, image: "redis:6.2", mode: plain }
+          - { name: Redis 8, image: "redis:8.10", mode: plain }
+          - { name: Redis 8 Cluster, image: "redis:8.10", mode: cluster }
+          - { name: Redis 8 with ACL, image: "redis:8.10", mode: acl }
+          - { name: Redis 8 with Sentinel, image: "redis:8.10", mode: sentinel }
+          - { name: Valkey 8, image: "valkey/valkey:8.0", mode: plain }
+          - { name: Valkey 9, image: "valkey/valkey:9.1", mode: plain }
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Start ${{ matrix.backend.name }}
+        if: matrix.backend.image != ''
+        run: echo "DOCKET_TEST_URL=$(scripts/test-redis.sh ${{ matrix.backend.image }} ${{ matrix.backend.mode }})" >> "$GITHUB_ENV"
+
+      - name: Run the tests
+        run: cargo test --workspace --all-features --locked
+
+  coverage:
+    name: Rust coverage
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+
+      # Coverage runs on nightly, where `coverage(off)` works.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      # Each backend reaches code the others do not, so the gate applies to
+      # their runs together.
+      - name: Start Redis, a cluster, and a sentinel
+        run: |
+          {
+            echo "STANDALONE_URL=$(scripts/test-redis.sh redis:8.10 plain 16379)"
+            echo "CLUSTER_URL=$(scripts/test-redis.sh redis:8.10 cluster 17001)"
+            echo "SENTINEL_URL=$(scripts/test-redis.sh redis:8.10 sentinel 16400)"
+          } >> "$GITHUB_ENV"
+
+      - name: Run the tests on every backend
+        run: |
+          cargo llvm-cov clean --workspace
+          for url in "" "$STANDALONE_URL" "$CLUSTER_URL" "$SENTINEL_URL"; do
+            DOCKET_TEST_URL=$url cargo llvm-cov --no-report --workspace --all-features --locked
+          done
+
+      - name: Check coverage
+        run: >
+          cargo llvm-cov report --summary-only
+          --ignore-filename-regex 'memory/engine|conformance-agent'
+          --fail-under-lines 100 --fail-under-regions 100 --fail-under-functions 100
+
+      - name: Write the coverage report
+        if: ${{ !cancelled() }}
+        run: cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'memory/engine|conformance-agent'
+
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: rust/lcov.info
+          flags: rust

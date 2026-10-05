@@ -1,8 +1,12 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use chrono::Utc;
-use docket::{Disposition, Event, State};
-use futures::StreamExt;
+use docket::{Disposition, Docket, Event, State, Task};
+use futures::future::BoxFuture;
+use futures::{FutureExt, StreamExt};
+use rstest::rstest;
+use serde::{Deserialize, Serialize};
 
 use crate::support::{Echo, Noop, docket, within, worker};
 
@@ -210,4 +214,52 @@ async fn clear_removes_tasks_that_have_not_started() {
     assert_eq!(docket.clear().await.unwrap(), 2);
     let snapshot = docket.snapshot().await.unwrap();
     assert_eq!((snapshot.total_tasks, snapshot.future.len()), (0, 0));
+}
+
+/// A task whose output has keys that JSON cannot hold.
+#[derive(Clone, Debug, Serialize, Deserialize, Task)]
+#[task(name = "bytes-keyed", output = HashMap<Vec<u8>, u8>)]
+struct BytesKeyed;
+
+/// A task that takes the name of `Echo` but other arguments.
+#[derive(Clone, Debug, Serialize, Deserialize, Task)]
+#[task(name = "echo")]
+struct Numbered {
+    number: u64,
+}
+
+fn refuse(text: &str) -> Result<String, std::io::Error> {
+    panic!("could not echo {text}")
+}
+
+type Setup = fn(Docket) -> BoxFuture<'static, docket::Result<()>>;
+
+#[rstest]
+#[case::output_that_is_not_json(|docket: Docket| async move {
+    docket.register(|_ctx, _: BytesKeyed| async {
+        Ok::<_, std::io::Error>(HashMap::from([(vec![1], 1)]))
+    });
+    docket.add(BytesKeyed).key("k").await.map(drop)
+}.boxed(), "key must be a string")]
+#[case::arguments_of_another_shape(|docket: Docket| async move {
+    docket.register(|_ctx, args: Echo| async move { Ok::<_, std::io::Error>(args.text) });
+    docket.add(Numbered { number: 1 }).key("k").await.map(drop)
+}.boxed(), "missing field `text`")]
+#[case::a_panic_with_a_formatted_message(|docket: Docket| async move {
+    docket.register(|_ctx, args: Echo| async move { refuse(&args.text) });
+    docket.add(Echo::new("this")).key("k").await.map(drop)
+}.boxed(), "the task's handler panicked: could not echo this")]
+#[tokio::test]
+async fn a_task_fails_with_why_it_could_not_run(#[case] setup: Setup, #[case] expected: &str) {
+    let docket = docket().await;
+    setup(docket.clone()).await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    let execution = docket.execution("k").await.unwrap().unwrap();
+    let status = execution.status().await.unwrap().unwrap();
+    assert_eq!(status.state, State::Failed);
+    assert!(status.error.unwrap().contains(expected));
 }

@@ -74,21 +74,12 @@ pub struct WorkerSummary {
     pub tasks: Vec<String>,
 }
 
-fn bytes_map(map: &HashMap<String, redis::Value>) -> HashMap<String, Vec<u8>> {
-    map.iter()
-        .filter_map(|(field, value)| match value {
-            redis::Value::BulkString(bytes) => Some((field.clone(), bytes.clone())),
-            _ => None,
-        })
-        .collect()
-}
-
 impl Docket {
     /// What the docket holds now.
     pub async fn snapshot(&self) -> Result<Snapshot> {
         let keys = self.keys();
         let taken = Utc::now();
-        let mut connection = self.connection().await?;
+        let mut connection = self.handle();
         self.ensure_group(&mut connection).await?;
 
         let (stream_length, queue_length, pending, entries, queued): (
@@ -115,7 +106,7 @@ impl Docket {
         let mut future = Vec::new();
         let mut running = Vec::new();
         for entry in entries.ids {
-            let Ok(message) = Message::from_fields(&bytes_map(&entry.map)) else {
+            let Ok(message) = Message::from_entry(&entry) else {
                 continue;
             };
             match running_by_id.get(&entry.id) {
@@ -143,7 +134,7 @@ impl Docket {
     /// The run of the task with this key, or `None` when the docket knows
     /// nothing of it, for example after its state expired.
     pub async fn execution(&self, key: &str) -> Result<Option<Execution>> {
-        let mut connection = self.connection().await?;
+        let mut connection = self.handle();
         let runs: HashMap<String, String> = connection.hgetall(self.keys().runs(key)).await?;
         let Some(function) = runs.get("function") else {
             return Ok(None);
@@ -171,7 +162,7 @@ impl Docket {
     }
 
     async fn list_workers(&self, key: String) -> Result<Vec<WorkerSummary>> {
-        let mut connection = self.connection().await?;
+        let mut connection = self.handle();
         let oldest = seconds(Utc::now()) - self.heartbeat_window().as_secs_f64();
         let _: () = connection.zrembyscore(&key, 0, oldest).await?;
         let seen: Vec<(String, f64)> = connection.zrange_withscores(&key, 0, -1).await?;
@@ -204,7 +195,7 @@ impl Docket {
     /// tasks the docket held.  Running tasks finish.
     pub async fn clear(&self) -> Result<usize> {
         let keys = self.keys();
-        let mut connection = self.connection().await?;
+        let mut connection = self.handle();
         let (stream_length, queue_length, queued, entries): (
             usize,
             usize,

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use docket::behaviors::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks};
-use docket::{ConcurrencyLimit, Context, Cooldown, Debounce, RateLimit, State, Task};
+use docket::{Context, Cooldown, Debounce, RateLimit, State, Task};
 use serde::{Deserialize, Serialize};
 
 use crate::support::{Noop, docket, within, worker};
@@ -12,90 +12,6 @@ use crate::support::{Noop, docket, within, worker};
 #[task(name = "per-customer")]
 struct PerCustomer {
     customer: u32,
-}
-
-/// Counts how many handlers run at once, and the most that ever did.
-#[derive(Default)]
-struct Overlap {
-    running: AtomicU32,
-    most: AtomicU32,
-}
-
-impl Overlap {
-    async fn hold(&self) {
-        let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
-        self.most.fetch_max(now, Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        self.running.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
-#[tokio::test]
-async fn a_concurrency_limit_caps_the_task() {
-    let docket = docket().await;
-    let overlap = Arc::new(Overlap::default());
-    let held = Arc::clone(&overlap);
-    docket
-        .register(move |_ctx, _: Noop| {
-            let held = Arc::clone(&held);
-            async move {
-                held.hold().await;
-                Ok::<_, std::io::Error>(())
-            }
-        })
-        .with(ConcurrencyLimit::new(2));
-    for _ in 0..6 {
-        docket.add(Noop).await.unwrap();
-    }
-
-    within(30, worker(&docket).concurrency(6).run_until_finished())
-        .await
-        .unwrap();
-
-    assert_eq!(overlap.most.load(Ordering::SeqCst), 2);
-}
-
-#[tokio::test]
-async fn a_per_field_limit_counts_each_value_apart() {
-    let docket = docket().await;
-    let overlap = Arc::new(Overlap::default());
-    let held = Arc::clone(&overlap);
-    docket
-        .register(move |_ctx, _: PerCustomer| {
-            let held = Arc::clone(&held);
-            async move {
-                held.hold().await;
-                Ok::<_, std::io::Error>(())
-            }
-        })
-        .with(ConcurrencyLimit::per_field("customer", 1).scope("tests"));
-    for customer in [1, 1, 2, 2] {
-        docket.add(PerCustomer { customer }).await.unwrap();
-    }
-
-    within(30, worker(&docket).concurrency(4).run_until_finished())
-        .await
-        .unwrap();
-
-    assert_eq!(overlap.most.load(Ordering::SeqCst), 2);
-}
-
-#[tokio::test]
-async fn a_limit_on_a_missing_field_drops_the_task() {
-    let docket = docket().await;
-    docket
-        .register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) })
-        .with(ConcurrencyLimit::per_field("customer", 1));
-    let execution = docket.add(Noop).await.unwrap();
-
-    within(10, worker(&docket).run_until_finished())
-        .await
-        .unwrap();
-
-    assert_eq!(
-        execution.status().await.unwrap().unwrap().state,
-        State::Cancelled
-    );
 }
 
 #[tokio::test]

@@ -17,7 +17,7 @@ use crate::behaviors::{
 use crate::context::{self, Context};
 use crate::docket::{Docket, Placement, Registered};
 use crate::error::Result;
-use crate::execution::{Message, State, StoredResult};
+use crate::execution::{Message, State};
 use crate::keys::WORKER_GROUP;
 use crate::scripts;
 use crate::wire::iso;
@@ -248,25 +248,19 @@ impl Run<'_> {
             started_at,
             generation: self.message().generation,
             state_payload: payload.to_string(),
-            key_json: serde_json::to_string(key)?,
+            key_json: serde_json::Value::from(key).to_string(),
             worker_group_name: WORKER_GROUP.to_owned(),
             message_id: self.delivery.id.clone(),
         }
         .call();
-        let mut connection = self.docket.connection().await?;
-        let reply: Vec<Value> = call.run(&mut connection).await?;
-        let status = match reply.first() {
-            Some(Value::BulkString(status)) => String::from_utf8_lossy(status).into_owned(),
-            Some(Value::SimpleString(status)) => status.clone(),
-            _ => String::new(),
-        };
+        let mut connection = self.docket.handle();
+        // The reply is the claim's status, the runs hash, and the progress
+        // hash.
+        let (status, runs, _): (String, std::collections::HashMap<String, String>, Value) =
+            call.run(&mut connection).await?;
         if status != "OK" {
             return Ok(None);
         }
-        let runs: std::collections::HashMap<String, String> = match reply.get(1) {
-            Some(value) => redis::from_redis_value(value.clone()).unwrap_or_default(),
-            None => std::collections::HashMap::new(),
-        };
         Ok(Some(
             runs.get("generation")
                 .and_then(|generation| generation.parse().ok())
@@ -278,7 +272,7 @@ impl Run<'_> {
     async fn strike(&self) -> Result<()> {
         let keys = self.docket.keys();
         let key = self.key();
-        let mut connection = self.docket.connection().await?;
+        let mut connection = self.docket.handle();
         let () = redis::pipe()
             .hdel(keys.runs(key), &["known", "stream_id"])
             .ignore()
@@ -324,7 +318,7 @@ impl Run<'_> {
             extra_fields,
         }
         .call();
-        let mut connection = self.docket.connection().await?;
+        let mut connection = self.docket.handle();
         call.run::<Value, _>(&mut connection).await?;
         Ok(())
     }
@@ -436,8 +430,8 @@ impl Run<'_> {
         if ttl == 0 || output.is_null() {
             return Ok(());
         }
-        let stored = serde_json::to_string(&StoredResult { ok: output })?;
-        let mut connection = self.docket.connection().await?;
+        let stored = serde_json::json!({ "ok": output }).to_string();
+        let mut connection = self.docket.handle();
         let ttl = u64::try_from(ttl).unwrap_or(u64::MAX);
         let () = connection
             .set_ex(self.docket.keys().result(self.key()), stored, ttl)

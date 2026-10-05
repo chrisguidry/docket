@@ -1,5 +1,6 @@
 //! Following a run's state and progress events over pub/sub.
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -94,18 +95,20 @@ impl Stream for Events {
 
 pub(super) async fn subscribe(docket: &Docket, key: &str) -> Result<Events> {
     let keys = docket.keys();
-    let mut pubsub = docket.backend().pubsub().await?;
-    pubsub
+    let pubsub = docket
+        .backend()
         .subscribe(&[keys.state(key), keys.progress(key)])
         .await?;
 
     // Reading after the subscription is confirmed means no change can fall
     // between the read and the first message.
     let mut initial = Vec::new();
-    let mut connection = docket.connection().await?;
-    let hash: std::collections::HashMap<String, String> =
-        redis::AsyncCommands::hgetall(&mut connection, keys.runs(key)).await?;
-    if let Some(status) = Status::from_hash(&hash) {
+    let (runs, progress): (HashMap<String, String>, HashMap<String, String>) = redis::pipe()
+        .hgetall(keys.runs(key))
+        .hgetall(keys.progress(key))
+        .query_async(&mut docket.handle())
+        .await?;
+    if let Some(status) = Status::from_hash(&runs) {
         initial.push(Ok(Event::State(StateEvent {
             state: status.state,
             when: status.when,
@@ -115,7 +118,7 @@ pub(super) async fn subscribe(docket: &Docket, key: &str) -> Result<Events> {
             error: status.error,
         })));
     }
-    let snapshot = progress::read(docket, key).await?;
+    let snapshot = progress::snapshot(&progress);
     initial.push(Ok(Event::Progress(ProgressEvent {
         current: snapshot.current,
         total: snapshot.total,

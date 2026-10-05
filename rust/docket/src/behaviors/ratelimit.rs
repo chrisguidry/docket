@@ -93,12 +93,7 @@ impl Admission for RateLimit {
         }
         .call();
         let docket = ctx.docket().clone();
-        let decision: redis::RedisResult<(i64, i64)> = async {
-            let mut connection = docket.connection().await.map_err(super::redis_error)?;
-            call.run(&mut connection).await
-        }
-        .await;
-        match decision {
+        match super::run_script::<(i64, i64)>(&docket, &call).await {
             // A run that a later admission hook blocks gives its place back.
             Ok((ADMITTED, _)) => Ok(Admitted::with_release(move |released| async move {
                 if released == Released::Blocked

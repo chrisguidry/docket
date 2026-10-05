@@ -3,6 +3,8 @@
 mod events;
 mod message;
 mod progress;
+#[cfg(test)]
+mod tests;
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -213,16 +215,13 @@ impl<O> Execution<O> {
     /// The run's current status, or `None` when the docket knows nothing of
     /// it, for example after its state expired.
     pub async fn status(&self) -> Result<Option<Status>> {
-        let mut connection = self.docket.connection().await?;
-        let hash: HashMap<String, String> = connection
-            .hgetall(self.docket.keys().runs(&self.key))
-            .await?;
-        Ok(Status::from_hash(&hash))
+        status(&self.docket, &self.key).await
     }
 
     /// The run's progress.
     pub async fn progress(&self) -> Result<ProgressSnapshot> {
-        progress::read(&self.docket, &self.key).await
+        let mut connection = self.docket.handle();
+        progress::read(&mut connection, &self.docket, &self.key).await
     }
 
     /// Follows the run's state and progress events as they happen.  The
@@ -238,56 +237,68 @@ impl<O: DeserializeOwned> Execution<O> {
     /// returns [`Error::TaskFailed`], and a cancelled one
     /// [`Error::TaskCancelled`].  Bound the wait with `tokio::time::timeout`.
     pub async fn result(&self) -> Result<O> {
-        let mut events = self.subscribe().await?;
+        output(&self.docket, &self.key)
+            .await
+            .and_then(|output| serde_json::from_value(output).map_err(Error::from))
+    }
+}
+
+// The work of an execution lives in functions of the docket and key, so it
+// compiles once rather than once for each output type.
+
+async fn status(docket: &Docket, key: &str) -> Result<Option<Status>> {
+    let hash: HashMap<String, String> = docket.handle().hgetall(docket.keys().runs(key)).await?;
+    Ok(Status::from_hash(&hash))
+}
+
+/// Waits for the run of `key` to end, and returns its output.
+async fn output(docket: &Docket, key: &str) -> Result<serde_json::Value> {
+    let mut events = events::subscribe(docket, key).await?;
+    loop {
+        if let Some(status) = status(docket, key).await?
+            && status.state.is_terminal()
+        {
+            return outcome(docket, key, &status).await;
+        }
+        // Wait for the next state event before reading the status again,
+        // so that the final read sees the terminal state and its fields.
         loop {
-            if let Some(status) = self.status().await?
-                && status.state.is_terminal()
-            {
-                return self.outcome(&status).await;
-            }
-            // Wait for the next state event before reading the status again,
-            // so that the final read sees the terminal state and its fields.
-            loop {
-                match events.next().await {
-                    Some(Ok(Event::State(event))) if event.state.is_terminal() => break,
-                    Some(Ok(_)) => {}
-                    Some(Err(error)) => return Err(error),
-                    None => break,
-                }
+            match events.next().await {
+                Some(Ok(Event::State(event))) if event.state.is_terminal() => break,
+                Some(Ok(_)) => {}
+                Some(Err(error)) => return Err(error),
+                None => break,
             }
         }
     }
+}
 
-    async fn outcome(&self, status: &Status) -> Result<O> {
-        match status.state {
-            State::Cancelled => Err(Error::TaskCancelled {
-                key: self.key.clone(),
-            }),
-            State::Failed => Err(Error::TaskFailed {
-                key: self.key.clone(),
-                message: status
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "the task failed".to_owned()),
-            }),
-            _ => {
-                let mut connection = self.docket.connection().await?;
-                let stored: Option<String> =
-                    connection.get(self.docket.keys().result(&self.key)).await?;
-                let output = match stored {
-                    Some(stored) => serde_json::from_str::<StoredResult>(&stored)?.ok,
-                    None => serde_json::Value::Null,
-                };
-                Ok(serde_json::from_value(output)?)
+async fn outcome(docket: &Docket, key: &str, status: &Status) -> Result<serde_json::Value> {
+    match status.state {
+        State::Cancelled => Err(Error::TaskCancelled {
+            key: key.to_owned(),
+        }),
+        State::Failed => Err(Error::TaskFailed {
+            key: key.to_owned(),
+            message: status
+                .error
+                .clone()
+                .unwrap_or_else(|| "the task failed".to_owned()),
+        }),
+        _ => {
+            let stored: Option<String> = docket.handle().get(docket.keys().result(key)).await?;
+            match stored {
+                Some(stored) => Ok(serde_json::from_str::<StoredResult>(&stored)?.ok),
+                None => Ok(serde_json::Value::Null),
             }
         }
     }
 }
 
 /// What a worker stores for a task that completed.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct StoredResult {
-    pub ok: serde_json::Value,
+#[derive(serde::Deserialize)]
+struct StoredResult {
+    ok: serde_json::Value,
 }
 
 impl<O> std::fmt::Debug for Execution<O> {

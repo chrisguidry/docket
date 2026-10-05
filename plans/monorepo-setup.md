@@ -210,9 +210,52 @@ The 10 scripts in `examples/` have no CI, and they import in two ways
 each one as a smoke test.  Each port adds its own directory under each
 concept.
 
-## Steps 8 through 10: One scaffold per language
+## Step 8: docket-rs
 
-In order: Rust, Go, TypeScript.  Each scaffold pull request brings:
+Built on the `rust` branch, ahead of steps 6 and 7, because tabs and
+side-by-side examples need a second language to show.  `rust/` is a Cargo
+workspace:
+
+- `docket` (published as docket-rs, imported as `docket`): the library.
+- `docket-macros` (docket-rs-macros): `#[derive(Task)]`, re-exported by
+  docket-rs.
+- `conformance-agent`: the agent the driver runs as `rust@main`; every
+  scenario passes, `chaos` included.
+
+What it settles:
+
+- redis-rs is the client.  `memory://` serves the vendored engine over an
+  in-process RESP2 connection (see [the README](README.md#in-process-redis-for-memory)).
+- Behaviors attach at registration, `Behavior<T>` is generic over the task,
+  and hooks return decisions (`AfterFailure`, `AfterCompletion`) that the
+  worker carries out with the Lua scripts.  Per-run handles live in the
+  context: `ctx.timeout()`, `ctx.perpetual()`, `ctx.behavior::<T>()`.
+- A redelivered run keeps its attempt number, as in pydocket; the
+  `redelivery` scenario asserts it.
+- A whole-task strike stays in force when a field strike on the same task
+  is added, where pydocket's lapses.
+- Lease renewal keeps running while a worker drains, where pydocket's stops.
+- `docket::cli::WorkerArgs` gives an application's binary pydocket's worker
+  options; docket-rs ships no binary.
+
+CI is `.github/workflows/rust.yml`: lints and docs, the tests on Memory,
+Redis 6 and 8, a Redis 8 cluster, Redis 8 with ACL and with Sentinel, and
+Valkey 8 and 9, and a nightly coverage job that requires 100% of lines,
+regions, and functions across Memory, Redis, the cluster, and Sentinel
+together.  `rust/scripts/test-redis.sh` starts each backend.  The
+conformance workflow adds `Conformance, rust@main` and `Chaos tests,
+rust@main`.  `publish-rust.yml` publishes on a `rust/v*` release, after a
+first release by hand with a token.
+
+Not built yet, and not in pydocket's core contract: OpenTelemetry metrics
+(each task runs in a `tracing` span), a credential provider like pydocket's
+`credential_provider`, the `Agenda` helper, and a fallback handler for
+unknown tasks (a worker completes them with a warning).
+
+## Steps 9 and 10: One scaffold per language
+
+In order: Go, then TypeScript.  Each scaffold pull request brings what
+docket-rs brought:
 
 - the package: `rust/` as a Cargo workspace for `docket-rs`, `go/` as the
   module `github.com/chrisguidry/docket/go`, `typescript/` for

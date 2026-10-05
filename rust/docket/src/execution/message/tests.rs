@@ -58,6 +58,10 @@ fn a_missing_generation_is_zero() {
 
 #[rstest]
 #[case::no_key("key", None, "a task message has no key field")]
+#[case::no_when("when", None, "a task message has no when field")]
+#[case::no_function("function", None, "a task message has no function field")]
+#[case::no_args("args", None, "a task message has no args field")]
+#[case::no_attempt("attempt", None, "a task message has no attempt field")]
 #[case::bad_when("when", Some("soon"), "a task message's when is soon")]
 #[case::bad_attempt("attempt", Some("x"), "a task message's attempt is not a number")]
 #[case::negative_attempt("attempt", Some("-1"), "a task message's attempt is out of range")]
@@ -72,4 +76,18 @@ fn rejects_bad_fields(#[case] field: &str, #[case] value: Option<&str>, #[case] 
         Message::from_fields(&fields).unwrap_err().to_string(),
         error
     );
+}
+
+#[test]
+fn reads_a_stream_entry() {
+    let entry = redis::streams::StreamId {
+        id: "1-0".into(),
+        map: message()
+            .fields()
+            .into_iter()
+            .map(|(field, value)| (field, redis::Value::BulkString(value)))
+            .collect(),
+        ..Default::default()
+    };
+    assert_eq!(Message::from_entry(&entry).unwrap(), message());
 }

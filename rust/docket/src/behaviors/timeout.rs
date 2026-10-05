@@ -125,3 +125,6 @@ impl Context {
         self.behavior()
     }
 }
+
+#[cfg(test)]
+mod tests;

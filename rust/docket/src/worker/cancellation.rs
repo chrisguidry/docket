@@ -15,24 +15,21 @@ const RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// Starts the listener and waits until its subscription is confirmed, so
 /// that no cancel sent after the worker starts can be missed.
-pub(super) async fn start(worker: &Arc<Shared>, infrastructure: &mut JoinSet<()>) -> Result<()> {
+pub(super) async fn start(worker: &Arc<Shared>, infrastructure: &mut JoinSet<()>) {
     let (subscribed, confirmed) = oneshot::channel();
     infrastructure.spawn(listen(Arc::clone(worker), Some(subscribed)));
     // The listener's task holds the sender until it has subscribed or failed
     // its first attempt; either way the worker can go on.
     let _ = confirmed.await;
-    Ok(())
 }
 
 async fn listen(worker: Arc<Shared>, mut subscribed: Option<oneshot::Sender<()>>) {
     let docket = &worker.docket;
     loop {
-        let pubsub = async {
-            let mut pubsub = docket.backend().pubsub().await?;
-            pubsub.psubscribe(docket.keys().cancel_pattern()).await?;
-            redis::RedisResult::Ok(pubsub)
-        }
-        .await;
+        let pubsub = docket
+            .backend()
+            .psubscribe(docket.keys().cancel_pattern())
+            .await;
         if let Some(subscribed) = subscribed.take() {
             let _ = subscribed.send(());
         }
@@ -40,13 +37,15 @@ async fn listen(worker: Arc<Shared>, mut subscribed: Option<oneshot::Sender<()>>
             tokio::time::sleep(RETRY_DELAY).await;
             continue;
         };
-        let mut messages = pubsub.into_on_message();
-        while let Some(message) = messages.next().await {
-            if let Ok(key) = message.get_payload::<String>() {
-                worker.cancel_key(&key);
-                if let Err(error) = forget_waiter(docket, &key).await {
-                    tracing::warn!(%error, %key, "cleaning up a cancelled waiter failed");
-                }
+        // Docket publishes the task's key, so a message that is not text
+        // names no task.
+        let mut keys = pubsub
+            .into_on_message()
+            .filter_map(|message| std::future::ready(message.get_payload::<String>().ok()));
+        while let Some(key) = keys.next().await {
+            worker.cancel_key(&key);
+            if let Err(error) = forget_waiter(docket, &key).await {
+                tracing::warn!(%error, %key, "cleaning up a cancelled waiter failed");
             }
         }
         tokio::time::sleep(RETRY_DELAY).await;
@@ -58,7 +57,7 @@ async fn listen(worker: Arc<Shared>, mut subscribed: Option<oneshot::Sender<()>>
 /// skip cancelled waiters anyway, so this only tidies up.
 async fn forget_waiter(docket: &crate::Docket, key: &str) -> Result<()> {
     let keys = docket.keys();
-    let mut connection = docket.connection().await?;
+    let mut connection = docket.handle();
     let runs: std::collections::HashMap<String, String> =
         redis::AsyncCommands::hgetall(&mut connection, keys.runs(key)).await?;
     let (Some(stream), Some(entry)) = (runs.get("waiter_stream"), runs.get("waiter_entry_id"))

@@ -73,7 +73,7 @@ impl Docket {
     /// Places one task, and returns what the script decided.
     pub(crate) async fn place(&self, placement: Placement) -> Result<Disposition> {
         let call = self.schedule_call(placement);
-        let mut connection = self.connection().await?;
+        let mut connection = self.handle();
         let reply: String = call.run(&mut connection).await?;
         Ok(Disposition::from_reply(&reply))
     }
@@ -119,7 +119,7 @@ impl Docket {
 
     /// Adds many tasks in one round trip to Redis.
     pub async fn add_many(&self, calls: impl IntoIterator<Item = Call>) -> Result<Vec<Execution>> {
-        self.place_many(calls, false).await
+        self.place_many(calls.into_iter().collect(), false).await
     }
 
     /// Replaces many tasks in one round trip to Redis.  Every call needs a
@@ -128,7 +128,7 @@ impl Docket {
         &self,
         calls: impl IntoIterator<Item = Call>,
     ) -> Result<Vec<Execution>> {
-        self.place_many(calls, true).await
+        self.place_many(calls.into_iter().collect(), true).await
     }
 
     fn message<T: Task>(
@@ -161,11 +161,7 @@ impl Docket {
         self.strikes().is_struck(&message.function, &args)
     }
 
-    async fn place_many(
-        &self,
-        calls: impl IntoIterator<Item = Call>,
-        replace: bool,
-    ) -> Result<Vec<Execution>> {
+    async fn place_many(&self, calls: Vec<Call>, replace: bool) -> Result<Vec<Execution>> {
         let mut messages = Vec::new();
         for call in calls {
             if replace && call.key.is_none() {
@@ -184,13 +180,16 @@ impl Docket {
             });
         }
 
+        // A strike can arrive while the batch is in flight, so each message
+        // is judged once, and only the placed ones take a reply.
+        let struck: Vec<bool> = messages
+            .iter()
+            .map(|message| self.is_struck(message))
+            .collect();
         let mut pipeline = redis::pipe();
         pipeline.ignore_errors();
         let mut placed = Vec::new();
-        for message in &messages {
-            if self.is_struck(message) {
-                continue;
-            }
+        for (message, _) in messages.iter().zip(&struck).filter(|(_, struck)| !**struck) {
             let call = self.schedule_call(Placement::new(message.clone(), replace));
             if self.backend().is_cluster() {
                 call.queue_eval(&mut pipeline);
@@ -202,25 +201,28 @@ impl Docket {
 
         let mut replies: Vec<RedisResult<Value>> = Vec::new();
         if let Some(first) = placed.first() {
-            let mut connection = self.connection().await?;
+            let mut connection = self.handle();
             if !self.backend().is_cluster() {
                 first.load(&mut connection).await?;
             }
             replies = pipeline.query_async(&mut connection).await?;
         }
 
-        let mut replies = replies.into_iter();
+        let mut dispositions = replies.into_iter().map(|reply| match reply {
+            Ok(value) => Disposition::from_value(&value),
+            Err(error) => Disposition::Failed(error.to_string()),
+        });
         Ok(messages
             .iter()
-            .map(|message| {
-                let disposition = if self.is_struck(message) {
+            .zip(struck)
+            .map(|(message, struck)| {
+                let disposition = if struck {
                     Disposition::Struck
                 } else {
-                    match replies.next() {
-                        Some(Ok(value)) => Disposition::from_value(&value),
-                        Some(Err(error)) => Disposition::Failed(error.to_string()),
-                        None => Disposition::Failed("Redis sent no reply".to_owned()),
-                    }
+                    // Redis answers every command of a pipeline.
+                    dispositions
+                        .next()
+                        .unwrap_or(Disposition::Failed("Redis sent no reply".to_owned()))
                 };
                 Execution::new(self.clone(), message, disposition)
             })

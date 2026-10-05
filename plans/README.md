@@ -74,7 +74,7 @@ public package.
 | Language | Engine |
 |---|---|
 | Python | burner-redis from PyPI, unchanged. |
-| Rust | A vendored copy of the burner-redis engine (about 9,000 lines with tests), behind a `memory` cargo feature that is off by default. It is never published on its own. |
+| Rust | A vendored copy of the burner-redis engine (about 9,000 lines with tests), behind a `memory` cargo feature that is off by default. It is never published on its own. docket-rs serves it over an in-process RESP2 connection on a `tokio::io::duplex` pipe, so stock redis-rs connections and pub/sub run against it, and every code path above it is the one real Redis uses. |
 | Go | miniredis, in an internal package that the main package imports. Docket's whole Python suite passed against miniredis `master`. Release v2.39.0 fails 4 expiry tests, so we need a newer release or a pinned pseudo-version. |
 | TypeScript | A lean private engine in TypeScript, with an embedded Lua VM. |
 
@@ -187,13 +187,10 @@ covers only Python under zensical.
 
 ## Open questions
 
-- **Build order.**  Rust, then Go, then TypeScript, or all three at once
-  after the protocol and conformance work.
+- **Build order.**  Rust first (built), then Go and TypeScript.
 - **The TypeScript Lua VM.**  lua-redis-wasm, wasmoon, or fengari.
-- **Redis clients.**  redis-rs for Rust is likely, because its
-  `aio::ConnectionLike` trait lets the vendored engine plug in.  Go
-  (go-redis or rueidis) and TypeScript (ioredis or node-redis) are not
-  researched yet.
+- **Redis clients.**  Rust uses redis-rs (decided).  Go (go-redis or
+  rueidis) and TypeScript (ioredis or node-redis) are not researched yet.
 - **Telemetry.**  Whether every language emits the same span and metric
   names, so one dashboard works for any language.
 - **The conformance scenarios.**  Which behaviors get a scenario first.

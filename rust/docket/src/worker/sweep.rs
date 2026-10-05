@@ -9,7 +9,7 @@ use redis::RedisResult;
 use redis::streams::StreamAutoClaimReply;
 use tokio::time::Instant;
 
-use super::session::{Delivery, Shared, deliveries};
+use super::session::{Delivery, Shared, deliveries, regrouping};
 use crate::error::Result;
 use crate::keys::WORKER_GROUP;
 use crate::scripts;
@@ -55,7 +55,7 @@ impl Sweep {
             return Ok(false);
         }
         let docket = &self.worker.docket;
-        let mut connection = docket.connection().await?;
+        let mut connection = docket.handle();
         let taken: Option<String> = redis::cmd("SET")
             .arg(docket.keys().sweep_lease())
             .arg(&self.worker.settings.name)
@@ -79,7 +79,7 @@ impl Sweep {
             duration_ms: self.lease_millis(),
         }
         .call();
-        let mut connection = docket.connection().await?;
+        let mut connection = docket.handle();
         let held: i64 = call.run(&mut connection).await?;
         Ok(held == 1)
     }
@@ -95,7 +95,7 @@ impl Sweep {
         let worker = Arc::clone(&self.worker);
         let docket = &worker.docket;
         let settings = &worker.settings;
-        let mut connection = docket.connection().await?;
+        let mut connection = docket.handle();
         let idle = u64::try_from(settings.redelivery_timeout.as_millis()).unwrap_or(u64::MAX);
         let reply: RedisResult<StreamAutoClaimReply> = redis::cmd("XAUTOCLAIM")
             .arg(docket.keys().stream())
@@ -107,13 +107,13 @@ impl Sweep {
             .arg(count)
             .query_async(&mut connection)
             .await;
-        let reply = match reply {
-            Err(error) if error.code() == Some("NOGROUP") => {
-                docket.ensure_group(&mut connection).await?;
-                return Ok(Vec::new());
-            }
-            reply => reply?,
-        };
+        // Without a group there is nothing to claim, so the walk starts over.
+        let reply = regrouping(docket, reply)
+            .await?
+            .unwrap_or(StreamAutoClaimReply {
+                next_stream_id: "0-0".to_owned(),
+                ..StreamAutoClaimReply::default()
+            });
         self.cursor = reply.next_stream_id;
         if self.cursor == "0-0" {
             self.rest();
@@ -130,9 +130,7 @@ pub(super) async fn renew_leases(worker: Arc<Shared>) {
     loop {
         tokio::time::sleep(interval).await;
         let ids = worker.active_ids();
-        let Ok(mut connection) = docket.connection().await else {
-            continue;
-        };
+        let mut connection = docket.handle();
         for chunk in ids.chunks(RENEWAL_BATCH) {
             let renewed: RedisResult<redis::Value> = redis::cmd("XCLAIM")
                 .arg(docket.keys().stream())

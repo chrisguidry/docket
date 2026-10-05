@@ -29,10 +29,14 @@ pub use ratelimit::RateLimit;
 pub use retry::{ExponentialRetry, ForcedRetry, Retry};
 pub use timeout::{TimedOut, Timeout, TimeoutControl};
 
-/// A docket error as the Redis error that admission hooks report.
-fn redis_error(error: crate::Error) -> redis::RedisError {
-    match error {
-        crate::Error::Redis(error) => error,
-        other => redis::RedisError::from((redis::ErrorKind::Client, "docket", other.to_string())),
-    }
+/// Runs one of docket's scripts on the docket's connection.
+async fn run_script<T: redis::FromRedisValue>(
+    docket: &crate::Docket,
+    call: &crate::scripts::Call,
+) -> crate::Result<T> {
+    let mut connection = docket.connection().await?;
+    call.run(&mut connection).await.map_err(Into::into)
 }
+
+#[cfg(all(test, feature = "memory"))]
+mod tests;
