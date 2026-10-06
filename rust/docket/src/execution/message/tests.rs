@@ -13,6 +13,7 @@ fn message() -> Message {
         args: r#"{"customer":7}"#.into(),
         attempt: 2,
         generation: 5,
+        trace: HashMap::new(),
     }
 }
 

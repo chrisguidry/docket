@@ -55,6 +55,12 @@ impl Events {
         Ok(())
     }
 
+    /// Adds one to a field of a hash, and returns the new count.
+    pub async fn increment(&self, hash: &str, field: &str) -> docket::Result<i64> {
+        let mut connection = self.connection.clone();
+        Ok(connection.hincr(hash, field, 1).await?)
+    }
+
     /// Records what a running task is doing.
     pub async fn ran(&self, ctx: &docket::Context, event: &str) -> docket::Result<()> {
         self.record(Event {

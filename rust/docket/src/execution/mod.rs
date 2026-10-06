@@ -48,6 +48,17 @@ impl Disposition {
         }
     }
 
+    /// The disposition as pydocket names it on a span.
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Scheduled => "scheduled",
+            Self::AlreadyScheduled => "already_scheduled",
+            Self::Struck => "struck",
+            Self::Superseded => "superseded",
+            Self::Failed(_) => "failed",
+        }
+    }
+
     pub(crate) fn from_value(value: &Value) -> Self {
         match value {
             Value::SimpleString(reply) => Self::from_reply(reply),

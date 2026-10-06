@@ -12,9 +12,14 @@ mod execution;
 mod keys;
 #[cfg(feature = "memory")]
 mod memory;
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
 mod scripts;
+#[cfg(any(feature = "cli", feature = "prometheus"))]
+mod serving;
 mod strikes;
 mod task;
+mod telemetry;
 pub mod testing;
 mod wire;
 mod worker;
@@ -37,5 +42,5 @@ pub use execution::{
 /// [`DocketBuilder::credentials_provider`].
 pub use redis::{BasicAuth, StreamingCredentialsProvider};
 pub use strikes::{Operator, Strike, StrikeField};
-pub use task::Task;
+pub use task::{Logged, Task, TaskField};
 pub use worker::Worker;

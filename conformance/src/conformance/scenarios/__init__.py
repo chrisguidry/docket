@@ -16,6 +16,7 @@ from . import (
     perpetual_single_flight,
     redelivery,
     same_key,
+    telemetry,
 )
 
 SCENARIOS: dict[str, ModuleType] = {
@@ -28,4 +29,5 @@ SCENARIOS: dict[str, ModuleType] = {
     "perpetual-single-flight": perpetual_single_flight,
     "same-key": same_key,
     "chaos": chaos,
+    "telemetry": telemetry,
 }

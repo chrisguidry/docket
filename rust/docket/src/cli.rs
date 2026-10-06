@@ -2,7 +2,9 @@
 //!
 //! docket-rs is a library, so it ships no worker binary.  [`WorkerArgs`]
 //! gives an application's binary the same options, with the same
-//! environment variables, as pydocket's `docket worker`:
+//! environment variables, as pydocket's `docket worker`, including the
+//! healthcheck and Prometheus metrics servers that `--healthcheck-port` and
+//! `--metrics-port` start:
 //!
 //! ```no_run
 //! use clap::Parser;
@@ -24,10 +26,15 @@
 //! # }
 //! ```
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
+use tokio::net::TcpListener;
+use tokio::task::JoinSet;
+
 use crate::docket::Docket;
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::prometheus::Exporter;
 use crate::worker::Worker;
 
 /// A docket worker's command-line options.
@@ -84,11 +91,32 @@ pub struct WorkerArgs {
     /// Stop once nothing is left to run, instead of on SIGTERM or SIGINT.
     #[arg(long)]
     pub until_finished: bool,
+
+    /// The port to serve a healthcheck on.
+    #[arg(long, env = "DOCKET_WORKER_HEALTHCHECK_PORT")]
+    pub healthcheck_port: Option<u16>,
+
+    /// The port to serve Prometheus metrics on.
+    #[arg(long, env = "DOCKET_WORKER_METRICS_PORT")]
+    pub metrics_port: Option<u16>,
+}
+
+/// The exporter that `--metrics-port` installs.  The global meter provider
+/// is one per process, so the exporter that feeds it is too.
+static EXPORTER: OnceLock<Exporter> = OnceLock::new();
+
+fn exporter() -> &'static Exporter {
+    EXPORTER.get_or_init(Exporter::install)
 }
 
 impl WorkerArgs {
-    /// Connects to the docket the options name.
+    /// Connects to the docket the options name.  With `--metrics-port`, it
+    /// first installs the Prometheus exporter as the global meter provider,
+    /// because a docket binds its instruments when it connects.
     pub async fn docket(&self) -> Result<Docket> {
+        if self.metrics_port.is_some() {
+            exporter();
+        }
         Docket::connect(&self.docket, &self.url).await
     }
 
@@ -111,14 +139,44 @@ impl WorkerArgs {
 
     /// Runs a worker until nothing is left with `--until-finished`, or
     /// otherwise until SIGTERM or SIGINT, after which running tasks finish.
+    /// The healthcheck and metrics servers answer on every address for as
+    /// long as the worker runs.
     pub async fn run(&self, docket: &Docket) -> Result<()> {
         let worker = self.worker(docket);
+        let _servers = self.servers().await?;
         if self.until_finished {
             worker.run_until_finished().await
         } else {
             worker.run_until(shutdown_signal()).await
         }
     }
+
+    /// Starts a server for each port that the options set.  The servers stop
+    /// when the set drops.
+    async fn servers(&self) -> Result<JoinSet<std::io::Result<()>>> {
+        let mut servers = JoinSet::new();
+        if let Some(port) = self.healthcheck_port {
+            let listener = listen(port, "the healthcheck").await?;
+            servers.spawn(crate::serving::serve(listener, "text/plain", || {
+                "OK".to_owned()
+            }));
+        }
+        if let Some(port) = self.metrics_port {
+            let listener = listen(port, "the metrics").await?;
+            // For a docket that connected without `docket()`, this installs
+            // the exporter now.  That docket's instruments stay bound to the
+            // provider it found, so only instruments made later show here.
+            servers.spawn(exporter().serve(listener));
+        }
+        Ok(servers)
+    }
+}
+
+/// Listens on `port` on every address, as pydocket's servers do.
+async fn listen(port: u16, server: &str) -> Result<TcpListener> {
+    TcpListener::bind(("0.0.0.0", port))
+        .await
+        .map_err(|error| Error::Invalid(format!("cannot serve {server} on port {port}: {error}")))
 }
 
 /// Completes on SIGTERM or SIGINT, the signals that stop a deployed worker.

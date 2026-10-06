@@ -150,6 +150,7 @@ impl Context {
             args: args.to_string(),
             attempt: 1,
             generation: 1,
+            trace: std::collections::HashMap::new(),
         };
         Self::new(Run {
             docket: docket.clone(),

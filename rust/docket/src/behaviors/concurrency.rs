@@ -155,7 +155,7 @@ fn hold(
             loop {
                 tokio::time::sleep(timeout / 4).await;
                 if let Err(error) = renew(&docket, &slots, &key, key_ttl).await {
-                    tracing::warn!(%error, "renewing a concurrency slot failed");
+                    tracing::warn!(%error, "Concurrency lease renewal failed for {slots}");
                 }
             }
         }

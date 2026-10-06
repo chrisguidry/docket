@@ -1,10 +1,13 @@
 //! Adding and replacing tasks, one at a time or in batches.
 
+use std::collections::HashMap;
 use std::future::IntoFuture;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
+use opentelemetry::KeyValue;
+use opentelemetry::context::FutureExt as _;
 use redis::{RedisResult, Value};
 
 use super::Docket;
@@ -13,6 +16,7 @@ use crate::execution::{Disposition, Execution, Message};
 use crate::keys::WORKER_GROUP;
 use crate::scripts;
 use crate::task::Task;
+use crate::telemetry;
 use crate::wire::{iso, seconds};
 
 /// Where and how one task goes into the docket.
@@ -139,21 +143,92 @@ impl Docket {
             args: serde_json::to_string(args)?,
             attempt: 1,
             generation: 0,
+            trace: HashMap::new(),
         })
     }
 
     async fn submit<O>(&self, message: Message, replace: bool) -> Result<Execution<O>> {
-        let disposition = if self.is_struck(&message) {
-            Disposition::Struck
-        } else {
-            self.place(Placement::new(message.clone(), replace)).await?
-        };
+        let disposition = self
+            .schedule(Placement::new(message.clone(), replace))
+            .await?;
         Ok(Execution::new(self.clone(), &message, disposition))
+    }
+
+    /// Places one task the way an add or a replace does: under a
+    /// `docket.add` or `docket.replace` span, refused when a strike blocks
+    /// it, and counted.
+    pub(crate) async fn schedule(&self, placement: Placement) -> Result<Disposition> {
+        let replace = placement.replace;
+        let name = if replace {
+            "docket.replace"
+        } else {
+            "docket.add"
+        };
+        let mut attributes = self.labels();
+        attributes.extend(telemetry::run_attributes(&placement.message));
+        let span = self.telemetry().producer_span(name, attributes);
+        let function = placement.message.function.clone();
+        let disposition = if self.refuse_struck(&placement.message) {
+            Ok(Disposition::Struck)
+        } else {
+            self.place(placement).with_context(span.clone()).await
+        };
+        telemetry::end(
+            &span,
+            disposition
+                .as_ref()
+                .map(|disposition| vec![KeyValue::new("docket.disposition", disposition.as_str())]),
+        );
+        let disposition = disposition?;
+        self.count_scheduled(&function, &disposition, replace);
+        Ok(disposition)
     }
 
     pub(crate) fn is_struck(&self, message: &Message) -> bool {
         let args = serde_json::from_str(&message.args).unwrap_or(serde_json::Value::Null);
         self.strikes().is_struck(&message.function, &args)
+    }
+
+    /// Whether a strike blocks `message`, and if one does, logs and counts
+    /// it the way every scheduling path in pydocket does.
+    fn refuse_struck(&self, message: &Message) -> bool {
+        if !self.is_struck(message) {
+            return false;
+        }
+        tracing::warn!(
+            "{:?} is stricken, skipping schedule of {:?}",
+            message.function,
+            message.key
+        );
+        let mut labels = telemetry::task_labels(self.name(), &message.function);
+        labels.push(KeyValue::new("docket.where", "docket"));
+        self.telemetry().metrics.tasks_stricken.add(1, &labels);
+        true
+    }
+
+    /// Counts a placed task.  One that a strike blocked, that Redis refused,
+    /// or that a newer copy superseded was neither added nor replaced, so it
+    /// does not count.  A replace also counts as a cancel of what it
+    /// replaced.
+    fn count_scheduled(&self, function: &str, disposition: &Disposition, replace: bool) {
+        if matches!(
+            disposition,
+            Disposition::Struck | Disposition::Failed(_) | Disposition::Superseded
+        ) {
+            return;
+        }
+        let metrics = &self.telemetry().metrics;
+        let labels = telemetry::task_labels(self.name(), function);
+        if replace {
+            metrics.tasks_replaced.add(1, &labels);
+            metrics.tasks_cancelled.add(1, &labels);
+            metrics.tasks_scheduled.add(1, &labels);
+        } else {
+            metrics.tasks_added.add(1, &labels);
+            if *disposition == Disposition::Scheduled {
+                metrics.tasks_scheduled.add(1, &labels);
+            }
+        }
     }
 
     async fn place_many(&self, calls: Vec<Call>, replace: bool) -> Result<Vec<Execution>> {
@@ -174,19 +249,76 @@ impl Docket {
                     .map_err(|error| Error::Json(serde::ser::Error::custom(error)))?,
                 attempt: 1,
                 generation: 0,
+                trace: HashMap::new(),
             });
         }
 
+        let name = if replace {
+            "docket.replace_many"
+        } else {
+            "docket.add_many"
+        };
+        let mut attributes = self.labels();
+        attributes.push(KeyValue::new(
+            "docket.batch.count",
+            i64::try_from(messages.len()).unwrap_or(i64::MAX),
+        ));
+        let span = self.telemetry().producer_span(name, attributes);
         // A strike can arrive while the batch is in flight, so each message
         // is judged once, and only the placed ones take a reply.
         let struck: Vec<bool> = messages
             .iter()
-            .map(|message| self.is_struck(message))
+            .map(|message| self.refuse_struck(message))
             .collect();
+        let stricken = struck.iter().filter(|struck| **struck).count();
+        let replies = self
+            .place_batch(&messages, &struck, replace)
+            .with_context(span.clone())
+            .await;
+        telemetry::end(
+            &span,
+            replies.as_ref().map(|_| {
+                vec![KeyValue::new(
+                    "docket.batch.stricken",
+                    i64::try_from(stricken).unwrap_or(i64::MAX),
+                )]
+            }),
+        );
+        let mut dispositions = replies?.into_iter().map(|reply| match reply {
+            Ok(value) => Disposition::from_value(&value),
+            Err(error) => Disposition::Failed(error.to_string()),
+        });
+        Ok(messages
+            .iter()
+            .zip(struck)
+            .map(|(message, struck)| {
+                let disposition = if struck {
+                    Disposition::Struck
+                } else {
+                    // Redis answers every command of a pipeline.
+                    let disposition = dispositions
+                        .next()
+                        .unwrap_or(Disposition::Failed("Redis sent no reply".to_owned()));
+                    self.count_scheduled(&message.function, &disposition, replace);
+                    disposition
+                };
+                Execution::new(self.clone(), message, disposition)
+            })
+            .collect())
+    }
+
+    /// Sends the messages that no strike blocked in one pipeline, and
+    /// returns Redis's reply to each.
+    async fn place_batch(
+        &self,
+        messages: &[Message],
+        struck: &[bool],
+        replace: bool,
+    ) -> Result<Vec<RedisResult<Value>>> {
         let mut pipeline = redis::pipe();
         pipeline.ignore_errors();
         let mut placed = Vec::new();
-        for (message, _) in messages.iter().zip(&struck).filter(|(_, struck)| !**struck) {
+        for (message, _) in messages.iter().zip(struck).filter(|(_, struck)| !**struck) {
             let call = self.schedule_call(Placement::new(message.clone(), replace));
             if self.backend().is_cluster() {
                 call.queue_eval(&mut pipeline);
@@ -204,26 +336,7 @@ impl Docket {
             }
             replies = pipeline.query_async(&mut connection).await?;
         }
-
-        let mut dispositions = replies.into_iter().map(|reply| match reply {
-            Ok(value) => Disposition::from_value(&value),
-            Err(error) => Disposition::Failed(error.to_string()),
-        });
-        Ok(messages
-            .iter()
-            .zip(struck)
-            .map(|(message, struck)| {
-                let disposition = if struck {
-                    Disposition::Struck
-                } else {
-                    // Redis answers every command of a pipeline.
-                    dispositions
-                        .next()
-                        .unwrap_or(Disposition::Failed("Redis sent no reply".to_owned()))
-                };
-                Execution::new(self.clone(), message, disposition)
-            })
-            .collect())
+        Ok(replies)
     }
 }
 

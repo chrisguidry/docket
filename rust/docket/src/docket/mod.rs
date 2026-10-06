@@ -9,6 +9,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use chrono::Utc;
+use opentelemetry::context::FutureExt as _;
 use redis::{AsyncCommands, Value};
 
 use crate::behaviors::BoxError;
@@ -19,6 +20,7 @@ use crate::keys::Keys;
 use crate::scripts;
 use crate::strikes::{Monitor, SharedStrikes, Strike, Strikes};
 use crate::task::Task;
+use crate::telemetry::{self, Telemetry};
 use crate::wire::iso;
 
 pub use registry::Registration;
@@ -51,6 +53,7 @@ struct Inner {
     strikes: SharedStrikes,
     monitor: Monitor,
     settings: Settings,
+    telemetry: Arc<Telemetry>,
 }
 
 #[derive(Clone, Debug)]
@@ -115,7 +118,14 @@ impl DocketBuilder {
         let backend = Arc::new(Backend::open(&self.url, self.credentials)?);
         let keys = Keys::new(backend.prefix(&self.name));
         let strikes: SharedStrikes = Arc::new(Strikes::default());
-        let monitor = Monitor::start(Arc::clone(&backend), keys.strikes(), Arc::clone(&strikes));
+        let telemetry = Arc::new(Telemetry::new());
+        let monitor = Monitor::start(
+            Arc::clone(&backend),
+            keys.strikes(),
+            Arc::clone(&strikes),
+            self.name.clone(),
+            Arc::clone(&telemetry),
+        );
         Ok(Docket {
             inner: Arc::new(Inner {
                 name: self.name,
@@ -125,6 +135,7 @@ impl DocketBuilder {
                 strikes,
                 monitor,
                 settings: self.settings,
+                telemetry,
             }),
         })
     }
@@ -194,6 +205,22 @@ impl Docket {
     /// Cancels a task.  A scheduled task is removed, and a running task is
     /// stopped at its next `.await`.
     pub async fn cancel(&self, key: &str) -> Result<()> {
+        let mut attributes = self.labels();
+        attributes.push(opentelemetry::KeyValue::new("docket.key", key.to_owned()));
+        let span = self.telemetry().producer_span("docket.cancel", attributes);
+        let cancelled = self.cancel_quietly(key).with_context(span.clone()).await;
+        telemetry::end(&span, cancelled.as_ref().map(|()| Vec::new()));
+        cancelled?;
+        self.telemetry()
+            .metrics
+            .tasks_cancelled
+            .add(1, &self.labels());
+        Ok(())
+    }
+
+    /// Cancels a task without a span or a count, for docket's own cancels,
+    /// which pydocket does not count either.
+    pub(crate) async fn cancel_quietly(&self, key: &str) -> Result<()> {
         let keys = &self.inner.keys;
         let completed_at = iso(Utc::now());
         let payload = serde_json::json!({
@@ -234,11 +261,23 @@ impl Docket {
     }
 
     async fn send_strike(&self, strike: Strike, restore: bool) -> Result<()> {
+        let mut attributes = self.labels();
+        attributes.extend(crate::strikes::labels(&strike));
+        let name = if restore {
+            "docket.restore"
+        } else {
+            "docket.strike"
+        };
+        let span = self.telemetry().producer_span(name, attributes);
         let fields = crate::strikes::instruction(&strike, restore);
         let mut connection = self.handle();
-        let _: String = connection
+        let sent: Result<String> = connection
             .xadd(self.inner.keys.strikes(), "*", &fields)
-            .await?;
+            .with_context(span.clone())
+            .await
+            .map_err(Into::into);
+        telemetry::end(&span, sent.as_ref().map(|_| Vec::new()));
+        sent?;
         self.inner.strikes.apply(&strike, restore);
         Ok(())
     }
@@ -247,6 +286,15 @@ impl Docket {
     /// in force here.
     pub async fn strikes_loaded(&self) {
         self.inner.monitor.loaded().await;
+    }
+
+    pub(crate) fn telemetry(&self) -> &Telemetry {
+        &self.inner.telemetry
+    }
+
+    /// `docket.name`, which every metric and span carries.
+    pub(crate) fn labels(&self) -> Vec<opentelemetry::KeyValue> {
+        telemetry::docket_labels(&self.inner.name)
     }
 
     pub(crate) fn keys(&self) -> &Keys {

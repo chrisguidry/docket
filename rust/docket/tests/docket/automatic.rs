@@ -136,6 +136,7 @@ async fn a_worker_logs_when_scheduling_again_fails() {
 
     proxy.fail("HGETALL", 1);
 
-    logs.wait_for("scheduling automatic tasks failed").await;
+    logs.wait_for("Error re-seeding automatic perpetual tasks")
+        .await;
     run.abort();
 }

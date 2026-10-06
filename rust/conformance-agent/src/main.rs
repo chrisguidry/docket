@@ -11,6 +11,7 @@
 //! makes its assertions on those events.
 
 mod events;
+mod exporters;
 mod scenarios;
 
 use clap::{Parser, ValueEnum};
@@ -39,18 +40,32 @@ async fn main() -> docket::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
         .init();
     let arguments = Arguments::parse();
+    let exporting = exporters::start();
     let docket = Docket::connect(&arguments.docket, &arguments.url).await?;
     let events = events::Events::open(&arguments.url, &arguments.scenario)
         .await
         .map_err(docket::Error::from)?;
     let scenario = scenarios::find(&arguments.scenario);
-    match arguments.role {
+    let result = match arguments.role {
         Role::Produce => scenario.produce(&docket, &events).await,
         Role::Worker => {
             let worker = scenario.worker(&docket, &events);
-            worker.run_until(shutdown()).await
+            match &exporting.prometheus {
+                Some((exporter, port)) => {
+                    let listener = tokio::net::TcpListener::bind(("0.0.0.0", *port))
+                        .await
+                        .expect("the agent can serve on its metrics port");
+                    tokio::select! {
+                        result = worker.run_until(shutdown()) => result,
+                        _ = exporter.serve(listener) => Ok(()),
+                    }
+                }
+                None => worker.run_until(shutdown()).await,
+            }
         }
-    }
+    };
+    exporting.shutdown();
+    result
 }
 
 /// Completes on SIGTERM or SIGINT, the way a deployed worker stops.

@@ -13,6 +13,39 @@ use crate::task::Task;
 
 pub(crate) use monitor::{Monitor, encode as instruction};
 
+/// The labels pydocket gives a strike on its spans and its in-effect gauge.
+pub(crate) fn labels(strike: &Strike) -> Vec<opentelemetry::KeyValue> {
+    use opentelemetry::KeyValue;
+    let mut labels = Vec::new();
+    if let Some(function) = &strike.function {
+        labels.push(KeyValue::new("docket.task", function.clone()));
+    }
+    if let Some(condition) = &strike.condition {
+        labels.push(KeyValue::new("docket.parameter", condition.field.clone()));
+        labels.push(KeyValue::new(
+            "docket.operator",
+            condition.operator.as_str(),
+        ));
+        labels.push(KeyValue::new("docket.value", condition.value.to_string()));
+    }
+    labels
+}
+
+/// A strike as pydocket logs it, such as `charge(customer == 7)`, with `*`
+/// for a part the strike leaves open.
+pub(crate) fn call_repr(strike: &Strike) -> String {
+    let function = strike.function.as_deref().unwrap_or("*");
+    match &strike.condition {
+        Some(condition) => format!(
+            "{function}({} {} {})",
+            condition.field,
+            condition.operator.as_str(),
+            condition.value
+        ),
+        None => format!("{function}(* {} *)", Operator::Equal.as_str()),
+    }
+}
+
 /// A comparison in a strike condition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]

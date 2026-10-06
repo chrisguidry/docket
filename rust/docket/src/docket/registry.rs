@@ -10,7 +10,7 @@ use crate::behaviors::{
     Automatic, Behavior, BoxError, ErasedHooks, Hooks, SafeguardWake, TaskFuture, safeguard_wake,
 };
 use crate::context::Context;
-use crate::task::Task;
+use crate::task::{Task, TaskField};
 
 /// A handler with its argument and output types erased: it takes the
 /// arguments as JSON text and returns the output as JSON.
@@ -21,6 +21,8 @@ pub(crate) type Handler = Arc<dyn Fn(Context, &str) -> TaskFuture<'static> + Sen
 pub(crate) struct Registered {
     pub handler: Handler,
     pub hooks: ErasedHooks,
+    /// The task's fields, for the call its log lines show.
+    pub fields: &'static [TaskField],
 }
 
 impl Registered {
@@ -47,6 +49,7 @@ impl Registered {
         Self {
             handler,
             hooks: ErasedHooks::default(),
+            fields: T::FIELDS,
         }
     }
 
@@ -68,6 +71,7 @@ impl Registered {
         Self {
             handler,
             hooks: ErasedHooks::default(),
+            fields: &[],
         }
     }
 }

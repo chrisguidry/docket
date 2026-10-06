@@ -23,7 +23,7 @@ pub(super) async fn reseed(worker: Arc<Shared>) {
     loop {
         tokio::time::sleep(worker.settings.automatic_tasks_interval).await;
         if let Err(error) = seed(&worker).await {
-            tracing::warn!(%error, "scheduling automatic tasks failed");
+            tracing::error!(%error, "Error re-seeding automatic perpetual tasks");
         }
     }
 }
@@ -67,10 +67,11 @@ pub(super) async fn seed(worker: &Shared) -> Result<()> {
                 args: automatic.args,
                 attempt: 1,
                 generation: 0,
+                trace: HashMap::new(),
             };
-            if !docket.is_struck(&message) {
-                docket.place(Placement::new(message, false)).await?;
-            }
+            // An add, as in pydocket: it checks strikes, and it is traced and
+            // counted.
+            docket.schedule(Placement::new(message, false)).await?;
         }
         Result::Ok(())
     }

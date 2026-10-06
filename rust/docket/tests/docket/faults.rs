@@ -35,6 +35,8 @@ async fn producers_reconnect_after_redis_comes_back() {
     assert!(docket.snapshot().await.is_err());
     assert!(docket.cancel("anything").await.is_err());
     assert!(docket.strike(Strike::task::<Noop>()).await.is_err());
+    assert!(docket.add_many([docket.call(Noop)]).await.is_err());
+    assert!(docket.clear().await.is_err());
     proxy.heal();
 
     within(10, async {

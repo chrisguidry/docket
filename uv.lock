@@ -515,12 +515,16 @@ version = "0"
 source = { editable = "conformance" }
 dependencies = [
     { name = "docker" },
+    { name = "opentelemetry-proto" },
+    { name = "prometheus-client" },
     { name = "redis" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "docker", specifier = ">=7.1.0" },
+    { name = "opentelemetry-proto", specifier = ">=1.33.0" },
+    { name = "prometheus-client", specifier = ">=0.21.1" },
     { name = "redis", specifier = ">=6" },
 ]
 

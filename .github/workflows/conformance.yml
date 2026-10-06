@@ -70,6 +70,36 @@ jobs:
       - name: same-key
         run: uv run python -m conformance same-key --implementation ${{ matrix.implementation }}
 
+      - name: telemetry
+        run: uv run python -m conformance telemetry --implementation ${{ matrix.implementation }}
+
+  telemetry:
+    name: Telemetry, python@main and rust@main
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv and set Python version
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: 3.12
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --dev --upgrade-package redis
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: telemetry
+        run: uv run python -m conformance telemetry --implementation python@main --implementation rust@main
+
   chaos:
     name: Chaos tests
     runs-on: ubuntu-26.04

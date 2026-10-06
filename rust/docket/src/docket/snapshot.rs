@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
+use opentelemetry::context::FutureExt as _;
 use redis::streams::{StreamPendingCountReply, StreamRangeReply};
 use redis::{AsyncCommands, RedisResult};
 
@@ -10,6 +11,7 @@ use super::Docket;
 use crate::error::Result;
 use crate::execution::{Execution, Message, Status};
 use crate::keys::WORKER_GROUP;
+use crate::telemetry;
 use crate::wire::seconds;
 
 /// How many stream entries a snapshot reads.
@@ -194,6 +196,15 @@ impl Docket {
     /// Removes every task that no worker has started, and returns how many
     /// tasks the docket held.  Running tasks finish.
     pub async fn clear(&self) -> Result<usize> {
+        let span = self
+            .telemetry()
+            .producer_span("docket.clear", self.labels());
+        let cleared = self.clear_tasks().with_context(span.clone()).await;
+        telemetry::end(&span, cleared.as_ref().map(|_| Vec::new()));
+        cleared
+    }
+
+    async fn clear_tasks(&self) -> Result<usize> {
         let keys = self.keys();
         let mut connection = self.handle();
         let (stream_length, queue_length, queued, entries): (

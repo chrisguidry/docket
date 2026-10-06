@@ -101,9 +101,39 @@ async fn a_task_logs_under_its_name_key_and_attempt() {
         .await
         .unwrap();
 
-    assert!(logs.contains("task=echo key=greeting attempt=1 worker=logger"));
-    assert!(logs.contains("message=task finished"));
+    assert!(logs.contains("docket.worker=logger docket.task=echo docket.key=greeting"));
+    assert!(logs.contains("docket.attempt=1"));
     assert_eq!(execution.result().await.unwrap(), "hi");
+}
+
+#[tokio::test]
+async fn a_run_logs_its_start_and_end_with_its_call() {
+    let (logs, _guard) = Logs::capture();
+    let docket = docket().await;
+    docket.register(|_ctx, args: Echo| async move { Ok::<_, std::io::Error>(args.text) });
+    docket.add(Echo::new("hi")).key("greeting").await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert!(logs.contains("ms] echo(text=...){greeting}"));
+    assert!(logs.contains("message=↪ ["));
+    assert!(logs.contains("message=↩ ["));
+}
+
+#[tokio::test]
+async fn a_worker_lists_its_tasks_when_it_starts() {
+    let (logs, _guard) = Logs::capture();
+    let docket = docket().await;
+    docket.register(|_ctx, args: Echo| async move { Ok::<_, std::io::Error>(args.text) });
+
+    within(10, worker(&docket).name("lister").run_until_finished())
+        .await
+        .unwrap();
+
+    assert!(logs.contains("Starting worker \"lister\" with the following tasks:"));
+    assert!(logs.contains("message=* echo(text)"));
 }
 
 #[tokio::test]
@@ -116,6 +146,6 @@ async fn a_task_with_no_handler_logs_a_warning() {
         .await
         .unwrap();
 
-    assert!(logs.contains("no handler is registered for this task"));
-    assert!(logs.contains("function=noop key=orphan"));
+    assert!(logs.contains("Unknown task \"noop\" received - dropping."));
+    assert!(logs.contains("docket.task=noop docket.key=orphan"));
 }

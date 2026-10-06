@@ -62,9 +62,18 @@ class Harness:
         self.events = Events(self.redis, scenario)
         self.agents: list[Agent] = []
 
-    async def start(self, role: Role) -> Agent:
-        """Start an agent from one of the implementations, chosen at random."""
-        implementation = random.choice(self.implementations)
+    async def start(
+        self,
+        role: Role,
+        *,
+        implementation: Implementation | None = None,
+        env: dict[str, str] | None = None,
+    ) -> Agent:
+        """Start an agent, with extra environment variables when given.
+
+        Without an implementation, it chooses one of them at random.
+        """
+        implementation = implementation or random.choice(self.implementations)
         log = self.workdir / f"{len(self.agents):03d}-{role}-{implementation.name}.log"
         with log.open("wb") as output:
             process = await asyncio.create_subprocess_exec(
@@ -78,15 +87,25 @@ class Harness:
                 self.docket,
                 stdout=output,
                 stderr=output,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env={**os.environ, "PYTHONUNBUFFERED": "1", **(env or {})},
             )
         agent = Agent(implementation, role, process, log)
         self.agents.append(agent)
         return agent
 
-    async def produce(self, count: int = 1, timeout: float = 30) -> None:
+    async def produce(
+        self,
+        count: int = 1,
+        timeout: float = 30,
+        *,
+        implementation: Implementation | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
         """Run producers at the same time, each one to the end."""
-        producers = [await self.start("produce") for _ in range(count)]
+        producers = [
+            await self.start("produce", implementation=implementation, env=env)
+            for _ in range(count)
+        ]
         await self.exited(producers, timeout)
         codes = [producer.process.returncode for producer in producers]
         if any(codes):

@@ -1,29 +1,27 @@
-//! Running one task, from its claim to its terminal state.
+//! Running one task, from its claim to its terminal state, with the
+//! metrics, span, and log lines pydocket records for each run.
 
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::sync::{Arc, LazyLock};
+use std::time::Instant;
 
 use chrono::Utc;
 use futures::FutureExt;
-use redis::Value;
+use opentelemetry::KeyValue;
+use opentelemetry::context::FutureExt as _;
+use opentelemetry::trace::{Status, TraceContextExt};
 use tracing::Instrument;
 
+use super::run_state::{Claim, Run};
 use super::session::{Active, Delivery, Shared};
-use crate::behaviors::{
-    AdmissionBlocked, AfterCompletion, AfterFailure, BoxError, Outcome, Release, Released,
-};
+use crate::behaviors::{AdmissionBlocked, AfterFailure, BoxError, Outcome, Release, Released};
 use crate::context::{self, Context};
-use crate::docket::{Docket, Placement, Registered};
+use crate::docket::Registered;
 use crate::error::Result;
-use crate::execution::{Message, State};
-use crate::keys::WORKER_GROUP;
-use crate::scripts;
+use crate::execution::State;
+use crate::telemetry::{self, call_repr, format_duration};
 use crate::wire::iso;
-
-/// How soon a blocked task tries again when its hook names no delay.
-const ADMISSION_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// A handler whose future ended with a panic fails with this error.
 #[derive(Debug, thiserror::Error)]
@@ -35,26 +33,35 @@ struct Panicked(String);
 #[error("the task was cancelled")]
 struct Cancelled;
 
+/// The handler for a task with no handler of its own and no fallback: it
+/// warns and completes, as pydocket's `default_fallback_task` does, so the
+/// run is counted and traced like any other.
+static DEFAULT_FALLBACK: LazyLock<Registered> = LazyLock::new(|| {
+    Registered::fallback(|ctx: Context, _args: serde_json::Value| async move {
+        tracing::warn!(
+            "Unknown task {:?} received - dropping. \
+             Register it with docket.register before the worker starts.",
+            ctx.function()
+        );
+        Ok::<_, std::convert::Infallible>(serde_json::Value::Null)
+    })
+});
+
 pub(super) async fn run(worker: Arc<Shared>, delivery: Delivery) -> Result<()> {
     let message = &delivery.message;
-    // Logs inside the handler carry the task's name, key, and attempt, the
-    // way pydocket's TaskLogger adds them.
+    // Logs inside the handler carry the run's fields, the way pydocket's
+    // TaskLogger adds them.
     let span = tracing::info_span!(
         "docket.task",
-        docket = worker.docket.name(),
-        task = %message.function,
-        key = %message.key,
-        attempt = message.attempt,
-        worker = %worker.settings.name,
+        "docket.name" = worker.docket.name(),
+        "docket.worker" = %worker.settings.name,
+        "docket.task" = %message.function,
+        "docket.key" = %message.key,
+        "docket.when" = %iso(message.when),
+        "docket.attempt" = message.attempt,
     );
     let active = worker.start(&delivery.id, &message.key);
-    let started = tokio::time::Instant::now();
-    let result = execute(&worker, &delivery, &active)
-        .instrument(span.clone())
-        .await;
-    span.in_scope(
-        || tracing::info!(elapsed = ?started.elapsed(), ok = result.is_ok(), "task finished"),
-    );
+    let result = execute(&worker, &delivery, &active).instrument(span).await;
     worker.finish(&delivery.id);
     result
 }
@@ -62,62 +69,162 @@ pub(super) async fn run(worker: Arc<Shared>, delivery: Delivery) -> Result<()> {
 async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Result<()> {
     let docket = &worker.docket;
     let message = &delivery.message;
-    let run = Run { docket, delivery };
-
-    if docket.is_struck(message) || !worker.allow_run(&message.key) {
-        return run.strike().await;
-    }
-    let Some(generation) = run.claim(&worker.settings.name).await? else {
-        return Ok(());
-    };
     let registered = docket
         .registered(&message.function)
-        .or_else(|| worker.settings.fallback.clone());
-    let Some(registered) = registered else {
-        tracing::warn!(function = %message.function, key = %message.key, "no handler is registered for this task");
-        return run.terminal(State::Completed, generation, Vec::new()).await;
+        .or_else(|| worker.settings.fallback.clone())
+        .unwrap_or_else(|| DEFAULT_FALLBACK.clone());
+    let args = serde_json::from_str(&message.args).unwrap_or(serde_json::Value::Null);
+    let run = Run {
+        docket,
+        delivery,
+        worker: &worker.settings.name,
+        call: call_repr(&message.function, registered.fields, &args, &message.key),
+    };
+    let metrics = &docket.telemetry().metrics;
+
+    if docket.is_struck(message) || !worker.allow_run(&message.key) {
+        tracing::warn!("🗙 {}", run.call);
+        metrics.tasks_stricken.add(1, &run.labels_where("worker"));
+        return run.strike().await;
+    }
+    let generation = match run.claim().await? {
+        Claim::Claimed(generation) => generation,
+        // Docket::cancel counted the cancellation already.
+        Claim::Cancelled => {
+            tracing::info!("✗ {} (cancelled)", run.call);
+            return Ok(());
+        }
+        Claim::Superseded => {
+            tracing::info!("↬ {} (superseded)", run.call);
+            metrics.tasks_superseded.add(1, &run.labels_where("worker"));
+            return Ok(());
+        }
     };
 
+    let labels = run.labels();
+    let punctuality = (Utc::now() - message.when).as_seconds_f64();
+    metrics.tasks_started.add(1, &labels);
+    if delivery.redelivered {
+        metrics.tasks_redelivered.add(1, &labels);
+    }
+    metrics.tasks_running.add(1, &labels);
+    metrics.task_punctuality.record(punctuality, &labels);
+    let arrow = if message.attempt > 1 { "↬" } else { "↪" };
+    tracing::info!("{arrow} [{}] {}", format_duration(punctuality), run.call);
+
+    let mut attributes = telemetry::worker_labels(docket.name(), &worker.settings.name);
+    attributes.extend(telemetry::run_attributes(message));
+    let span = docket.telemetry().consumer_span(message, attributes);
     let ctx = context(worker, delivery, &registered);
-    let releases = match admit(&registered, &ctx).await {
+    let (result, duration) = attempt(&run, &registered, &ctx, active, generation)
+        .with_context(span.clone())
+        .await;
+    span.span().end();
+
+    metrics.tasks_running.add(-1, &labels);
+    metrics.tasks_completed.add(1, &labels);
+    metrics.task_duration.record(duration, &labels);
+    result
+}
+
+/// Admits and runs the task, then records its end.  Returns the outcome and
+/// how long the handler ran, which is zero for a run that admission
+/// blocked, as in pydocket.
+async fn attempt(
+    run: &Run<'_>,
+    registered: &Registered,
+    ctx: &Context,
+    active: &Active,
+    generation: i64,
+) -> (Result<()>, f64) {
+    let span = opentelemetry::Context::current();
+    let metrics = &run.docket.telemetry().metrics;
+    let started = Instant::now();
+
+    let releases = match admit(registered, ctx).await {
         Ok(releases) => releases,
-        Err(blocked) => return run.blocked(&blocked, generation).await,
+        Err(blocked) => {
+            // Admission control asks for the task to come back later, which
+            // is not a failure, so the span says what happened and ends ok.
+            span.span().add_event(
+                "exception",
+                vec![KeyValue::new(
+                    "exception.message",
+                    blocked.reason().to_owned(),
+                )],
+            );
+            span.span().set_status(Status::Ok);
+            return (run.blocked(&blocked, generation).await, 0.0);
+        }
     };
 
-    let outcome = call(&registered, &ctx, active).await;
+    let outcome = call(registered, ctx, active).await;
+    let duration = started.elapsed().as_secs_f64();
     let cancelled = active.cancelled_by_docket.load(Ordering::SeqCst);
-    match outcome {
+    let result = match outcome {
         _ if cancelled => {
             release(releases).await;
+            span.span().set_status(Status::Ok);
+            tracing::info!("✗ [{}] {} (cancelled)", format_duration(duration), run.call);
             run.terminal(State::Cancelled, generation, Vec::new()).await
         }
         Ok(output) => {
-            let after = complete(&registered, &ctx, Ok(output.clone())).await;
-            let result = run.succeed(after.as_ref(), output, generation).await;
+            metrics.tasks_succeeded.add(1, &run.labels());
+            span.span().set_status(Status::Ok);
+            let after = complete(registered, ctx, Ok(output.clone())).await;
+            let result = run
+                .succeed(after.as_ref(), output, generation, duration)
+                .await;
             release(releases).await;
             result
         }
         Err(error) => {
             release(releases).await;
-            let error = Arc::new(error);
-            if let Some(failure) = &registered.hooks.failure
-                && let AfterFailure::RetryAt(when) = failure(ctx.clone(), Arc::clone(&error)).await
-            {
-                return run.retry(when, generation).await;
-            }
+            metrics.tasks_failed.add(1, &run.labels());
             let message = error.to_string();
-            let outcome: Outcome = Err(Box::new(Failed(message.clone())));
-            if let Some(after) = complete(&registered, &ctx, outcome).await {
-                run.after_completion(&after, generation).await?;
-            }
-            run.terminal(
-                State::Failed,
-                generation,
-                vec![("error".into(), message.into_bytes())],
-            )
-            .await
+            telemetry::fail(&span, &message);
+            fail(run, registered, ctx, error, generation, duration).await
         }
+    };
+    (result, duration)
+}
+
+/// Ends a failed run: a retry when the failure hook asks for one, otherwise
+/// the completion hook's decision and a failed state.
+async fn fail(
+    run: &Run<'_>,
+    registered: &Registered,
+    ctx: &Context,
+    error: BoxError,
+    generation: i64,
+    duration: f64,
+) -> Result<()> {
+    let error = Arc::new(error);
+    let message = error.to_string();
+    if let Some(failure) = &registered.hooks.failure
+        && let AfterFailure::RetryAt(when) = failure(ctx.clone(), Arc::clone(&error)).await
+    {
+        return run.retry(when, generation, duration, &message).await;
     }
+    let outcome: Outcome = Err(Box::new(Failed(message.clone())));
+    let handled = match complete(registered, ctx, outcome).await {
+        Some(after) => run.after_completion(&after, generation, duration).await?,
+        None => false,
+    };
+    if !handled {
+        tracing::error!(
+            error = message,
+            "↩ [{}] {}",
+            format_duration(duration),
+            run.call
+        );
+    }
+    run.terminal(
+        State::Failed,
+        generation,
+        vec![("error".into(), message.into_bytes())],
+    )
+    .await
 }
 
 /// The error a completion hook sees for a failed task.
@@ -207,250 +314,7 @@ async fn complete(
     registered: &Registered,
     ctx: &Context,
     outcome: Outcome,
-) -> Option<AfterCompletion> {
+) -> Option<crate::behaviors::AfterCompletion> {
     let completion = registered.hooks.completion.as_ref()?;
     Some(completion(ctx.clone(), Arc::new(outcome)).await)
 }
-
-/// The Redis side of one delivery.
-struct Run<'a> {
-    docket: &'a Docket,
-    delivery: &'a Delivery,
-}
-
-impl Run<'_> {
-    fn message(&self) -> &Message {
-        &self.delivery.message
-    }
-
-    fn key(&self) -> &str {
-        &self.delivery.message.key
-    }
-
-    /// Claims the delivery, and returns the run's generation, or `None` when
-    /// the task must not run because it was superseded or cancelled.
-    async fn claim(&self, worker: &str) -> Result<Option<i64>> {
-        let keys = self.docket.keys();
-        let key = self.key();
-        let started_at = iso(Utc::now());
-        let payload = serde_json::json!({
-            "type": "state",
-            "key": key,
-            "state": "running",
-            "worker": worker,
-            "started_at": started_at,
-        });
-        let call = scripts::Claim {
-            runs_key: keys.runs(key),
-            progress_key: keys.progress(key),
-            known_key: keys.known(key),
-            stream_id_key: keys.stream_id(key),
-            state_channel: keys.state(key),
-            stream_key: keys.stream(),
-            worker: worker.to_owned(),
-            started_at,
-            generation: self.message().generation,
-            state_payload: payload.to_string(),
-            key_json: serde_json::Value::from(key).to_string(),
-            worker_group_name: WORKER_GROUP.to_owned(),
-            message_id: self.delivery.id.clone(),
-        }
-        .call();
-        let mut connection = self.docket.handle();
-        // The reply is the claim's status, the runs hash, and the progress
-        // hash.
-        let (status, runs, _): (String, std::collections::HashMap<String, String>, Value) =
-            call.run(&mut connection).await?;
-        if status != "OK" {
-            return Ok(None);
-        }
-        Ok(Some(
-            runs.get("generation")
-                .and_then(|generation| generation.parse().ok())
-                .unwrap_or(self.message().generation),
-        ))
-    }
-
-    /// Ends a struck delivery as cancelled without running it.
-    async fn strike(&self) -> Result<()> {
-        let keys = self.docket.keys();
-        let key = self.key();
-        let mut connection = self.docket.handle();
-        let () = redis::pipe()
-            .hdel(keys.runs(key), &["known", "stream_id"])
-            .ignore()
-            .del(&[keys.known(key), keys.stream_id(key)])
-            .ignore()
-            .query_async(&mut connection)
-            .await?;
-        self.terminal(State::Cancelled, self.message().generation, Vec::new())
-            .await
-    }
-
-    /// Records a terminal state and acknowledges the delivery.
-    async fn terminal(
-        &self,
-        state: State,
-        generation: i64,
-        extra_fields: Vec<(String, Vec<u8>)>,
-    ) -> Result<()> {
-        let keys = self.docket.keys();
-        let key = self.key();
-        let completed_at = iso(Utc::now());
-        let mut payload = serde_json::json!({
-            "type": "state",
-            "key": key,
-            "state": state.as_str(),
-            "completed_at": completed_at,
-        });
-        if let Some((_, error)) = extra_fields.iter().find(|(field, _)| field == "error") {
-            payload["error"] = String::from_utf8_lossy(error).into_owned().into();
-        }
-        let call = scripts::Terminal {
-            runs_key: keys.runs(key),
-            state_channel: keys.state(key),
-            progress_key: keys.progress(key),
-            stream_key: keys.stream(),
-            generation,
-            state: state.as_str().to_owned(),
-            completed_at,
-            ttl_seconds: self.docket.ttl_seconds(),
-            state_payload: payload.to_string(),
-            worker_group_name: WORKER_GROUP.to_owned(),
-            message_id: self.delivery.id.clone(),
-            extra_fields,
-        }
-        .call();
-        let mut connection = self.docket.handle();
-        call.run::<Value, _>(&mut connection).await?;
-        Ok(())
-    }
-
-    /// Puts the delivery back in the docket at `when`, acknowledging it in
-    /// the same script.
-    async fn reschedule(
-        &self,
-        when: chrono::DateTime<Utc>,
-        attempt: u32,
-        generation: i64,
-    ) -> Result<()> {
-        let mut message = self.message().clone();
-        message.when = when;
-        message.attempt = attempt;
-        message.generation = generation;
-        self.docket
-            .place(Placement {
-                message,
-                replace: true,
-                reschedule_message_id: self.delivery.id.clone(),
-                expected_generation: 0,
-            })
-            .await?;
-        Ok(())
-    }
-
-    async fn retry(&self, when: chrono::DateTime<Utc>, generation: i64) -> Result<()> {
-        self.reschedule(when, self.message().attempt + 1, generation)
-            .await
-    }
-
-    async fn blocked(&self, blocked: &AdmissionBlocked, generation: i64) -> Result<()> {
-        if blocked.handled {
-            return Ok(());
-        }
-        if !blocked.reschedule {
-            return self
-                .terminal(State::Cancelled, generation, Vec::new())
-                .await;
-        }
-        let delay = blocked
-            .retry_delay
-            .filter(|delay| !delay.is_zero())
-            .unwrap_or(ADMISSION_RETRY_DELAY);
-        let when = Utc::now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX);
-        self.reschedule(when, self.message().attempt, generation)
-            .await
-    }
-
-    /// Ends a completed task, after acting on its completion hook's decision.
-    async fn succeed(
-        &self,
-        after: Option<&AfterCompletion>,
-        output: serde_json::Value,
-        generation: i64,
-    ) -> Result<()> {
-        let handled = match after {
-            Some(after) => self.after_completion(after, generation).await?,
-            None => false,
-        };
-        if handled {
-            return self
-                .terminal(State::Completed, generation, Vec::new())
-                .await;
-        }
-        self.store(output, generation).await?;
-        self.terminal(State::Completed, generation, self.result_field())
-            .await
-    }
-
-    fn result_field(&self) -> Vec<(String, Vec<u8>)> {
-        vec![("result_key".to_owned(), self.key().as_bytes().to_vec())]
-    }
-
-    /// Acts on a completion hook's decision, and returns whether it took the
-    /// place of the task's normal ending.
-    async fn after_completion(&self, after: &AfterCompletion, generation: i64) -> Result<bool> {
-        match after {
-            AfterCompletion::Finish => Ok(false),
-            AfterCompletion::Cancel => {
-                self.docket.cancel(self.key()).await?;
-                Ok(false)
-            }
-            AfterCompletion::Reschedule { when, args } => {
-                let mut message = self.message().clone();
-                message.when = *when;
-                message.attempt = 1;
-                if let Some(args) = args {
-                    message.args = args.to_string();
-                }
-                self.docket
-                    .place(Placement {
-                        message,
-                        replace: true,
-                        reschedule_message_id: String::new(),
-                        expected_generation: generation,
-                    })
-                    .await?;
-                Ok(true)
-            }
-        }
-    }
-
-    /// Stores a completed task's output, or removes an earlier run's output
-    /// when there is none to keep.  The script writes only while this run's
-    /// generation is current, so a replaced run that finishes after its
-    /// replacement cannot overwrite the replacement's output.
-    async fn store(&self, output: serde_json::Value, generation: i64) -> Result<()> {
-        let ttl = self.docket.ttl_seconds();
-        let stored = if ttl == 0 || output.is_null() {
-            String::new()
-        } else {
-            serde_json::json!({ "ok": output }).to_string()
-        };
-        let keys = self.docket.keys();
-        let () = STORE_RESULT
-            .key(keys.runs(self.key()))
-            .key(keys.result(self.key()))
-            .arg(generation)
-            .arg(stored)
-            .arg(ttl)
-            .invoke_async(&mut self.docket.handle())
-            .await?;
-        Ok(())
-    }
-}
-
-/// docket-rs's own result layout, so this script is not one of the shared
-/// ones in protocol/.
-static STORE_RESULT: std::sync::LazyLock<redis::Script> =
-    std::sync::LazyLock::new(|| redis::Script::new(include_str!("store_result.lua")));

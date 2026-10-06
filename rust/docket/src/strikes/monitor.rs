@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 
 use super::{Condition, Operator, SharedStrikes, Strike};
 use crate::connection::Backend;
+use crate::telemetry::{self, Telemetry};
 
 /// How long one read of the strike stream waits for a new instruction.
 const BLOCK: Duration = Duration::from_secs(60);
@@ -24,9 +25,22 @@ pub(crate) struct Monitor {
 }
 
 impl Monitor {
-    pub fn start(backend: Arc<Backend>, stream: String, strikes: SharedStrikes) -> Self {
+    pub fn start(
+        backend: Arc<Backend>,
+        stream: String,
+        strikes: SharedStrikes,
+        docket: String,
+        telemetry: Arc<Telemetry>,
+    ) -> Self {
         let (loaded_sender, loaded) = watch::channel(false);
-        let task = tokio::spawn(follow(backend, stream, strikes, loaded_sender));
+        let follower = Follower {
+            backend,
+            stream,
+            strikes,
+            docket,
+            telemetry,
+        };
+        let task = tokio::spawn(follower.follow(loaded_sender));
         Self { task, loaded }
     }
 
@@ -46,29 +60,49 @@ impl Drop for Monitor {
     }
 }
 
-async fn follow(
+/// What the monitor's task works with.
+struct Follower {
     backend: Arc<Backend>,
     stream: String,
     strikes: SharedStrikes,
-    loaded: watch::Sender<bool>,
-) {
-    let mut last_id = "0-0".to_owned();
-    loop {
-        let Ok(mut connection) = backend.connect().await else {
+    docket: String,
+    telemetry: Arc<Telemetry>,
+}
+
+impl Follower {
+    async fn follow(self, loaded: watch::Sender<bool>) {
+        let mut last_id = "0-0".to_owned();
+        loop {
+            if let Ok(mut connection) = self.backend.connect().await {
+                self.read(&mut connection, &mut last_id, &loaded).await;
+            }
+            self.telemetry
+                .metrics
+                .redis_disruptions
+                .add(1, &telemetry::docket_labels(&self.docket));
+            tracing::warn!("Redis is unavailable, sleeping for 1 second...");
             tokio::time::sleep(RETRY_DELAY).await;
-            continue;
-        };
+        }
+    }
+
+    /// Reads strike instructions until Redis fails.
+    async fn read(
+        &self,
+        connection: &mut crate::connection::Connection,
+        last_id: &mut String,
+        loaded: &watch::Sender<bool>,
+    ) {
         loop {
             let mut options = StreamReadOptions::default().count(100);
             if *loaded.borrow() {
                 options = options.block(BLOCK.as_millis().try_into().unwrap_or(usize::MAX));
             }
             let reply: Option<StreamReadReply> = match connection
-                .xread_options(&[stream.as_str()], &[last_id.as_str()], &options)
+                .xread_options(&[self.stream.as_str()], &[last_id.as_str()], &options)
                 .await
             {
                 Ok(reply) => reply,
-                Err(_) => break,
+                Err(_) => return,
             };
             let entries = reply
                 .into_iter()
@@ -83,10 +117,25 @@ async fn follow(
             }
             // An entry that is not a strike instruction changes nothing.
             for (strike, restore) in entries.iter().filter_map(|entry| decode(&entry.map)) {
-                strikes.apply(&strike, restore);
+                self.apply(&strike, restore);
             }
         }
-        tokio::time::sleep(RETRY_DELAY).await;
+    }
+
+    /// Puts one instruction in force, and logs and counts it.  The count
+    /// moves for every instruction read, as pydocket's does, so a strike
+    /// sent twice counts twice.
+    fn apply(&self, strike: &Strike, restore: bool) {
+        self.strikes.apply(strike, restore);
+        let verb = if restore { "Restoring" } else { "Striking" };
+        tracing::info!("{verb} {}", super::call_repr(strike));
+        let mut labels = telemetry::docket_labels(&self.docket);
+        labels.extend(super::labels(strike));
+        let change = if restore { -1 } else { 1 };
+        self.telemetry
+            .metrics
+            .strikes_in_effect
+            .add(change, &labels);
     }
 }
 
