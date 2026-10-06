@@ -303,3 +303,23 @@ async fn a_worker_waits_for_the_strikes_before_it_runs_anything() {
         State::Cancelled
     );
 }
+
+#[tokio::test]
+async fn a_worker_that_cannot_read_the_strikes_still_shuts_down() {
+    let Some(proxy) = proxy().await else { return };
+    // The strike monitor never finishes its first read, so shutdown is the
+    // only way out of the worker's wait for the strikes.
+    proxy.fail("XREAD", usize::MAX);
+    let docket = docket_through(&proxy).await;
+    docket.register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) });
+    let execution = docket.add(Noop).await.unwrap();
+
+    within(10, worker(&docket).run_until(async {}))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Queued
+    );
+}
