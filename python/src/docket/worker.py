@@ -755,6 +755,20 @@ class Worker:
                         await _wait_for_event(session.cancellation_ready, 0.1)
                     if stopping.is_set():
                         return
+                    # A strike written before the worker started must stop
+                    # its tasks, so nothing runs until the strike stream is
+                    # read.  That takes as long as Redis is unreachable, so
+                    # a stopping worker does not wait for it.
+                    strikes_loaded = asyncio.ensure_future(
+                        self.docket.wait_for_strikes_loaded()
+                    )
+                    try:
+                        while not strikes_loaded.done() and not stopping.is_set():
+                            await asyncio.wait([strikes_loaded], timeout=0.1)
+                    finally:
+                        strikes_loaded.cancel()
+                    if stopping.is_set():
+                        return
                     if self.schedule_automatic_tasks:
                         try:
                             await self._schedule_all_automatic_perpetual_tasks()
@@ -1137,7 +1151,10 @@ class Worker:
                             encoded_result = base64.b64encode(pickled_result).decode(
                                 "ascii"
                             )
-                            result_key = execution.key
+                            # Each run stores under its own generation, so a replaced run
+                            # that finishes last writes where nobody reads: terminal.lua
+                            # leaves a superseded run's result_key out of the run state.
+                            result_key = f"{execution.key}:{execution.generation}"
                             ttl_seconds = int(self.docket.execution_ttl.total_seconds())
                             await self.docket.result_storage.put(
                                 result_key, {"data": encoded_result}, ttl=ttl_seconds
@@ -1225,7 +1242,7 @@ class Worker:
                         encoded_exception = base64.b64encode(pickled_exception).decode(
                             "ascii"
                         )
-                        result_key = execution.key
+                        result_key = f"{execution.key}:{execution.generation}"
                         ttl_seconds = int(self.docket.execution_ttl.total_seconds())
                         await self.docket.result_storage.put(
                             result_key, {"data": encoded_exception}, ttl=ttl_seconds
