@@ -14,18 +14,19 @@ jobs:
     if: startsWith(github.event.release.tag_name, 'rust/v')
     uses: ./.github/workflows/rust.yml
     secrets: inherit
-    # A called workflow can ask for no more than its caller grants, and
-    # GitHub refuses the whole run at startup if one of its jobs does, even
-    # a job that skips itself on a release.
     permissions:
       contents: read
-      pull-requests: read
+
+  prek:
+    name: Run the Prek workflow
+    if: startsWith(github.event.release.tag_name, 'rust/v')
+    uses: ./.github/workflows/prek.yml
 
   publish:
     name: Publish docket-rs to crates.io
     runs-on: ubuntu-26.04
     timeout-minutes: 15
-    needs: rust
+    needs: [rust, prek]
     environment:
       name: crates-io
       url: https://crates.io/crates/docket-rs

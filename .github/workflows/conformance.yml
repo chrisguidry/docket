@@ -101,7 +101,7 @@ jobs:
         run: uv run python -m conformance telemetry --implementation python@main --implementation rust@main
 
   chaos:
-    name: Chaos tests
+    name: Chaos tests, python@main and python@release
     runs-on: ubuntu-26.04
     timeout-minutes: 6
 
