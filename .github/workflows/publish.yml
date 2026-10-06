@@ -9,11 +9,11 @@ permissions:
 
 jobs:
   ci:
-    name: Run CI
+    name: Run the Python workflow
     # pydocket releases are tagged python/v0.27.0, or bare before the
     # monorepo.  Another language's release does not publish to PyPI.
     if: startsWith(github.event.release.tag_name, 'python/v') || !contains(github.event.release.tag_name, '/')
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/python.yml
 
   publish:
     name: Build and publish to PyPI
