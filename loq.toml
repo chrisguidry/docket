@@ -1,6 +1,8 @@
 default_max_lines = 500
 respect_gitignore = true
-exclude = ["**/uv.lock", "**/.git/**", "**/docs/**", "plans/**"]
+# rust/docket/src/memory/engine is a copy of burner-redis, kept as upstream
+# writes it so that a fresh copy is a clean diff.
+exclude = ["**/uv.lock", "**/Cargo.lock", "**/.git/**", "**/docs/**", "plans/**", "rust/target/**", "rust/docket/src/memory/engine/**"]
 
 # Source files get a higher default limit (750)
 [[rules]]

@@ -286,3 +286,6 @@ jobs:
 
       - name: Run prek
         uses: j178/prek-action@v2
+        env:
+          # The Rust workflow runs rustfmt and clippy with its own toolchain.
+          SKIP: rustfmt,clippy
