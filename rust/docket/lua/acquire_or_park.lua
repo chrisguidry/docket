@@ -88,7 +88,9 @@ redis.call('HSET', runs_key,
     'args', args_data,
     'kwargs', kwargs_data
 )
-redis.call('HDEL', runs_key, 'stream_id')
+-- The claim before admission wrote a worker and a start time, and a parked
+-- task has neither until a worker claims it again.
+redis.call('HDEL', runs_key, 'stream_id', 'worker', 'started_at')
 
 redis.call('PUBLISH', state_channel, state_payload)
 
