@@ -14,12 +14,8 @@ jobs:
     if: startsWith(github.event.release.tag_name, 'rust/v')
     uses: ./.github/workflows/rust.yml
     secrets: inherit
-    # A called workflow can ask for no more than its caller grants, and
-    # GitHub refuses the whole run at startup if one of its jobs does, even
-    # a job that skips itself on a release.
     permissions:
       contents: read
-      pull-requests: read
 
   publish:
     name: Publish docket-rs to crates.io

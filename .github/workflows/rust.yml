@@ -11,36 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  # A skipped job counts as passed for a required check, so on a pull request
-  # the jobs below skip themselves when nothing they test changed, instead of
-  # the workflow not running at all.  Pushes and releases run everything.
-  changes:
-    name: Rust changes
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    permissions:
-      pull-requests: read
-    outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dorny/paths-filter@v4
-        id: filter
-        with:
-          filters: |
-            rust:
-              - "rust/**"
-              - "protocol/**"
-              - "conformance/**"
-              - "python/tests/cluster/**"
-              - ".github/workflows/rust.yml"
-
   lint:
     name: Rust lints
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     defaults:
@@ -70,8 +42,6 @@ jobs:
 
   test:
     name: Rust, ${{ matrix.backend.name }}
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     strategy:
@@ -107,8 +77,6 @@ jobs:
 
   coverage:
     name: Rust coverage
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     defaults:
