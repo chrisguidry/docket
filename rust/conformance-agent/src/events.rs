@@ -1,11 +1,13 @@
 //! The events a scenario's tasks write, in the shape every agent writes.
 
 use redis::AsyncCommands;
-use redis::aio::MultiplexedConnection;
+use redis::aio::ConnectionManager;
 
+/// The chaos scenario restarts Redis, so the recorder's connection
+/// reconnects by itself.
 #[derive(Clone)]
 pub struct Events {
-    connection: MultiplexedConnection,
+    connection: ConnectionManager,
     stream: String,
 }
 
@@ -27,9 +29,7 @@ pub struct Event<'a> {
 impl Events {
     pub async fn open(url: &str, scenario: &str) -> redis::RedisResult<Self> {
         Ok(Self {
-            connection: redis::Client::open(url)?
-                .get_multiplexed_async_connection()
-                .await?,
+            connection: redis::Client::open(url)?.get_connection_manager().await?,
             stream: format!("conformance:{scenario}:events"),
         })
     }
