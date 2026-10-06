@@ -17,11 +17,16 @@ jobs:
     permissions:
       contents: read
 
+  prek:
+    name: Run the Prek workflow
+    if: startsWith(github.event.release.tag_name, 'rust/v')
+    uses: ./.github/workflows/prek.yml
+
   publish:
     name: Publish docket-rs to crates.io
     runs-on: ubuntu-26.04
     timeout-minutes: 15
-    needs: rust
+    needs: [rust, prek]
     environment:
       name: crates-io
       url: https://crates.io/crates/docket-rs
