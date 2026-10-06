@@ -4,7 +4,6 @@ frees up, rather than polling via the future queue).
 """
 
 import asyncio
-import time
 from datetime import datetime, timezone
 
 from docket import (
@@ -13,18 +12,7 @@ from docket import (
     Worker,
 )
 
-
-async def _wait_for_xlen(docket: Docket, key: str, target: int) -> None:
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        async with docket.redis() as redis:
-            size = await redis.xlen(key)
-        if size == target:
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError(  # pragma: no cover
-        f"XLEN({key}) did not reach {target} in time"
-    )
+from tests.concurrency_limits.waiters import wait_for_xlen
 
 
 async def test_blocked_task_parks_on_waiter_stream(docket: Docket, worker: Worker):
@@ -51,7 +39,7 @@ async def test_blocked_task_parks_on_waiter_stream(docket: Docket, worker: Worke
     await started.wait()
 
     waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
-    await _wait_for_xlen(docket, waiters_stream, 1)
+    await wait_for_xlen(docket, waiters_stream, 1)
 
     async with docket.redis() as redis:
         entries = await redis.xrange(waiters_stream, "-", "+")
@@ -95,7 +83,7 @@ async def test_release_wakes_oldest_waiter_first(docket: Docket, worker: Worker)
     waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
     for tid in (1, 2, 3):
         await docket.add(task)(customer_id=1, task_id=tid)
-        await _wait_for_xlen(docket, waiters_stream, tid)
+        await wait_for_xlen(docket, waiters_stream, tid)
 
     release_holder.set()
     await worker_task
@@ -146,7 +134,7 @@ async def test_blocked_task_makes_no_polling_retries(docket: Docket, worker: Wor
     # Wait for the blocked task to actually park on the waiter stream
     # before releasing the holder.
     waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
-    await _wait_for_xlen(docket, waiters_stream, 1)
+    await wait_for_xlen(docket, waiters_stream, 1)
 
     release_holder.set()
     await worker_task
@@ -198,7 +186,7 @@ async def test_safeguard_wakes_waiter_when_holder_died_without_releasing(
         runner = asyncio.create_task(worker.run_forever())
 
         # Waiter parks because the (live-looking) fake slot is full.
-        await _wait_for_xlen(docket, waiters_stream, 1)
+        await wait_for_xlen(docket, waiters_stream, 1)
 
         # Now forge a stale-holder state.  No lease renewer is touching
         # this slot, so the timestamp stays at 0 until the safeguard
@@ -262,7 +250,7 @@ async def test_cancel_of_parked_task_prevents_wake_and_run(
 
     # Make sure `blocked` is actually parked on the waiter stream
     waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
-    await _wait_for_xlen(docket, waiters_stream, 1)
+    await wait_for_xlen(docket, waiters_stream, 1)
 
     # Cancel the parked task; release the holder; verify blocked never ran
     await docket.cancel(blocked_exec.key)
@@ -310,10 +298,10 @@ async def test_cancel_of_parked_task_removes_waiter_entry_before_release(
 
     parked = await docket.add(holder)(customer_id=1)
     waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
-    await _wait_for_xlen(docket, waiters_stream, 1)
+    await wait_for_xlen(docket, waiters_stream, 1)
 
     await docket.cancel(parked.key)
-    await _wait_for_xlen(docket, waiters_stream, 0)
+    await wait_for_xlen(docket, waiters_stream, 0)
 
     release_holder.set()
     await asyncio.wait_for(worker_task, timeout=5)
@@ -326,7 +314,9 @@ async def test_cancel_cleanup_script_drains_waiter_entry(docket: Docket):
     ``ConcurrencyLimit._cleanup_cancelled_waiter`` when a parked task is
     cancelled.  Driving the script directly tests it without a worker.
     """
-    from docket.dependencies._concurrency import _cancel_cleanup  # pyright: ignore[reportPrivateUsage]
+    from docket.dependencies._concurrency import (
+        _cancel_cleanup,  # pyright: ignore[reportPrivateUsage]
+    )
 
     waiter_stream = f"{docket.prefix}:concurrency:cleanup-direct:waiters"
     task_key = "cleanup-direct"
