@@ -23,11 +23,12 @@ async def test_a_parked_task_has_no_worker_or_start_time(
         started.set()
         await hold.wait()
 
+    # The waiter goes in only after the holder has its slot, because the
+    # worker may start either of two tasks it reads together.
     await docket.add(holder)(customer_id=1)
-    waiter = await docket.add(holder)(customer_id=1)
-
     worker_task = asyncio.create_task(worker.run_until_finished())
     await started.wait()
+    waiter = await docket.add(holder)(customer_id=1)
     await wait_for_xlen(docket, f"{docket.prefix}:concurrency:customer_id:1:waiters", 1)
 
     await waiter.sync()
