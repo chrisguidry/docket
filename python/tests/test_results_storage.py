@@ -189,7 +189,7 @@ async def test_result_key_stored_in_execution_record(docket: Docket, worker: Wor
 
     # Sync and check result field
     await execution.sync()
-    assert execution.result_key == execution.key
+    assert execution.result_key == f"{execution.key}:1"
 
 
 async def test_result_storage_uses_provided_or_default(docket: Docket):

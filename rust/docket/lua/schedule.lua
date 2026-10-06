@@ -160,6 +160,10 @@ if generation_index then
     message[generation_index] = tostring(new_gen)
 end
 
+-- A new run starts without the previous run's ending, so a reused key
+-- never shows the old worker, error, completion time, or result.
+redis.call('HDEL', runs_key, 'worker', 'started_at', 'completed_at', 'error', 'result_key')
+
 if is_immediate then
     -- Add to stream for immediate execution
     local message_id = redis.call('XADD', stream_key, '*', unpack(message))

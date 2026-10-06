@@ -218,3 +218,31 @@ async fn the_safeguard_wakes_a_waiter_after_its_slot_holder_dies() {
         State::Completed
     );
 }
+
+#[tokio::test]
+async fn a_parked_task_has_no_worker_or_start_time() {
+    let docket = docket().await;
+    docket
+        .register(|_ctx, _: Noop| async {
+            std::future::pending::<()>().await;
+            Ok::<_, std::io::Error>(())
+        })
+        .with(ConcurrencyLimit::new(1));
+    docket.add(Noop).await.unwrap();
+    let waiter = docket.add(Noop).await.unwrap();
+
+    let running = tokio::spawn(worker(&docket).concurrency(2).run_forever());
+    within(10, async {
+        while !safeguard_scheduled(&docket).await {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let status = waiter.status().await.unwrap().unwrap();
+    running.abort();
+
+    assert_eq!(
+        (status.state, status.worker, status.started_at),
+        (State::Scheduled, None, None)
+    );
+}
