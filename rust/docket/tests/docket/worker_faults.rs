@@ -109,7 +109,7 @@ fn fail(text: String) -> Result<String, std::io::Error> {
 type Attach = fn(Registration<Echo>);
 
 #[rstest::rstest]
-#[case::storing_the_result(|proxy: &Proxy| proxy.fail("SETEX", 1), |_| {}, Ok)]
+#[case::storing_the_result(|proxy: &Proxy| proxy.fail_script(include_str!("../../src/worker/store_result.lua"), 1), |_| {}, Ok)]
 #[case::cancelling_after_a_success(
     cancel_script,
     |registration: Registration<Echo>| { registration.with(Then(AfterCompletion::Cancel)); },

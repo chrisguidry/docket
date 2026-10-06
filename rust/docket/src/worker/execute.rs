@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use futures::FutureExt;
-use redis::{AsyncCommands, Value};
+use redis::Value;
 use tracing::Instrument;
 
 use super::session::{Active, Delivery, Shared};
@@ -388,7 +388,7 @@ impl Run<'_> {
                 .terminal(State::Completed, generation, Vec::new())
                 .await;
         }
-        self.store(output).await?;
+        self.store(output, generation).await?;
         self.terminal(State::Completed, generation, self.result_field())
             .await
     }
@@ -426,19 +426,31 @@ impl Run<'_> {
         }
     }
 
-    /// Stores a completed task's output, unless the docket keeps nothing or
-    /// there is no output to keep.
-    async fn store(&self, output: serde_json::Value) -> Result<()> {
+    /// Stores a completed task's output, or removes an earlier run's output
+    /// when there is none to keep.  The script writes only while this run's
+    /// generation is current, so a replaced run that finishes after its
+    /// replacement cannot overwrite the replacement's output.
+    async fn store(&self, output: serde_json::Value, generation: i64) -> Result<()> {
         let ttl = self.docket.ttl_seconds();
-        if ttl == 0 || output.is_null() {
-            return Ok(());
-        }
-        let stored = serde_json::json!({ "ok": output }).to_string();
-        let mut connection = self.docket.handle();
-        let ttl = u64::try_from(ttl).unwrap_or(u64::MAX);
-        let () = connection
-            .set_ex(self.docket.keys().result(self.key()), stored, ttl)
+        let stored = if ttl == 0 || output.is_null() {
+            String::new()
+        } else {
+            serde_json::json!({ "ok": output }).to_string()
+        };
+        let keys = self.docket.keys();
+        let () = STORE_RESULT
+            .key(keys.runs(self.key()))
+            .key(keys.result(self.key()))
+            .arg(generation)
+            .arg(stored)
+            .arg(ttl)
+            .invoke_async(&mut self.docket.handle())
             .await?;
         Ok(())
     }
 }
+
+/// docket-rs's own result layout, so this script is not one of the shared
+/// ones in protocol/.
+static STORE_RESULT: std::sync::LazyLock<redis::Script> =
+    std::sync::LazyLock::new(|| redis::Script::new(include_str!("store_result.lua")));

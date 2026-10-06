@@ -263,3 +263,118 @@ async fn a_task_fails_with_why_it_could_not_run(#[case] setup: Setup, #[case] ex
     assert_eq!(status.state, State::Failed);
     assert!(status.error.unwrap().contains(expected));
 }
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, docket::Task)]
+#[task(name = "maybe", output = Option<String>)]
+struct Maybe {
+    text: Option<String>,
+}
+
+#[tokio::test]
+async fn a_reused_key_does_not_return_the_previous_runs_result() {
+    let docket = docket().await;
+    docket.register(|_ctx, args: Maybe| async move { Ok::<_, std::io::Error>(args.text) });
+    let first = docket
+        .add(Maybe {
+            text: Some("first".into()),
+        })
+        .key("reused")
+        .await
+        .unwrap();
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+    assert_eq!(first.result().await.unwrap(), Some("first".into()));
+
+    let second = docket
+        .add(Maybe { text: None })
+        .key("reused")
+        .await
+        .unwrap();
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert_eq!(second.result().await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn a_replaced_run_that_finishes_last_keeps_its_successors_result() {
+    let docket = docket().await;
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let (gate, signal) = (
+        std::sync::Arc::clone(&release),
+        std::sync::Arc::clone(&started),
+    );
+    docket.register(move |_ctx, args: Echo| {
+        let (gate, signal) = (std::sync::Arc::clone(&gate), std::sync::Arc::clone(&signal));
+        async move {
+            if args.text == "old" {
+                signal.notify_one();
+                gate.notified().await;
+            }
+            Ok::<_, std::io::Error>(args.text)
+        }
+    });
+    docket.add(Echo::new("old")).key("swapped").await.unwrap();
+    let run = tokio::spawn(worker(&docket).concurrency(2).run_until_finished());
+    within(10, started.notified()).await;
+
+    let replacement = docket
+        .replace(Echo::new("new"), "swapped", Utc::now())
+        .await
+        .unwrap();
+    within(10, async {
+        while replacement.status().await.unwrap().unwrap().state != State::Completed {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    release.notify_one();
+    within(10, run).await.unwrap().unwrap();
+
+    assert_eq!(replacement.result().await.unwrap(), "new");
+}
+
+#[tokio::test]
+async fn a_reused_key_does_not_show_the_previous_runs_ending() {
+    let docket = docket().await;
+    docket.register(|_ctx, args: Echo| async move {
+        if args.text == "fail" {
+            return Err(std::io::Error::other("the first run failed"));
+        }
+        Ok(args.text)
+    });
+    docket.add(Echo::new("fail")).key("again").await.unwrap();
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    let second = docket
+        .add(Echo::new("fine"))
+        .key("again")
+        .after(Duration::from_secs(60))
+        .await
+        .unwrap();
+    let scheduled = second.status().await.unwrap().unwrap();
+    assert_eq!(
+        (
+            scheduled.state,
+            scheduled.error,
+            scheduled.completed_at,
+            scheduled.worker
+        ),
+        (State::Scheduled, None, None, None)
+    );
+
+    docket
+        .replace(Echo::new("fine"), "again", Utc::now())
+        .await
+        .unwrap();
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+    let completed = second.status().await.unwrap().unwrap();
+    assert_eq!((completed.state, completed.error), (State::Completed, None));
+}

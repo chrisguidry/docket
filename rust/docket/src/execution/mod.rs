@@ -125,18 +125,25 @@ pub struct Status {
 }
 
 impl Status {
+    /// Reads the run state hash.  Scheduling a key again leaves an earlier
+    /// run's fields in the hash, so each field counts only in the states
+    /// where the current run has written it.
     pub(crate) fn from_hash(hash: &HashMap<String, String>) -> Option<Self> {
-        let time = |field: &str| hash.get(field).and_then(|text| parse_iso(text));
+        let state = State::parse(hash.get("state")?)?;
+        let claimed = state == State::Running || state.is_terminal();
+        let text = |field: &str, current: bool| hash.get(field).filter(|_| current).cloned();
+        let time =
+            |field: &str, current: bool| text(field, current).and_then(|text| parse_iso(&text));
         Some(Self {
-            state: State::parse(hash.get("state")?)?,
+            state,
             when: hash
                 .get("when")
                 .and_then(|text| text.parse::<f64>().ok())
                 .and_then(seconds_to_time),
-            worker: hash.get("worker").cloned(),
-            started_at: time("started_at"),
-            completed_at: time("completed_at"),
-            error: hash.get("error").cloned(),
+            worker: text("worker", claimed),
+            started_at: time("started_at", claimed),
+            completed_at: time("completed_at", state.is_terminal()),
+            error: text("error", state == State::Failed),
         })
     }
 }

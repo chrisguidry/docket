@@ -34,7 +34,6 @@ pub(super) async fn seed(worker: &Shared) -> Result<()> {
     if automatic.is_empty() {
         return Ok(());
     }
-    docket.strikes_loaded().await;
 
     let keys = docket.keys();
     let lock = keys.perpetual_lock();

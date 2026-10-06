@@ -148,20 +148,26 @@ async fn session(
     let shutdown = shutdown_token(until);
     let mut infrastructure = JoinSet::new();
     let result = async {
+        // Opening the reader first makes an unreachable Redis an error here,
+        // which the reconnect loop handles, rather than a silent wait below.
+        let mut reader = worker.docket.backend().connect().await?;
+        worker.docket.ensure_group(&mut reader).await?;
         cancellation::start(worker, &mut infrastructure).await;
+        // A strike written before the worker started must stop its tasks, so
+        // nothing runs until the strike stream is read.  That takes as long
+        // as Redis is unreachable, so a shutdown does not wait for it.
+        tokio::select! {
+            () = worker.docket.strikes_loaded() => {}
+            () = shutdown.cancelled() => return Ok(()),
+        }
         if worker.settings.schedule_automatic_tasks {
-            // Seeding waits for the strikes to load, which takes as long as
-            // Redis is unreachable, so a shutdown must not wait for it.
-            tokio::select! {
-                seeded = perpetuals::seed(worker) => seeded?,
-                () = shutdown.cancelled() => return Ok(()),
-            }
+            perpetuals::seed(worker).await?;
             infrastructure.spawn(perpetuals::reseed(Arc::clone(worker)));
         }
         infrastructure.spawn(scheduler(Arc::clone(worker)));
         infrastructure.spawn(sweep::renew_leases(Arc::clone(worker)));
         infrastructure.spawn(heartbeat::beat(Arc::clone(worker)));
-        poll(worker, until, &shutdown, tasks).await
+        poll(worker, reader, until, &shutdown, tasks).await
     }
     .await;
 
@@ -175,14 +181,13 @@ async fn session(
 
 async fn poll(
     worker: &Arc<Shared>,
+    mut reader: Connection,
     until: &Until,
     shutdown: &CancellationToken,
     tasks: &mut JoinSet<Result<()>>,
 ) -> Result<()> {
     let docket = &worker.docket;
     let settings = &worker.settings;
-    let mut reader = docket.backend().connect().await?;
-    docket.ensure_group(&mut reader).await?;
     let mut sweep = Sweep::new(Arc::clone(worker));
 
     loop {

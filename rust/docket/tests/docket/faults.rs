@@ -273,3 +273,33 @@ async fn a_waiting_result_subscribes_again_when_its_subscription_drops() {
         proxy.count("HGETALL") - reads_before
     );
 }
+
+#[tokio::test]
+async fn a_worker_waits_for_the_strikes_before_it_runs_anything() {
+    let Some(proxy) = proxy().await else { return };
+    let first = docket_through(&proxy).await;
+    first.register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) });
+    let execution = first.add(Noop).await.unwrap();
+    first.strike(Strike::task::<Noop>()).await.unwrap();
+
+    // A new connection to the docket, whose strike monitor cannot read the
+    // strike stream at first, the way it might be slow after a restart.
+    proxy.fail("XREAD", 1);
+    let second = docket::Docket::connect(first.name(), proxy.url())
+        .await
+        .unwrap();
+    second.register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) });
+    within(
+        20,
+        worker(&second)
+            .schedule_automatic_tasks(false)
+            .run_until_finished(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Cancelled
+    );
+}
