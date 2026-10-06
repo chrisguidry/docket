@@ -26,13 +26,18 @@ jobs:
     permissions:
       id-token: write # Required for trusted publishing
       contents: read
+    env:
+      # Only whether the secret exists, never its value.
+      HAS_BOOTSTRAP_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
     defaults:
       run:
         working-directory: rust
+    # This job holds a publish token, so its actions are pinned to commits:
+    # a tag that moves cannot change what runs here.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # Cargo takes the version from Cargo.toml, not from the tag, so the
       # two must agree before anything is published.
@@ -46,16 +51,19 @@ jobs:
             exit 1
           fi
 
-      # crates.io trusts this workflow only after the first release, which
-      # someone publishes by hand with a token.
-      - uses: rust-lang/crates-io-auth-action@v1
+      # crates.io trusts this workflow only after the first release.  That
+      # release uses a short-lived token in the environment's
+      # CARGO_REGISTRY_TOKEN secret, which is deleted once trusted publishing
+      # works.
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         id: auth
+        if: env.HAS_BOOTSTRAP_TOKEN != 'true'
 
       # docket-rs depends on the exact version of docket-rs-macros, so the
       # macros go first.
       - name: Publish
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
         run: |
           cargo publish --locked --package docket-rs-macros
           cargo publish --locked --package docket-rs

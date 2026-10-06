@@ -52,5 +52,10 @@ sha1 = "0.10"
 rstest = "0.27.0"
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "test-util"] }
 
+[package.metadata.docs.rs]
+# docs.rs builds the crate once, so it turns on every feature to document
+# memory:// and the CLI options too.
+all-features = true
+
 [lints]
 workspace = true
