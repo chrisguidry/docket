@@ -50,6 +50,26 @@ fn shows_the_length_of_a_collection(#[case] items: serde_json::Value, #[case] sh
     assert_eq!(call, format!("t(items={shown}){{k}}"));
 }
 
+#[rstest]
+#[case::text(json!("hello"), "'hello'")]
+#[case::single_quote(json!("it's"), "\"it's\"")]
+#[case::both_quotes(json!("it's \"so\""), "'it\\'s \"so\"'")]
+#[case::escapes(json!("a\\b\n\r\t\u{1}"), "'a\\\\b\\n\\r\\t\\x01'")]
+#[case::truth(json!(true), "True")]
+#[case::falsehood(json!(false), "False")]
+#[case::nothing(json!(null), "None")]
+#[case::number(json!(1.5), "1.5")]
+#[case::list(json!([1, "a"]), "[1, 'a']")]
+#[case::map(json!({"a": null}), "{'a': None}")]
+fn shows_a_value_as_python_repr_does(#[case] value: serde_json::Value, #[case] shown: &str) {
+    let fields = [TaskField {
+        name: "value",
+        logged: Logged::Value,
+    }];
+    let call = call_repr("t", &fields, &json!({ "value": value }), "k");
+    assert_eq!(call, format!("t(value={shown}){{k}}"));
+}
+
 #[test]
 fn hides_a_logged_field_the_arguments_lack() {
     let args = json!({"card": "4242"});
