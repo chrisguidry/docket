@@ -1,4 +1,5 @@
 pub mod proxy;
+pub mod telemetry;
 
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ pub fn url() -> String {
 
 /// A docket of the test's own.
 pub async fn docket() -> Docket {
+    telemetry::install();
     let url = url();
     let docket = Docket::builder(format!("docket-test-{}", uuid::Uuid::now_v7()), &url)
         .connect()
@@ -82,6 +84,7 @@ pub async fn proxy() -> Option<proxy::Proxy> {
 
 /// A docket of the test's own, through `proxy`.
 pub async fn docket_through(proxy: &proxy::Proxy) -> Docket {
+    telemetry::install();
     Docket::builder(format!("docket-test-{}", uuid::Uuid::now_v7()), proxy.url())
         .connect()
         .await

@@ -52,9 +52,7 @@ async fn a_worker_keeps_trying_to_reach_redis_until_it_is_shut_down() {
         Worker::new(docket)
             .reconnection_delay(Duration::from_millis(10))
             .run_until(async move {
-                shutdown
-                    .wait_for("Redis is unavailable; reconnecting")
-                    .await;
+                shutdown.wait_for("Redis is unavailable, retrying in").await;
             }),
     )
     .await

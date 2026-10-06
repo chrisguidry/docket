@@ -12,7 +12,8 @@ pub(super) async fn beat(worker: Arc<Shared>) {
     let interval = worker.docket.settings().heartbeat_interval;
     loop {
         if let Err(error) = once(&worker).await {
-            tracing::warn!(%error, "the heartbeat failed");
+            worker.disrupted();
+            tracing::error!(%error, "Error sending worker heartbeat");
         }
         tokio::time::sleep(interval).await;
     }
@@ -49,6 +50,19 @@ async fn once(worker: &Shared) -> crate::Result<()> {
 
     let mut connection = docket.handle();
     let () = pipeline.query_async(&mut connection).await?;
+
+    // The depths ride on the heartbeat, so each worker reports them as
+    // often as it reports that it is alive.
+    let (stream, due, future): (u64, u64, u64) = redis::pipe()
+        .xlen(keys.stream())
+        .zcount(keys.queue(), 0, now)
+        .zcount(keys.queue(), now, "+inf")
+        .query_async(&mut connection)
+        .await?;
+    let metrics = &docket.telemetry().metrics;
+    let labels = docket.labels();
+    metrics.queue_depth.record(stream + due, &labels);
+    metrics.schedule_depth.record(future, &labels);
     Ok(())
 }
 
@@ -63,5 +77,10 @@ pub(super) async fn remove(worker: &Shared) {
         pipeline.zrem(keys.task_workers(&task), name).ignore();
     }
     pipeline.del(keys.worker_tasks(name)).ignore();
-    let _: RedisResult<()> = pipeline.query_async(&mut docket.handle()).await;
+    let removed: RedisResult<()> = pipeline.query_async(&mut docket.handle()).await;
+    // A worker that loses Redis on the way out ages out of the list on its
+    // own, because every heartbeat prunes the members it has not heard from.
+    if removed.is_err() {
+        tracing::debug!("Could not clear worker heartbeat, Redis is unavailable");
+    }
 }

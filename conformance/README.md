@@ -37,6 +37,7 @@ driver chooses one at random for each agent it starts.
 | `perpetual-single-flight` | Three workers share an automatic perpetual task.  Its runs never overlap, even when all the workers die during a run and new ones start. |
 | `same-key` | Two producers add and then replace the same key at about the same time, and the task runs once, at the time of the last replace. |
 | `chaos` | Every task added runs while workers die and Redis restarts. |
+| `telemetry` | The producer and the worker emit the metrics, spans, and Prometheus series in [the telemetry spec](../plans/telemetry-parity.md).  With more than one implementation, the driver runs each one in turn, and their telemetry must be equal. |
 
 ## The agent contract
 
@@ -66,3 +67,38 @@ Each event has these fields:
 The driver reads only these events and the run state that docket's shared
 Lua scripts keep, never anything particular to one language.  A new
 language passes when its agent writes the same events.
+
+## The telemetry contract
+
+The `telemetry` scenario runs its workload twice for each implementation,
+each time on a new docket.  The workload is in the docstring of
+`python/conformance-agent/scenarios/telemetry.py`.  Each agent gets
+`CONFORMANCE_PHASE`, and its producer starts every key with that value and a
+colon, such as `otlp:succeed`.
+
+In the `otlp` phase, the driver sets these variables for the worker and the
+producer:
+
+| Variable | Value |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | The driver's receiver, such as `http://127.0.0.1:PORT` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `500` |
+| `OTEL_BSP_SCHEDULE_DELAY` | `200` |
+| `OTEL_SERVICE_NAME` | `conformance-worker` or `conformance-producer` |
+
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the agent installs a tracer
+provider and a meter provider before it connects to the docket.  They export
+spans and metrics over OTLP/HTTP with protobuf bodies, to the paths
+`/v1/traces` and `/v1/metrics`, with cumulative temporality.  The agent uses
+the W3C trace context propagator.  It shuts both providers down before it
+exits, so that the driver gets everything.  The driver tells the processes
+apart by the resource's `service.name`.
+
+In the `prometheus` phase, the driver sets `DOCKET_WORKER_METRICS_PORT` for
+the worker, and no OTLP variables.  The worker serves its metrics in the
+Prometheus text format at `http://127.0.0.1:PORT/metrics`, with a
+`target_info` family.
+
+The driver writes each implementation's normalized telemetry to
+`telemetry-NAME.json`, beside the agents' logs.

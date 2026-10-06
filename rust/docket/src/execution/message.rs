@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
 use crate::error::{Error, Result};
+use crate::telemetry;
 use crate::wire::{iso, parse_iso};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -17,14 +18,21 @@ pub(crate) struct Message {
     pub args: String,
     pub attempt: u32,
     pub generation: i64,
+    /// The trace context the message arrived with, which links its run to
+    /// the span that put it in the docket.
+    pub trace: HashMap<String, String>,
 }
 
 impl Message {
-    /// The fields in the order the scripts expect.  `kwargs` exists because
-    /// the scripts copy it into the run state, and Lua cannot write a missing
-    /// value.  pydocket keeps keyword arguments there; docket-rs has none.
+    /// The fields in the order the scripts expect, then the current trace
+    /// context.  `kwargs` exists because the scripts copy it into the run
+    /// state, and Lua cannot write a missing value.  pydocket keeps keyword
+    /// arguments there; docket-rs has none.
+    ///
+    /// A message takes the context current when it goes into the docket,
+    /// not the one it arrived with, so a retry links to the run that failed.
     pub fn fields(&self) -> Vec<(String, Vec<u8>)> {
-        [
+        let standard = [
             ("key", self.key.clone()),
             ("when", iso(self.when)),
             ("function", self.function.clone()),
@@ -34,8 +42,11 @@ impl Message {
             ("generation", self.generation.to_string()),
         ]
         .into_iter()
-        .map(|(field, value)| (field.to_owned(), value.into_bytes()))
-        .collect()
+        .map(|(field, value)| (field.to_owned(), value));
+        standard
+            .chain(telemetry::inject())
+            .map(|(field, value)| (field, value.into_bytes()))
+            .collect()
     }
 
     /// The message in a stream entry, whose values Redis sends as bulk
@@ -78,6 +89,7 @@ impl Message {
             } else {
                 0
             },
+            trace: telemetry::carrier(fields),
         })
     }
 }

@@ -10,7 +10,10 @@ publish = false
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6.7", features = ["derive"] }
-docket-rs = { path = "../docket" }
+docket-rs = { path = "../docket", features = ["prometheus"] }
+opentelemetry = { version = "0.33", default-features = false, features = ["trace", "metrics"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "metrics"] }
 rand = "0.10.3"
 redis = { version = "1.7.1", features = ["aio", "tokio-comp", "connection-manager"] }
 serde = { version = "1.0.229", features = ["derive"] }

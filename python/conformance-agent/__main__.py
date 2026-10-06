@@ -15,9 +15,11 @@ import argparse
 import asyncio
 import importlib
 import logging
+import os
 from types import ModuleType
 
 from docket import Docket, Worker
+from exporters import exporting
 
 
 def scenario_module(scenario: str) -> ModuleType:
@@ -31,12 +33,15 @@ async def produce(scenario: str, url: str, docket_name: str) -> None:
 
 async def work(scenario: str, url: str, docket_name: str) -> None:
     module = scenario_module(scenario)
+    # `docket worker` reads this variable, and Worker.run does not.
+    metrics_port = os.environ.get("DOCKET_WORKER_METRICS_PORT")
     # Worker.run is what `docket worker` runs, so the worker stops on SIGTERM
     # and SIGINT the way a deployed one does.
     await Worker.run(
         docket_name=docket_name,
         url=url,
         tasks=[f"{module.__name__}:tasks"],
+        metrics_port=int(metrics_port) if metrics_port else None,
         **module.WORKER,
     )
 
@@ -55,7 +60,8 @@ def main() -> None:
     )
 
     role = produce if arguments.role == "produce" else work
-    asyncio.run(role(arguments.scenario, arguments.url, arguments.docket))
+    with exporting():
+        asyncio.run(role(arguments.scenario, arguments.url, arguments.docket))
 
 
 if __name__ == "__main__":

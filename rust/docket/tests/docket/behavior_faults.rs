@@ -78,7 +78,7 @@ async fn a_refused_renewal_still_completes_the_task() {
     .unwrap();
 
     assert_eq!(state(&execution).await, State::Completed);
-    assert!(logs.contains("renewing a concurrency slot failed"));
+    assert!(logs.contains("Concurrency lease renewal failed for"));
 }
 
 /// Runs two tasks under a limit of one, so that one of them parks, with

@@ -89,11 +89,30 @@ own tests need no server:
 docket-rs = { version = "0.1", features = ["memory"] }
 ```
 
+## Logs, metrics, and traces
+
+docket-rs logs, counts, and traces the same things as pydocket, with the same
+names, so one dashboard reads both.
+
+- Logs go through `tracing`.  Each run logs when it starts and ends, inside a
+  span with the docket, worker, task, key, and attempt.  A run's log lines
+  show only the argument fields marked `#[task(logged)]`, or
+  `#[task(logged(length_only))]` for a collection's length.
+- Metrics and spans go through the `opentelemetry` API, and record nothing
+  until you install a meter provider or a tracer provider.  A docket binds to
+  the global providers when it connects, so install them first.
+- Each message carries the trace context of the span that added it, and each
+  run's span links back to that span.  Install a text map propagator, such as
+  `TraceContextPropagator`, for the links.
+- The `prometheus` feature serves the metrics in the Prometheus text format,
+  the way pydocket's `--metrics-port` does: see `docket::prometheus`.
+
 ## Command line
 
 docket-rs ships no worker binary.  The `cli` feature gives your binary the
 worker options of pydocket's `docket worker`, as a clap struct to flatten into
-your own command line: see `docket::cli::WorkerArgs`.
+your own command line: see `docket::cli::WorkerArgs`.  It includes
+`--metrics-port` and `--healthcheck-port`.
 
 ## Working on docket-rs
 

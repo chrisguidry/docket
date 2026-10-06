@@ -144,7 +144,7 @@ pub(super) async fn renew_leases(worker: Arc<Shared>) {
                 .query_async(&mut connection)
                 .await;
             if let Err(error) = renewed {
-                tracing::warn!(%error, "renewing task leases failed");
+                tracing::warn!(%error, "Failed to renew leases");
             }
         }
     }

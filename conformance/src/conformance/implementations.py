@@ -50,7 +50,20 @@ async def prepare_python(version: str, workdir: Path) -> Implementation:
     python = str(venv / "bin" / "python")
     logger.info("Installing pydocket %s into %s", version, venv)
     await run("uv", "venv", "--quiet", str(venv), "--python", sys.executable)
-    await run("uv", "pip", "install", "--quiet", "--python", python, *source)
+    # pydocket depends only on opentelemetry-api and prometheus-client.  The
+    # telemetry scenario's agent also needs the SDK and the OTLP exporter, and
+    # older releases have no extra that brings them.
+    await run(
+        "uv",
+        "pip",
+        "install",
+        "--quiet",
+        "--python",
+        python,
+        *source,
+        "opentelemetry-sdk",
+        "opentelemetry-exporter-otlp-proto-http",
+    )
 
     agent = str(REPOSITORY / "python" / "conformance-agent")
     return Implementation(f"python@{version}", [python, agent])

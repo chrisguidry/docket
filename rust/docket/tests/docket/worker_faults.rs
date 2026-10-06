@@ -31,16 +31,17 @@ fn hasty(docket: &Docket) -> Worker {
 #[case::reading(|proxy: &Proxy| proxy.fail("XREADGROUP", 1), "injected failure for XREADGROUP")]
 #[case::taking_the_sweep_lease(|proxy: &Proxy| proxy.fail("SET", 1), "injected failure for SET")]
 #[case::sweeping(|proxy: &Proxy| proxy.fail("XAUTOCLAIM", 1), "injected failure for XAUTOCLAIM")]
-#[case::checking_for_work(|proxy: &Proxy| proxy.fail("XLEN", 1), "injected failure for XLEN")]
+#[case::checking_for_work(|proxy: &Proxy| proxy.fail("ZCARD", 1), "injected failure for ZCARD")]
 #[case::claiming(
     |proxy: &Proxy| proxy.fail_script(include_str!("../../lua/claim.lua"), 1),
     "injected failure for EVALSHA"
 )]
 #[case::moving_due_tasks(
     |proxy: &Proxy| proxy.fail_script(include_str!("../../lua/stream_due_tasks.lua"), 1),
-    "moving due tasks failed"
+    "Error in scheduler loop"
 )]
-#[case::beating(|proxy: &Proxy| proxy.fail("MULTI", 1), "the heartbeat failed")]
+#[case::beating(|proxy: &Proxy| proxy.fail("MULTI", 1), "Error sending worker heartbeat")]
+#[case::measuring_the_depths(|proxy: &Proxy| proxy.fail("ZCOUNT", 1), "Error sending worker heartbeat")]
 #[tokio::test]
 async fn a_worker_finishes_its_tasks_after_redis_refuses_a_command(
     #[case] arm: fn(&Proxy),
@@ -218,7 +219,7 @@ async fn a_worker_logs_when_redis_refuses_to_renew_its_leases() {
         .await
         .unwrap();
 
-    assert!(logs.contains("renewing task leases failed"));
+    assert!(logs.contains("Failed to renew leases"));
 }
 
 type Report = fn(Context) -> BoxFuture<'static, docket::Result<()>>;

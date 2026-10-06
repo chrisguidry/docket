@@ -15,6 +15,16 @@ fn a_schedule_reply_names_its_disposition(#[case] reply: Value, #[case] expected
 }
 
 #[rstest]
+#[case(Disposition::Scheduled, "scheduled")]
+#[case(Disposition::AlreadyScheduled, "already_scheduled")]
+#[case(Disposition::Struck, "struck")]
+#[case(Disposition::Superseded, "superseded")]
+#[case(Disposition::Failed("refused".into()), "failed")]
+fn a_disposition_has_pydockets_name(#[case] disposition: Disposition, #[case] name: &str) {
+    assert_eq!(disposition.as_str(), name);
+}
+
+#[rstest]
 #[case(State::Scheduled)]
 #[case(State::Queued)]
 #[case(State::Running)]

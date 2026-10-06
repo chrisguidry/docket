@@ -56,6 +56,7 @@ fn defaults_match_pydocket() {
     assert_eq!(args.scheduling_resolution, Duration::from_millis(250));
     assert!(args.schedule_automatic_tasks);
     assert!(!args.until_finished);
+    assert_eq!((args.healthcheck_port, args.metrics_port), (None, None));
 }
 
 #[test]
@@ -82,6 +83,10 @@ fn reads_every_option() {
         "--schedule-automatic-tasks",
         "false",
         "--until-finished",
+        "--healthcheck-port",
+        "8080",
+        "--metrics-port",
+        "9090",
     ]);
     assert_eq!(
         (args.docket.as_str(), args.url.as_str()),
@@ -92,6 +97,10 @@ fn reads_every_option() {
     assert_eq!(args.redelivery_timeout, Duration::from_secs(60));
     assert!(!args.schedule_automatic_tasks);
     assert!(args.until_finished);
+    assert_eq!(
+        (args.healthcheck_port, args.metrics_port),
+        (Some(8080), Some(9090))
+    );
 }
 
 #[cfg(feature = "memory")]
@@ -157,4 +166,101 @@ async fn a_worker_stops_on_a_shutdown_signal(#[case] signal: &str) {
     signal_until_finished(signal, &run).await;
 
     run.await.unwrap().unwrap();
+}
+
+/// A port that nothing listens on.  The servers listen on every address,
+/// and the tests reach them on the loopback one.
+#[cfg(feature = "memory")]
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+#[cfg(feature = "memory")]
+async fn get(port: u16) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    stream.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).await.unwrap();
+    answer
+}
+
+#[cfg(feature = "memory")]
+#[tokio::test]
+async fn serves_a_healthcheck_and_the_metrics_it_installed() {
+    let (healthcheck, metrics) = (free_port(), free_port());
+    let args = parse(&[
+        "--url",
+        "memory://cli-servers",
+        "--healthcheck-port",
+        &healthcheck.to_string(),
+        "--metrics-port",
+        &metrics.to_string(),
+    ]);
+    let _docket = args.docket().await.unwrap();
+    let _servers = args.servers().await.unwrap();
+    opentelemetry::global::meter("cli-test")
+        .u64_counter("cli_scrapes")
+        .build()
+        .add(1, &[]);
+
+    let health = get(healthcheck).await;
+    let page = get(metrics).await;
+
+    assert!(health.contains("Content-Type: text/plain\r\n"), "{health}");
+    assert!(health.ends_with("\r\n\r\nOK"), "{health}");
+    assert!(
+        page.contains("Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n"),
+        "{page}"
+    );
+    assert!(page.contains("\ncli_scrapes_total 1.0\n"), "{page}");
+}
+
+#[cfg(feature = "memory")]
+#[tokio::test]
+async fn runs_a_worker_with_its_servers() {
+    let args = parse(&[
+        "--url",
+        "memory://cli-run-servers",
+        "--until-finished",
+        "--healthcheck-port",
+        &free_port().to_string(),
+        "--metrics-port",
+        &free_port().to_string(),
+    ]);
+    let docket = args.docket().await.unwrap();
+    args.run(&docket).await.unwrap();
+}
+
+#[cfg(feature = "memory")]
+#[rstest]
+#[case::healthcheck("--healthcheck-port", "the healthcheck")]
+#[case::metrics("--metrics-port", "the metrics")]
+#[tokio::test]
+async fn refuses_a_port_in_use(#[case] option: &str, #[case] server: &str) {
+    let taken = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let args = parse(&[
+        "--url",
+        "memory://cli-port-in-use",
+        option,
+        &port.to_string(),
+    ]);
+    let docket = args.docket().await.unwrap();
+
+    let error = args.run(&docket).await.unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .starts_with(&format!("cannot serve {server} on port {port}: ")),
+        "{error}"
+    );
 }

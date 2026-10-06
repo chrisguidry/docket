@@ -4,8 +4,14 @@ version = "0"
 description = "Runs the same scenarios against every docket implementation"
 requires-python = ">=3.10"
 # The driver talks to Redis and the agents, never to docket, so that it stays
-# the same for every language.
-dependencies = ["docker>=7.1.0", "redis>=6"]
+# the same for every language.  The telemetry scenario decodes OTLP and parses
+# the Prometheus text format.
+dependencies = [
+    "docker>=7.1.0",
+    "opentelemetry-proto>=1.33.0",
+    "prometheus-client>=0.21.1",
+    "redis>=6",
+]
 
 [build-system]
 requires = ["hatchling"]

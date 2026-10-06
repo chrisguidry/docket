@@ -87,9 +87,21 @@ impl Shared {
             .values()
             .filter(|active| active.key == key)
         {
+            tracing::info!("Cancelling running task {key:?}");
             active.cancelled_by_docket.store(true, Ordering::SeqCst);
             active.cancel.cancel();
         }
+    }
+
+    /// Counts a time the worker went on after Redis dropped, refused, or
+    /// timed out a command.
+    pub fn disrupted(&self) {
+        let labels = crate::telemetry::worker_labels(self.docket.name(), &self.settings.name);
+        self.docket
+            .telemetry()
+            .metrics
+            .redis_disruptions
+            .add(1, &labels);
     }
 
     /// Counts a run of `key`, and says whether `run_at_most` allows it.
@@ -117,11 +129,17 @@ pub(crate) struct Delivery {
 }
 
 pub(super) async fn run(worker: Arc<Shared>, until: Until) -> Result<()> {
+    startup_log(&worker);
     let mut tasks = JoinSet::new();
     loop {
         match session(&worker, &until, &mut tasks).await {
             Err(error) if error.is_redis_unavailable() => {
-                tracing::warn!(%error, "Redis is unavailable; reconnecting");
+                worker.disrupted();
+                tracing::warn!(
+                    %error,
+                    "Redis is unavailable, retrying in {:?}...",
+                    worker.settings.reconnection_delay
+                );
                 let shutdown = shutdown_token(&until);
                 tokio::select! {
                     () = tokio::time::sleep(worker.settings.reconnection_delay) => {}
@@ -130,6 +148,24 @@ pub(super) async fn run(worker: Arc<Shared>, until: Until) -> Result<()> {
             }
             result => return result,
         }
+    }
+}
+
+/// Lists the tasks the worker runs, as pydocket's worker does when it
+/// starts, with each task's fields in place of a Python signature.
+fn startup_log(worker: &Shared) {
+    let docket = &worker.docket;
+    tracing::info!(
+        "Starting worker {:?} with the following tasks:",
+        worker.settings.name
+    );
+    for name in docket.task_names() {
+        let fields = docket
+            .registered(&name)
+            .map(|registered| registered.fields)
+            .unwrap_or_default();
+        let fields: Vec<&str> = fields.iter().map(|field| field.name).collect();
+        tracing::info!("* {name}({})", fields.join(", "));
     }
 }
 
@@ -331,6 +367,12 @@ fn collect(finished: std::result::Result<Result<()>, tokio::task::JoinError>) ->
 }
 
 async fn drain(tasks: &mut JoinSet<Result<()>>) -> Result<()> {
+    if !tasks.is_empty() {
+        tracing::info!(
+            "Shutdown requested, finishing {} active tasks...",
+            tasks.len()
+        );
+    }
     let mut first_error = Ok(());
     while let Some(finished) = tasks.join_next().await {
         if let Err(error) = collect(finished) {
@@ -356,7 +398,7 @@ async fn scheduler(worker: Arc<Shared>) {
         }
         .call();
         if let Err(error) = call.run::<redis::Value, _>(&mut docket.handle()).await {
-            tracing::warn!(%error, "moving due tasks failed");
+            tracing::error!(%error, "Error in scheduler loop");
         }
         tokio::time::sleep(worker.settings.scheduling_resolution).await;
     }

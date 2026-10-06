@@ -72,7 +72,7 @@ async fn a_slot_without_redis_warns_on_renewal_and_release() {
         1,
     );
 
-    logs.wait_for("renewing a concurrency slot failed").await;
+    logs.wait_for("Concurrency lease renewal failed for").await;
     let release = admitted.release.unwrap();
     release(Released::Ran).await;
 

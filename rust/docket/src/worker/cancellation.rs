@@ -34,7 +34,7 @@ async fn listen(worker: Arc<Shared>, mut subscribed: Option<oneshot::Sender<()>>
             let _ = subscribed.send(());
         }
         let Ok(pubsub) = pubsub else {
-            tokio::time::sleep(RETRY_DELAY).await;
+            reconnect(&worker).await;
             continue;
         };
         // Docket publishes the task's key, so a message that is not text
@@ -48,8 +48,15 @@ async fn listen(worker: Arc<Shared>, mut subscribed: Option<oneshot::Sender<()>>
                 tracing::warn!(%error, %key, "cleaning up a cancelled waiter failed");
             }
         }
-        tokio::time::sleep(RETRY_DELAY).await;
+        reconnect(&worker).await;
     }
+}
+
+/// Counts and logs a lost subscription, then waits before the next one.
+async fn reconnect(worker: &Shared) {
+    worker.disrupted();
+    tracing::warn!("Redis error in cancellation listener, reconnecting...");
+    tokio::time::sleep(RETRY_DELAY).await;
 }
 
 /// Removes a cancelled task from the concurrency waiter stream it is parked

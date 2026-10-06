@@ -10,6 +10,7 @@ mod perpetual;
 mod perpetual_single_flight;
 mod redelivery;
 mod same_key;
+mod telemetry;
 
 use std::time::Duration;
 
@@ -27,6 +28,7 @@ pub enum Scenario {
     PerpetualSingleFlight,
     Redelivery,
     SameKey,
+    Telemetry,
 }
 
 pub fn find(name: &str) -> Scenario {
@@ -40,6 +42,7 @@ pub fn find(name: &str) -> Scenario {
         "perpetual-single-flight" => Scenario::PerpetualSingleFlight,
         "redelivery" => Scenario::Redelivery,
         "same-key" => Scenario::SameKey,
+        "telemetry" => Scenario::Telemetry,
         _ => {
             eprintln!("no scenario is named {name}");
             std::process::exit(2);
@@ -63,6 +66,7 @@ impl Scenario {
             Self::Perpetual | Self::PerpetualSingleFlight => Ok(()),
             Self::Redelivery => redelivery::produce(docket).await,
             Self::SameKey => same_key::produce(docket, events).await,
+            Self::Telemetry => telemetry::produce(docket).await,
         }
     }
 
@@ -78,6 +82,7 @@ impl Scenario {
             Self::PerpetualSingleFlight => perpetual_single_flight::worker(docket, events, worker),
             Self::Redelivery => redelivery::worker(docket, events, worker),
             Self::SameKey => same_key::worker(docket, events, worker),
+            Self::Telemetry => telemetry::worker(docket, events, worker),
         }
     }
 }
