@@ -8,7 +8,6 @@ connections get, and pushes them to that one callback as an AUTH token whose
 "oid" claim is the username.
 """
 
-import inspect
 from typing import Any, Callable
 
 from redis.auth.token import SimpleToken
@@ -20,9 +19,8 @@ class RotatingProvider(StreamingCredentialProvider):
         self.credentials = (username, password)
         self._on_next: Callable[[Any], Any] | None = None
 
-    def get_credentials(self) -> tuple[str, str]:
-        return self.credentials
-
+    # Only the async method: docket's clients are all asyncio, so redis-py
+    # never asks for the credentials synchronously.
     async def get_credentials_async(self) -> tuple[str, str]:
         return self.credentials
 
@@ -40,6 +38,5 @@ class RotatingProvider(StreamingCredentialProvider):
         if self._on_next is None:
             return
         token = SimpleToken(password, -1, -1, {"oid": username})
-        result = self._on_next(token)
-        if inspect.isawaitable(result):
-            await result
+        # redis-py's asyncio clients register a coroutine function.
+        await self._on_next(token)
