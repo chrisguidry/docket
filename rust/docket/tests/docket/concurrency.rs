@@ -222,16 +222,23 @@ async fn the_safeguard_wakes_a_waiter_after_its_slot_holder_dies() {
 #[tokio::test]
 async fn a_parked_task_has_no_worker_or_start_time() {
     let docket = docket().await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let starting = Arc::clone(&started);
     docket
-        .register(|_ctx, _: Noop| async {
-            std::future::pending::<()>().await;
-            Ok::<_, std::io::Error>(())
+        .register(move |_ctx, _: Noop| {
+            starting.notify_one();
+            async {
+                std::future::pending::<()>().await;
+                Ok::<_, std::io::Error>(())
+            }
         })
         .with(ConcurrencyLimit::new(1));
+    // The waiter goes in only after the holder has its slot, because the
+    // worker may start either of two tasks it reads together.
     docket.add(Noop).await.unwrap();
-    let waiter = docket.add(Noop).await.unwrap();
-
     let running = tokio::spawn(worker(&docket).concurrency(2).run_forever());
+    within(10, started.notified()).await;
+    let waiter = docket.add(Noop).await.unwrap();
     within(10, async {
         while !safeguard_scheduled(&docket).await {
             tokio::time::sleep(Duration::from_millis(20)).await;
