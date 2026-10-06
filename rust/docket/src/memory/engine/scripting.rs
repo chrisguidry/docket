@@ -117,7 +117,7 @@ impl LuaEngine {
         let mut hasher = Sha1::new();
         hasher.update(script.as_bytes());
         let result = hasher.finalize();
-        format!("{:x}", result)
+        result.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     /// Execute a Lua script with access to KEYS, ARGV, and redis.call()/redis.pcall().
