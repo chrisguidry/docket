@@ -9,7 +9,7 @@ which user each connection is authenticated as.
 
 import asyncio
 import gc
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from typing import Any, AsyncGenerator, Callable, NamedTuple
 from uuid import uuid4
@@ -147,10 +147,11 @@ async def reading(pubsub: Any) -> AsyncGenerator[list[bytes], None]:
     try:
         yield received
     finally:
-        if reader.done():
-            reader.result()  # the reader's own error, if it failed
+        # Cancelling a reader that already failed does nothing, so awaiting it
+        # raises the reader's own error.
         reader.cancel()
-        await asyncio.gather(reader, return_exceptions=True)
+        with suppress(asyncio.CancelledError):
+            await reader
 
 
 async def test_a_rotation_leaves_a_reading_subscriber_alone(
@@ -160,23 +161,43 @@ async def test_a_rotation_leaves_a_reading_subscriber_alone(
     rotation leaves it alone: one connection, still getting messages."""
     old, new = users
     provider = RotatingProvider(*old)
+    # One statement for both, because coverage.py's sys.monitoring core reports
+    # a false partial branch on the innermost of three nested with statements.
+    async with (
+        RedisConnection(credential_less_url, provider) as connection,
+        connection.pubsub() as pubsub,
+    ):
+        await pubsub.subscribe("rotation")
+        async with reading(pubsub) as received:
+            await wait_until(
+                lambda: subscribed_as(admin, users, old),
+                description="the subscriber to authenticate as the old user",
+            )
+
+            await provider.rotate(*new)
+            await admin.publish("rotation", "after")  # type: ignore[reportUnknownMemberType]
+            await wait_until(
+                lambda: b"after" in received,
+                description="a message published after the rotation",
+            )
+
+            assert await subscribers(admin, users) == [old.name]
+
+
+async def test_a_rotation_before_connecting_reaches_the_first_connection(
+    credential_less_url: str, admin: Redis, users: tuple[User, User]
+):
+    """A token refresh can land before docket opens any connection, and the
+    first connection must authenticate with the refreshed token."""
+    old, new = users
+    provider = RotatingProvider(*old)
+
+    await provider.rotate(*new)
+
     async with RedisConnection(credential_less_url, provider) as connection:
-        async with connection.pubsub() as pubsub:
-            await pubsub.subscribe("rotation")
-            async with reading(pubsub) as received:
-                await wait_until(
-                    lambda: subscribed_as(admin, users, old),
-                    description="the subscriber to authenticate as the old user",
-                )
-
-                await provider.rotate(*new)
-                await admin.publish("rotation", "after")  # type: ignore[reportUnknownMemberType]
-                await wait_until(
-                    lambda: b"after" in received,
-                    description="a message published after the rotation",
-                )
-
-                assert await subscribers(admin, users) == [old.name]
+        async with connection.client() as r:
+            await r.exists("rotation")
+        assert await authenticated_as(admin, users, subscribed=False) == {new.name}
 
 
 async def test_a_rotation_after_close_opens_no_connections(
@@ -237,3 +258,8 @@ async def test_a_worker_keeps_working_when_the_old_user_is_revoked(
             after = await docket.add(add)(3, 4)
             await worker.run_until_finished()
             assert await after.get_result() == 7
+
+
+def test_the_provider_streams():
+    """It says it streams, as redis-entraid's provider does."""
+    assert RotatingProvider("user", "secret").is_streaming()
