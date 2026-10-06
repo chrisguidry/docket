@@ -330,6 +330,9 @@ The `execution_ttl` controls:
 - How long state records persist in Redis after task completion
 - How long result data is retained (see Result Storage below)
 
+A task added under the key of one that has ended starts a record of its own,
+which expires only once that task ends.
+
 It does not affect progress information, which Docket deletes when the task ends.
 
 ### Fire-and-Forget Mode
