@@ -79,6 +79,46 @@ async def test_running_worker_resows_severed_automatic_perpetual(
     await docket.cancel("perpetual_task")
 
 
+async def test_running_worker_resows_an_automatic_perpetual_after_a_clear(
+    docket: Docket,
+    worker: Worker,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """clear() cancels the perpetual's next run, so the next re-seed adds it
+    again, not only once the cleared record expires."""
+    monkeypatch.setattr(
+        "docket.worker.AUTOMATIC_PERPETUAL_RESEED_INTERVAL_SECONDS", 0.05
+    )
+
+    calls = 0
+
+    async def perpetual_task(
+        perpetual: Perpetual = Perpetual(every=timedelta(seconds=30), automatic=True),
+    ):
+        nonlocal calls
+        calls += 1
+
+    docket.register(perpetual_task)
+    runs_key = docket.runs_key("perpetual_task")
+
+    async def next_run_is_parked() -> bool:
+        async with docket.redis() as redis:
+            return await redis.hget(runs_key, "state") == b"scheduled"
+
+    run = asyncio.create_task(worker.run_forever())
+    await wait_until(lambda: calls == 1, description="startup seeding ran the task")
+    await wait_until(next_run_is_parked, description="next run parked")
+
+    await docket.clear()
+
+    await wait_until(lambda: calls == 2, description="re-seeding re-ran the perpetual")
+
+    run.cancel()
+    await asyncio.gather(run, return_exceptions=True)
+
+    await docket.cancel("perpetual_task")
+
+
 async def test_fallback_drop_then_reseed_recovers_chain(
     docket: Docket,
     caplog: pytest.LogCaptureFixture,

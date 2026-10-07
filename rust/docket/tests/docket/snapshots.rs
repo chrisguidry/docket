@@ -1,14 +1,18 @@
 //! Looking at what a docket holds: snapshots, single executions, and
 //! clearing it out.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use docket::Docket;
+use docket::{Docket, Event, State};
+use futures::StreamExt;
 use redis::AsyncCommands;
 use redis::aio::MultiplexedConnection;
+use rstest::rstest;
+use tokio::sync::Notify;
 
-use crate::support::{Echo, Noop, docket, url};
+use crate::support::{Echo, Noop, docket, url, within, worker};
 
 /// A plain connection to the Redis under the tests, when they run against a
 /// plain Redis, for writing what docket itself never writes.  A docket's keys
@@ -111,4 +115,107 @@ async fn a_docket_that_keeps_nothing_forgets_cleared_tasks() {
         .unwrap();
     assert_eq!(docket.clear().await.unwrap(), 1);
     assert_eq!(execution.status().await.unwrap(), None);
+}
+
+#[rstest]
+#[case::queued(Duration::ZERO)]
+#[case::scheduled(Duration::from_secs(60))]
+#[tokio::test]
+async fn clear_cancels_each_task_it_removes(#[case] delay: Duration) {
+    let docket = docket().await;
+    let execution = docket.add(Noop).key("cleared").after(delay).await.unwrap();
+
+    docket.clear().await.unwrap();
+
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Cancelled
+    );
+}
+
+#[rstest]
+#[case::queued(Duration::ZERO)]
+#[case::scheduled(Duration::from_secs(60))]
+#[tokio::test]
+async fn a_cleared_key_can_be_added_again(#[case] delay: Duration) {
+    let docket = docket().await;
+    docket.register(|_ctx, args: Echo| async move { Ok::<_, std::io::Error>(args.text) });
+    docket
+        .add(Echo::new("first"))
+        .key("cleared")
+        .after(delay)
+        .await
+        .unwrap();
+    docket.clear().await.unwrap();
+
+    let second = docket
+        .add(Echo::new("second"))
+        .key("cleared")
+        .await
+        .unwrap();
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert_eq!(within(10, second.result()).await.unwrap(), "second");
+}
+
+/// No worker holds a task that has not started, so the clear itself has to
+/// publish the cancelled state, the way a cancel does.
+#[rstest]
+#[case::queued(Duration::ZERO)]
+#[case::scheduled(Duration::from_secs(60))]
+#[tokio::test]
+async fn clear_tells_a_follower_that_the_task_is_cancelled(#[case] delay: Duration) {
+    let docket = docket().await;
+    let execution = docket.add(Noop).after(delay).await.unwrap();
+    let mut events = execution.subscribe().await.unwrap();
+
+    docket.clear().await.unwrap();
+
+    within(10, async {
+        while let Some(event) = events.next().await {
+            if let Event::State(event) = event.unwrap()
+                && event.state == State::Cancelled
+            {
+                return;
+            }
+        }
+    })
+    .await;
+}
+
+/// A docket that keeps no records still keeps a running task's record until
+/// the task ends, so the task shows as running through a clear.
+#[tokio::test]
+async fn clear_leaves_a_running_task_alone() {
+    let docket = Docket::builder(format!("docket-test-{}", uuid::Uuid::now_v7()), url())
+        .execution_ttl(Duration::ZERO)
+        .connect()
+        .await
+        .unwrap();
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let (starting, released) = (Arc::clone(&started), Arc::clone(&release));
+    docket.register(move |_ctx, _: Noop| {
+        let (starting, released) = (Arc::clone(&starting), Arc::clone(&released));
+        async move {
+            starting.notify_one();
+            released.notified().await;
+            Ok::<_, std::io::Error>(())
+        }
+    });
+    docket.add(Noop).key("held").await.unwrap();
+    let run = tokio::spawn(worker(&docket).run_until_finished());
+    within(10, started.notified()).await;
+
+    docket.clear().await.unwrap();
+    let during = match docket.execution("held").await.unwrap() {
+        Some(execution) => execution.status().await.unwrap().map(|status| status.state),
+        None => None,
+    };
+    release.notify_one();
+    within(10, run).await.unwrap().unwrap();
+
+    assert_eq!(during, Some(State::Running));
 }

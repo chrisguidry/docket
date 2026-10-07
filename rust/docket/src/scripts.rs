@@ -251,6 +251,13 @@ scripts! {
         args: [task_key: Text, completed_at: Text, state_payload: Text],
     }
 
+    /// Cancels every task that has not started, and empties the stream and
+    /// the queue.
+    Clear = "clear" {
+        keys: [stream_key, queue_key],
+        args: [docket_prefix: Text, completed_at: Text, ttl_seconds: Integer],
+    }
+
     /// Marks a delivered task as running on a worker.
     Claim = "claim" {
         keys: [runs_key, progress_key, known_key, stream_id_key, state_channel, stream_key],

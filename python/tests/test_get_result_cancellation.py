@@ -62,6 +62,31 @@ async def test_cancel_wakes_get_result_before_the_task_starts(
         await waiter
 
 
+@pytest.mark.parametrize(
+    "delay",
+    [
+        pytest.param(timedelta(hours=1), id="scheduled"),
+        pytest.param(timedelta(0), id="queued"),
+    ],
+)
+async def test_clear_wakes_get_result_before_the_task_starts(
+    docket: Docket, now: Callable[[], datetime], delay: timedelta
+):
+    """clear() cancels each task that has not started, so it publishes the
+    cancelled state the way cancel() does."""
+
+    async def never_runs() -> None: ...
+
+    execution = await docket.add(never_runs, when=now() + delay)()
+    waiter = asyncio.create_task(execution.get_result(timeout=timedelta(seconds=5)))
+    await wait_for_subscriber(docket, execution.key)
+
+    await docket.clear()
+
+    with pytest.raises(ExecutionCancelled):
+        await waiter
+
+
 async def test_cancel_wakes_get_result_on_a_running_task(
     docket: Docket, worker: Worker
 ):

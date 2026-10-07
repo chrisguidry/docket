@@ -149,12 +149,8 @@ type Faulty = fn(Docket, Arc<Proxy>) -> BoxFuture<'static, docket::Result<()>>;
     proxy.fail("ZRANGE", 1);
     docket.workers().await.map(drop)
 }.boxed())]
-#[case::clear_read(|docket: Docket, proxy: Arc<Proxy>| async move {
-    proxy.fail("XLEN", 1);
-    docket.clear().await.map(drop)
-}.boxed())]
-#[case::clear_write(|docket: Docket, proxy: Arc<Proxy>| async move {
-    proxy.fail("XTRIM", 1);
+#[case::clear(|docket: Docket, proxy: Arc<Proxy>| async move {
+    proxy.fail_script(include_str!("../../lua/clear.lua"), 1);
     docket.clear().await.map(drop)
 }.boxed())]
 #[case::execution(|docket: Docket, proxy: Arc<Proxy>| async move {

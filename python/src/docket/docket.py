@@ -27,6 +27,7 @@ from ._docket_snapshot import DocketSnapshotMixin
 from ._docket_snapshot import RunningExecution as RunningExecution
 from ._docket_snapshot import WorkerInfo as WorkerInfo
 from ._execution_scripts import _cancel_task
+from ._lua import Arg, Key, redis_script
 from ._redis import (
     PubSubClient,
     RedisClient,
@@ -66,6 +67,18 @@ from .strikelist import (
 
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: trace.Tracer = trace.get_tracer(__name__)
+
+
+@redis_script
+async def _clear(
+    redis: RedisClient,
+    *,
+    stream_key: Key[str],
+    queue_key: Key[str],
+    docket_prefix: Arg[str],
+    completed_at: Arg[str],
+    ttl_seconds: Arg[int],
+) -> int: ...
 
 
 P = ParamSpec("P")
@@ -1024,8 +1037,11 @@ class Docket(DocketSnapshotMixin):
         """Clear all queued and scheduled tasks from the docket.
 
         This removes all tasks from the stream (immediate tasks) and queue
-        (scheduled tasks), along with their associated parked data. Running
-        tasks are not affected.
+        (scheduled tasks), along with their associated parked data, and
+        cancels each task that has not started, as ``cancel()`` does: its
+        key is free for a new task at once, and a caller waiting on its
+        result receives ``ExecutionCancelled``.  Running tasks are not
+        affected.
 
         Returns:
             The total number of tasks that were cleared.
@@ -1035,59 +1051,11 @@ class Docket(DocketSnapshotMixin):
             attributes=self.labels(),
         ):
             async with self.redis() as redis:
-                async with redis.pipeline() as pipeline:
-                    # Get counts before clearing
-                    pipeline.xlen(self.stream_key)
-                    pipeline.zcard(self.queue_key)
-                    pipeline.zrange(self.queue_key, 0, -1)
-
-                    stream_count: int
-                    queue_count: int
-                    scheduled_keys: list[bytes]
-                    stream_count, queue_count, scheduled_keys = await pipeline.execute()
-
-                # Get keys from stream messages before trimming
-                stream_keys: list[str] = []
-                if stream_count > 0:
-                    # Read all messages from the stream
-                    messages = await redis.xrange(self.stream_key, "-", "+")
-                    for message_id, fields in messages:
-                        # Extract the key field from the message
-                        if b"key" in fields:  # pragma: no branch
-                            stream_keys.append(fields[b"key"].decode())
-
-                async with redis.pipeline() as pipeline:
-                    # Clear all data
-                    # Trim stream to 0 messages instead of deleting it to preserve consumer group
-                    if stream_count > 0:
-                        pipeline.xtrim(self.stream_key, maxlen=0, approximate=False)
-                    pipeline.delete(self.queue_key)
-
-                    # Clear parked task data and known task keys for scheduled tasks
-                    for key_bytes in scheduled_keys:
-                        task_key = key_bytes.decode()
-                        pipeline.delete(self.parked_task_key(task_key))
-                        pipeline.delete(self.known_task_key(task_key))
-                        pipeline.delete(self.stream_id_key(task_key))
-
-                        # Handle runs hash: set TTL or delete based on execution_ttl
-                        task_runs_key = self.runs_key(task_key)
-                        if self.execution_ttl:
-                            ttl_seconds = int(self.execution_ttl.total_seconds())
-                            pipeline.expire(task_runs_key, ttl_seconds)
-                        else:
-                            pipeline.delete(task_runs_key)
-
-                    # Handle runs hash for immediate tasks from stream
-                    for task_key in stream_keys:
-                        task_runs_key = self.runs_key(task_key)
-                        if self.execution_ttl:
-                            ttl_seconds = int(self.execution_ttl.total_seconds())
-                            pipeline.expire(task_runs_key, ttl_seconds)
-                        else:
-                            pipeline.delete(task_runs_key)
-
-                    await pipeline.execute()
-
-                    total_cleared = stream_count + queue_count
-                    return total_cleared
+                return await _clear(
+                    redis,
+                    stream_key=self.stream_key,
+                    queue_key=self.queue_key,
+                    docket_prefix=self.prefix,
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    ttl_seconds=int(self.execution_ttl.total_seconds()),
+                )

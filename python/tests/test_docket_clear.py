@@ -1,11 +1,13 @@
 """Tests for docket.clear() and stream/consumer group bootstrap."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Callable, cast
 from unittest.mock import AsyncMock
 
 import pytest
 
+from docket import ExecutionState, Worker
 from docket.docket import Docket
 
 # Tests for docket.clear()
@@ -182,6 +184,76 @@ async def test_clear_with_execution_ttl_zero(the_task: AsyncMock):
             scheduled_runs = await redis.exists(f"{docket.name}:runs:scheduled1")
             assert immediate_runs == 0
             assert scheduled_runs == 0
+
+
+not_started = pytest.mark.parametrize(
+    "delay",
+    [
+        pytest.param(timedelta(0), id="queued"),
+        pytest.param(timedelta(hours=1), id="scheduled"),
+    ],
+)
+
+
+@not_started
+async def test_clear_cancels_each_task_it_removes(
+    docket: Docket, the_task: AsyncMock, now: Callable[[], datetime], delay: timedelta
+):
+    docket.register(the_task)
+    execution = await docket.add(the_task, when=now() + delay, key="cleared")()
+
+    await docket.clear()
+
+    await execution.sync()
+    assert execution.state == ExecutionState.CANCELLED
+
+
+@not_started
+async def test_a_cleared_key_can_be_added_again(
+    docket: Docket,
+    worker: Worker,
+    the_task: AsyncMock,
+    now: Callable[[], datetime],
+    delay: timedelta,
+):
+    docket.register(the_task)
+    await docket.add(the_task, when=now() + delay, key="cleared")("first")
+    await docket.clear()
+
+    await docket.add(the_task, key="cleared")("second")
+    await worker.run_until_finished()
+
+    the_task.assert_awaited_once_with("second")
+
+
+async def test_clear_leaves_a_running_task_alone(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
+    """A docket that keeps no records still keeps a running task's record until
+    the task ends, so the task shows as running through a clear."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def held() -> None:
+        started.set()
+        await release.wait()
+
+    async with Docket(
+        name=make_docket_name(), url=redis_url, execution_ttl=timedelta(0)
+    ) as docket:
+        docket.register(held)
+        await docket.add(held, key="held")()
+        async with Worker(docket) as worker:
+            running = asyncio.create_task(worker.run_until_finished())
+            await started.wait()
+
+            await docket.clear()
+            during = await docket.get_execution("held")
+            release.set()
+            await running
+
+    assert during is not None
+    assert during.state == ExecutionState.RUNNING
 
 
 # Tests for stream/consumer group bootstrap
