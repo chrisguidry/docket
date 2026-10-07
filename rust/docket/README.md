@@ -82,7 +82,9 @@ with Redis 6.2 and 8.10, Redis 8.10 in cluster mode, with ACLs, and behind
 Sentinel, and Valkey 8.0 and 9.1.
 
 `memory://`, behind the `memory` feature, runs an in-process Redis, so your
-own tests need no server:
+own tests need no server.  Each `memory://` URL keeps its data for the life of
+the process, as in pydocket, so a docket opened again on a URL finds what the
+last one left there:
 
 ```toml
 [dev-dependencies]

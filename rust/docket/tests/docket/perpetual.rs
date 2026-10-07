@@ -39,6 +39,31 @@ async fn a_perpetual_task_runs_again_after_each_run() {
     assert_eq!(*seen.lock().unwrap(), [1, 2, 3]);
 }
 
+/// The limit refuses the task's own next run, as a strike would, so
+/// `run_at_most` returns after the last allowed run instead of waiting for
+/// the next one to come due.
+#[tokio::test]
+async fn run_at_most_returns_after_the_last_allowed_run_of_a_slow_perpetual_task() {
+    let docket = docket().await;
+    let runs = Arc::new(Mutex::new(0));
+    let counted = Arc::clone(&runs);
+    docket
+        .register(move |_ctx, _: Noop| {
+            *counted.lock().unwrap() += 1;
+            async { Ok::<_, std::io::Error>(()) }
+        })
+        .with(Perpetual::every(Duration::from_secs(3600)));
+    docket.add(Noop).key("hourly").await.unwrap();
+
+    let limits = HashMap::from([("hourly".to_owned(), 1)]);
+    within(10, worker(&docket).run_at_most(limits))
+        .await
+        .unwrap();
+
+    assert_eq!(*runs.lock().unwrap(), 1);
+    assert_eq!(docket.snapshot().await.unwrap().future, []);
+}
+
 #[tokio::test]
 async fn a_perpetual_task_can_stop_itself() {
     let docket = docket().await;

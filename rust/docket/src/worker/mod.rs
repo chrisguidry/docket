@@ -206,7 +206,10 @@ impl Worker {
 
     /// Runs tasks until nothing is left, running each listed key at most the
     /// given number of times.  This is for testing perpetual tasks, which
-    /// otherwise run forever.
+    /// otherwise run forever.  Only claimed runs count.  Once a key has had
+    /// its runs, the docket treats it as struck until this returns, so its
+    /// next run is refused when it is scheduled, and this returns without
+    /// waiting for that run to come due.
     pub async fn run_at_most(self, iterations: HashMap<String, u32>) -> Result<()> {
         self.run(Until::Finished, iterations).await
     }
@@ -222,7 +225,8 @@ impl Worker {
                 "a worker's message batch must be at least 1".into(),
             ));
         }
-        let worker = Arc::new(session::Shared::new(self.docket, self.settings, iterations));
+        let _limited = self.docket.limit_runs(&iterations);
+        let worker = Arc::new(session::Shared::new(self.docket, self.settings));
         // The session future is large, so it lives on the heap rather than
         // in every caller's future.
         Box::pin(session::run(worker, until)).await

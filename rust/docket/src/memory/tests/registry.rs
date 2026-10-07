@@ -27,7 +27,7 @@ async fn servers_on_different_urls_are_separate() {
 }
 
 #[tokio::test]
-async fn a_url_starts_empty_once_every_server_on_it_is_gone() {
+async fn a_url_keeps_its_data_after_every_server_on_it_is_gone() {
     let url = unique_url();
     let first = MemoryServer::open(&url);
     let mut connection = first.connection().await.unwrap();
@@ -38,7 +38,7 @@ async fn a_url_starts_empty_once_every_server_on_it_is_gone() {
     let second = MemoryServer::open(&url);
     assert_eq!(
         run(&mut second.connection().await.unwrap(), "GET k").await,
-        "nil"
+        "\"v\""
     );
 }
 

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use redis::aio::MultiplexedConnection;
@@ -122,18 +123,14 @@ async fn requests_behind_a_blocked_read_run_after_it() {
 
 #[tokio::test]
 async fn a_blocked_read_ends_when_its_client_disconnects() {
-    let url = unique_url();
-    let server = MemoryServer::open(&url);
-    let mut connection = server.connection().await.unwrap();
-    run(&mut connection, "SET k v").await;
+    let server = MemoryServer::open(&unique_url());
+    let connection = server.connection().await.unwrap();
     let read = start(connection, "XREAD BLOCK 0 STREAMS s $");
     tokio::time::sleep(Duration::from_millis(50)).await;
+    let holders = Arc::strong_count(server.store());
     read.abort();
-    drop(server);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // The session no longer holds the store, so the URL starts empty.
-    let server = MemoryServer::open(&url);
-    let mut connection = server.connection().await.unwrap();
-    assert_eq!(run(&mut connection, "GET k").await, "nil");
+    // The blocked session held the store, and it no longer does.
+    assert!(Arc::strong_count(server.store()) < holders);
 }
