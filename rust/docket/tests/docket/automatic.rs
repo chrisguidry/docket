@@ -63,6 +63,30 @@ async fn scheduling_again_leaves_a_running_or_scheduled_task_alone() {
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
 
+/// A clear cancels the task's next run, so the next seeding adds it again,
+/// not only once the cleared record expires.
+#[tokio::test]
+async fn a_cleared_automatic_task_is_scheduled_again() {
+    let docket = docket().await;
+    let runs = register_automatic(&docket);
+    let run = tokio::spawn(
+        worker(&docket)
+            .automatic_tasks_interval(Duration::from_millis(10))
+            .run_forever(),
+    );
+    ran_once(&docket, &runs).await;
+
+    docket.clear().await.unwrap();
+
+    within(10, async {
+        while runs.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    run.abort();
+}
+
 #[tokio::test]
 async fn a_struck_automatic_task_is_not_scheduled() {
     let docket = docket().await;

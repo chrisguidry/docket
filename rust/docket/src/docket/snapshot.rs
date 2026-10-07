@@ -1,6 +1,6 @@
 //! Looking at what is in a docket, and emptying it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use opentelemetry::context::FutureExt as _;
@@ -11,8 +11,9 @@ use super::Docket;
 use crate::error::Result;
 use crate::execution::{Execution, Message, Status};
 use crate::keys::WORKER_GROUP;
+use crate::scripts;
 use crate::telemetry;
-use crate::wire::seconds;
+use crate::wire::{iso, seconds};
 
 /// How many stream entries a snapshot reads.
 const SNAPSHOT_LIMIT: usize = 1000;
@@ -194,7 +195,11 @@ impl Docket {
     }
 
     /// Removes every task that no worker has started, and returns how many
-    /// tasks the docket held.  Running tasks finish.
+    /// tasks the docket held.  Each removed task is cancelled, as
+    /// [`Docket::cancel`] cancels one: its key is free for a new task at
+    /// once, and a caller waiting on its result gets
+    /// [`Error::TaskCancelled`](crate::Error::TaskCancelled).  Running tasks
+    /// finish.
     pub async fn clear(&self) -> Result<usize> {
         let span = self
             .telemetry()
@@ -206,47 +211,15 @@ impl Docket {
 
     async fn clear_tasks(&self) -> Result<usize> {
         let keys = self.keys();
-        let mut connection = self.handle();
-        let (stream_length, queue_length, queued, entries): (
-            usize,
-            usize,
-            Vec<String>,
-            StreamRangeReply,
-        ) = redis::pipe()
-            .xlen(keys.stream())
-            .zcard(keys.queue())
-            .zrange(keys.queue(), 0, -1)
-            .xrange_all(keys.stream())
-            .query_async(&mut connection)
-            .await?;
-
-        let mut task_keys: HashSet<String> = queued.into_iter().collect();
-        for entry in entries.ids {
-            if let Some(redis::Value::BulkString(key)) = entry.map.get("key") {
-                task_keys.insert(String::from_utf8_lossy(key).into_owned());
-            }
+        let call = scripts::Clear {
+            stream_key: keys.stream(),
+            queue_key: keys.queue(),
+            docket_prefix: keys.prefix().to_owned(),
+            completed_at: iso(Utc::now()),
+            ttl_seconds: self.ttl_seconds(),
         }
-
-        let mut pipeline = redis::pipe();
-        pipeline
-            .cmd("XTRIM")
-            .arg(keys.stream())
-            .arg("MAXLEN")
-            .arg(0)
-            .ignore()
-            .del(keys.queue())
-            .ignore();
-        for key in &task_keys {
-            pipeline
-                .del(&[keys.parked(key), keys.known(key), keys.stream_id(key)])
-                .ignore();
-            match self.ttl_seconds() {
-                0 => pipeline.del(keys.runs(key)).ignore(),
-                ttl => pipeline.expire(keys.runs(key), ttl).ignore(),
-            };
-        }
-        let () = pipeline.query_async(&mut connection).await?;
-        Ok(stream_length + queue_length)
+        .call();
+        Ok(call.run(&mut self.handle()).await?)
     }
 
     /// Creates the workers' consumer group if it does not exist yet.
