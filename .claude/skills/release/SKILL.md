@@ -1,13 +1,13 @@
 ---
 name: release
-description: How docket tags and publishes a release of pydocket or docket-rs - the tag formats, the docket-rs version bump that must merge first, the release-name style, the gh commands, and what to do when a publish fails. Use when I ask to cut, prepare, name, or plan a release, to bump a version, or to publish to PyPI or crates.io. Never cut a release unless I ask for one.
+description: How docket tags and publishes a release of pydocket or docket-rs - the tag formats, the docket-rs version bump that must merge first, the release-name format, the gh commands, and what to do when a publish fails. Use when the developer asks to cut, prepare, name, or plan a release, to bump a version, or to publish to PyPI or crates.io. Never cut a release unless the developer asks for one, and never write a release's tagline: only a human writes it.
 ---
 
 # Releasing docket
 
 Each language publishes from its own GitHub release.  A release is
 permanent: PyPI and crates.io never accept the same version twice.  So
-confirm the tag, the target commit, and the title with me before you run
+confirm the tag, the target commit, and the title with the developer before you run
 `gh release create`.
 
 ## Tags
@@ -22,11 +22,11 @@ a new bare tag: `publish.yml` treats one as a pydocket release.
 
 Both publish workflows start on every new release.  Each one checks the
 tag prefix and skips the other language's release.  Only an admin of the
-repository can create a tag, so the release must come from my account.
+repository can create a tag, so the release must come from an admin's account.
 
 ## Versions
 
-I pick the bump.  A release with only fixes takes a patch version.  A
+The developer picks the bump.  A release with only fixes takes a patch version.  A
 release that adds features or breaks an API takes a minor version, because
 both packages are still 0.x.
 
@@ -61,22 +61,21 @@ crates.io, so do not run it.
 The title is the tag, a hyphen, and a tagline:
 `python/v0.26.1 - Papers, please`, `rust/v0.1.0 - Crabtastic`.
 
-A tagline is a pun or a pop-culture reference about what the release does.
-"Papers, please" released Redis credential providers, and "Crabtastic" was
-the first docket-rs.  Others: "Survive and thrive", "Half a million
-reasons", "Burn After Redising", "cron is a flat circcle", "Perpetual: The
-Next Generation".
+**Only a human writes the tagline.  Never write one, suggest one, or
+offer a list to pick from.  Ask the developer for it, and use their words
+exactly.**  To help them, tell them what the release contains.
 
-A plain summary like "Fixes for reused task keys" is the wrong style.
-Read the titles of the last 20 releases (`gh release list --limit 20`),
-then offer me about five taglines for each release.  I pick.
+If the developer has not given a tagline, stop and ask.  Do not create
+the release with a placeholder or with a tagline from an earlier
+conversation that they did not confirm for this release.
 
 ## Notes
 
-The body is GitHub's generated notes, with a line or two from me above
-them: a thank-you to a first-time contributor, an emoji, or a joke.  Ask
-me for that line, and suggest a thank-you when the release has a new
-contributor.
+The body is GitHub's generated notes, with a line or two from the
+developer above them, such as a thank-you to a first-time contributor, an
+emoji, or a joke.  That line is theirs too: ask for it, and do not write
+it.  When the release has a first-time contributor, tell the developer
+who it is, so they can thank them.
 
 GitHub starts the generated notes at the previous release of any
 language.  Always pass `--notes-start-tag` with the previous tag of the
@@ -91,14 +90,14 @@ first with `--latest=false`.
 ```bash
 gh release create python/vX.Y.Z --target <full sha> \
   --title "python/vX.Y.Z - <tagline>" \
-  --notes "<my line>" --generate-notes --notes-start-tag python/v<previous>
+  --notes "<their line>" --generate-notes --notes-start-tag python/v<previous>
 
 gh release create rust/vX.Y.Z --target <full sha> \
   --title "rust/vX.Y.Z - <tagline>" \
-  --notes "<my line>" --generate-notes --notes-start-tag rust/v<previous>
+  --notes "<their line>" --generate-notes --notes-start-tag rust/v<previous>
 ```
 
-With both `--notes` and `--generate-notes`, gh puts my line above the
+With both `--notes` and `--generate-notes`, gh puts their line above the
 generated notes.
 
 Each publish workflow runs the full CI for its language and the Prek
@@ -123,5 +122,5 @@ the same file.
   `gh run rerun <run id> --failed`.
 - **docket-rs-macros published, then docket-rs failed.**  A rerun fails at
   once, because crates.io refuses the macros version that already exists.
-  Tell me.  The choices are a manual `cargo publish --locked --package
+  Tell the developer.  The choices are a manual `cargo publish --locked --package
   docket-rs` from the tagged commit, or a new version of both crates.
