@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{Datelike, TimeZone, Timelike, Utc};
@@ -80,20 +80,33 @@ async fn a_manual_cron_task_runs_again_at_its_next_match() {
     assert!(next > Utc::now());
 }
 
+/// The next slot counts from when a run started, as in pydocket, so a run
+/// still going at its next slot is followed by that slot's run, not the one
+/// after it.
 #[tokio::test]
-async fn a_cron_task_with_no_next_match_ends_after_its_run() {
+async fn a_run_that_overlaps_its_next_slot_is_followed_by_that_slot() {
     let docket = docket().await;
+    let whens = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&whens);
     docket
-        .register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) })
-        .with(Cron::new("0 0 30 2 *").unwrap().manual());
-    let execution = docket.add(Noop).key("never-again").await.unwrap();
+        .register(move |ctx, _: Noop| {
+            recorded.lock().unwrap().push(ctx.when());
+            async {
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                Ok::<_, std::io::Error>(())
+            }
+        })
+        .with(Cron::new("* * * * * *").unwrap());
 
-    within(10, worker(&docket).run_until_finished())
+    let two_runs = async {
+        while whens.lock().unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    within(10, worker(&docket).run_until(two_runs))
         .await
         .unwrap();
 
-    assert_eq!(
-        execution.status().await.unwrap().unwrap().state,
-        State::Completed
-    );
+    let whens = whens.lock().unwrap().clone();
+    assert_eq!(whens[1] - whens[0], chrono::Duration::seconds(1));
 }

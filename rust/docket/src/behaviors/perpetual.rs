@@ -91,6 +91,8 @@ impl Completion for Next {
 #[derive(Debug)]
 pub struct PerpetualControl {
     started: Instant,
+    /// The same moment on the wall clock, which a cron schedule counts from.
+    pub(crate) started_at: DateTime<Utc>,
     next: Mutex<Upcoming>,
 }
 
@@ -105,6 +107,7 @@ impl PerpetualControl {
     pub(crate) fn new() -> Self {
         Self {
             started: Instant::now(),
+            started_at: Utc::now(),
             next: Mutex::new(Upcoming::default()),
         }
     }

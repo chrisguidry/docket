@@ -1,13 +1,17 @@
 """Tests for Cron dependency (cron-style scheduled tasks)."""
 
+import asyncio
+import json
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
+from cronsim import CronSimError
 
-from docket import Docket, Worker
+from docket import CurrentExecution, Docket, Execution, Worker
 from docket.dependencies import Cron
 from docket.dependencies._cron import VIXIE_KEYWORDS
 
@@ -171,3 +175,59 @@ def test_standard_expression_not_modified():
     """Standard 5-field expressions pass through without modification."""
     cron = Cron("30 2 15 * *", automatic=False)
     assert cron.expression == "30 2 15 * *"
+
+
+async def test_a_run_that_overlaps_its_next_slot_is_followed_by_that_slot(
+    docket: Docket, worker: Worker
+):
+    """Each run's schedule starts when the run starts, so a run still going at
+    its next slot is followed by that slot's run, not the one after it."""
+    whens: list[datetime] = []
+
+    async def overlapping(
+        cron: Cron = Cron("* * * * * *"),
+        execution: Execution = CurrentExecution(),
+    ):
+        whens.append(execution.when)
+        await asyncio.sleep(1.5)
+
+    docket.register(overlapping)
+    await worker.run_at_most({"overlapping": 2})
+
+    assert whens[1] - whens[0] == timedelta(seconds=1)
+
+
+# docket-rs's tests read the same table, so both implementations accept and
+# refuse the same expressions, and find the same next match for each one.
+CRON_TABLE = json.loads(
+    (Path(__file__).parents[3] / "conformance" / "cron-expressions.json").read_text()
+)
+
+
+def _instant(text: str) -> datetime:
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+@pytest.mark.parametrize(
+    "expression, expected",
+    [
+        (row["expression"], row["next"])
+        for row in CRON_TABLE["expressions"]
+        if row["next"] is not None
+    ],
+)
+def test_cron_finds_the_next_match_in_the_shared_table(expression: str, expected: str):
+    with patch("docket.dependencies._cron.datetime") as clock:
+        clock.now.return_value = _instant(CRON_TABLE["after"])
+        cron = Cron(expression, automatic=False)
+
+    assert cron.next_time() == _instant(expected)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [row["expression"] for row in CRON_TABLE["expressions"] if row["next"] is None],
+)
+def test_cron_refuses_each_expression_the_shared_table_refuses(expression: str):
+    with pytest.raises(CronSimError):
+        Cron(expression, automatic=False)
