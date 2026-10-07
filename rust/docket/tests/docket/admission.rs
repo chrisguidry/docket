@@ -7,6 +7,7 @@ use docket::{Context, Cooldown, Debounce, RateLimit, Retry, State, Task};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
+use crate::logs::Logs;
 use crate::support::{Noop, docket, within, worker};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Task)]
@@ -235,6 +236,7 @@ impl<T: Task> Behavior<T> for NotYet {
 
 #[tokio::test]
 async fn a_block_without_a_delay_tries_the_task_again_shortly() {
+    let (logs, _guard) = Logs::capture();
     let docket = docket().await;
     let checks = Arc::new(AtomicU32::new(0));
     docket
@@ -251,6 +253,10 @@ async fn a_block_without_a_delay_tries_the_task_again_shortly() {
         execution.status().await.unwrap().unwrap().state,
         State::Completed
     );
+    assert!(logs.contains(&format!(
+        "⏳ Task {} blocked by admission control, rescheduling",
+        execution.key()
+    )));
 }
 
 /// A behavior whose check takes a while and then fails, so a cancel can
