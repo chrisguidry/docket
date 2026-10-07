@@ -1,0 +1,217 @@
+{
+  "after": "2026-10-05T07:30:00Z",
+  "expressions": [
+    {
+      "expression": "0 9 * * 1-5",
+      "next": "2026-10-05T09:00:00Z"
+    },
+    {
+      "expression": "*/15 * * * *",
+      "next": "2026-10-05T07:45:00Z"
+    },
+    {
+      "expression": "0 0 1 * *",
+      "next": "2026-11-01T00:00:00Z"
+    },
+    {
+      "expression": "0 0 * * 0",
+      "next": "2026-10-11T00:00:00Z"
+    },
+    {
+      "expression": "0 0 * * 7",
+      "next": "2026-10-11T00:00:00Z"
+    },
+    {
+      "expression": "0 0 * * 0-7",
+      "next": "2026-10-06T00:00:00Z"
+    },
+    {
+      "expression": "0 0 * * MON",
+      "next": "2026-10-12T00:00:00Z"
+    },
+    {
+      "expression": "0 0 * * mon",
+      "next": "2026-10-12T00:00:00Z"
+    },
+    {
+      "expression": "0 0 * * MON-FRI",
+      "next": "2026-10-06T00:00:00Z"
+    },
+    {
+      "expression": "0 0 * * 1,3,5",
+      "next": "2026-10-07T00:00:00Z"
+    },
+    {
+      "expression": "0 0 1 JAN *",
+      "next": "2027-01-01T00:00:00Z"
+    },
+    {
+      "expression": "0 0 * JAN-MAR *",
+      "next": "2027-01-01T00:00:00Z"
+    },
+    {
+      "expression": "0 9-17/2 * * *",
+      "next": "2026-10-05T09:00:00Z"
+    },
+    {
+      "expression": "0 0 1-31/10 * *",
+      "next": "2026-10-11T00:00:00Z"
+    },
+    {
+      "expression": "0 0 1,15 * 1",
+      "next": "2026-10-12T00:00:00Z"
+    },
+    {
+      "expression": "0 0 1 * MON",
+      "next": "2026-10-12T00:00:00Z"
+    },
+    {
+      "expression": "0 0 29 2 *",
+      "next": "2028-02-29T00:00:00Z"
+    },
+    {
+      "expression": "0 0 L * *",
+      "next": "2026-10-31T00:00:00Z"
+    },
+    {
+      "expression": "0 0 LW * *",
+      "next": "2026-10-30T00:00:00Z"
+    },
+    {
+      "expression": "0 0 * * 5L",
+      "next": "2026-10-30T00:00:00Z"
+    },
+    {
+      "expression": "0 0 * * 6L",
+      "next": "2026-10-31T00:00:00Z"
+    },
+    {
+      "expression": "0 0 * * 1#2",
+      "next": "2026-10-12T00:00:00Z"
+    },
+    {
+      "expression": "0 12 * * SUN#1",
+      "next": "2026-11-01T12:00:00Z"
+    },
+    {
+      "expression": "0 0 * * 5#5",
+      "next": "2026-10-30T00:00:00Z"
+    },
+    {
+      "expression": "15 0 * * * *",
+      "next": "2026-10-05T08:00:15Z"
+    },
+    {
+      "expression": "0 15 * * * *",
+      "next": "2026-10-05T08:15:00Z"
+    },
+    {
+      "expression": "* * * * * *",
+      "next": "2026-10-05T07:30:01Z"
+    },
+    {
+      "expression": "@yearly",
+      "next": "2027-01-01T00:00:00Z"
+    },
+    {
+      "expression": "@annually",
+      "next": "2027-01-01T00:00:00Z"
+    },
+    {
+      "expression": "@monthly",
+      "next": "2026-11-01T00:00:00Z"
+    },
+    {
+      "expression": "@weekly",
+      "next": "2026-10-11T00:00:00Z"
+    },
+    {
+      "expression": "@daily",
+      "next": "2026-10-06T00:00:00Z"
+    },
+    {
+      "expression": "@midnight",
+      "next": "2026-10-06T00:00:00Z"
+    },
+    {
+      "expression": "@hourly",
+      "next": "2026-10-05T08:00:00Z"
+    },
+    {
+      "expression": "0 0 15W * *",
+      "next": null
+    },
+    {
+      "expression": "0 0 1W * *",
+      "next": null
+    },
+    {
+      "expression": "0 0 ? * *",
+      "next": null
+    },
+    {
+      "expression": "0 0 31 2 *",
+      "next": null
+    },
+    {
+      "expression": "0 0 30 2 *",
+      "next": null
+    },
+    {
+      "expression": "0 0 31 4 *",
+      "next": null
+    },
+    {
+      "expression": "0 0 * * L",
+      "next": null
+    },
+    {
+      "expression": "0 0 0 1 1 * 2027",
+      "next": null
+    },
+    {
+      "expression": "0 0 L-3 * *",
+      "next": null
+    },
+    {
+      "expression": "0 0 * * 7-1",
+      "next": null
+    },
+    {
+      "expression": "0 0 * * 5-2",
+      "next": null
+    },
+    {
+      "expression": "0 0 * * 8",
+      "next": null
+    },
+    {
+      "expression": "0 24 * * *",
+      "next": null
+    },
+    {
+      "expression": "60 * * * *",
+      "next": null
+    },
+    {
+      "expression": "*/0 * * * *",
+      "next": null
+    },
+    {
+      "expression": "* * *",
+      "next": null
+    },
+    {
+      "expression": "@reboot",
+      "next": null
+    },
+    {
+      "expression": "@every 5m",
+      "next": null
+    },
+    {
+      "expression": "every tuesday",
+      "next": null
+    }
+  ]
+}

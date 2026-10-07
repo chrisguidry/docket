@@ -24,6 +24,10 @@ Each implementation gets its own virtual environment, and every one of them
 runs the agent from the working tree.  When you give more than one, the
 driver chooses one at random for each agent it starts.
 
+## Cron expressions
+
+`cron-expressions.json` lists cron expressions, each with its first match after one instant, or `null` for one that the implementations must refuse.  Each language's tests read it, so every `Cron` accepts the same expressions and finds the same matches.
+
 ## Scenarios
 
 | Scenario | What it shows |

@@ -144,7 +144,9 @@ async def hourly_sync(cron: Cron = Cron("0 * * * *")) -> None:
     await sync_external_data()
 ```
 
-Cron uses standard 5-field syntax: `minute hour day month weekday`.
+Cron uses standard 5-field syntax: `minute hour day month weekday`.  A sixth field at the start sets the second.
+
+Each run's next match counts from when that run started, so a run that is still going at its next match is followed by that match's run as soon as it ends.
 
 ### Vixie Keywords
 

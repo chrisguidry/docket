@@ -1,4 +1,4 @@
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use rstest::rstest;
 
 use super::Cron;
@@ -49,4 +49,36 @@ fn a_manual_cron_keeps_its_schedule() {
         cron.next_after(now).unwrap().to_rfc3339(),
         "2026-10-05T08:00:00+00:00"
     );
+}
+
+/// The expressions pydocket's `Cron` accepts and refuses, each with the first
+/// match after one instant.  pydocket's tests read the same table.
+#[test]
+fn reads_every_expression_the_way_pydocket_does() {
+    let table: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../conformance/cron-expressions.json"
+    ))
+    .unwrap();
+    let after = DateTime::parse_from_rfc3339(table["after"].as_str().unwrap())
+        .unwrap()
+        .with_timezone(&Utc);
+    let mut differences = Vec::new();
+    for row in table["expressions"].as_array().unwrap() {
+        let expression = row["expression"].as_str().unwrap();
+        // An expression pydocket refuses has no next match: Cron::new fails.
+        let expected = row["next"].as_str().map(|next| {
+            Some(
+                DateTime::parse_from_rfc3339(next)
+                    .unwrap()
+                    .with_timezone(&Utc),
+            )
+        });
+        let next = Cron::new(expression)
+            .ok()
+            .map(|cron| cron.next_after(after));
+        if next != expected {
+            differences.push(format!("{expression}: expected {expected:?}, got {next:?}"));
+        }
+    }
+    assert!(differences.is_empty(), "{differences:#?}");
 }
