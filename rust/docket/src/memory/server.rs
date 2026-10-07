@@ -5,7 +5,7 @@
 //! connections and pub/sub for `memory://` exactly as it does for Redis.
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, OnceLock, Weak};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -24,10 +24,10 @@ const PIPE_CAPACITY: usize = 64 * 1024;
 /// nothing reads them.  Redis's own active expiry runs ten times a second.
 const SWEEP_INTERVAL: Duration = Duration::from_millis(100);
 
-/// The live store for each URL.  A store lives as long as any server opened
-/// on its URL, so two dockets on the same URL share data while either is
-/// open, and a URL opened again after every server closed starts empty.
-static STORES: LazyLock<Mutex<HashMap<String, Weak<Store>>>> =
+/// The store for each URL, for the life of the process, as in pydocket: two
+/// dockets on the same URL share data, and a docket opened again on a URL
+/// finds what the last one left there.
+static STORES: LazyLock<Mutex<HashMap<String, Arc<Store>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) struct MemoryServer {
@@ -39,13 +39,12 @@ pub(crate) struct MemoryServer {
 
 impl MemoryServer {
     pub(crate) fn open(url: &str) -> Self {
-        let mut stores = STORES.lock();
-        stores.retain(|_, store| store.strong_count() > 0);
-        let store = stores.get(url).and_then(Weak::upgrade).unwrap_or_else(|| {
-            let store = Arc::new(Store::new());
-            stores.insert(url.to_owned(), Arc::downgrade(&store));
-            store
-        });
+        let store = Arc::clone(
+            STORES
+                .lock()
+                .entry(url.to_owned())
+                .or_insert_with(|| Arc::new(Store::new())),
+        );
         Self {
             store,
             sweeper: OnceLock::new(),
@@ -72,7 +71,7 @@ impl MemoryServer {
     }
 
     #[cfg(test)]
-    pub(crate) fn store(&self) -> &Store {
+    pub(crate) fn store(&self) -> &Arc<Store> {
         &self.store
     }
 

@@ -82,13 +82,16 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
     };
     let metrics = &docket.telemetry().metrics;
 
-    if docket.is_struck(message) || !worker.allow_run(&message.key) {
+    if docket.is_struck(message) {
         tracing::warn!("🗙 {}", run.call);
         metrics.tasks_stricken.add(1, &run.labels_where("worker"));
         return run.strike().await;
     }
     let generation = match run.claim().await? {
-        Claim::Claimed(generation) => generation,
+        Claim::Claimed(generation) => {
+            worker.limited.count_run(&message.key);
+            generation
+        }
         // Docket::cancel counted the cancellation already.
         Claim::Cancelled => {
             tracing::info!("✗ {} (cancelled)", run.call);

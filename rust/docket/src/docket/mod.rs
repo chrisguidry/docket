@@ -1,11 +1,12 @@
 //! A docket: a named set of tasks in one Redis.
 
 mod registry;
+mod run_limits;
 mod schedule;
 mod snapshot;
 
 use std::future::Future;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -25,6 +26,7 @@ use crate::wire::iso;
 
 pub use registry::Registration;
 pub(crate) use registry::{Registered, Registry};
+pub(crate) use run_limits::Limited;
 pub(crate) use schedule::Placement;
 pub use schedule::{Add, Call};
 pub use snapshot::{Snapshot, TaskSummary, WorkerSummary};
@@ -54,6 +56,7 @@ struct Inner {
     monitor: Monitor,
     settings: Settings,
     telemetry: Arc<Telemetry>,
+    run_limits: Mutex<run_limits::RunLimits>,
 }
 
 #[derive(Clone, Debug)]
@@ -136,6 +139,7 @@ impl DocketBuilder {
                 monitor,
                 settings: self.settings,
                 telemetry,
+                run_limits: Mutex::new(run_limits::RunLimits::default()),
             }),
         })
     }

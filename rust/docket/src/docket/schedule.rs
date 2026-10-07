@@ -186,7 +186,7 @@ impl Docket {
 
     pub(crate) fn is_struck(&self, message: &Message) -> bool {
         let args = serde_json::from_str(&message.args).unwrap_or(serde_json::Value::Null);
-        self.strikes().is_struck(&message.function, &args)
+        self.has_run_out(&message.key) || self.strikes().is_struck(&message.function, &args)
     }
 
     /// Whether a strike blocks `message`, and if one does, logs and counts

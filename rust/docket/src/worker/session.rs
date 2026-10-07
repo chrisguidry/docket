@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use super::sweep::Sweep;
 use super::{Settings, Until, cancellation, execute, heartbeat, perpetuals, sweep};
 use crate::connection::Connection;
-use crate::docket::Docket;
+use crate::docket::{Docket, Limited};
 use crate::error::{Error, Result};
 use crate::execution::Message;
 use crate::keys::WORKER_GROUP;
@@ -22,8 +22,8 @@ use crate::keys::WORKER_GROUP;
 pub(crate) struct Shared {
     pub docket: Docket,
     pub settings: Settings,
-    iterations: HashMap<String, u32>,
-    counts: Mutex<HashMap<String, u32>>,
+    /// The `run_at_most` limits this worker counts its runs against.
+    pub limited: Limited,
     active: Mutex<HashMap<String, Active>>,
 }
 
@@ -38,12 +38,11 @@ pub(crate) struct Active {
 }
 
 impl Shared {
-    pub fn new(docket: Docket, settings: Settings, iterations: HashMap<String, u32>) -> Self {
+    pub fn new(docket: Docket, settings: Settings, limited: Limited) -> Self {
         Self {
             docket,
             settings,
-            iterations,
-            counts: Mutex::new(HashMap::new()),
+            limited,
             active: Mutex::new(HashMap::new()),
         }
     }
@@ -102,20 +101,6 @@ impl Shared {
             .metrics
             .redis_disruptions
             .add(1, &labels);
-    }
-
-    /// Counts a run of `key`, and says whether `run_at_most` allows it.
-    pub fn allow_run(&self, key: &str) -> bool {
-        let Some(limit) = self.iterations.get(key) else {
-            return true;
-        };
-        let mut counts = self
-            .counts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = counts.entry(key.to_owned()).or_default();
-        *count += 1;
-        *count <= *limit
     }
 }
 
