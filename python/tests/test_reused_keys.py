@@ -3,6 +3,7 @@ its result, its error, and its ending."""
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 from docket import Docket, Worker
 from docket.execution import ExecutionState
@@ -80,3 +81,33 @@ async def test_a_reused_key_does_not_show_the_previous_runs_ending(
     await worker.run_until_finished()
     await second.sync()
     assert (second.state, second.error) == (ExecutionState.COMPLETED, None)
+
+
+async def test_a_key_used_again_soon_after_its_run_ended_keeps_its_record(
+    redis_url: str, make_docket_name: Callable[[], str]
+):
+    """An ended run's record expires execution_ttl after the ending.  A run added
+    under the same key before then has a record of its own: it waits to be claimed
+    and runs, however long it waits."""
+    ran: list[int] = []
+
+    async def count(n: int) -> None:
+        ran.append(n)
+
+    async with Docket(
+        name=make_docket_name(), url=redis_url, execution_ttl=timedelta(seconds=1)
+    ) as docket:
+        docket.register(count)
+        await docket.add(count, key="again")(1)
+        async with Worker(docket) as worker:
+            await worker.run_until_finished()
+
+        second = await docket.add(count, key="again")(2)
+        await asyncio.sleep(1.5)  # the ended run's record would have expired by now
+        await second.sync()
+        assert second.state == ExecutionState.QUEUED
+
+        async with Worker(docket) as worker:
+            await worker.run_until_finished()
+
+    assert ran == [1, 2]

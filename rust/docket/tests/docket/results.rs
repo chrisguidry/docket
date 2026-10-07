@@ -378,3 +378,29 @@ async fn a_reused_key_does_not_show_the_previous_runs_ending() {
     let completed = second.status().await.unwrap().unwrap();
     assert_eq!((completed.state, completed.error), (State::Completed, None));
 }
+
+#[tokio::test]
+async fn a_key_used_again_soon_after_its_run_ended_keeps_its_record() {
+    let url = crate::support::url();
+    let docket = docket::Docket::builder(format!("docket-test-{}", uuid::Uuid::now_v7()), url)
+        .execution_ttl(Duration::from_secs(1))
+        .connect()
+        .await
+        .unwrap();
+    docket.register(|_ctx, args: Echo| async move { Ok::<_, std::io::Error>(args.text) });
+    docket.add(Echo::new("first")).key("again").await.unwrap();
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    let second = docket.add(Echo::new("second")).key("again").await.unwrap();
+    // the ended run's record would have expired by now
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let waiting = second.status().await.unwrap().unwrap();
+    assert_eq!(waiting.state, State::Queued);
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+    assert_eq!(second.result().await.unwrap(), "second");
+}

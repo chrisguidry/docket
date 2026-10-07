@@ -154,6 +154,21 @@ else
     end
 end
 
+-- A key used again after its run ended: terminal.lua gave that run's
+-- record an expiry of execution_ttl, which the new run would inherit, so
+-- the record could expire before a worker claims the new run (it is then
+-- refused as superseded) or while it runs (it then can't be seen, and the
+-- key no longer refuses a duplicate).  The new run starts a record of its
+-- own, keeping only the generation counter.
+local previous_state = redis.call('HGET', runs_key, 'state')
+if previous_state == 'completed' or previous_state == 'failed' or previous_state == 'cancelled' then
+    local previous_generation = redis.call('HGET', runs_key, 'generation')
+    redis.call('DEL', runs_key)
+    if previous_generation then
+        redis.call('HSET', runs_key, 'generation', previous_generation)
+    end
+end
+
 -- Increment generation counter
 local new_gen = redis.call('HINCRBY', runs_key, 'generation', 1)
 if generation_index then
