@@ -2,10 +2,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use docket::behaviors::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks};
-use docket::{Context, Cooldown, Debounce, RateLimit, State, Task};
+use docket::behaviors::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks, NotAdmitted};
+use docket::{Context, Cooldown, Debounce, RateLimit, Retry, State, Task};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
+use crate::logs::Logs;
 use crate::support::{Noop, docket, within, worker};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Task)]
@@ -108,10 +110,10 @@ async fn a_rate_limit_can_drop_the_excess() {
 struct EvenCustomersOnly;
 
 impl Admission for EvenCustomersOnly {
-    async fn admit(&self, ctx: &Context) -> Result<Admitted, AdmissionBlocked> {
+    async fn admit(&self, ctx: &Context) -> Result<Admitted, NotAdmitted> {
         match ctx.args()["customer"].as_u64() {
             Some(customer) if customer % 2 == 0 => Ok(Admitted::now()),
-            _ => Err(AdmissionBlocked::new("odd customer").drop_task()),
+            _ => Err(AdmissionBlocked::new("odd customer").drop_task().into()),
         }
     }
 }
@@ -171,5 +173,136 @@ async fn a_later_block_gives_back_an_earlier_admission() {
     assert_eq!(
         even.status().await.unwrap().unwrap().state,
         State::Completed
+    );
+}
+
+/// A behavior whose check always fails, the way a check fails when Redis
+/// refuses it.  It counts how often it was asked.
+struct Unanswerable(Arc<AtomicU32>);
+
+impl Admission for Unanswerable {
+    async fn admit(&self, _ctx: &Context) -> Result<Admitted, NotAdmitted> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(NotAdmitted::failed("the check could not run"))
+    }
+}
+
+impl<T: Task> Behavior<T> for Unanswerable {
+    fn attach(self, hooks: &mut Hooks<'_, T>) {
+        hooks.admission(self);
+    }
+}
+
+#[tokio::test]
+async fn an_admission_that_fails_fails_the_task_through_its_retry() {
+    let docket = docket().await;
+    let checks = Arc::new(AtomicU32::new(0));
+    docket
+        .register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) })
+        .with(Unanswerable(Arc::clone(&checks)))
+        .with(Retry::attempts(3));
+    let execution = docket.add(Noop).await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    let status = execution.status().await.unwrap().unwrap();
+    assert_eq!(checks.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        (status.state, status.error.as_deref()),
+        (State::Failed, Some("the check could not run"))
+    );
+}
+
+/// A behavior that blocks a task once, without saying when to try again,
+/// and then admits it.
+struct NotYet(Arc<AtomicU32>);
+
+impl Admission for NotYet {
+    async fn admit(&self, _ctx: &Context) -> Result<Admitted, NotAdmitted> {
+        match self.0.fetch_add(1, Ordering::SeqCst) {
+            0 => Err(AdmissionBlocked::new("not yet").into()),
+            _ => Ok(Admitted::now()),
+        }
+    }
+}
+
+impl<T: Task> Behavior<T> for NotYet {
+    fn attach(self, hooks: &mut Hooks<'_, T>) {
+        hooks.admission(self);
+    }
+}
+
+#[tokio::test]
+async fn a_block_without_a_delay_tries_the_task_again_shortly() {
+    let (logs, _guard) = Logs::capture();
+    let docket = docket().await;
+    let checks = Arc::new(AtomicU32::new(0));
+    docket
+        .register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) })
+        .with(NotYet(Arc::clone(&checks)));
+    let execution = docket.add(Noop).await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert_eq!(checks.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Completed
+    );
+    assert!(logs.contains(&format!(
+        "⏳ Task {} blocked by admission control, rescheduling",
+        execution.key()
+    )));
+}
+
+/// A behavior whose check takes a while and then fails, so a cancel can
+/// arrive while it runs.
+struct SlowlyUnanswerable {
+    checking: Arc<Notify>,
+    checks: Arc<AtomicU32>,
+}
+
+impl Admission for SlowlyUnanswerable {
+    async fn admit(&self, _ctx: &Context) -> Result<Admitted, NotAdmitted> {
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        self.checking.notify_one();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Err(NotAdmitted::failed("the check could not run"))
+    }
+}
+
+impl<T: Task> Behavior<T> for SlowlyUnanswerable {
+    fn attach(self, hooks: &mut Hooks<'_, T>) {
+        hooks.admission(self);
+    }
+}
+
+#[tokio::test]
+async fn a_cancel_during_a_failing_admission_is_not_retried() {
+    let docket = docket().await;
+    let checking = Arc::new(Notify::new());
+    let checks = Arc::new(AtomicU32::new(0));
+    docket
+        .register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) })
+        .with(SlowlyUnanswerable {
+            checking: Arc::clone(&checking),
+            checks: Arc::clone(&checks),
+        })
+        .with(Retry::attempts(3));
+    let execution = docket.add(Noop).await.unwrap();
+
+    let run = tokio::spawn(worker(&docket).run_until_finished());
+    within(10, checking.notified()).await;
+    docket.cancel(execution.key()).await.unwrap();
+    within(10, run).await.unwrap().unwrap();
+
+    assert_eq!(checks.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Cancelled
     );
 }

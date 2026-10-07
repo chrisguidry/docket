@@ -7,6 +7,7 @@ scenario's tasks and its producer.
 from types import ModuleType
 
 from . import (
+    admission_failure,
     backoff,
     cancel_before_start,
     chaos,
@@ -30,4 +31,5 @@ SCENARIOS: dict[str, ModuleType] = {
     "same-key": same_key,
     "chaos": chaos,
     "telemetry": telemetry,
+    "admission-failure": admission_failure,
 }

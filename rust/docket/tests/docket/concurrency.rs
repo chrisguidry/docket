@@ -114,7 +114,7 @@ async fn a_per_field_limit_counts_string_values() {
 }
 
 #[tokio::test]
-async fn a_limit_on_a_missing_field_drops_the_task() {
+async fn a_limit_on_a_missing_field_fails_the_task() {
     let docket = docket().await;
     docket
         .register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) })
@@ -125,9 +125,13 @@ async fn a_limit_on_a_missing_field_drops_the_task() {
         .await
         .unwrap();
 
+    let status = execution.status().await.unwrap().unwrap();
     assert_eq!(
-        execution.status().await.unwrap().unwrap().state,
-        State::Cancelled
+        (status.state, status.error.as_deref()),
+        (
+            State::Failed,
+            Some("the noop task's arguments have no customer field to limit by")
+        )
     );
 }
 

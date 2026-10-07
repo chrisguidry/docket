@@ -1,6 +1,7 @@
 //! One module for each scenario, named after it with underscores, each with
 //! `produce` and `worker`.
 
+mod admission_failure;
 mod backoff;
 mod cancel_before_start;
 mod chaos;
@@ -19,6 +20,7 @@ use docket::{Docket, Worker};
 use crate::events::Events;
 
 pub enum Scenario {
+    AdmissionFailure,
     Backoff,
     CancelBeforeStart,
     Chaos,
@@ -33,6 +35,7 @@ pub enum Scenario {
 
 pub fn find(name: &str) -> Scenario {
     match name {
+        "admission-failure" => Scenario::AdmissionFailure,
         "backoff" => Scenario::Backoff,
         "cancel-before-start" => Scenario::CancelBeforeStart,
         "chaos" => Scenario::Chaos,
@@ -58,6 +61,7 @@ fn base(docket: &Docket) -> Worker {
 impl Scenario {
     pub async fn produce(&self, docket: &Docket, events: &Events) -> docket::Result<()> {
         match self {
+            Self::AdmissionFailure => admission_failure::produce(docket).await,
             Self::Backoff => backoff::produce(docket).await,
             Self::CancelBeforeStart => cancel_before_start::produce(docket, events).await,
             Self::Chaos => chaos::produce(docket, events).await,
@@ -73,6 +77,7 @@ impl Scenario {
     pub fn worker(&self, docket: &Docket, events: &Events) -> Worker {
         let worker = base(docket);
         match self {
+            Self::AdmissionFailure => admission_failure::worker(docket, events, worker),
             Self::Backoff => backoff::worker(docket, events, worker),
             Self::CancelBeforeStart => cancel_before_start::worker(docket, events, worker),
             Self::Chaos => chaos::worker(docket, events, worker),

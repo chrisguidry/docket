@@ -2,9 +2,10 @@
 //! tests need a plain Redis behind the fault proxy, so they do nothing on the
 //! in-process engine or a cluster.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use docket::{ConcurrencyLimit, Docket, Execution, State};
+use docket::{ConcurrencyLimit, Docket, Execution, Retry, State};
 use rstest::rstest;
 
 use crate::logs::Logs;
@@ -25,11 +26,21 @@ async fn state(execution: &Execution<()>) -> State {
     execution.status().await.unwrap().unwrap().state
 }
 
+/// A refused slot fails that attempt, as any failed admission check does, so
+/// the task's retry runs it again as its next attempt.
 #[tokio::test]
-async fn a_refused_slot_is_tried_again() {
+async fn a_refused_slot_fails_the_attempt_and_its_retry_runs_it_again() {
     let Some(proxy) = proxy().await else { return };
     let docket = docket_through(&proxy).await;
-    limited(&docket, Duration::ZERO);
+    let attempts = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&attempts);
+    docket
+        .register(move |ctx, _: Noop| {
+            recorded.lock().unwrap().push(ctx.attempt());
+            async { Ok::<_, std::io::Error>(()) }
+        })
+        .with(ConcurrencyLimit::new(1))
+        .with(Retry::attempts(2));
     let execution = docket.add(Noop).await.unwrap();
     proxy.fail_script(include_str!("../../lua/acquire_or_park.lua"), 1);
 
@@ -38,6 +49,7 @@ async fn a_refused_slot_is_tried_again() {
         .unwrap();
 
     assert_eq!(state(&execution).await, State::Completed);
+    assert_eq!(*attempts.lock().unwrap(), [2]);
 }
 
 #[tokio::test]

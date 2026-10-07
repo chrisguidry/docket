@@ -1,18 +1,22 @@
 """What a scenario works with: Redis, the agents it starts, and their events."""
 
 import asyncio
+import json
 import os
 import random
 import signal
 from asyncio.subprocess import Process
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
 from docker.models.containers import Container
 from redis.asyncio import Redis
+from redis.asyncio.client import PubSub
 
 from .events import Events
 from .implementations import Implementation
@@ -145,6 +149,26 @@ class Harness:
             await asyncio.sleep(0.1)
             state = await self.run_state(key)
         return state
+
+    @asynccontextmanager
+    async def published_states(self, key: str) -> AsyncGenerator[list[str]]:
+        """Collects each state that docket publishes for ``key`` during the block.
+
+        Redis delivers a message only to current subscribers, so this waits for
+        the subscription to be confirmed before the block starts.  The list
+        fills when the block ends.
+        """
+        pubsub: PubSub = self.redis.pubsub()  # pyright: ignore[reportUnknownMemberType]
+        states: list[str] = []
+        async with pubsub:
+            await pubsub.subscribe(f"{self.docket}:state:{key}")
+            await pubsub.get_message(timeout=5)
+            yield states
+            while message := cast(
+                dict[str, Any] | None,
+                await pubsub.get_message(ignore_subscribe_messages=True, timeout=1),
+            ):
+                states.append(json.loads(message["data"])["state"])
 
     async def stop(self) -> None:
         for agent in self.agents:

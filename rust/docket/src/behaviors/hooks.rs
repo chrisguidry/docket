@@ -39,11 +39,8 @@ pub trait Behavior<T: Task> {
 /// they were attached, after the worker claims the task and before the
 /// handler runs.
 pub trait Admission: Send + Sync + 'static {
-    /// Admits the task, or blocks it.
-    fn admit(
-        &self,
-        ctx: &Context,
-    ) -> impl Future<Output = Result<Admitted, AdmissionBlocked>> + Send;
+    /// Admits the task, blocks it, or fails it when the check cannot run.
+    fn admit(&self, ctx: &Context) -> impl Future<Output = Result<Admitted, NotAdmitted>> + Send;
 }
 
 /// Wraps the call to the handler.  A task has at most one; attaching a
@@ -162,6 +159,27 @@ impl AdmissionBlocked {
     }
 }
 
+/// Why an [`Admission`] hook did not admit a task.
+#[derive(Debug, thiserror::Error)]
+pub enum NotAdmitted {
+    /// The task may not start now.
+    #[error(transparent)]
+    Blocked(#[from] AdmissionBlocked),
+    /// The check could not decide, for example because Redis refused it, or
+    /// because the task lacks the field that a limit counts by.  The task
+    /// fails with this error, as if its handler had returned it, so its
+    /// failure hook, such as a retry, decides what happens next.
+    #[error(transparent)]
+    Failed(BoxError),
+}
+
+impl NotAdmitted {
+    /// Fails the task with `error`.
+    pub fn failed(error: impl Into<BoxError>) -> Self {
+        Self::Failed(error.into())
+    }
+}
+
 /// What a [`Failure`] hook decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AfterFailure {
@@ -262,7 +280,7 @@ impl<T: Task + Default> Hooks<'_, T> {
 }
 
 type AdmissionFn =
-    Arc<dyn Fn(Context) -> BoxFuture<'static, Result<Admitted, AdmissionBlocked>> + Send + Sync>;
+    Arc<dyn Fn(Context) -> BoxFuture<'static, Result<Admitted, NotAdmitted>> + Send + Sync>;
 type FailureFn =
     Arc<dyn Fn(Context, Arc<BoxError>) -> BoxFuture<'static, AfterFailure> + Send + Sync>;
 type CompletionFn =

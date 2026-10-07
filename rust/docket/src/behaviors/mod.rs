@@ -16,7 +16,7 @@ mod timeout;
 pub(crate) use concurrency::{SAFEGUARD_PREFIX, SafeguardWake, safeguard_wake};
 pub use hooks::{
     Admission, AdmissionBlocked, Admitted, AfterCompletion, AfterFailure, Behavior, BoxError,
-    Completion, Failure, Hooks, Outcome, Released, Runtime, TaskFuture,
+    Completion, Failure, Hooks, NotAdmitted, Outcome, Released, Runtime, TaskFuture,
 };
 pub(crate) use hooks::{Automatic, ErasedHooks, Release};
 

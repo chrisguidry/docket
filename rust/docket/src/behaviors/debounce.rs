@@ -5,7 +5,7 @@ use std::time::Duration;
 use chrono::Utc;
 
 use super::subject::subject;
-use super::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks};
+use super::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks, NotAdmitted};
 use crate::context::Context;
 use crate::scripts;
 use crate::task::Task;
@@ -58,7 +58,7 @@ const PROCEED: i64 = 1;
 const RESCHEDULE: i64 = 2;
 
 impl Admission for Debounce {
-    async fn admit(&self, ctx: &Context) -> Result<Admitted, AdmissionBlocked> {
+    async fn admit(&self, ctx: &Context) -> Result<Admitted, NotAdmitted> {
         let base = self.scope.as_deref().unwrap_or(ctx.docket().name());
         let tag = subject(ctx, self.field.as_deref())?;
         // The braces make the two keys one cluster slot, so that the script
@@ -78,10 +78,13 @@ impl Admission for Debounce {
             Ok((PROCEED, _)) => Ok(Admitted::now()),
             Ok((RESCHEDULE, remaining)) => {
                 Err(AdmissionBlocked::new("waiting for calls to settle")
-                    .retry_delay(Duration::from_millis(remaining.try_into().unwrap_or(0))))
+                    .retry_delay(Duration::from_millis(remaining.try_into().unwrap_or(0)))
+                    .into())
             }
-            Ok(_) => Err(AdmissionBlocked::new("a newer call is settling").drop_task()),
-            Err(error) => Err(AdmissionBlocked::new(format!("debouncing failed: {error}"))),
+            Ok(_) => Err(AdmissionBlocked::new("a newer call is settling")
+                .drop_task()
+                .into()),
+            Err(error) => Err(NotAdmitted::failed(format!("debouncing failed: {error}"))),
         }
     }
 }

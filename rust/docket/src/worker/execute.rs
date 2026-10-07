@@ -15,7 +15,7 @@ use tracing::Instrument;
 
 use super::run_state::{Claim, Run};
 use super::session::{Active, Delivery, Shared};
-use crate::behaviors::{AdmissionBlocked, AfterFailure, BoxError, Outcome, Release, Released};
+use crate::behaviors::{AfterFailure, BoxError, NotAdmitted, Outcome, Release, Released};
 use crate::context::{self, Context};
 use crate::docket::Registered;
 use crate::error::Result;
@@ -143,7 +143,21 @@ async fn attempt(
 
     let releases = match admit(registered, ctx).await {
         Ok(releases) => releases,
-        Err(blocked) => {
+        Err(NotAdmitted::Failed(error)) => {
+            let duration = started.elapsed().as_secs_f64();
+            // A cancel that came while the check ran wins, so a retry does
+            // not queue the cancelled task again.
+            if active.cancelled_by_docket.load(Ordering::SeqCst) {
+                return (cancelled(run, &span, generation, duration).await, duration);
+            }
+            metrics.tasks_failed.add(1, &run.labels());
+            telemetry::fail(&span, &error.to_string());
+            return (
+                fail(run, registered, ctx, error, generation, duration).await,
+                duration,
+            );
+        }
+        Err(NotAdmitted::Blocked(blocked)) => {
             // Admission control asks for the task to come back later, which
             // is not a failure, so the span says what happened and ends ok.
             span.span().add_event(
@@ -160,13 +174,11 @@ async fn attempt(
 
     let outcome = call(registered, ctx, active).await;
     let duration = started.elapsed().as_secs_f64();
-    let cancelled = active.cancelled_by_docket.load(Ordering::SeqCst);
+    let was_cancelled = active.cancelled_by_docket.load(Ordering::SeqCst);
     let result = match outcome {
-        _ if cancelled => {
+        _ if was_cancelled => {
             release(releases).await;
-            span.span().set_status(Status::Ok);
-            tracing::info!("✗ [{}] {} (cancelled)", format_duration(duration), run.call);
-            run.terminal(State::Cancelled, generation, Vec::new()).await
+            cancelled(run, &span, generation, duration).await
         }
         Ok(output) => {
             metrics.tasks_succeeded.add(1, &run.labels());
@@ -187,6 +199,18 @@ async fn attempt(
         }
     };
     (result, duration)
+}
+
+/// Ends a run that [`Docket::cancel`](crate::Docket::cancel) stopped.
+async fn cancelled(
+    run: &Run<'_>,
+    span: &opentelemetry::Context,
+    generation: i64,
+    duration: f64,
+) -> Result<()> {
+    span.span().set_status(Status::Ok);
+    tracing::info!("✗ [{}] {} (cancelled)", format_duration(duration), run.call);
+    run.terminal(State::Cancelled, generation, Vec::new()).await
 }
 
 /// Ends a failed run: a retry when the failure hook asks for one, otherwise
@@ -262,16 +286,16 @@ fn context(worker: &Shared, delivery: &Delivery, registered: &Registered) -> Con
 async fn admit(
     registered: &Registered,
     ctx: &Context,
-) -> std::result::Result<Vec<Release>, AdmissionBlocked> {
+) -> std::result::Result<Vec<Release>, NotAdmitted> {
     let mut releases = Vec::new();
     for admission in &registered.hooks.admissions {
         match admission(ctx.clone()).await {
             Ok(admitted) => releases.extend(admitted.release),
-            Err(blocked) => {
+            Err(refused) => {
                 while let Some(release) = releases.pop() {
                     release(Released::Blocked).await;
                 }
-                return Err(blocked);
+                return Err(refused);
             }
         }
     }

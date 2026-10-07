@@ -7,7 +7,7 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 
 use super::subject::subject;
-use super::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks, Released};
+use super::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks, NotAdmitted, Released};
 use crate::connection::Handle;
 use crate::context::Context;
 use crate::docket::Docket;
@@ -72,7 +72,7 @@ impl<T: Task> Behavior<T> for ConcurrencyLimit {
 }
 
 impl Admission for ConcurrencyLimit {
-    async fn admit(&self, ctx: &Context) -> Result<Admitted, AdmissionBlocked> {
+    async fn admit(&self, ctx: &Context) -> Result<Admitted, NotAdmitted> {
         let docket = ctx.docket().clone();
         let keys = docket.keys();
         let key = ctx.key().to_owned();
@@ -127,9 +127,11 @@ impl Admission for ConcurrencyLimit {
                     timeout,
                 )
                 .await;
-                Err(AdmissionBlocked::new("the concurrency limit is reached").handled())
+                Err(AdmissionBlocked::new("the concurrency limit is reached")
+                    .handled()
+                    .into())
             }
-            Err(error) => Err(AdmissionBlocked::new(format!(
+            Err(error) => Err(NotAdmitted::failed(format!(
                 "taking a concurrency slot failed: {error}"
             ))),
         }

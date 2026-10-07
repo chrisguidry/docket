@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use super::subject::subject;
-use super::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks};
+use super::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks, NotAdmitted};
 use crate::context::Context;
 use crate::task::Task;
 
@@ -50,7 +50,7 @@ impl<T: Task> Behavior<T> for Cooldown {
 }
 
 impl Admission for Cooldown {
-    async fn admit(&self, ctx: &Context) -> Result<Admitted, AdmissionBlocked> {
+    async fn admit(&self, ctx: &Context) -> Result<Admitted, NotAdmitted> {
         let base = self.scope.as_deref().unwrap_or(ctx.docket().name());
         let key = format!("{base}:cooldown:{}", subject(ctx, self.field.as_deref())?);
         let window = u64::try_from(self.window.as_millis())
@@ -71,8 +71,10 @@ impl Admission for Cooldown {
         .await;
         match set {
             Ok(Some(_)) => Ok(Admitted::now()),
-            Ok(None) => Err(AdmissionBlocked::new("the task is cooling down").drop_task()),
-            Err(error) => Err(AdmissionBlocked::new(format!(
+            Ok(None) => Err(AdmissionBlocked::new("the task is cooling down")
+                .drop_task()
+                .into()),
+            Err(error) => Err(NotAdmitted::failed(format!(
                 "checking the cooldown failed: {error}"
             ))),
         }
