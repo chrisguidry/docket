@@ -89,6 +89,8 @@ uv run prek install
 
 - This project uses Github for issue tracking
 - This project can use git worktrees under .worktrees/
+- The **`release`** skill at `.claude/skills/release/SKILL.md` covers tags,
+  version bumps, release names, and publishing
 
 ### Keeping docs honest as you edit
 
