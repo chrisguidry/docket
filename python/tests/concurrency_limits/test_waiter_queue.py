@@ -11,6 +11,7 @@ from docket import (
     Docket,
     Worker,
 )
+from docket._redis import confirm_subscriptions
 
 from tests.concurrency_limits.waiters import wait_for_xlen
 
@@ -379,6 +380,7 @@ async def test_admission_blocked_handled_does_not_publish_failed_event(
     async def collector() -> None:
         async with docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
             await pubsub.subscribe(docket.key(f"state:{contender_key}"))
+            await confirm_subscriptions(pubsub, 1)
             ready.set()
             async for message in pubsub.listen():
                 if message["type"] != "message":
