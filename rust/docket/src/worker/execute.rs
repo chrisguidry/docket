@@ -145,6 +145,11 @@ async fn attempt(
         Ok(releases) => releases,
         Err(NotAdmitted::Failed(error)) => {
             let duration = started.elapsed().as_secs_f64();
+            // A cancel that came while the check ran wins, so a retry does
+            // not queue the cancelled task again.
+            if active.cancelled_by_docket.load(Ordering::SeqCst) {
+                return (cancelled(run, &span, generation, duration).await, duration);
+            }
             metrics.tasks_failed.add(1, &run.labels());
             telemetry::fail(&span, &error.to_string());
             return (
@@ -169,13 +174,11 @@ async fn attempt(
 
     let outcome = call(registered, ctx, active).await;
     let duration = started.elapsed().as_secs_f64();
-    let cancelled = active.cancelled_by_docket.load(Ordering::SeqCst);
+    let was_cancelled = active.cancelled_by_docket.load(Ordering::SeqCst);
     let result = match outcome {
-        _ if cancelled => {
+        _ if was_cancelled => {
             release(releases).await;
-            span.span().set_status(Status::Ok);
-            tracing::info!("✗ [{}] {} (cancelled)", format_duration(duration), run.call);
-            run.terminal(State::Cancelled, generation, Vec::new()).await
+            cancelled(run, &span, generation, duration).await
         }
         Ok(output) => {
             metrics.tasks_succeeded.add(1, &run.labels());
@@ -196,6 +199,18 @@ async fn attempt(
         }
     };
     (result, duration)
+}
+
+/// Ends a run that [`Docket::cancel`](crate::Docket::cancel) stopped.
+async fn cancelled(
+    run: &Run<'_>,
+    span: &opentelemetry::Context,
+    generation: i64,
+    duration: f64,
+) -> Result<()> {
+    span.span().set_status(Status::Ok);
+    tracing::info!("✗ [{}] {} (cancelled)", format_duration(duration), run.call);
+    run.terminal(State::Cancelled, generation, Vec::new()).await
 }
 
 /// Ends a failed run: a retry when the failure hook asks for one, otherwise
