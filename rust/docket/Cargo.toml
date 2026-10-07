@@ -32,7 +32,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 chrono-tz = "0.10.4"
 clap = { version = "4.6.7", features = ["derive", "env"], optional = true }
 croner = "4.0.1"
-docket-rs-macros = { version = "=0.1.0", path = "../docket-macros" }
+docket-rs-macros = { version = "=0.2.0", path = "../docket-macros" }
 redis = { version = "1.7.1", features = ["aio", "tokio-comp", "tokio-rustls-comp", "tls-rustls-webpki-roots", "script", "streams", "cluster-async", "sentinel", "token-based-authentication"] }
 futures = "0.3.34"
 gethostname = "1.1.0"

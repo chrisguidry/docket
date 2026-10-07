@@ -10,7 +10,7 @@ tasks, and runs a worker.
 
 ```toml
 [dependencies]
-docket-rs = "0.1"
+docket-rs = "0.2"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 ```
@@ -86,7 +86,7 @@ own tests need no server:
 
 ```toml
 [dev-dependencies]
-docket-rs = { version = "0.1", features = ["memory"] }
+docket-rs = { version = "0.2", features = ["memory"] }
 ```
 
 ## Logs, metrics, and traces
