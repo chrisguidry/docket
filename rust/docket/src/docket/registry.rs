@@ -84,16 +84,29 @@ impl std::fmt::Debug for Registered {
 
 #[derive(Default)]
 pub(crate) struct Registry {
+    /// Each task, by its own name.
     tasks: HashMap<String, Registered>,
+    /// Every name a message can carry, its own or another, mapped to the
+    /// task's own name, so that both find the same handler and behaviors.
+    names: HashMap<String, String>,
 }
 
 impl Registry {
     pub fn insert(&mut self, name: &str, registered: Registered) {
         self.tasks.insert(name.to_owned(), registered);
+        self.names.insert(name.to_owned(), name.to_owned());
+    }
+
+    /// Runs messages under `other` with the task named `name`.
+    pub fn also_name(&mut self, name: &str, other: &str) {
+        self.names.insert(other.to_owned(), name.to_owned());
     }
 
     pub fn get(&self, name: &str) -> Option<Registered> {
-        self.tasks.get(name).cloned()
+        self.names
+            .get(name)
+            .and_then(|own| self.tasks.get(own))
+            .cloned()
     }
 
     pub fn change<R>(&mut self, name: &str, change: impl FnOnce(&mut Registered) -> R) -> R {
@@ -119,7 +132,7 @@ impl Registry {
     }
 
     pub fn names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.tasks.keys().cloned().collect();
+        let mut names: Vec<String> = self.names.keys().cloned().collect();
         names.sort();
         names
     }
@@ -167,6 +180,18 @@ impl<T: Task> Registration<T> {
             registered.hooks.needs_safeguard
         });
         register_safeguard(&self.docket, needs_safeguard);
+        self
+    }
+
+    /// Runs the task for messages under `name` too, with the same handler
+    /// and behaviors, so tasks added under an old name still run after a
+    /// rename.  Adding the task still uses its own name.
+    #[expect(
+        clippy::return_self_not_must_use,
+        reason = "a registration chain ends in a statement, and that must not warn"
+    )]
+    pub fn also_named(self, name: impl Into<String>) -> Self {
+        self.docket.also_name(T::NAME, &name.into());
         self
     }
 }
