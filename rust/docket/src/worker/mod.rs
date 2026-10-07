@@ -225,8 +225,8 @@ impl Worker {
                 "a worker's message batch must be at least 1".into(),
             ));
         }
-        let _limited = self.docket.limit_runs(&iterations);
-        let worker = Arc::new(session::Shared::new(self.docket, self.settings));
+        let limited = self.docket.limit_runs(&iterations);
+        let worker = Arc::new(session::Shared::new(self.docket, self.settings, limited));
         // The session future is large, so it lives on the heap rather than
         // in every caller's future.
         Box::pin(session::run(worker, until)).await

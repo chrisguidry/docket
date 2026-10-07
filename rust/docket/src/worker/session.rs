@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use super::sweep::Sweep;
 use super::{Settings, Until, cancellation, execute, heartbeat, perpetuals, sweep};
 use crate::connection::Connection;
-use crate::docket::Docket;
+use crate::docket::{Docket, Limited};
 use crate::error::{Error, Result};
 use crate::execution::Message;
 use crate::keys::WORKER_GROUP;
@@ -22,6 +22,8 @@ use crate::keys::WORKER_GROUP;
 pub(crate) struct Shared {
     pub docket: Docket,
     pub settings: Settings,
+    /// The `run_at_most` limits this worker counts its runs against.
+    pub limited: Limited,
     active: Mutex<HashMap<String, Active>>,
 }
 
@@ -36,10 +38,11 @@ pub(crate) struct Active {
 }
 
 impl Shared {
-    pub fn new(docket: Docket, settings: Settings) -> Self {
+    pub fn new(docket: Docket, settings: Settings, limited: Limited) -> Self {
         Self {
             docket,
             settings,
+            limited,
             active: Mutex::new(HashMap::new()),
         }
     }

@@ -5,7 +5,6 @@ mod run_limits;
 mod schedule;
 mod snapshot;
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -27,6 +26,7 @@ use crate::wire::iso;
 
 pub use registry::Registration;
 pub(crate) use registry::{Registered, Registry};
+pub(crate) use run_limits::Limited;
 pub(crate) use schedule::Placement;
 pub use schedule::{Add, Call};
 pub use snapshot::{Snapshot, TaskSummary, WorkerSummary};
@@ -56,7 +56,7 @@ struct Inner {
     monitor: Monitor,
     settings: Settings,
     telemetry: Arc<Telemetry>,
-    run_limits: Mutex<HashMap<String, run_limits::RunLimit>>,
+    run_limits: Mutex<run_limits::RunLimits>,
 }
 
 #[derive(Clone, Debug)]
@@ -139,7 +139,7 @@ impl DocketBuilder {
                 monitor,
                 settings: self.settings,
                 telemetry,
-                run_limits: Mutex::new(HashMap::new()),
+                run_limits: Mutex::new(run_limits::RunLimits::default()),
             }),
         })
     }

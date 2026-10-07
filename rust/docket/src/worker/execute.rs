@@ -89,7 +89,7 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
     }
     let generation = match run.claim().await? {
         Claim::Claimed(generation) => {
-            docket.count_run(&message.key);
+            worker.limited.count_run(&message.key);
             generation
         }
         // Docket::cancel counted the cancellation already.
