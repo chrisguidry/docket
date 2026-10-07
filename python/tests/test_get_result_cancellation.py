@@ -69,15 +69,22 @@ async def test_cancel_wakes_get_result_before_the_task_starts(
         pytest.param(timedelta(0), id="queued"),
     ],
 )
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param("plain", id="plain-key"),
+        pytest.param("back\bspace", id="key-with-a-control-character"),
+    ],
+)
 async def test_clear_wakes_get_result_before_the_task_starts(
-    docket: Docket, now: Callable[[], datetime], delay: timedelta
+    docket: Docket, now: Callable[[], datetime], delay: timedelta, key: str
 ):
     """clear() cancels each task that has not started, so it publishes the
-    cancelled state the way cancel() does."""
+    cancelled state the way cancel() does, as JSON that any key leaves valid."""
 
     async def never_runs() -> None: ...
 
-    execution = await docket.add(never_runs, when=now() + delay)()
+    execution = await docket.add(never_runs, when=now() + delay, key=key)()
     waiter = asyncio.create_task(execution.get_result(timeout=timedelta(seconds=5)))
     await wait_for_subscriber(docket, execution.key)
 

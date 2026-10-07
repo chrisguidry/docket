@@ -161,14 +161,19 @@ async fn a_cleared_key_can_be_added_again(#[case] delay: Duration) {
 }
 
 /// No worker holds a task that has not started, so the clear itself has to
-/// publish the cancelled state, the way a cancel does.
+/// publish the cancelled state, the way a cancel does, as JSON that any key
+/// leaves valid.
 #[rstest]
-#[case::queued(Duration::ZERO)]
-#[case::scheduled(Duration::from_secs(60))]
+#[case::queued(Duration::ZERO, "plain")]
+#[case::scheduled(Duration::from_secs(60), "plain")]
+#[case::a_key_with_a_control_character(Duration::ZERO, "back\u{8}space")]
 #[tokio::test]
-async fn clear_tells_a_follower_that_the_task_is_cancelled(#[case] delay: Duration) {
+async fn clear_tells_a_follower_that_the_task_is_cancelled(
+    #[case] delay: Duration,
+    #[case] key: &str,
+) {
     let docket = docket().await;
-    let execution = docket.add(Noop).after(delay).await.unwrap();
+    let execution = docket.add(Noop).key(key).after(delay).await.unwrap();
     let mut events = execution.subscribe().await.unwrap();
 
     docket.clear().await.unwrap();
@@ -183,6 +188,23 @@ async fn clear_tells_a_follower_that_the_task_is_cancelled(#[case] delay: Durati
         }
     })
     .await;
+}
+
+/// An immediate task has no parked data, so a clear deletes nothing at the
+/// key that parked data would have, even when that key is the stream's.
+#[tokio::test]
+async fn clear_keeps_the_stream_when_a_task_key_names_it() {
+    let docket = docket().await;
+    let Some(mut raw) = raw().await else { return };
+    docket.add(Noop).key("stream").await.unwrap();
+
+    docket.clear().await.unwrap();
+
+    let exists: bool = raw
+        .exists(format!("{}:stream", docket.name()))
+        .await
+        .unwrap();
+    assert!(exists);
 }
 
 /// A docket that keeps no records still keeps a running task's record until

@@ -226,6 +226,20 @@ async def test_a_cleared_key_can_be_added_again(
     the_task.assert_awaited_once_with("second")
 
 
+async def test_clear_keeps_the_stream_when_a_task_key_names_it(
+    docket: Docket, the_task: AsyncMock
+):
+    """An immediate task has no parked data, so clear() deletes nothing at the
+    key that parked data would have, even when that key is the stream's."""
+    docket.register(the_task)
+    await docket.add(the_task, key="stream")()
+
+    await docket.clear()
+
+    async with docket.redis() as redis:
+        assert await redis.exists(docket.stream_key) == 1
+
+
 async def test_clear_leaves_a_running_task_alone(
     redis_url: str, make_docket_name: Callable[[], str]
 ):

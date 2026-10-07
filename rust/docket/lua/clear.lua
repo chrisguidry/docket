@@ -16,14 +16,14 @@ local ttl_seconds = tonumber(ARGV[3])
 -- messages go too, but their runs hashes stay as they are, because each
 -- one's worker records how it ends.
 
--- Inline JSON-string escaper for the common cases, as in
--- stream_due_tasks.lua.  Task keys are user-supplied.
+-- Task keys are user-supplied, and JSON allows no control character in a
+-- string, so this escapes every one of them.  cjson is not available on the
+-- in-memory backend.
 local function json_escape(s)
-    s = s:gsub('\\', '\\\\')
-    s = s:gsub('"', '\\"')
-    s = s:gsub('\n', '\\n')
-    s = s:gsub('\r', '\\r')
-    s = s:gsub('\t', '\\t')
+    s = s:gsub('[\\"]', '\\%0')
+    s = s:gsub('%c', function(c)
+        return string.format('\\u%04x', c:byte())
+    end)
     return s
 end
 
@@ -39,7 +39,12 @@ local function remember(task_key)
     end
 end
 
+-- Only a scheduled task has parked data, at the docket's prefix and its
+-- key.  A key from the stream gets no DEL there: for an immediate task with
+-- a key like "stream", that DEL would remove the stream itself.
+local scheduled = {}
 for _, task_key in ipairs(redis.call('ZRANGE', queue_key, 0, -1)) do
+    scheduled[task_key] = true
     remember(task_key)
 end
 
@@ -59,12 +64,11 @@ redis.call('DEL', queue_key)
 
 local prefix = docket_prefix .. ':'
 for _, task_key in ipairs(task_keys) do
-    -- TODO: Remove known: and stream-id: in v0.14.0 (legacy key locations).
-    redis.call('DEL',
-        prefix .. task_key,
-        prefix .. 'known:' .. task_key,
-        prefix .. 'stream-id:' .. task_key
-    )
+    if scheduled[task_key] then
+        redis.call('DEL', prefix .. task_key)
+    end
+    -- TODO: Remove in v0.14.0 (legacy key locations).
+    redis.call('DEL', prefix .. 'known:' .. task_key, prefix .. 'stream-id:' .. task_key)
 
     local runs_key = prefix .. 'runs:' .. task_key
     local state = redis.call('HGET', runs_key, 'state')
