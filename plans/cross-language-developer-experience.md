@@ -843,10 +843,12 @@ async def payroll(gate: None = BusinessHoursOnly()) -> None: ...
 struct BusinessHoursOnly;
 
 impl Admission for BusinessHoursOnly {
-    async fn admit(&self, _ctx: &Context) -> Result<Admitted, AdmissionBlocked> {
+    async fn admit(&self, _ctx: &Context) -> Result<Admitted, NotAdmitted> {
         match Local::now().hour() {
             9..17 => Ok(Admitted::now()),
-            _ => Err(AdmissionBlocked::new("after hours").retry_delay(Duration::from_secs(15 * 60))),
+            _ => Err(AdmissionBlocked::new("after hours")
+                .retry_delay(Duration::from_secs(15 * 60))
+                .into()),
         }
     }
 }
@@ -894,7 +896,10 @@ Each behavior states which hooks it uses.  In Rust, `attach` puts the
 behavior into its hooks, and `Behavior` is generic over the task, so a
 behavior can require more of the task's arguments.  An admission hook
 returns `Admitted::with_release(...)` when it holds something, such as a
-concurrency slot, that must be given back after the task.  A failure hook
+concurrency slot, that must be given back after the task.  It refuses a
+task with `NotAdmitted`: `Blocked` holds the task back, the way Python's
+`AdmissionBlocked` does, and `Failed` fails the task when the check cannot
+run, the way any other error from a Python dependency does.  A failure hook
 returns `AfterFailure::RetryAt(when)` or `Fail`, and a completion hook
 returns `AfterCompletion`; docket, not the behavior, calls the Lua scripts.  In Go, `Hooks()` returns a struct of hook
 functions.  In TypeScript, the behavior is an object with optional hook

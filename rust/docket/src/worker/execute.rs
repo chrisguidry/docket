@@ -15,7 +15,7 @@ use tracing::Instrument;
 
 use super::run_state::{Claim, Run};
 use super::session::{Active, Delivery, Shared};
-use crate::behaviors::{AdmissionBlocked, AfterFailure, BoxError, Outcome, Release, Released};
+use crate::behaviors::{AfterFailure, BoxError, NotAdmitted, Outcome, Release, Released};
 use crate::context::{self, Context};
 use crate::docket::Registered;
 use crate::error::Result;
@@ -143,7 +143,16 @@ async fn attempt(
 
     let releases = match admit(registered, ctx).await {
         Ok(releases) => releases,
-        Err(blocked) => {
+        Err(NotAdmitted::Failed(error)) => {
+            let duration = started.elapsed().as_secs_f64();
+            metrics.tasks_failed.add(1, &run.labels());
+            telemetry::fail(&span, &error.to_string());
+            return (
+                fail(run, registered, ctx, error, generation, duration).await,
+                duration,
+            );
+        }
+        Err(NotAdmitted::Blocked(blocked)) => {
             // Admission control asks for the task to come back later, which
             // is not a failure, so the span says what happened and ends ok.
             span.span().add_event(
@@ -262,16 +271,16 @@ fn context(worker: &Shared, delivery: &Delivery, registered: &Registered) -> Con
 async fn admit(
     registered: &Registered,
     ctx: &Context,
-) -> std::result::Result<Vec<Release>, AdmissionBlocked> {
+) -> std::result::Result<Vec<Release>, NotAdmitted> {
     let mut releases = Vec::new();
     for admission in &registered.hooks.admissions {
         match admission(ctx.clone()).await {
             Ok(admitted) => releases.extend(admitted.release),
-            Err(blocked) => {
+            Err(refused) => {
                 while let Some(release) = releases.pop() {
                     release(Released::Blocked).await;
                 }
-                return Err(blocked);
+                return Err(refused);
             }
         }
     }

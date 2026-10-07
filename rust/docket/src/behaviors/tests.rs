@@ -12,7 +12,7 @@ use tracing::{Event, Metadata, Subscriber};
 
 use super::{
     AdmissionBlocked, Admitted, Behavior, ConcurrencyLimit, Cooldown, Debounce, ErasedHooks, Hooks,
-    RateLimit,
+    NotAdmitted, RateLimit,
 };
 use crate::context::Context;
 use crate::docket::Docket;
@@ -111,7 +111,7 @@ pub(super) fn context(docket: &Docket, key: &str) -> Context {
 pub(super) type Attach = fn(&mut Hooks<'_, Noop>);
 
 /// Runs the one admission hook that `attach` gives a task.
-pub(super) async fn admit(attach: Attach, ctx: Context) -> Result<Admitted, AdmissionBlocked> {
+pub(super) async fn admit(attach: Attach, ctx: Context) -> Result<Admitted, NotAdmitted> {
     let mut erased = ErasedHooks::default();
     attach(&mut Hooks {
         erased: &mut erased,
@@ -120,20 +120,34 @@ pub(super) async fn admit(attach: Attach, ctx: Context) -> Result<Admitted, Admi
     erased.admissions[0](ctx).await
 }
 
+/// The block that an admission hook answered with.
+pub(super) fn blocked(admitted: Result<Admitted, NotAdmitted>) -> AdmissionBlocked {
+    match admitted {
+        Err(NotAdmitted::Blocked(blocked)) => blocked,
+        Err(NotAdmitted::Failed(error)) => panic!("the admission failed: {error}"),
+        Ok(_) => panic!("the task was admitted"),
+    }
+}
+
+/// The error of an admission hook that could not decide.
+pub(super) fn failed(admitted: Result<Admitted, NotAdmitted>) -> String {
+    match admitted {
+        Err(NotAdmitted::Failed(error)) => error.to_string(),
+        Err(NotAdmitted::Blocked(blocked)) => panic!("the admission blocked: {blocked}"),
+        Ok(_) => panic!("the task was admitted"),
+    }
+}
+
 #[rstest]
 #[case::concurrency(|hooks: &mut Hooks<'_, Noop>| ConcurrencyLimit::new(1).attach(hooks), "taking a concurrency slot failed")]
 #[case::cooldown(|hooks: &mut Hooks<'_, Noop>| Cooldown::new(Duration::from_secs(1)).attach(hooks), "checking the cooldown failed")]
 #[case::debounce(|hooks: &mut Hooks<'_, Noop>| Debounce::new(Duration::from_secs(1)).attach(hooks), "debouncing failed")]
 #[case::rate_limit(|hooks: &mut Hooks<'_, Noop>| RateLimit::new(1).attach(hooks), "checking the rate limit failed")]
 #[tokio::test]
-async fn an_unreachable_redis_blocks_the_task_for_a_retry(
-    #[case] attach: Attach,
-    #[case] reason: &str,
-) {
+async fn an_unreachable_redis_fails_the_task(#[case] attach: Attach, #[case] reason: &str) {
     let docket = unreachable().await;
-    let blocked = admit(attach, context(&docket, "a")).await.err().unwrap();
-    assert!(blocked.reason().starts_with(reason), "{}", blocked.reason());
-    assert!(blocked.reschedule);
+    let error = failed(admit(attach, context(&docket, "a")).await);
+    assert!(error.starts_with(reason), "{error}");
 }
 
 #[rstest]
@@ -142,14 +156,13 @@ async fn an_unreachable_redis_blocks_the_task_for_a_retry(
 #[case::debounce(|hooks: &mut Hooks<'_, Noop>| Debounce::per_field("customer", Duration::from_secs(1)).scope("tests").attach(hooks))]
 #[case::rate_limit(|hooks: &mut Hooks<'_, Noop>| RateLimit::per_field("customer", 1).attach(hooks))]
 #[tokio::test]
-async fn a_limit_on_a_missing_field_drops_the_task(#[case] attach: Attach) {
+async fn a_limit_on_a_missing_field_fails_the_task(#[case] attach: Attach) {
     let docket = unreachable().await;
-    let blocked = admit(attach, context(&docket, "a")).await.err().unwrap();
+    let error = failed(admit(attach, context(&docket, "a")).await);
     assert_eq!(
-        blocked.reason(),
+        error,
         "the noop task's arguments have no customer field to limit by"
     );
-    assert!(!blocked.reschedule);
 }
 
 #[tokio::test]
@@ -158,7 +171,7 @@ async fn a_cooldown_admits_one_call_and_drops_the_next() {
     let attach: Attach = |hooks| Cooldown::new(Duration::from_secs(60)).attach(hooks);
 
     let first = admit(attach, context(&docket, "a")).await;
-    let second = admit(attach, context(&docket, "b")).await.err().unwrap();
+    let second = blocked(admit(attach, context(&docket, "b")).await);
 
     assert!(first.is_ok());
     assert_eq!(second.reason(), "the task is cooling down");
@@ -170,8 +183,8 @@ async fn debounce_holds_the_first_call_drops_rivals_and_then_runs_it() {
     let docket = memory().await;
     let attach: Attach = |hooks| Debounce::new(Duration::from_millis(100)).attach(hooks);
 
-    let waiting = admit(attach, context(&docket, "a")).await.err().unwrap();
-    let rival = admit(attach, context(&docket, "b")).await.err().unwrap();
+    let waiting = blocked(admit(attach, context(&docket, "a")).await);
+    let rival = blocked(admit(attach, context(&docket, "b")).await);
     // The first call runs once no call has come for the settle time.
     tokio::time::sleep(Duration::from_millis(110)).await;
     let settled = admit(attach, context(&docket, "a")).await;
@@ -191,7 +204,7 @@ async fn a_rate_limit_admits_up_to_its_limit(#[case] attach: Attach, #[case] res
     let docket = memory().await;
 
     let first = admit(attach, context(&docket, "a")).await;
-    let second = admit(attach, context(&docket, "b")).await.err().unwrap();
+    let second = blocked(admit(attach, context(&docket, "b")).await);
 
     assert!(first.is_ok());
     assert_eq!(second.reason(), "the rate limit is reached");

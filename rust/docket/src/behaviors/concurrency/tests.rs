@@ -4,7 +4,7 @@ use redis::AsyncCommands;
 use rstest::rstest;
 
 use super::{cancel_unless_parked, hold};
-use crate::behaviors::tests::{Attach, Logs, Noop, admit, context, memory, unreachable};
+use crate::behaviors::tests::{Attach, Logs, Noop, admit, blocked, context, memory, unreachable};
 use crate::behaviors::{Behavior, ConcurrencyLimit, Released};
 use crate::docket::Docket;
 
@@ -19,10 +19,7 @@ async fn scheduled_keys(docket: &Docket) -> Vec<String> {
 async fn a_release_wakes_the_task_parked_behind_it() {
     let docket = memory().await;
     let holder = admit(ONE_AT_A_TIME, context(&docket, "a")).await;
-    let parked = admit(ONE_AT_A_TIME, context(&docket, "b"))
-        .await
-        .err()
-        .unwrap();
+    let parked = blocked(admit(ONE_AT_A_TIME, context(&docket, "b")).await);
     assert_eq!(parked.reason(), "the concurrency limit is reached");
     assert!(parked.handled);
     assert_eq!(scheduled_keys(&docket).await, ["__safeguard__:b"]);

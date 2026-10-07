@@ -73,6 +73,9 @@ jobs:
       - name: telemetry
         run: uv run python -m conformance telemetry --implementation ${{ matrix.implementation }}
 
+      - name: admission-failure
+        run: uv run python -m conformance admission-failure --implementation ${{ matrix.implementation }}
+
   telemetry:
     name: Telemetry, python@main and rust@main
     runs-on: ubuntu-26.04

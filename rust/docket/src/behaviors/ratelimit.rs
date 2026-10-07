@@ -6,7 +6,7 @@ use chrono::Utc;
 use redis::AsyncCommands;
 
 use super::subject::subject;
-use super::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks, Released};
+use super::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks, NotAdmitted, Released};
 use crate::context::Context;
 use crate::scripts;
 use crate::task::Task;
@@ -77,7 +77,7 @@ impl<T: Task> Behavior<T> for RateLimit {
 const ADMITTED: i64 = 1;
 
 impl Admission for RateLimit {
-    async fn admit(&self, ctx: &Context) -> Result<Admitted, AdmissionBlocked> {
+    async fn admit(&self, ctx: &Context) -> Result<Admitted, NotAdmitted> {
         let base = self.scope.as_deref().unwrap_or(ctx.docket().name());
         let key = format!("{base}:ratelimit:{}", subject(ctx, self.field.as_deref())?);
         let now_ms = millis(Utc::now());
@@ -102,12 +102,13 @@ impl Admission for RateLimit {
                     let _: redis::RedisResult<i64> = connection.zrem(&key, &member).await;
                 }
             })),
-            Ok(_) if self.drop => {
-                Err(AdmissionBlocked::new("the rate limit is reached").drop_task())
-            }
+            Ok(_) if self.drop => Err(AdmissionBlocked::new("the rate limit is reached")
+                .drop_task()
+                .into()),
             Ok((_, retry_after)) => Err(AdmissionBlocked::new("the rate limit is reached")
-                .retry_delay(Duration::from_millis(retry_after.try_into().unwrap_or(1)))),
-            Err(error) => Err(AdmissionBlocked::new(format!(
+                .retry_delay(Duration::from_millis(retry_after.try_into().unwrap_or(1)))
+                .into()),
+            Err(error) => Err(NotAdmitted::failed(format!(
                 "checking the rate limit failed: {error}"
             ))),
         }
