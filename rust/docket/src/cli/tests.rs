@@ -197,6 +197,29 @@ async fn a_worker_stops_on_a_shutdown_signal(#[case] signal: &str) {
     run.await.unwrap().unwrap();
 }
 
+#[cfg(feature = "memory")]
+#[tokio::test]
+async fn a_worker_stops_when_its_shutdown_completes() {
+    let url = format!("memory://{}", uuid::Uuid::now_v7());
+    let args = parse(&["--url", &url]);
+    let docket = args.docket().await.unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let run = tokio::spawn(async move {
+        args.run_until(&docket, async {
+            stopped.await.ok();
+        })
+        .await
+    });
+
+    stop.send(()).unwrap();
+
+    tokio::time::timeout(Duration::from_secs(10), run)
+        .await
+        .expect("the worker stops on its shutdown")
+        .unwrap()
+        .unwrap();
+}
+
 /// A port that nothing listens on.  The servers listen on every address,
 /// and the tests reach them on the loopback one.
 #[cfg(feature = "memory")]
@@ -250,6 +273,34 @@ async fn serves_a_healthcheck_and_the_metrics_it_installed() {
         "{page}"
     );
     assert!(page.contains("\ncli_scrapes_total 1.0\n"), "{page}");
+}
+
+#[cfg(feature = "memory")]
+#[tokio::test]
+async fn the_servers_stop_when_they_drop() {
+    let healthcheck = free_port();
+    let args = parse(&[
+        "--url",
+        "memory://cli-servers-drop",
+        "--healthcheck-port",
+        &healthcheck.to_string(),
+    ]);
+    let servers = args.servers().await.unwrap();
+    assert!(get(healthcheck).await.ends_with("OK"));
+
+    drop(servers);
+
+    let refused = async {
+        while tokio::net::TcpStream::connect(("127.0.0.1", healthcheck))
+            .await
+            .is_ok()
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), refused)
+        .await
+        .expect("the healthcheck stops listening");
 }
 
 #[cfg(feature = "memory")]
