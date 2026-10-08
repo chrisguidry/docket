@@ -148,7 +148,8 @@ with `Docket::redis`, which opens a redis-rs connection on any of these URLs,
 A test can move a `memory://` docket's clock with `docket::testing::advance_time`,
 or have idle workers skip ahead to the next scheduled task with
 `docket::testing::skip_idle_time`, so that perpetual intervals and retry
-delays take no real time.
+delays take no real time.  Skipping assumes one worker per `memory://` URL,
+because an idle worker moves the clock that busy workers share.
 
 [`examples/testing.rs`](examples/testing.rs) is a small application with the
 tests it writes for its tasks this way.
