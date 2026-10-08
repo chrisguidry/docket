@@ -38,7 +38,7 @@ use crate::prometheus::Exporter;
 use crate::worker::Worker;
 
 /// A docket worker's command-line options.
-#[derive(clap::Args, Clone, Debug, PartialEq, Eq)]
+#[derive(clap::Args, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WorkerArgs {
     /// The name of the docket.
@@ -46,7 +46,14 @@ pub struct WorkerArgs {
     pub docket: String,
 
     /// The URL of the Redis server.
-    #[arg(long, env = "DOCKET_URL", default_value = "redis://localhost:6379/0")]
+    // The URL may hold a password, so the help leaves out its value from the
+    // environment, and `Debug` redacts it.
+    #[arg(
+        long,
+        env = "DOCKET_URL",
+        hide_env_values = true,
+        default_value = "redis://localhost:6379/0"
+    )]
     pub url: String,
 
     /// The name of the worker.  The default is `{hostname}#{pid}`.
@@ -99,6 +106,26 @@ pub struct WorkerArgs {
     /// The port to serve Prometheus metrics on.
     #[arg(long, env = "DOCKET_WORKER_METRICS_PORT")]
     pub metrics_port: Option<u16>,
+}
+
+impl std::fmt::Debug for WorkerArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerArgs")
+            .field("docket", &self.docket)
+            .field("url", &crate::connection::redact(&self.url))
+            .field("name", &self.name)
+            .field("concurrency", &self.concurrency)
+            .field("message_batch", &self.message_batch)
+            .field("redelivery_timeout", &self.redelivery_timeout)
+            .field("reconnection_delay", &self.reconnection_delay)
+            .field("minimum_check_interval", &self.minimum_check_interval)
+            .field("scheduling_resolution", &self.scheduling_resolution)
+            .field("schedule_automatic_tasks", &self.schedule_automatic_tasks)
+            .field("until_finished", &self.until_finished)
+            .field("healthcheck_port", &self.healthcheck_port)
+            .field("metrics_port", &self.metrics_port)
+            .finish()
+    }
 }
 
 /// The exporter that `--metrics-port` installs.  The global meter provider
