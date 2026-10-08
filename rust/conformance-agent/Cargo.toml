@@ -8,19 +8,19 @@ license.workspace = true
 publish = false
 
 [dependencies]
-chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
-clap = { version = "4.6.7", features = ["derive"] }
-docket-rs = { path = "../docket", features = ["prometheus"] }
-opentelemetry = { version = "0.33", default-features = false, features = ["trace", "metrics"] }
-opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics"] }
-opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "metrics"] }
-rand = "0.10.3"
-redis = { version = "1.7.1", features = ["aio", "tokio-comp", "connection-manager"] }
-serde = { version = "1.0.229", features = ["derive"] }
-tokio = { version = "1.53.2", features = ["full"] }
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-uuid = { version = "1.27.0", features = ["v7"] }
+chrono = { workspace = true, features = ["clock", "std"] }
+clap = { workspace = true, features = ["derive"] }
+docket-rs = { workspace = true, features = ["prometheus"] }
+opentelemetry = { workspace = true, features = ["trace", "metrics"] }
+opentelemetry-otlp = { workspace = true, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics"] }
+opentelemetry_sdk = { workspace = true, features = ["trace", "metrics"] }
+rand.workspace = true
+redis = { workspace = true, features = ["aio", "tokio-comp", "connection-manager"] }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = { workspace = true, features = ["v7"] }
 
 [lints]
 workspace = true
