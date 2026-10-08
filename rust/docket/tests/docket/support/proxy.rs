@@ -16,10 +16,12 @@ use tokio::task::JoinSet;
 
 type Matcher = Box<dyn Fn(&[Vec<u8>]) -> bool + Send>;
 
-/// Fails the next `times` commands that `matches` picks.
+/// Fails the next `times` commands that `matches` picks, with `error` in
+/// place of the reply, or with a generic error when `error` is `None`.
 struct Rule {
     matches: Matcher,
     times: usize,
+    error: Option<String>,
 }
 
 #[derive(Default)]
@@ -38,17 +40,18 @@ struct State {
 }
 
 impl State {
-    /// Whether to fail this command, spending one of a rule's failures.
-    fn should_fail(&mut self, args: &[Vec<u8>]) -> bool {
-        let Some(rule) = self
+    /// The error reply for this command when it should fail, spending one
+    /// of a rule's failures.
+    fn failure(&mut self, args: &[Vec<u8>], name: &[u8]) -> Option<Vec<u8>> {
+        let rule = self
             .rules
             .iter_mut()
-            .find(|rule| rule.times > 0 && (rule.matches)(args))
-        else {
-            return false;
-        };
+            .find(|rule| rule.times > 0 && (rule.matches)(args))?;
         rule.times -= 1;
-        true
+        let error = rule.error.clone().unwrap_or_else(|| {
+            format!("ERR injected failure for {}", String::from_utf8_lossy(name))
+        });
+        Some(format!("-{error}\r\n").into_bytes())
     }
 }
 
@@ -86,7 +89,7 @@ impl Proxy {
     /// without sending them to Redis.
     pub fn fail(&self, command: &str, times: usize) {
         let command = command.to_ascii_uppercase();
-        self.add(times, move |args| {
+        self.add(times, None, move |args| {
             args[0].eq_ignore_ascii_case(command.as_bytes())
         });
     }
@@ -94,13 +97,24 @@ impl Proxy {
     /// Answers the next `times` runs of the Lua script with this source with
     /// an error.
     pub fn fail_script(&self, source: &str, times: usize) {
+        self.refuse_script(source, times, None);
+    }
+
+    /// Answers the next `times` runs of the Lua script with this source with
+    /// `error`, such as `READONLY You can't write against a read only
+    /// replica.`
+    pub fn fail_script_with(&self, source: &str, times: usize, error: &str) {
+        self.refuse_script(source, times, Some(error.to_owned()));
+    }
+
+    fn refuse_script(&self, source: &str, times: usize, error: Option<String>) {
         let sha = Sha1::digest(source.as_bytes())
             .iter()
             .fold(String::new(), |mut hex, byte| {
                 let _ = write!(hex, "{byte:02x}");
                 hex
             });
-        self.add(times, move |args| {
+        self.add(times, error, move |args| {
             args[0].eq_ignore_ascii_case(b"EVALSHA")
                 && args
                     .get(1)
@@ -108,10 +122,16 @@ impl Proxy {
         });
     }
 
-    fn add(&self, times: usize, matches: impl Fn(&[Vec<u8>]) -> bool + Send + 'static) {
+    fn add(
+        &self,
+        times: usize,
+        error: Option<String>,
+        matches: impl Fn(&[Vec<u8>]) -> bool + Send + 'static,
+    ) {
         self.state.lock().unwrap().rules.push(Rule {
             matches: Box::new(matches),
             times,
+            error,
         });
     }
 
@@ -277,9 +297,12 @@ async fn commands(
                 .counts
                 .entry(String::from_utf8_lossy(&name).into_owned())
                 .or_default() += 1;
-            if connection.transparent.load(Ordering::SeqCst)
-                || !state.lock().unwrap().should_fail(&args)
-            {
+            let failure = if connection.transparent.load(Ordering::SeqCst) {
+                None
+            } else {
+                state.lock().unwrap().failure(&args, &name)
+            };
+            let Some(error) = failure else {
                 connection
                     .pending
                     .lock()
@@ -287,12 +310,7 @@ async fn commands(
                     .push_back(Pending::Forwarded);
                 forward.extend(raw);
                 continue;
-            }
-            let error = format!(
-                "-ERR injected failure for {}\r\n",
-                String::from_utf8_lossy(&name)
-            )
-            .into_bytes();
+            };
             let mut pending = connection.pending.lock().unwrap();
             if pending.is_empty() {
                 let _ = connection.to_client.send(error);
