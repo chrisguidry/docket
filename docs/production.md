@@ -29,7 +29,7 @@ async with Worker(
 
 ### Environment Variable Configuration
 
-All settings can be configured via environment variables:
+The worker CLI supports environment variables for its configuration:
 
 ```bash
 # Core docket settings
@@ -57,6 +57,11 @@ export DOCKET_LOGGING_FORMAT=json
 export DOCKET_TASKS=myapp.tasks:production_tasks
 ```
 
+To install [worker-level dependencies](dependency-injection.md#standalone-workers),
+set `DOCKET_WORKER_DEPENDENCIES=myapp.dependencies:worker_dependencies`, pointing
+to an exported mapping or sequence of dependency instances. These environment
+variables configure the CLI; direct `Worker.run()` calls take explicit arguments.
+
 ### CLI Usage
 
 Run workers in production using the CLI:
@@ -78,9 +83,18 @@ docket worker \
   --tasks myapp.tasks:production_tasks
 ```
 
+Use `--dependencies myapp.dependencies:worker_dependencies` to load a dependency
+collection, overriding `DOCKET_WORKER_DEPENDENCIES` if set. See
+[Standalone workers](dependency-injection.md#standalone-workers) for the collection
+definition and the equivalent Python entry point using `Worker.run()`.
+
 ### Signal Handling
 
-Workers catch `SIGTERM` and `SIGINT` and shut down gracefully — they stop accepting new tasks and wait for in-flight tasks to finish before exiting. On container orchestrators like Kubernetes, set `terminationGracePeriodSeconds` to be longer than your slowest expected task so the worker has time to drain. Tasks that don't finish before the grace period expires will be redelivered to other workers based on `redelivery_timeout`.
+Workers started through the CLI or `Worker.run()` catch `SIGTERM` and `SIGINT` and shut down gracefully — they stop accepting new tasks and wait for in-flight tasks to finish before exiting. On container orchestrators like Kubernetes, set `terminationGracePeriodSeconds` to be longer than your slowest expected task so the worker has time to drain. Tasks that don't finish before the grace period expires will be redelivered to other workers based on `redelivery_timeout`.
+
+When embedding a worker in another framework, use `worker.run_forever()` or
+`worker.run_until_finished()` within the worker's async context manager. These
+methods leave signal handling to the host framework.
 
 ## Connection Management
 
