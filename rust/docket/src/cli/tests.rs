@@ -120,6 +120,35 @@ async fn runs_a_worker_from_its_options() {
     args.run(&docket).await.unwrap();
 }
 
+#[cfg(feature = "memory")]
+#[tokio::test]
+async fn a_docket_from_the_options_takes_builder_settings() {
+    let args = parse(&["--docket", "orders", "--url", "memory://cli-builder"]);
+
+    let docket = args
+        .docket_builder()
+        .execution_ttl(Duration::from_secs(7))
+        .connect()
+        .await
+        .unwrap();
+
+    assert_eq!(docket.name(), "orders");
+    assert_eq!(docket.settings().execution_ttl, Duration::from_secs(7));
+}
+
+#[test]
+fn an_application_changes_the_options_defaults() {
+    use clap::{CommandFactory, FromArgMatches};
+
+    let command = <Cli as CommandFactory>::command()
+        .mut_arg("docket", |arg| arg.default_value("orders"))
+        .mut_arg("concurrency", |arg| arg.default_value("2"));
+    let matches = command.try_get_matches_from(["app"]).unwrap();
+    let args = Cli::from_arg_matches(&matches).unwrap().worker;
+
+    assert_eq!((args.docket.as_str(), args.concurrency), ("orders", 2));
+}
+
 /// Signals reach every listener in the process, so the tests that send them
 /// take turns.
 #[cfg(all(unix, feature = "memory"))]

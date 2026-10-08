@@ -25,6 +25,32 @@
 //! cli.worker.run(&docket).await
 //! # }
 //! ```
+//!
+//! [`WorkerArgs::docket_builder`] takes the settings that have no option,
+//! and clap's `mut_arg` changes an option's default for the application:
+//!
+//! ```no_run
+//! # use clap::{CommandFactory, FromArgMatches, Parser};
+//! # use std::time::Duration;
+//! # #[derive(Parser)]
+//! # struct Cli {
+//! #     #[command(flatten)]
+//! #     worker: docket::cli::WorkerArgs,
+//! # }
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let matches = Cli::command()
+//!     .mut_arg("docket", |arg| arg.default_value("orders"))
+//!     .get_matches();
+//! let cli = Cli::from_arg_matches(&matches)?;
+//! let docket = cli
+//!     .worker
+//!     .docket_builder()
+//!     .execution_ttl(Duration::from_hours(1))
+//!     .connect()
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -32,7 +58,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 
-use crate::docket::Docket;
+use crate::docket::{Docket, DocketBuilder};
 use crate::error::{Error, Result};
 use crate::prometheus::Exporter;
 use crate::worker::Worker;
@@ -114,10 +140,19 @@ impl WorkerArgs {
     /// first installs the Prometheus exporter as the global meter provider,
     /// because a docket binds its instruments when it connects.
     pub async fn docket(&self) -> Result<Docket> {
+        self.docket_builder().connect().await
+    }
+
+    /// A builder for the docket the options name, for settings that have no
+    /// option, such as [`execution_ttl`](crate::DocketBuilder::execution_ttl).
+    /// With `--metrics-port`, it installs the Prometheus exporter, as
+    /// [`docket`](Self::docket) does.
+    #[must_use]
+    pub fn docket_builder(&self) -> DocketBuilder {
         if self.metrics_port.is_some() {
             exporter();
         }
-        Docket::connect(&self.docket, &self.url).await
+        Docket::builder(&self.docket, &self.url)
     }
 
     /// A worker with the options' settings.
