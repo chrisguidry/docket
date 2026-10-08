@@ -1,4 +1,5 @@
 use opentelemetry::metrics::MeterProvider;
+use opentelemetry_sdk::metrics::{Aggregation, Instrument, SdkMeterProvider, Stream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -55,6 +56,38 @@ fn renders_nothing_once_its_provider_shuts_down() {
     exporter.meter_provider().shutdown().unwrap();
 
     assert_eq!(exporter.render(), "");
+}
+
+#[test]
+fn renders_with_the_views_of_the_applications_builder() {
+    let punctuality = |instrument: &Instrument| {
+        Stream::builder()
+            .with_aggregation(Aggregation::ExplicitBucketHistogram {
+                boundaries: vec![0.5, 5.0],
+                record_min_max: false,
+            })
+            .build()
+            .ok()
+            .filter(|_| instrument.name() == "docket_task_punctuality")
+    };
+    let exporter = Exporter::with_provider(SdkMeterProvider::builder().with_view(punctuality));
+    let meter = exporter.meter_provider().meter("docket");
+    meter
+        .f64_histogram("docket_task_punctuality")
+        .with_unit("s")
+        .build()
+        .record(1.0, &[]);
+
+    let page = exporter.render();
+
+    assert!(
+        page.contains(
+            "docket_task_punctuality_seconds_bucket{le=\"0.5\"} 0.0\n\
+             docket_task_punctuality_seconds_bucket{le=\"5.0\"} 1.0\n\
+             docket_task_punctuality_seconds_bucket{le=\"+Inf\"} 1.0\n"
+        ),
+        "{page}"
+    );
 }
 
 #[tokio::test]
