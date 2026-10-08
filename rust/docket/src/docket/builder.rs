@@ -81,7 +81,9 @@ impl DocketBuilder {
 
     /// How long a command may wait for Redis to answer before it fails.
     /// Blocking reads, such as a worker's wait for new tasks, block for at
-    /// most half of it, so that their answers arrive in time.
+    /// most half of it, so that their answers arrive in time.  Redis blocks
+    /// for at least a millisecond, so a timeout under 2 ms fails at
+    /// [`connect`](Self::connect).
     ///
     /// By default a command waits as long as it takes, as in pydocket, and
     /// TCP keepalive finds a Redis that is gone.  With a timeout, a Lua

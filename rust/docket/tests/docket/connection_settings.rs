@@ -208,6 +208,14 @@ const SECOND: Duration = Duration::from_secs(1);
     Docket::builder("x", "memory://x").response_timeout(Duration::ZERO),
     "response timeout"
 )]
+#[case::response_timeout_under_the_shortest_block(
+    Docket::builder("x", "memory://x").response_timeout(Duration::from_micros(500)),
+    "response timeout"
+)]
+#[case::response_timeout_with_no_room_for_a_reply(
+    Docket::builder("x", "memory://x").response_timeout(Duration::from_micros(1999)),
+    "response timeout"
+)]
 #[case::backoff(
     Docket::builder("x", "memory://x")
         .retry_backoff(Duration::from_secs(2), Duration::from_secs(1)),

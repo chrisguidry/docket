@@ -29,6 +29,12 @@ pub(crate) struct Keepalive {
     pub probes: u32,
 }
 
+/// The shortest block of a blocking read.  Redis takes a block in whole
+/// milliseconds and reads `BLOCK 0` as a block with no end.  A response
+/// timeout under twice this leaves a block no room to end before the
+/// timeout, so every blocking read would time out.
+const SHORTEST_BLOCK: Duration = Duration::from_millis(1);
+
 /// The longest keepalive idle time and interval Linux takes, in seconds.
 const MAX_KEEPALIVE_SECONDS: u64 = 32767;
 
@@ -102,13 +108,14 @@ impl Settings {
                 "the connection timeout must be longer than zero".into(),
             ));
         }
-        if self
-            .response_timeout
-            .is_some_and(|timeout| timeout.is_zero())
+        if let Some(timeout) = self.response_timeout
+            && timeout < SHORTEST_BLOCK * 2
         {
-            return Err(Error::Invalid(
-                "the response timeout must be longer than zero".into(),
-            ));
+            return Err(Error::Invalid(format!(
+                "the response timeout must be at least {:?}, twice the shortest block \
+                 of a blocking read, not {timeout:?}",
+                SHORTEST_BLOCK * 2
+            )));
         }
         if self.min_retry_wait > self.max_retry_wait {
             return Err(Error::Invalid(
@@ -122,14 +129,13 @@ impl Settings {
     /// `wanted`.  A block at least as long as the response timeout fails as
     /// a timeout before Redis answers, so blocks stop at half of it, which
     /// leaves the other half for the reply to arrive.  A block is never
-    /// shorter than a millisecond, because Redis reads `BLOCK 0` as a block
-    /// with no end.
+    /// shorter than [`SHORTEST_BLOCK`].
     pub fn block(&self, wanted: Duration) -> Duration {
         let wanted = match self.response_timeout {
             Some(timeout) => wanted.min(timeout / 2),
             None => wanted,
         };
-        wanted.max(Duration::from_millis(1))
+        wanted.max(SHORTEST_BLOCK)
     }
 
     /// The TCP settings for every TCP connection to Redis.
