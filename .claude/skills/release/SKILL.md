@@ -41,7 +41,7 @@ first, that changes:
 
 - `version` in `[workspace.package]` in `rust/Cargo.toml`
 - the exact pin `docket-rs-macros = { version = "=X.Y.Z", ... }` in
-  `rust/docket/Cargo.toml`
+  `[workspace.dependencies]` in `rust/Cargo.toml`
 - `rust/Cargo.lock`: run `cargo metadata --format-version 1 >/dev/null`
   in `rust/` to update it
 - the install lines (`docket-rs = "X.Y"`) in `rust/docket/README.md`
