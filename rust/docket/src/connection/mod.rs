@@ -178,6 +178,15 @@ impl Backend {
         }
     }
 
+    /// The clock of the dockets on this backend.
+    pub fn clock(&self) -> crate::clock::Clock {
+        match &self.kind {
+            #[cfg(feature = "memory")]
+            Kind::Memory(server) => server.clock(),
+            _ => crate::clock::Clock::default(),
+        }
+    }
+
     /// Whether this backend is a cluster, whose nodes cannot be trusted to
     /// keep a script loaded for pipelined `EVALSHA`.
     pub fn is_cluster(&self) -> bool {
@@ -257,6 +266,31 @@ impl ConnectionLike for Connection {
             Self::Single(connection) => connection.get_db(),
             Self::Cluster(connection) => connection.get_db(),
         }
+    }
+}
+
+/// A connection to the Redis behind a docket, for an application's own
+/// keys; see [`Docket::redis`](crate::Docket::redis).  redis-rs's
+/// [`AsyncCommands`](redis::AsyncCommands) work on it.
+#[derive(Clone)]
+pub struct RedisConnection(pub(crate) Connection);
+
+impl ConnectionLike for RedisConnection {
+    fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
+        self.0.req_packed_command(cmd)
+    }
+
+    fn req_packed_commands<'a>(
+        &'a mut self,
+        pipeline: &'a Pipeline,
+        offset: usize,
+        count: usize,
+    ) -> RedisFuture<'a, Vec<Value>> {
+        self.0.req_packed_commands(pipeline, offset, count)
+    }
+
+    fn get_db(&self) -> i64 {
+        self.0.get_db()
     }
 }
 

@@ -70,6 +70,7 @@ const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 pub struct Exporter {
     provider: SdkMeterProvider,
     reader: SharedReader,
+    target_info: bool,
 }
 
 impl Exporter {
@@ -99,7 +100,21 @@ impl Exporter {
     pub fn with_provider(builder: MeterProviderBuilder) -> Self {
         let reader = SharedReader(Arc::new(ManualReader::builder().build()));
         let provider = builder.with_reader(reader.clone()).build();
-        Self { provider, reader }
+        Self {
+            provider,
+            reader,
+            target_info: true,
+        }
+    }
+
+    /// Leaves the `target_info` series, whose labels are the resource's
+    /// attributes, off the page, as pydocket's reader does with
+    /// `disable_target_info=True`.  The page has it by default, as
+    /// pydocket's does.
+    #[must_use]
+    pub fn without_target_info(mut self) -> Self {
+        self.target_info = false;
+        self
     }
 
     /// The meter provider whose metrics this exporter renders.
@@ -116,7 +131,7 @@ impl Exporter {
         // A provider that has shut down collects nothing, and nothing
         // renders as an empty page, which is the right answer for it.
         let _ = self.reader.collect(&mut collected);
-        text::render(&collected)
+        text::render(&collected, self.target_info)
     }
 
     /// Answers every request on `listener` with [`render`](Self::render),

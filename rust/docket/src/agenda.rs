@@ -74,7 +74,7 @@ impl Agenda {
     /// first task is due at the start and the last at the end; a single task
     /// is due halfway.
     pub async fn scatter(&self, docket: &Docket, over: Duration) -> Result<Vec<Execution>> {
-        self.scatter_from(docket, Utc::now(), over, Duration::ZERO)
+        self.scatter_from(docket, docket.now(), over, Duration::ZERO)
             .await
     }
 

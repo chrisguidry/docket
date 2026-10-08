@@ -25,14 +25,41 @@
 //! cli.worker.run(&docket).await
 //! # }
 //! ```
+//!
+//! [`WorkerArgs::docket_builder`] takes the settings that have no option,
+//! and clap's `mut_arg` changes an option's default for the application:
+//!
+//! ```no_run
+//! # use clap::{CommandFactory, FromArgMatches, Parser};
+//! # use std::time::Duration;
+//! # #[derive(Parser)]
+//! # struct Cli {
+//! #     #[command(flatten)]
+//! #     worker: docket::cli::WorkerArgs,
+//! # }
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let matches = Cli::command()
+//!     .mut_arg("docket", |arg| arg.default_value("orders"))
+//!     .get_matches();
+//! let cli = Cli::from_arg_matches(&matches)?;
+//! let docket = cli
+//!     .worker
+//!     .docket_builder()
+//!     .execution_ttl(Duration::from_hours(1))
+//!     .connect()
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
 
+use std::future::Future;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 
-use crate::docket::Docket;
+use crate::docket::{Docket, DocketBuilder};
 use crate::error::{Error, Result};
 use crate::prometheus::Exporter;
 use crate::worker::Worker;
@@ -114,10 +141,19 @@ impl WorkerArgs {
     /// first installs the Prometheus exporter as the global meter provider,
     /// because a docket binds its instruments when it connects.
     pub async fn docket(&self) -> Result<Docket> {
+        self.docket_builder().connect().await
+    }
+
+    /// A builder for the docket the options name, for settings that have no
+    /// option, such as [`execution_ttl`](crate::DocketBuilder::execution_ttl).
+    /// With `--metrics-port`, it installs the Prometheus exporter, as
+    /// [`docket`](Self::docket) does.
+    #[must_use]
+    pub fn docket_builder(&self) -> DocketBuilder {
         if self.metrics_port.is_some() {
             exporter();
         }
-        Docket::connect(&self.docket, &self.url).await
+        Docket::builder(&self.docket, &self.url)
     }
 
     /// A worker with the options' settings.
@@ -142,18 +178,33 @@ impl WorkerArgs {
     /// The healthcheck and metrics servers answer on every address for as
     /// long as the worker runs.
     pub async fn run(&self, docket: &Docket) -> Result<()> {
+        self.run_until(docket, shutdown_signal()).await
+    }
+
+    /// Runs a worker as [`run`](Self::run) does, but stops when `shutdown`
+    /// completes instead of on a signal, for an application that handles
+    /// signals itself or runs the worker next to other work.  With
+    /// `--until-finished`, the worker stops once nothing is left, and
+    /// `shutdown` is not awaited.
+    pub async fn run_until(
+        &self,
+        docket: &Docket,
+        shutdown: impl Future<Output = ()> + Send,
+    ) -> Result<()> {
         let worker = self.worker(docket);
         let _servers = self.servers().await?;
         if self.until_finished {
             worker.run_until_finished().await
         } else {
-            worker.run_until(shutdown_signal()).await
+            worker.run_until(shutdown).await
         }
     }
 
-    /// Starts a server for each port that the options set.  The servers stop
-    /// when the set drops.
-    async fn servers(&self) -> Result<JoinSet<std::io::Result<()>>> {
+    /// Starts a server for each port that the options set, as pydocket's
+    /// `healthcheck_server` and `metrics_server` do, for an application that
+    /// runs its worker without [`run`](Self::run).  The servers stop when
+    /// the returned [`Servers`] drops.
+    pub async fn servers(&self) -> Result<Servers> {
         let mut servers = JoinSet::new();
         if let Some(port) = self.healthcheck_port {
             let listener = listen(port, "the healthcheck").await?;
@@ -168,7 +219,18 @@ impl WorkerArgs {
             // provider it found, so only instruments made later show here.
             servers.spawn(exporter().serve(listener));
         }
-        Ok(servers)
+        Ok(Servers(servers))
+    }
+}
+
+/// The healthcheck and metrics servers that [`WorkerArgs::servers`]
+/// started.  They stop when this drops.
+#[must_use = "the servers stop when this drops"]
+pub struct Servers(JoinSet<std::io::Result<()>>);
+
+impl Drop for Servers {
+    fn drop(&mut self) {
+        self.0.abort_all();
     }
 }
 

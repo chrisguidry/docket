@@ -27,6 +27,20 @@ fn renders_the_sdk_default_resource() {
 }
 
 #[test]
+fn leaves_off_target_info_when_asked() {
+    let exporter = Exporter::new().without_target_info();
+    let meter = exporter.meter_provider().meter("docket");
+    meter.u64_counter("c").build().add(1, &[]);
+
+    let page = exporter.render();
+
+    assert_eq!(
+        page,
+        "# HELP c_total \n# TYPE c_total counter\nc_total 1.0\n"
+    );
+}
+
+#[test]
 fn counts_from_the_start_on_every_render() {
     let exporter = Exporter::new();
     let counter = exporter

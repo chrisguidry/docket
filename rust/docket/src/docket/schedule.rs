@@ -46,7 +46,7 @@ impl Docket {
         let keys = self.keys();
         let message = &placement.message;
         let key = message.key.as_str();
-        let immediate = message.when <= Utc::now();
+        let immediate = message.when <= self.now();
         let payload = serde_json::json!({
             "type": "state",
             "key": key,
@@ -103,7 +103,7 @@ impl Docket {
         key: impl Into<String>,
         when: DateTime<Utc>,
     ) -> Result<Execution<T::Output>> {
-        let message = Self::message(T::NAME, &args, Some(key.into()), Some(when))?;
+        let message = Self::message(T::NAME, &args, Some(key.into()), when)?;
         self.submit(message, true).await
     }
 
@@ -134,11 +134,11 @@ impl Docket {
         function: &str,
         args: &T,
         key: Option<String>,
-        when: Option<DateTime<Utc>>,
+        when: DateTime<Utc>,
     ) -> Result<Message> {
         Ok(Message {
             key: key.unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
-            when: when.unwrap_or_else(Utc::now),
+            when,
             function: function.to_owned(),
             args: serde_json::to_string(args)?,
             attempt: 1,
@@ -242,7 +242,7 @@ impl Docket {
             }
             messages.push(Message {
                 key: call.key.unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
-                when: call.when.unwrap_or_else(Utc::now),
+                when: call.when.unwrap_or_else(|| self.now()),
                 function: call.function.to_owned(),
                 args: call
                     .args
@@ -371,7 +371,8 @@ impl<T: Task> Add<'_, T> {
     /// When `delay` is longer than the time left before the year 262143.
     pub fn after(self, delay: Duration) -> Self {
         let delay = chrono::Duration::from_std(delay).expect("a delay fits in a chrono duration");
-        self.at(Utc::now() + delay)
+        let now = self.docket.now();
+        self.at(now + delay)
     }
 }
 
@@ -381,7 +382,8 @@ impl<'a, T: Task> IntoFuture for Add<'a, T> {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
-            let message = Docket::message(T::NAME, &self.args, self.key, self.when)?;
+            let when = self.when.unwrap_or_else(|| self.docket.now());
+            let message = Docket::message(T::NAME, &self.args, self.key, when)?;
             self.docket.submit(message, false).await
         })
     }

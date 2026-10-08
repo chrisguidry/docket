@@ -81,7 +81,7 @@ impl Docket {
     /// What the docket holds now.
     pub async fn snapshot(&self) -> Result<Snapshot> {
         let keys = self.keys();
-        let taken = Utc::now();
+        let taken = self.now();
         let mut connection = self.handle();
         self.ensure_group(&mut connection).await?;
 
@@ -145,7 +145,7 @@ impl Docket {
         let status = Status::from_hash(&runs);
         let when = status
             .and_then(|status| status.when)
-            .unwrap_or_else(Utc::now);
+            .unwrap_or_else(|| self.now());
         Ok(Some(Execution::found(
             self.clone(),
             key.to_owned(),
@@ -166,7 +166,7 @@ impl Docket {
 
     async fn list_workers(&self, key: String) -> Result<Vec<WorkerSummary>> {
         let mut connection = self.handle();
-        let oldest = seconds(Utc::now()) - self.heartbeat_window().as_secs_f64();
+        let oldest = seconds(self.now()) - self.heartbeat_window().as_secs_f64();
         let _: () = connection.zrembyscore(&key, 0, oldest).await?;
         let seen: Vec<(String, f64)> = connection.zrange_withscores(&key, 0, -1).await?;
         let mut workers = Vec::new();
@@ -215,7 +215,7 @@ impl Docket {
             stream_key: keys.stream(),
             queue_key: keys.queue(),
             docket_prefix: keys.prefix().to_owned(),
-            completed_at: iso(Utc::now()),
+            completed_at: iso(self.now()),
             ttl_seconds: self.ttl_seconds(),
         }
         .call();

@@ -4,6 +4,7 @@ mod agenda;
 pub mod behaviors;
 #[cfg(feature = "cli")]
 pub mod cli;
+mod clock;
 mod connection;
 mod context;
 mod docket;
@@ -29,6 +30,7 @@ pub use behaviors::{
     ConcurrencyLimit, Cooldown, Cron, Debounce, ExponentialRetry, ForcedRetry, Perpetual,
     RateLimit, Retry, Timeout,
 };
+pub use connection::RedisConnection;
 pub use context::Context;
 pub use docket::{
     Add, Call, Docket, DocketBuilder, Registration, Snapshot, TaskSummary, WorkerSummary,

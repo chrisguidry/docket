@@ -66,7 +66,7 @@ impl Run<'_> {
     pub async fn claim(&self) -> Result<Claim> {
         let keys = self.docket.keys();
         let key = self.key();
-        let started_at = iso(Utc::now());
+        let started_at = iso(self.docket.now());
         let payload = serde_json::json!({
             "type": "state",
             "key": key,
@@ -131,7 +131,7 @@ impl Run<'_> {
     ) -> Result<()> {
         let keys = self.docket.keys();
         let key = self.key();
-        let completed_at = iso(Utc::now());
+        let completed_at = iso(self.docket.now());
         let mut payload = serde_json::json!({
             "type": "state",
             "key": key,
@@ -242,7 +242,8 @@ impl Run<'_> {
             .retry_delay
             .filter(|delay| !delay.is_zero())
             .unwrap_or(ADMISSION_RETRY_DELAY);
-        let when = Utc::now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX);
+        let when =
+            self.docket.now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX);
         self.reschedule(when, self.message().attempt, generation, 0)
             .await
             .map(drop)

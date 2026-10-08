@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use chrono::Utc;
 use redis::AsyncCommands;
 
 use super::subject::subject;
@@ -80,7 +79,7 @@ impl Admission for RateLimit {
     async fn admit(&self, ctx: &Context) -> Result<Admitted, NotAdmitted> {
         let base = self.scope.as_deref().unwrap_or(ctx.docket().name());
         let key = format!("{base}:ratelimit:{}", subject(ctx, self.field.as_deref())?);
-        let now_ms = millis(Utc::now());
+        let now_ms = millis(ctx.docket().now());
         let window_ms = i64::try_from(self.per.as_millis()).unwrap_or(i64::MAX);
         let member = format!("{}:{now_ms}", ctx.key());
         let call = scripts::RateLimit {

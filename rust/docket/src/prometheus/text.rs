@@ -91,9 +91,10 @@ impl Number for i64 {
     }
 }
 
-/// The page for `collected`.  It is empty when nothing has been recorded,
-/// as pydocket's is.
-pub(super) fn render(collected: &ResourceMetrics) -> String {
+/// The page for `collected`, with the `target_info` series first when
+/// `target_info` is set.  It is empty when nothing has been recorded, as
+/// pydocket's is.
+pub(super) fn render(collected: &ResourceMetrics, target_info: bool) -> String {
     let metrics: Vec<&Metric> = collected
         .scope_metrics()
         .flat_map(ScopeMetrics::metrics)
@@ -101,7 +102,10 @@ pub(super) fn render(collected: &ResourceMetrics) -> String {
     if metrics.is_empty() {
         return String::new();
     }
-    let mut families = vec![target_info(collected.resource())];
+    let mut families = Vec::new();
+    if target_info {
+        families.push(resource_family(collected.resource()));
+    }
     for metric in metrics {
         add_metric(&mut families, metric);
     }
@@ -109,7 +113,7 @@ pub(super) fn render(collected: &ResourceMetrics) -> String {
 }
 
 /// The `target_info` family, whose labels are the resource's attributes.
-fn target_info(resource: &Resource) -> Family {
+fn resource_family(resource: &Resource) -> Family {
     let labels = resource
         .iter()
         .map(|(key, value)| (label_name(key.as_str()), label_value(value)))

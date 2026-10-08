@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use chrono::Utc;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 
@@ -80,7 +79,7 @@ impl Admission for ConcurrencyLimit {
         let waiters = format!("{slots}:waiters");
         let delivery = ctx.delivery();
         let timeout = delivery.redelivery_timeout;
-        let now = seconds(Utc::now());
+        let now = seconds(docket.now());
         let key_ttl = i64::try_from((timeout * 4).as_secs())
             .unwrap_or(i64::MAX)
             .max(1);
@@ -172,7 +171,7 @@ fn hold(
             queue_key: keys.queue(),
             task_key: key,
             max_concurrent: i64::from(max),
-            stale_threshold: seconds(Utc::now()) - timeout.as_secs_f64(),
+            stale_threshold: seconds(docket.now()) - timeout.as_secs_f64(),
             runs_prefix: keys.runs_prefix(),
             state_prefix: keys.state_prefix(),
             parked_prefix: keys.parked_prefix(),
@@ -188,7 +187,7 @@ fn hold(
 async fn renew(docket: &Docket, slots: &str, key: &str, key_ttl: i64) -> crate::Result<()> {
     let mut connection = docket.connection().await?;
     redis::pipe()
-        .zadd(slots, key, seconds(Utc::now()))
+        .zadd(slots, key, seconds(docket.now()))
         .ignore()
         .expire(slots, key_ttl)
         .ignore()
@@ -273,7 +272,7 @@ pub(crate) async fn safeguard_wake(ctx: Context, args: SafeguardWake) -> crate::
         stream_key: keys.stream(),
         queue_key: keys.queue(),
         max_concurrent: i64::from(args.max_concurrent),
-        stale_threshold: seconds(Utc::now()) - ctx.delivery().redelivery_timeout.as_secs_f64(),
+        stale_threshold: seconds(docket.now()) - ctx.delivery().redelivery_timeout.as_secs_f64(),
         runs_prefix: keys.runs_prefix(),
         state_prefix: keys.state_prefix(),
         parked_prefix: keys.parked_prefix(),

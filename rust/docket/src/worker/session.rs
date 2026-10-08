@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::sweep::Sweep;
 use super::{Settings, Until, cancellation, execute, heartbeat, perpetuals, sweep};
+use crate::clock::Moved;
 use crate::connection::Connection;
 use crate::docket::{Docket, Limited};
 use crate::error::{Error, Result};
@@ -249,6 +250,13 @@ async fn poll(
             tasks.spawn(execute::run(Arc::clone(worker), delivery));
         }
 
+        if !found
+            && tasks.is_empty()
+            && let Some(clock) = docket.clock().skipping_idle_time()
+        {
+            skip_idle_time(docket, clock).await;
+        }
+
         if matches!(until, Until::Finished)
             && !found
             && tasks.is_empty()
@@ -334,6 +342,22 @@ pub(super) async fn deliveries(
 }
 
 /// Whether the docket holds any task, now or in the future.
+/// Moves the docket's clock to its next scheduled task, for a test that
+/// skips the time when nothing is due.  The scheduler moves the task onto
+/// the stream on its next pass.  A read that fails leaves the clock alone,
+/// and the worker's next read reports the trouble.
+async fn skip_idle_time(docket: &Docket, clock: &Moved) {
+    let next: RedisResult<Vec<(String, f64)>> = docket
+        .handle()
+        .zrange_withscores(docket.keys().queue(), 0, 0)
+        .await;
+    if let Ok(next) = next
+        && let Some((_, when)) = next.first()
+    {
+        clock.advance_to(crate::wire::from_seconds(*when));
+    }
+}
+
 async fn has_work(docket: &Docket) -> Result<bool> {
     let mut connection = docket.handle();
     let (stream, queue): (usize, usize) = redis::pipe()
@@ -378,7 +402,7 @@ async fn scheduler(worker: Arc<Shared>) {
         let call = crate::scripts::StreamDueTasks {
             queue_key: keys.queue(),
             stream_key: keys.stream(),
-            now_timestamp: crate::wire::seconds(chrono::Utc::now()),
+            now_timestamp: crate::wire::seconds(docket.now()),
             docket_prefix: keys.prefix().to_owned(),
         }
         .call();

@@ -103,7 +103,7 @@ impl<Mode> Cron<Mode> {
     }
 
     fn attach_cron<T: Task>(&self, hooks: &mut Hooks<'_, T>) {
-        hooks.context(PerpetualControl::new);
+        hooks.context_at(PerpetualControl::new);
         hooks.completion(Schedule {
             cron: Cron {
                 schedule: self.schedule.clone(),
@@ -117,7 +117,7 @@ impl<Mode> Cron<Mode> {
 impl<T: Task + Default> Behavior<T> for Cron<Automatic> {
     fn attach(self, hooks: &mut Hooks<'_, T>) {
         self.attach_cron(hooks);
-        hooks.automatic(move || self.next_after(Utc::now()));
+        hooks.automatic_at(move |now| self.next_after(now));
     }
 }
 
