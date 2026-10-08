@@ -2,8 +2,6 @@
 
 use std::time::Duration;
 
-use chrono::Utc;
-
 use super::subject::subject;
 use super::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks, NotAdmitted};
 use crate::context::Context;
@@ -70,7 +68,7 @@ impl Admission for Debounce {
             seen_key: format!("{prefix}:last_seen"),
             execution_key: ctx.key().to_owned(),
             settle_ms,
-            now_ms: millis(Utc::now()),
+            now_ms: millis(ctx.docket().now()),
             ttl_ms: settle_ms.saturating_mul(10),
         }
         .call();

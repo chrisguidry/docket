@@ -6,6 +6,10 @@
 //!
 //! [`ContextBuilder`] makes the [`Context`] for calling a task's handler
 //! straight from a test, without a worker.
+//!
+//! With the `memory` feature, [`advance_time`] and [`skip_idle_time`] move a
+//! `memory://` docket's clock, so that tests of long intervals and delays
+//! take no real time.  pydocket has no such clock.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -74,7 +78,7 @@ impl ContextBuilder {
             args,
             key: uuid::Uuid::now_v7().to_string(),
             attempt: 1,
-            when: Utc::now(),
+            when: docket.now(),
             worker: "test-worker".to_owned(),
             behaviors: Vec::new(),
             redelivery_timeout: Duration::from_mins(5),
@@ -114,7 +118,8 @@ impl ContextBuilder {
     /// handler returns.
     #[must_use]
     pub fn perpetual(self) -> Self {
-        self.behavior(PerpetualControl::new())
+        let now = self.docket.now();
+        self.behavior(PerpetualControl::new(now))
     }
 
     /// Gives the run a value that the handler reads with
@@ -289,6 +294,31 @@ pub async fn assert_task_count<'a>(
 /// When the count differs, or the snapshot cannot be read.
 pub async fn assert_scheduled_count<T: Task>(docket: &Docket, count: usize) {
     assert_task_count(docket, T::NAME, count).await;
+}
+
+/// Moves a `memory://` docket's clock forward by `by`, for every docket on
+/// its URL, so that the tasks due by then run at a worker's next pass.
+///
+/// # Panics
+///
+/// When the docket is not on `memory://`.
+#[cfg(feature = "memory")]
+pub fn advance_time(docket: &Docket, by: std::time::Duration) {
+    docket.clock().moved().advance(by);
+}
+
+/// Makes a `memory://` docket skip the time when nothing is due, for every
+/// docket on its URL: a worker with nothing to run moves the clock forward
+/// to the next scheduled task.  Perpetual intervals and retry delays then
+/// take no real time.  The keys that Redis expires, such as a
+/// [`Cooldown`](crate::Cooldown)'s, still expire in real time.
+///
+/// # Panics
+///
+/// When the docket is not on `memory://`.
+#[cfg(feature = "memory")]
+pub fn skip_idle_time(docket: &Docket) {
+    docket.clock().moved().skip_idle_time();
 }
 
 /// Asserts that no task is scheduled.

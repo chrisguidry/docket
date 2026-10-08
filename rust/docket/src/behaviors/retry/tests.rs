@@ -25,7 +25,13 @@ fn exponential_delays_double_up_to_the_maximum(#[case] attempt: u32, #[case] exp
 #[test]
 fn stops_at_the_last_attempt() {
     assert_eq!(
-        decide(Some(3), 3, &plain_error(), Duration::ZERO),
+        decide(
+            Some(3),
+            3,
+            &plain_error(),
+            Duration::ZERO,
+            chrono::Utc::now()
+        ),
         AfterFailure::Fail
     );
 }
@@ -33,7 +39,13 @@ fn stops_at_the_last_attempt() {
 #[test]
 fn retries_before_the_last_attempt() {
     assert!(matches!(
-        decide(Some(3), 2, &plain_error(), Duration::ZERO),
+        decide(
+            Some(3),
+            2,
+            &plain_error(),
+            Duration::ZERO,
+            chrono::Utc::now()
+        ),
         AfterFailure::RetryAt(_)
     ));
 }
@@ -41,7 +53,13 @@ fn retries_before_the_last_attempt() {
 #[test]
 fn retries_forever_without_a_limit() {
     assert!(matches!(
-        decide(None, u32::MAX, &plain_error(), Duration::ZERO),
+        decide(
+            None,
+            u32::MAX,
+            &plain_error(),
+            Duration::ZERO,
+            chrono::Utc::now()
+        ),
         AfterFailure::RetryAt(_)
     ));
 }
@@ -49,7 +67,8 @@ fn retries_forever_without_a_limit() {
 #[test]
 fn a_forced_retry_chooses_the_delay() {
     let error: BoxError = Box::new(ForcedRetry::after(Duration::from_secs(3600)));
-    let AfterFailure::RetryAt(when) = decide(None, 1, &error, Duration::ZERO) else {
+    let AfterFailure::RetryAt(when) = decide(None, 1, &error, Duration::ZERO, chrono::Utc::now())
+    else {
         panic!("a forced retry retries");
     };
     assert!(when > chrono::Utc::now() + chrono::Duration::minutes(59));

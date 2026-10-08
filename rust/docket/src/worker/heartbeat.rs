@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use redis::RedisResult;
 
 use super::session::Shared;
@@ -23,7 +22,7 @@ async fn once(worker: &Shared) -> crate::Result<()> {
     let docket = &worker.docket;
     let keys = docket.keys();
     let name = &worker.settings.name;
-    let now = seconds(Utc::now());
+    let now = seconds(docket.now());
     let window = docket.heartbeat_window();
     let oldest = now - window.as_secs_f64();
     let tasks = docket.task_names();

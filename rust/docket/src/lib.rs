@@ -4,6 +4,7 @@ mod agenda;
 pub mod behaviors;
 #[cfg(feature = "cli")]
 pub mod cli;
+mod clock;
 mod connection;
 mod context;
 mod docket;

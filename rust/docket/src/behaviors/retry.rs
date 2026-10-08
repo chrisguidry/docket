@@ -54,7 +54,13 @@ impl<T: Task> Behavior<T> for Retry {
 
 impl Failure for Retry {
     async fn on_failure(&self, ctx: &Context, error: &BoxError) -> AfterFailure {
-        decide(self.attempts, ctx.attempt(), error, self.delay)
+        decide(
+            self.attempts,
+            ctx.attempt(),
+            error,
+            self.delay,
+            ctx.docket().now(),
+        )
     }
 }
 
@@ -124,20 +130,25 @@ impl Failure for ExponentialRetry {
             ctx.attempt(),
             error,
             self.delay_after(ctx.attempt()),
+            ctx.docket().now(),
         )
     }
 }
 
-fn decide(attempts: Option<u32>, attempt: u32, error: &BoxError, delay: Duration) -> AfterFailure {
+fn decide(
+    attempts: Option<u32>,
+    attempt: u32,
+    error: &BoxError,
+    delay: Duration,
+    now: DateTime<Utc>,
+) -> AfterFailure {
     if attempts.is_some_and(|attempts| attempt >= attempts) {
         return AfterFailure::Fail;
     }
     let delay = error
         .downcast_ref::<ForcedRetry>()
         .map_or(delay, |forced| forced.delay);
-    AfterFailure::RetryAt(
-        Utc::now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX),
-    )
+    AfterFailure::RetryAt(now + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX))
 }
 
 /// An error that asks for a retry after a delay the handler chooses.

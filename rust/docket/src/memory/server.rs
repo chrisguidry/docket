@@ -14,6 +14,7 @@ use redis::{AsyncConnectionConfig, RedisConnectionInfo, RedisResult};
 use tokio::io::DuplexStream;
 use tokio::task::AbortHandle;
 
+use crate::clock::Clock;
 use crate::memory::engine::store::Store;
 use crate::memory::session::Session;
 
@@ -26,12 +27,21 @@ const SWEEP_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The store for each URL, for the life of the process, as in pydocket: two
 /// dockets on the same URL share data, and a docket opened again on a URL
-/// finds what the last one left there.
-static STORES: LazyLock<Mutex<HashMap<String, Arc<Store>>>> =
+/// finds what the last one left there.  Each URL has its clock too, which a
+/// test moves for every docket on the URL.
+static STORES: LazyLock<Mutex<HashMap<String, Hosted>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// What a URL keeps for the life of the process.
+#[derive(Clone)]
+struct Hosted {
+    store: Arc<Store>,
+    clock: Clock,
+}
 
 pub(crate) struct MemoryServer {
     store: Arc<Store>,
+    clock: Clock,
     /// Started with the first connection, because opening a server needs no
     /// tokio runtime but sweeping does.
     sweeper: OnceLock<AbortHandle>,
@@ -39,16 +49,23 @@ pub(crate) struct MemoryServer {
 
 impl MemoryServer {
     pub(crate) fn open(url: &str) -> Self {
-        let store = Arc::clone(
-            STORES
-                .lock()
-                .entry(url.to_owned())
-                .or_insert_with(|| Arc::new(Store::new())),
-        );
+        let Hosted { store, clock } = STORES
+            .lock()
+            .entry(url.to_owned())
+            .or_insert_with(|| Hosted {
+                store: Arc::new(Store::new()),
+                clock: Clock::movable(),
+            })
+            .clone();
         Self {
             store,
+            clock,
             sweeper: OnceLock::new(),
         }
+    }
+
+    pub(crate) fn clock(&self) -> Clock {
+        self.clock.clone()
     }
 
     pub(crate) async fn connection(&self) -> RedisResult<MultiplexedConnection> {

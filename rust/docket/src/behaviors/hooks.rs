@@ -253,8 +253,17 @@ impl<T: Task> Hooks<'_, T> {
         &mut self,
         make: impl Fn() -> V + Send + Sync + 'static,
     ) {
-        self.erased.contexts.push(Arc::new(move || {
-            Box::new(make()) as Box<dyn Any + Send + Sync>
+        self.context_at(move |_now| make());
+    }
+
+    /// Gives each run of the task a fresh value from `make`, which takes the
+    /// time on the docket's clock when the run starts.
+    pub(crate) fn context_at<V: Send + Sync + 'static>(
+        &mut self,
+        make: impl Fn(DateTime<Utc>) -> V + Send + Sync + 'static,
+    ) {
+        self.erased.contexts.push(Arc::new(move |now| {
+            Box::new(make(now)) as Box<dyn Any + Send + Sync>
         }));
     }
 }
@@ -269,6 +278,15 @@ impl<T: Task + Default> Hooks<'_, T> {
     pub fn automatic(
         &mut self,
         first_run: impl Fn() -> Option<DateTime<Utc>> + Send + Sync + 'static,
+    ) {
+        self.automatic_at(move |_now| first_run());
+    }
+
+    /// Makes the task automatic, at the time that `first_run` gives from the
+    /// time on the docket's clock.
+    pub(crate) fn automatic_at(
+        &mut self,
+        first_run: impl Fn(DateTime<Utc>) -> Option<DateTime<Utc>> + Send + Sync + 'static,
     ) {
         let args = serde_json::to_string(&T::default())
             .expect("an automatic task's default arguments convert to JSON");
@@ -285,7 +303,7 @@ type FailureFn =
     Arc<dyn Fn(Context, Arc<BoxError>) -> BoxFuture<'static, AfterFailure> + Send + Sync>;
 type CompletionFn =
     Arc<dyn Fn(Context, Arc<Outcome>) -> BoxFuture<'static, AfterCompletion> + Send + Sync>;
-type ContextFn = Arc<dyn Fn() -> Box<dyn Any + Send + Sync> + Send + Sync>;
+type ContextFn = Arc<dyn Fn(DateTime<Utc>) -> Box<dyn Any + Send + Sync> + Send + Sync>;
 
 /// A task's hooks with the behaviors' types erased.
 #[derive(Clone, Default)]
@@ -304,7 +322,8 @@ pub(crate) struct ErasedHooks {
 pub(crate) struct Automatic {
     /// The default arguments as JSON text.
     pub args: String,
-    pub first_run: Arc<dyn Fn() -> Option<DateTime<Utc>> + Send + Sync>,
+    /// The first run's time, from the time on the docket's clock.
+    pub first_run: Arc<dyn Fn(DateTime<Utc>) -> Option<DateTime<Utc>> + Send + Sync>,
 }
 
 pub(crate) trait ErasedRuntime: Send + Sync {

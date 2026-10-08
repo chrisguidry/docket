@@ -14,6 +14,7 @@ use opentelemetry::context::FutureExt as _;
 use redis::AsyncCommands;
 
 use crate::behaviors::BoxError;
+use crate::clock::Clock;
 use crate::connection::{Backend, Handle, Provider, RedisConnection, Shared};
 use crate::context::Context;
 use crate::error::Result;
@@ -57,6 +58,7 @@ struct Inner {
     settings: Settings,
     telemetry: Arc<Telemetry>,
     run_limits: Mutex<run_limits::RunLimits>,
+    clock: Clock,
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +122,7 @@ impl DocketBuilder {
     pub async fn connect(self) -> Result<Docket> {
         let backend = Arc::new(Backend::open(&self.url, self.credentials)?);
         let keys = Keys::new(backend.prefix(&self.name));
+        let clock = backend.clock();
         let strikes: SharedStrikes = Arc::new(Strikes::default());
         let telemetry = Arc::new(Telemetry::new());
         let monitor = Monitor::start(
@@ -140,6 +143,7 @@ impl DocketBuilder {
                 settings: self.settings,
                 telemetry,
                 run_limits: Mutex::new(run_limits::RunLimits::default()),
+                clock,
             }),
         })
     }
@@ -245,7 +249,7 @@ impl Docket {
     /// check.  Returns whether the cancel happened.
     pub(crate) async fn cancel_quietly(&self, key: &str, expected_generation: i64) -> Result<bool> {
         let keys = &self.inner.keys;
-        let completed_at = iso(Utc::now());
+        let completed_at = iso(self.now());
         let payload = serde_json::json!({
             "type": "state",
             "key": key,
@@ -324,6 +328,15 @@ impl Docket {
     /// `docket.name`, which every metric and span carries.
     pub(crate) fn labels(&self) -> Vec<opentelemetry::KeyValue> {
         telemetry::docket_labels(&self.inner.name)
+    }
+
+    /// The time on the docket's clock, which a test can move on `memory://`.
+    pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
+        self.inner.clock.now()
+    }
+
+    pub(crate) fn clock(&self) -> &Clock {
+        &self.inner.clock
     }
 
     pub(crate) fn keys(&self) -> &Keys {

@@ -6,7 +6,6 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
-use chrono::Utc;
 use futures::FutureExt;
 use opentelemetry::KeyValue;
 use opentelemetry::context::FutureExt as _;
@@ -105,7 +104,7 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
     };
 
     let labels = run.labels();
-    let punctuality = (Utc::now() - message.when).as_seconds_f64();
+    let punctuality = (docket.now() - message.when).as_seconds_f64();
     metrics.tasks_started.add(1, &labels);
     if delivery.redelivered {
         metrics.tasks_redelivered.add(1, &labels);
@@ -273,7 +272,7 @@ fn context(worker: &Shared, delivery: &Delivery, registered: &Registered) -> Con
             .hooks
             .contexts
             .iter()
-            .map(|make| make())
+            .map(|make| make(worker.docket.now()))
             .collect(),
         delivery: context::Delivery {
             message_id: delivery.id.clone(),

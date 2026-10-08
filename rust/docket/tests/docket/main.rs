@@ -30,5 +30,7 @@ mod testing_helpers;
 mod timeouts;
 mod traces;
 mod unreachable;
+#[cfg(feature = "memory")]
+mod virtual_time;
 mod worker_faults;
 mod workers;

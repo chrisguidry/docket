@@ -178,6 +178,15 @@ impl Backend {
         }
     }
 
+    /// The clock of the dockets on this backend.
+    pub fn clock(&self) -> crate::clock::Clock {
+        match &self.kind {
+            #[cfg(feature = "memory")]
+            Kind::Memory(server) => server.clock(),
+            _ => crate::clock::Clock::default(),
+        }
+    }
+
     /// Whether this backend is a cluster, whose nodes cannot be trusted to
     /// keep a script loaded for pipelined `EVALSHA`.
     pub fn is_cluster(&self) -> bool {

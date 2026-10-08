@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::Utc;
 use redis::AsyncCommands;
 
 use super::session::Shared;
@@ -62,7 +61,7 @@ pub(super) async fn seed(worker: &Shared) -> Result<()> {
             }
             let message = Message {
                 key: name.clone(),
-                when: (automatic.first_run)().unwrap_or_else(Utc::now),
+                when: (automatic.first_run)(docket.now()).unwrap_or_else(|| docket.now()),
                 function: name,
                 args: automatic.args,
                 attempt: 1,

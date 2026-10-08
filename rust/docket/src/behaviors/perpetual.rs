@@ -53,7 +53,7 @@ impl Perpetual {
 }
 
 fn attach_perpetual<T: Task>(every: Duration, hooks: &mut Hooks<'_, T>) {
-    hooks.context(PerpetualControl::new);
+    hooks.context_at(PerpetualControl::new);
     hooks.completion(Next { every });
 }
 
@@ -83,7 +83,7 @@ impl Completion for Next {
         // each one takes, and a run longer than `every` is followed at once.
         let elapsed = control.started.elapsed();
         let wait = self.every.saturating_sub(elapsed);
-        control.decide(Utc::now() + chrono::Duration::from_std(wait).unwrap_or_default())
+        control.decide(ctx.docket().now() + chrono::Duration::from_std(wait).unwrap_or_default())
     }
 }
 
@@ -91,7 +91,8 @@ impl Completion for Next {
 #[derive(Debug)]
 pub struct PerpetualControl {
     started: Instant,
-    /// The same moment on the wall clock, which a cron schedule counts from.
+    /// The same moment on the docket's clock, which a cron schedule counts
+    /// from.
     pub(crate) started_at: DateTime<Utc>,
     next: Mutex<Upcoming>,
 }
@@ -104,10 +105,10 @@ struct Upcoming {
 }
 
 impl PerpetualControl {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(now: DateTime<Utc>) -> Self {
         Self {
             started: Instant::now(),
-            started_at: Utc::now(),
+            started_at: now,
             next: Mutex::new(Upcoming::default()),
         }
     }
@@ -119,7 +120,11 @@ impl PerpetualControl {
 
     /// Runs the task next after `delay`, instead of its usual time.
     pub fn after(&self, delay: Duration) {
-        self.at(Utc::now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX));
+        // The docket's clock, which a test can move, counted on from the
+        // start of the run.
+        let now = self.started_at
+            + chrono::Duration::from_std(self.started.elapsed()).unwrap_or_default();
+        self.at(now + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX));
     }
 
     /// Runs the task next at `when`.

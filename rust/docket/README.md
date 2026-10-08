@@ -107,6 +107,11 @@ An application that keeps keys of its own in the docket's Redis reaches them
 with `Docket::redis`, which opens a redis-rs connection on any of these URLs,
 `memory://` included.
 
+A test can move a `memory://` docket's clock with `docket::testing::advance_time`,
+or have idle workers skip ahead to the next scheduled task with
+`docket::testing::skip_idle_time`, so that perpetual intervals and retry
+delays take no real time.
+
 ## Logs, metrics, and traces
 
 docket-rs logs, counts, and traces the same things as pydocket, with the same

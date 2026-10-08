@@ -37,7 +37,7 @@ impl Progress {
 
     /// Sets the total that progress counts toward.
     pub async fn set_total(&self, total: i64) -> Result<()> {
-        let now = iso(Utc::now());
+        let now = iso(self.docket.now());
         self.write(
             vec![("total", total.to_string()), ("updated_at", now.clone())],
             false,
@@ -48,7 +48,7 @@ impl Progress {
 
     /// Sets the message, or clears it with `None`.
     pub async fn set_message(&self, message: Option<&str>) -> Result<()> {
-        let now = iso(Utc::now());
+        let now = iso(self.docket.now());
         let mut fields = vec![("updated_at", now.clone())];
         if let Some(message) = message {
             fields.push(("message", message.to_owned()));
@@ -64,7 +64,7 @@ impl Progress {
     /// Adds `amount` to the current progress.
     pub async fn increment(&self, amount: i64) -> Result<()> {
         let keys = self.docket.keys();
-        let now = iso(Utc::now());
+        let now = iso(self.docket.now());
         let mut connection = self.docket.handle();
         let (current, hash): (i64, HashMap<String, String>) = redis::pipe()
             .hincr(keys.progress(&self.key), "current", amount)

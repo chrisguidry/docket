@@ -24,6 +24,17 @@ pub(crate) fn seconds(when: DateTime<Utc>) -> f64 {
     micros / 1_000_000.0
 }
 
+/// The time `seconds` since the Unix epoch, to the microsecond, as
+/// [`seconds`] writes it.
+pub(crate) fn from_seconds(seconds: f64) -> DateTime<Utc> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "microseconds since the epoch stay well within i64"
+    )]
+    let micros = (seconds * 1_000_000.0).round() as i64;
+    DateTime::from_timestamp_micros(micros).unwrap_or(DateTime::<Utc>::MAX_UTC)
+}
+
 /// Milliseconds since the Unix epoch.
 pub(crate) fn millis(when: DateTime<Utc>) -> i64 {
     when.timestamp_millis()
