@@ -62,13 +62,15 @@ impl Error {
     }
 
     /// Whether Redis answered a command with an error that concerns that
-    /// command alone, such as a script error, a key of the wrong type, or
-    /// a refusal for lack of memory.  The connection still works, so the
-    /// other commands on it go on.  A lost connection, a timeout, and a
-    /// reply that says the server cannot serve now (`READONLY` after a
-    /// failover, `LOADING`, `CLUSTERDOWN`, `MASTERDOWN`, `TRYAGAIN`, or a
-    /// redirect the cluster client did not follow) do not count, because
-    /// they need a reconnect.
+    /// command alone, such as a script error or a key of the wrong type.
+    /// The connection still works, so the other commands on it go on.  A
+    /// lost connection, a timeout, and a reply that says the server cannot
+    /// serve now (`READONLY` after a failover, `LOADING`, `CLUSTERDOWN`,
+    /// `MASTERDOWN`, `TRYAGAIN`, or a redirect the cluster client did not
+    /// follow) do not count, because they need a reconnect.  Nor does `OOM`:
+    /// a server at its `maxmemory` refuses every write but still serves a
+    /// worker's reads, so a worker that went on would read every ready task
+    /// into its pending list without a pause and run none of them.
     pub(crate) fn is_refused_command(&self) -> bool {
         matches!(
             self,
@@ -76,6 +78,7 @@ impl Error {
                 error.kind(),
                 redis::ErrorKind::Server(_) | redis::ErrorKind::Extension
             ) && matches!(error.retry_method(), redis::RetryMethod::NoRetry)
+                && error.code() != Some("OOM")
         )
     }
 }

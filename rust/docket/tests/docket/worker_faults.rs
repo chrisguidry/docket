@@ -243,14 +243,21 @@ async fn a_struck_task_ends_after_redis_refuses_its_strike() {
 /// The reply of a server that a failover demoted to a replica.
 const READ_ONLY: &str = "READONLY You can't write against a read only replica.";
 
+/// The reply of a server at its `maxmemory` under the `noeviction` policy.
+const OUT_OF_MEMORY: &str = "OOM command not allowed when used memory > 'maxmemory'.";
+
+/// Replies that refuse every write the server gets, not one run's alone.
+#[rstest::rstest]
+#[case::read_only_replica(READ_ONLY)]
+#[case::out_of_memory(OUT_OF_MEMORY)]
 #[tokio::test]
-async fn a_worker_reconnects_when_a_runs_command_finds_a_read_only_replica() {
+async fn a_worker_reconnects_when_redis_refuses_every_write(#[case] reply: &str) {
     let Some(proxy) = proxy().await else { return };
     let (logs, _guard) = Logs::capture();
     let docket = docket_through(&proxy).await;
     docket.register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) });
     let execution = docket.add(Noop).await.unwrap();
-    proxy.fail_script_with(include_str!("../../lua/terminal.lua"), 1, READ_ONLY);
+    proxy.fail_script_with(include_str!("../../lua/terminal.lua"), 1, reply);
 
     within(20, hasty(&docket).concurrency(1).run_until_finished())
         .await

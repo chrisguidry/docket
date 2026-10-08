@@ -130,12 +130,13 @@ worker's startup list.  A run's log fields are `docket.name`,
 `docket.attempt`, as in pydocket's `extra`.
 
 When Redis refuses one run's command with an error that concerns that
-command alone, such as a script error or `OOM`, docket-rs logs a warning,
-`Redis refused a command for task "KEY", so it will be redelivered`, with
-the run's fields.  The other runs go on, and the delivery stays pending
-until the redelivery sweep claims it.  A lost connection, a timeout, or a
-reply that needs a reconnect, such as `READONLY`, still ends the worker's
-session as it does in pydocket.
+command alone, such as a script error or a key of the wrong type, docket-rs
+logs a warning, `Redis refused a command for task "KEY", so it will be
+redelivered`, with the run's fields.  The other runs go on, and the delivery
+stays pending until the redelivery sweep claims it.  A lost connection, a
+timeout, a reply that needs a reconnect, such as `READONLY`, or `OOM`, which
+refuses every write on the server, still ends the worker's session as it
+does in pydocket.
 
 A task's call in a log line shows only the arguments marked to be logged,
 the way `Logged` marks them in pydocket.  In docket-rs, a field takes
