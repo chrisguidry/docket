@@ -81,6 +81,23 @@ async fn a_command_redis_never_answers_fails_after_the_response_timeout() {
     .await;
 }
 
+/// A command waits for Redis as long as it takes unless the docket sets a
+/// response timeout, as in pydocket, so a long Lua script, such as a clear
+/// of a large docket, is never reported as a timeout while Redis finishes
+/// it.
+#[tokio::test]
+async fn a_command_waits_for_redis_without_a_response_timeout() {
+    let Some(proxy) = proxy().await else { return };
+    let docket = Docket::connect(format!("docket-test-{}", uuid::Uuid::now_v7()), proxy.url())
+        .await
+        .unwrap();
+    docket.snapshot().await.unwrap();
+
+    proxy.silence();
+    let waited = tokio::time::timeout(Duration::from_secs(12), docket.snapshot()).await;
+    assert!(waited.is_err(), "{waited:?}");
+}
+
 /// The keepalive timers of the established TCP connections to `port`, in
 /// seconds, read from the kernel's socket table.  A connection without
 /// keepalive has no timer.  The kernel reports timers in hundredths of a

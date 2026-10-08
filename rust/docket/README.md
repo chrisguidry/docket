@@ -93,11 +93,13 @@ TLS, turn off the default features:
 docket-rs = { version = "0.2", default-features = false }
 ```
 
-Every connection docket-rs opens gives up on a connect after 10 seconds and
-on a command after 10 seconds, and uses TCP keepalive to find a Redis that
-vanished without closing the connection.  Commands to a cluster retry up to 10
-times, waiting from 10 milliseconds to 1 second, so they survive the redirects
-of a slot migration.  `Docket::builder` changes each of these:
+Every connection docket-rs opens gives up on a connect after 10 seconds, and
+uses TCP keepalive to find a Redis that vanished without closing the
+connection.  As in pydocket, a command waits for Redis as long as it takes,
+because some of docket's Lua scripts, such as clearing a large docket, run for
+a long time.  Commands to a cluster retry up to 10 times, waiting from 10
+milliseconds to 1 second, so they survive the redirects of a slot migration.
+`Docket::builder` changes each of these, and sets a response timeout:
 
 ```rust,no_run
 use std::time::Duration;
@@ -118,9 +120,10 @@ async fn main() -> docket::Result<()> {
 }
 ```
 
-Blocking reads, such as a worker's wait for new tasks, block for at most half
-of the response timeout, so a short response timeout makes them poll more
-often.
+With a response timeout, blocking reads, such as a worker's wait for new
+tasks, block for at most half of it, so a short response timeout makes them
+poll more often.  A Lua script that runs longer than the response timeout
+fails with a timeout, though Redis still finishes it.
 
 `memory://`, behind the `memory` feature, runs an in-process Redis, so your
 own tests need no server.  Each `memory://` URL keeps its data for the life of

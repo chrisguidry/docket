@@ -81,11 +81,16 @@ impl DocketBuilder {
 
     /// How long a command may wait for Redis to answer before it fails.
     /// Blocking reads, such as a worker's wait for new tasks, block for at
-    /// most half of it, so that their answers arrive in time.  The default
-    /// is 10 seconds.
+    /// most half of it, so that their answers arrive in time.
+    ///
+    /// By default a command waits as long as it takes, as in pydocket, and
+    /// TCP keepalive finds a Redis that is gone.  With a timeout, a Lua
+    /// script that runs longer than it, such as a
+    /// [`clear`](crate::Docket::clear) of a large docket, fails with a
+    /// timeout while Redis still finishes it.
     #[must_use]
     pub fn response_timeout(mut self, timeout: Duration) -> Self {
-        self.connection.response_timeout = timeout;
+        self.connection.response_timeout = Some(timeout);
         self
     }
 

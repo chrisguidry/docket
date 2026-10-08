@@ -227,7 +227,7 @@ mod settings {
     #[test]
     fn a_backend_refuses_settings_that_would_fail_every_connection() {
         let settings = Settings {
-            response_timeout: Duration::ZERO,
+            response_timeout: Some(Duration::ZERO),
             ..Settings::default()
         };
         let error = Backend::open("memory://settings", None, settings).err();
@@ -238,7 +238,7 @@ mod settings {
     async fn a_subscription_to_a_silent_server_times_out() {
         let settings = Settings {
             connection_timeout: Duration::from_millis(200),
-            response_timeout: Duration::from_millis(200),
+            response_timeout: Some(Duration::from_millis(200)),
             ..Settings::default()
         };
         let url = format!("redis://{}/0", silent().await);

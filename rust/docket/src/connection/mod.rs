@@ -63,11 +63,14 @@ impl Backend {
                 let (min_wait, max_wait) = settings.retry_millis();
                 let builder = ClusterClient::builder([node.as_str()])
                     .connection_timeout(settings.connection_timeout)
-                    .response_timeout(settings.response_timeout)
                     .retries(settings.retries)
                     .min_retry_wait(min_wait)
                     .max_retry_wait(max_wait)
                     .tcp_settings(settings.tcp());
+                let builder = match settings.response_timeout {
+                    Some(timeout) => builder.response_timeout(timeout),
+                    None => builder,
+                };
                 let builder = match &credentials {
                     Some(provider) => builder.set_credentials_provider(provider.clone()),
                     None => builder,
@@ -125,7 +128,7 @@ impl Backend {
     pub async fn connect(&self) -> RedisResult<Connection> {
         let config = AsyncConnectionConfig::new()
             .set_connection_timeout(Some(self.settings.connection_timeout))
-            .set_response_timeout(Some(self.settings.response_timeout));
+            .set_response_timeout(self.settings.response_timeout);
         let config = match &self.credentials {
             Some(provider) => config.set_credentials_provider(provider.clone()),
             None => config,
@@ -173,7 +176,7 @@ impl Backend {
     /// Once subscribed, the connection waits for messages as long as it
     /// takes, and TCP keepalive finds a peer that is gone.
     async fn pubsub(&self) -> RedisResult<PubSub> {
-        within(self.settings.connection_timeout, self.open_pubsub()).await
+        within(Some(self.settings.connection_timeout), self.open_pubsub()).await
     }
 
     async fn open_pubsub(&self) -> RedisResult<PubSub> {
@@ -225,9 +228,12 @@ fn client(url: &str, settings: &Settings) -> RedisResult<Client> {
 
 /// `future`, or a timeout error once `timeout` passes.
 async fn within<T>(
-    timeout: Duration,
+    timeout: Option<Duration>,
     future: impl Future<Output = RedisResult<T>>,
 ) -> RedisResult<T> {
+    let Some(timeout) = timeout else {
+        return future.await;
+    };
     tokio::time::timeout(timeout, future)
         .await
         .unwrap_or_else(|_| Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into()))

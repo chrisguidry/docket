@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 #[derive(Clone, Debug)]
 pub(crate) struct Settings {
     pub connection_timeout: Duration,
-    pub response_timeout: Duration,
+    pub response_timeout: Option<Duration>,
     pub retries: u32,
     pub min_retry_wait: Duration,
     pub max_retry_wait: Duration,
@@ -70,9 +70,12 @@ impl Default for Settings {
             // A connect that stalls, for example on dropped SYN packets, has
             // no server work to wait for.
             connection_timeout: Duration::from_secs(10),
-            // A server that does not answer in this long is gone or stuck.
-            // Blocking reads stay under it, so it bounds every command.
-            response_timeout: Duration::from_secs(10),
+            // Commands wait for Redis as long as it takes, as in pydocket,
+            // because some of docket's Lua scripts, such as clearing a
+            // docket, run as long as the backlog is large.  A timeout would
+            // report them as failed while Redis still finished the work.
+            // TCP keepalive finds a server that is gone.
+            response_timeout: None,
             // A slot migration answers with a burst of redirects, and a
             // failover takes a few seconds; these ride out both within the
             // response timeout.
@@ -99,7 +102,10 @@ impl Settings {
                 "the connection timeout must be longer than zero".into(),
             ));
         }
-        if self.response_timeout.is_zero() {
+        if self
+            .response_timeout
+            .is_some_and(|timeout| timeout.is_zero())
+        {
             return Err(Error::Invalid(
                 "the response timeout must be longer than zero".into(),
             ));
@@ -119,9 +125,11 @@ impl Settings {
     /// shorter than a millisecond, because Redis reads `BLOCK 0` as a block
     /// with no end.
     pub fn block(&self, wanted: Duration) -> Duration {
-        wanted
-            .min(self.response_timeout / 2)
-            .max(Duration::from_millis(1))
+        let wanted = match self.response_timeout {
+            Some(timeout) => wanted.min(timeout / 2),
+            None => wanted,
+        };
+        wanted.max(Duration::from_millis(1))
     }
 
     /// The TCP settings for every TCP connection to Redis.
