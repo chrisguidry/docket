@@ -13,6 +13,7 @@ mod concurrency;
 mod context;
 mod credentials;
 mod cron;
+mod direct_calls;
 mod events;
 mod faults;
 mod logs;

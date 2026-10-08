@@ -137,6 +137,32 @@ impl PerpetualControl {
             Some(serde_json::to_value(args).expect("task arguments convert to JSON"));
     }
 
+    /// Whether the run has stopped the task with [`cancel`](Self::cancel).
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.lock().cancelled
+    }
+
+    /// When the run moved the next run to with [`at`](Self::at) or
+    /// [`after`](Self::after), or `None` for its usual time.
+    #[must_use]
+    pub fn next_when(&self) -> Option<DateTime<Utc>> {
+        self.lock().when
+    }
+
+    /// The arguments the run gave the next run with
+    /// [`perpetuate`](Self::perpetuate), or `None` for the same arguments.
+    ///
+    /// # Panics
+    ///
+    /// When the arguments are not a `T`.
+    #[must_use]
+    pub fn next_args<T: Task>(&self) -> Option<T> {
+        self.lock().args.clone().map(|args| {
+            serde_json::from_value(args).expect("the next run's arguments are the task's")
+        })
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Upcoming> {
         self.next
             .lock()
