@@ -100,16 +100,6 @@ async fn replace_many_swaps_each_task() {
 }
 
 #[tokio::test]
-async fn replace_many_needs_every_key() {
-    let docket = docket().await;
-    let error = docket
-        .replace_many([docket.call(Echo::new("x"))])
-        .await
-        .unwrap_err();
-    assert_eq!(error.to_string(), "replacing a echo task needs its key");
-}
-
-#[tokio::test]
 async fn a_docket_that_keeps_nothing_forgets_finished_tasks() {
     let url = crate::support::url();
     let docket = docket::Docket::builder(format!("docket-test-{}", uuid::Uuid::now_v7()), url)

@@ -77,6 +77,7 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
         docket,
         delivery,
         worker: &worker.settings.name,
+        name: registered.name.unwrap_or(&message.function),
         call: call_repr(&message.function, registered.fields, &args, &message.key),
     };
     let metrics = &docket.telemetry().metrics;

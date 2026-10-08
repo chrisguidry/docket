@@ -1,6 +1,7 @@
 //! What docket does with a Redis it cannot reach or a URL it cannot use.
 //! Nothing listens on port 1, so every connection to it is refused at once.
 
+use std::future::IntoFuture;
 use std::time::Duration;
 
 use docket::{Docket, Strike, Worker};
@@ -158,7 +159,7 @@ async fn a_batch_reports_an_unreachable_cluster() {
     let docket = Docket::connect("unreachable", "redis+cluster://127.0.0.1:1")
         .await
         .unwrap();
-    let error = within(10, docket.add_many([docket.call(Noop)]))
+    let error = within(10, docket.add_many([docket.call(Noop)]).into_future())
         .await
         .unwrap_err();
     assert!(error.is_redis_unavailable(), "{error}");

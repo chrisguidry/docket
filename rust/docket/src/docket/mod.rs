@@ -29,7 +29,7 @@ pub use registry::Registration;
 pub(crate) use registry::{Registered, Registry};
 pub(crate) use run_limits::Limited;
 pub(crate) use schedule::Placement;
-pub use schedule::{Add, Call};
+pub use schedule::{Add, Batch, Call};
 pub use snapshot::{Snapshot, TaskSummary, WorkerSummary};
 
 /// A named set of tasks in one Redis.  Producers add tasks to it, and
@@ -369,6 +369,14 @@ impl Docket {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(function)
+    }
+
+    pub(crate) fn also_name(&self, name: &str, other: &str) {
+        self.inner
+            .registry
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .also_name(name, other);
     }
 
     pub(crate) fn with_registered<R>(

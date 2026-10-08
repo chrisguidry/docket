@@ -29,6 +29,10 @@ struct State {
     connections: JoinSet<()>,
     /// How many of each command reached Redis, by upper-case name.
     counts: std::collections::HashMap<String, usize>,
+    /// How many reads from a client carried each command, by upper-case
+    /// name.  A client writes a pipeline at once and waits for its replies,
+    /// so a small pipeline arrives in one read.
+    batches: std::collections::HashMap<String, usize>,
     /// Ends every subscribed connection, and only those.
     drop_subscribers: Arc<tokio::sync::Notify>,
 }
@@ -127,6 +131,17 @@ impl Proxy {
     /// dropped only the subscriptions.
     pub fn drop_subscribers(&self) {
         self.state.lock().unwrap().drop_subscribers.notify_waiters();
+    }
+
+    /// How many reads from a client carried a command named `command`, which
+    /// is how many pipelines carried it, when the pipelines are small.
+    pub fn batches(&self, command: &str) -> usize {
+        let state = self.state.lock().unwrap();
+        state
+            .batches
+            .get(&command.to_ascii_uppercase())
+            .copied()
+            .unwrap_or(0)
     }
 
     /// How many commands named `command` reached the proxy, failed or not.
@@ -245,6 +260,7 @@ async fn commands(
     while let Ok(read @ 1..) = client.read(&mut chunk).await {
         buffer.extend_from_slice(&chunk[..read]);
         let mut forward = Vec::new();
+        let mut names = std::collections::HashSet::new();
         while let Some((length, args)) = parse_command(&buffer) {
             let raw: Vec<u8> = buffer.drain(..length).collect();
             let name = args
@@ -254,6 +270,7 @@ async fn commands(
             if name == b"SUBSCRIBE" || name == b"PSUBSCRIBE" {
                 connection.transparent.store(true, Ordering::SeqCst);
             }
+            names.insert(String::from_utf8_lossy(&name).into_owned());
             *state
                 .lock()
                 .unwrap()
@@ -281,6 +298,12 @@ async fn commands(
                 let _ = connection.to_client.send(error);
             } else {
                 pending.push_back(Pending::Injected(error));
+            }
+        }
+        {
+            let mut state = state.lock().unwrap();
+            for name in names {
+                *state.batches.entry(name).or_default() += 1;
             }
         }
         if !forward.is_empty() && server.write_all(&forward).await.is_err() {

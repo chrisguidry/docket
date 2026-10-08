@@ -7,6 +7,7 @@ mod support;
 
 mod admission;
 mod automatic;
+mod batches;
 mod behavior_faults;
 mod cancellation;
 mod concurrency;

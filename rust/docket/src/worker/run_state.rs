@@ -36,6 +36,9 @@ pub(super) struct Run<'a> {
     pub docket: &'a Docket,
     pub delivery: &'a Delivery,
     pub worker: &'a str,
+    /// The task's own name, for its next perpetual run, as pydocket
+    /// reschedules a perpetual task by its function.
+    pub name: &'a str,
     /// The task's call, as its log lines show it.
     pub call: String,
 }
@@ -298,6 +301,7 @@ impl Run<'_> {
             }
             AfterCompletion::Reschedule { when, args } => {
                 let mut message = self.message().clone();
+                message.function = self.name.to_owned();
                 message.when = *when;
                 message.attempt = 1;
                 if let Some(args) = args {
