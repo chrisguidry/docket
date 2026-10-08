@@ -39,12 +39,14 @@ async fn a_future_task_waits_for_its_time() {
         State::Scheduled
     );
 
-    let started = Utc::now();
     within(10, worker(&docket).run_until_finished())
         .await
         .unwrap();
 
-    assert!(Utc::now() - started >= chrono::Duration::milliseconds(250));
+    // The worker records when it started the task, so a slow step in the
+    // test itself cannot move either side of the comparison.
+    let started_at = execution.status().await.unwrap().unwrap().started_at;
+    assert!(started_at.unwrap() >= execution.when());
     assert_eq!(execution.result().await.unwrap(), "later");
 }
 
