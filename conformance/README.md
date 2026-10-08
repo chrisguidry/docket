@@ -43,6 +43,8 @@ driver chooses one at random for each agent it starts.
 | `chaos` | Every task added runs while workers die and Redis restarts. |
 | `telemetry` | The producer and the worker emit the metrics, spans, and Prometheus series in [the telemetry spec](../plans/telemetry-parity.md).  With more than one implementation, the driver runs each one in turn, and their telemetry must be equal. |
 | `admission-failure` | A task whose concurrency limit counts by an argument it doesn't have fails before it runs, and its retry gives it three attempts. |
+| `stop-after-replace` | A perpetual task replaces its own key and then stops itself.  The stop leaves the replacement, which runs once at its own time. |
+| `retry-after-replace` | A task replaces its own key and then fails.  Its retry gives way to the replacement, which runs once at its own time. |
 
 ## The agent contract
 

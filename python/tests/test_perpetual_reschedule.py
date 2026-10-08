@@ -13,7 +13,7 @@ from unittest.mock import Mock, call
 import pytest
 from opentelemetry.metrics import Counter
 
-from docket import Docket, Perpetual, Worker
+from docket import CurrentDocket, Docket, Perpetual, Worker
 from tests.conftest import wait_until
 
 
@@ -95,3 +95,40 @@ async def test_an_untouched_perpetual_reschedules_itself(
         < successor.when
         < before + timedelta(hours=1, minutes=1)
     )
+
+
+async def test_a_perpetual_that_stops_itself_keeps_a_replacement(
+    docket: Docket, worker: Worker, monkeypatch: pytest.MonkeyPatch
+):
+    """A Perpetual that cancels itself leaves alone a replace made while it ran."""
+    superseded = Mock(spec=Counter.add)
+    monkeypatch.setattr("docket.instrumentation.TASKS_SUPERSEDED.add", superseded)
+
+    runs: list[str] = []
+
+    async def stopping_perpetual(
+        round: str,
+        perpetual: Perpetual = Perpetual(every=timedelta(hours=1)),
+        docket: Docket = CurrentDocket(),
+    ):
+        runs.append(round)
+        if round == "first":
+            soon = datetime.now(timezone.utc) + timedelta(milliseconds=200)
+            await docket.replace(stopping_perpetual, soon, "stopping")("replacement")
+        perpetual.cancel()
+
+    await docket.add(stopping_perpetual, key="stopping")("first")
+    await worker.run_until_finished()
+
+    assert runs == ["first", "replacement"]
+    assert superseded.call_args_list == [
+        call(
+            1,
+            {
+                "docket.name": docket.name,
+                "docket.worker": worker.name,
+                "docket.task": "stopping_perpetual",
+                "docket.where": "on_complete",
+            },
+        )
+    ]

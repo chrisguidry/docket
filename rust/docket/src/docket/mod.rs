@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use opentelemetry::context::FutureExt as _;
-use redis::{AsyncCommands, Value};
+use redis::AsyncCommands;
 
 use crate::behaviors::BoxError;
 use crate::connection::{Backend, Handle, Provider, Shared};
@@ -213,8 +213,8 @@ impl Docket {
         let mut attributes = self.labels();
         attributes.push(opentelemetry::KeyValue::new("docket.key", key.to_owned()));
         let span = self.telemetry().producer_span("docket.cancel", attributes);
-        let cancelled = self.cancel_quietly(key).with_context(span.clone()).await;
-        telemetry::end(&span, cancelled.as_ref().map(|()| Vec::new()));
+        let cancelled = self.cancel_quietly(key, 0).with_context(span.clone()).await;
+        telemetry::end(&span, cancelled.as_ref().map(|_| Vec::new()));
         cancelled?;
         self.telemetry()
             .metrics
@@ -225,7 +225,11 @@ impl Docket {
 
     /// Cancels a task without a span or a count, for docket's own cancels,
     /// which pydocket does not count either.
-    pub(crate) async fn cancel_quietly(&self, key: &str) -> Result<()> {
+    ///
+    /// A run that cancels its own key passes its generation, and the cancel
+    /// leaves the key alone when a newer generation holds it.  0 skips that
+    /// check.  Returns whether the cancel happened.
+    pub(crate) async fn cancel_quietly(&self, key: &str, expected_generation: i64) -> Result<bool> {
         let keys = &self.inner.keys;
         let completed_at = iso(Utc::now());
         let payload = serde_json::json!({
@@ -246,13 +250,19 @@ impl Docket {
             task_key: key.to_owned(),
             completed_at,
             state_payload: payload.to_string(),
+            expected_generation,
         }
         .call();
         let mut connection = self.handle();
-        call.run::<Value, _>(&mut connection).await?;
+        let reply: String = call.run(&mut connection).await?;
+        // The newer generation owns the runs hash and the running task, so
+        // neither its lifetime nor a cancel signal may touch them.
+        if reply == "SUPERSEDED" {
+            return Ok(false);
+        }
         self.expire_runs(&mut connection, key).await?;
         let _: i64 = connection.publish(keys.cancel(key), key).await?;
-        Ok(())
+        Ok(true)
     }
 
     /// Strikes a task, or the calls that match a condition.

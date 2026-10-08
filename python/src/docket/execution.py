@@ -205,8 +205,8 @@ class Disposition(enum.Enum):
     SUPERSEDED = "superseded"
     """A newer schedule already holds this key, so the attempt left it alone.
     Only possible when the caller states the generation it expects, which
-    ``Perpetual`` does when it reschedules the attempt that just finished;
-    ``Docket.add`` and ``Docket.replace`` never produce it."""
+    ``Perpetual`` and ``Retry`` do when they reschedule the attempt that just
+    finished; ``Docket.add`` and ``Docket.replace`` never produce it."""
 
     FAILED = "failed"
     """The Redis command scheduling this task returned an error.  Only

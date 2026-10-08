@@ -73,6 +73,8 @@ async def monitor_deployment(
     print(f"Deployment {deployment_id} status: {status}")
 ```
 
+When something replaces the task's key while the task runs, the cancel leaves that replacement in place.
+
 ### Dynamic Parameters
 
 Perpetual tasks can change their arguments or timing for the next execution:

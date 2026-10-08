@@ -114,13 +114,20 @@ class Perpetual(CompletionHandler["Perpetual"]):
 
     async def on_complete(self, execution: Execution, outcome: TaskOutcome) -> bool:
         """Handle completion by scheduling the next execution."""
+        docket = current_docket.get()
+
         if self.cancelled:
-            docket = current_docket.get()
+            # Cancel under this attempt's generation, so a replace made while
+            # it ran survives the stop.
             async with docket.redis() as redis:
-                await docket._cancel(redis, execution.key)
+                cancelled = await docket._cancel(
+                    redis, execution.key, execution.generation
+                )
+            if not cancelled:
+                self._record_superseded(execution, outcome)
+                return True
             return False
 
-        docket = current_docket.get()
         worker = current_worker.get()
 
         if self._next_when:
@@ -140,19 +147,7 @@ class Perpetual(CompletionHandler["Perpetual"]):
         )
 
         if successor.disposition is Disposition.SUPERSEDED:
-            TASKS_SUPERSEDED.add(
-                1,
-                {
-                    **worker.labels(),
-                    **execution.general_labels(),
-                    "docket.where": "on_complete",
-                },
-            )
-            logger.info(
-                "↬ [%s] %s (superseded)",
-                format_duration(outcome.duration.total_seconds()),
-                execution.call_repr(),
-            )
+            self._record_superseded(execution, outcome)
             return True
 
         TASKS_PERPETUATED.add(1, {**worker.labels(), **execution.general_labels()})
@@ -172,3 +167,19 @@ class Perpetual(CompletionHandler["Perpetual"]):
         )
 
         return True
+
+    def _record_superseded(self, execution: Execution, outcome: TaskOutcome) -> None:
+        worker = current_worker.get()
+        TASKS_SUPERSEDED.add(
+            1,
+            {
+                **worker.labels(),
+                **execution.general_labels(),
+                "docket.where": "on_complete",
+            },
+        )
+        logger.info(
+            "↬ [%s] %s (superseded)",
+            format_duration(outcome.duration.total_seconds()),
+            execution.call_repr(),
+        )

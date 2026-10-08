@@ -162,13 +162,16 @@ impl Run<'_> {
     }
 
     /// Puts the delivery back in the docket at `when`, acknowledging it in
-    /// the same script.
+    /// the same script.  With a nonzero `expected_generation`, a newer
+    /// generation on the key refuses the reschedule and leaves the delivery
+    /// pending.
     async fn reschedule(
         &self,
         when: chrono::DateTime<Utc>,
         attempt: u32,
         generation: i64,
-    ) -> Result<()> {
+        expected_generation: i64,
+    ) -> Result<Disposition> {
         let mut message = self.message().clone();
         message.when = when;
         message.attempt = attempt;
@@ -178,13 +181,13 @@ impl Run<'_> {
                 message,
                 replace: true,
                 reschedule_message_id: self.delivery.id.clone(),
-                expected_generation: 0,
+                expected_generation,
             })
-            .await?;
-        Ok(())
+            .await
     }
 
-    /// Schedules the next attempt of a failed run.
+    /// Schedules the next attempt of a failed run, unless a replace took the
+    /// key while it ran.
     pub async fn retry(
         &self,
         when: chrono::DateTime<Utc>,
@@ -192,12 +195,26 @@ impl Run<'_> {
         duration: f64,
         error: &str,
     ) -> Result<()> {
-        self.reschedule(when, self.message().attempt + 1, generation)
+        // The retry carries this run's generation, so a replace made while
+        // it ran keeps its own time and arguments.
+        let disposition = self
+            .reschedule(when, self.message().attempt + 1, generation, generation)
             .await?;
         let metrics = &self.docket.telemetry().metrics;
-        metrics.tasks_retried.add(1, &self.labels());
         let took = format_duration(duration);
         tracing::error!(error, "↩ [{took}] {}", self.call);
+        if disposition == Disposition::Superseded {
+            metrics.tasks_superseded.add(1, &self.labels_where("retry"));
+            tracing::info!("↬ [{took}] {} (superseded)", self.call);
+            return self
+                .terminal(
+                    State::Failed,
+                    generation,
+                    vec![("error".into(), error.as_bytes().to_vec())],
+                )
+                .await;
+        }
+        metrics.tasks_retried.add(1, &self.labels());
         tracing::info!("↫ [{took}] {}", self.call);
         Ok(())
     }
@@ -226,8 +243,9 @@ impl Run<'_> {
             .filter(|delay| !delay.is_zero())
             .unwrap_or(ADMISSION_RETRY_DELAY);
         let when = Utc::now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX);
-        self.reschedule(when, self.message().attempt, generation)
+        self.reschedule(when, self.message().attempt, generation, 0)
             .await
+            .map(drop)
     }
 
     /// Ends a completed task, after acting on its completion hook's decision.
@@ -269,8 +287,13 @@ impl Run<'_> {
         match after {
             AfterCompletion::Finish => Ok(false),
             AfterCompletion::Cancel => {
-                self.docket.cancel_quietly(self.key()).await?;
-                Ok(false)
+                // Cancel under this run's generation, so a replace made
+                // while it ran survives the stop.
+                if self.docket.cancel_quietly(self.key(), generation).await? {
+                    return Ok(false);
+                }
+                self.superseded(duration);
+                Ok(true)
             }
             AfterCompletion::Reschedule { when, args } => {
                 let mut message = self.message().clone();
@@ -290,20 +313,28 @@ impl Run<'_> {
                         expected_generation: generation,
                     })
                     .await?;
-                let metrics = &self.docket.telemetry().metrics;
-                let took = format_duration(duration);
                 if disposition == Disposition::Superseded {
-                    metrics
-                        .tasks_superseded
-                        .add(1, &self.labels_where("on_complete"));
-                    tracing::info!("↬ [{took}] {} (superseded)", self.call);
+                    self.superseded(duration);
                 } else {
+                    let metrics = &self.docket.telemetry().metrics;
                     metrics.tasks_perpetuated.add(1, &self.labels());
+                    let took = format_duration(duration);
                     tracing::info!("↫ [{took}] {}", self.call);
                 }
                 Ok(true)
             }
         }
+    }
+
+    /// Records a completion hook's reschedule or cancel that a newer
+    /// generation on the key refused.
+    fn superseded(&self, duration: f64) {
+        let metrics = &self.docket.telemetry().metrics;
+        metrics
+            .tasks_superseded
+            .add(1, &self.labels_where("on_complete"));
+        let took = format_duration(duration);
+        tracing::info!("↬ [{took}] {} (superseded)", self.call);
     }
 
     /// Stores a completed task's output, or removes an earlier run's output
