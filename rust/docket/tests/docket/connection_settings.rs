@@ -40,17 +40,30 @@ impl Drop for Silent {
 }
 
 #[rstest]
-#[case::standalone("redis", "")]
-#[case::cluster("redis+cluster", "")]
-#[case::sentinel("redis+sentinel", "/mymaster")]
+#[case::standalone("redis")]
+#[case::cluster("redis+cluster")]
 #[tokio::test]
-async fn a_connect_to_a_silent_server_fails_after_the_connection_timeout(
-    #[case] scheme: &str,
-    #[case] path: &str,
-) {
+async fn a_connect_to_a_silent_server_fails_after_the_connection_timeout(#[case] scheme: &str) {
     let silent = Silent::start().await;
-    let docket = Docket::builder("silent", format!("{scheme}://{}{path}", silent.address))
+    let docket = Docket::builder("silent", format!("{scheme}://{}", silent.address))
         .connection_timeout(Duration::from_millis(200))
+        .connect()
+        .await
+        .unwrap();
+    let error = within(3, docket.snapshot()).await.unwrap_err();
+    assert!(error.is_redis_unavailable(), "{error}");
+}
+
+/// redis-rs asks the Sentinels for the master on connections of its own,
+/// which take no timeouts from docket: they give up after redis-rs's
+/// defaults of 1 second to connect and 500 ms to answer, however long the
+/// docket's connection timeout is.
+#[tokio::test]
+async fn a_connect_through_a_silent_sentinel_fails_after_redis_rs_timeouts() {
+    let silent = Silent::start().await;
+    let url = format!("redis+sentinel://{}/mymaster", silent.address);
+    let docket = Docket::builder("silent", url)
+        .connection_timeout(Duration::from_secs(60))
         .connect()
         .await
         .unwrap();

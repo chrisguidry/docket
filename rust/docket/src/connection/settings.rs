@@ -8,7 +8,9 @@ use redis::io::tcp::socket2::TcpKeepalive;
 
 use crate::error::{Error, Result};
 
-/// The connection settings a docket applies to every connection it opens.
+/// The connection settings a docket applies to the connections it opens.
+/// redis-rs takes only TCP settings for its connections to the Sentinels,
+/// so of these, only keepalive reaches the Sentinels themselves.
 #[derive(Clone, Debug)]
 pub(crate) struct Settings {
     pub connection_timeout: Duration,

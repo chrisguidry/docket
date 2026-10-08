@@ -72,7 +72,9 @@ impl DocketBuilder {
     }
 
     /// How long a connect to Redis may take before it fails.  The default
-    /// is 10 seconds.
+    /// is 10 seconds.  It does not reach the Sentinels of a
+    /// `redis+sentinel://` URL, whose connections keep redis-rs's own
+    /// timeouts of 1 second to connect and 500 ms to answer.
     #[must_use]
     pub fn connection_timeout(mut self, timeout: Duration) -> Self {
         self.connection.connection_timeout = timeout;
@@ -89,7 +91,8 @@ impl DocketBuilder {
     /// TCP keepalive finds a Redis that is gone.  With a timeout, a Lua
     /// script that runs longer than it, such as a
     /// [`clear`](crate::Docket::clear) of a large docket, fails with a
-    /// timeout while Redis still finishes it.
+    /// timeout while Redis still finishes it.  Like the connection timeout,
+    /// it does not reach the Sentinels of a `redis+sentinel://` URL.
     #[must_use]
     pub fn response_timeout(mut self, timeout: Duration) -> Self {
         self.connection.response_timeout = Some(timeout);
@@ -117,11 +120,12 @@ impl DocketBuilder {
         self
     }
 
-    /// TCP keepalive for every connection to Redis: after `idle` without
-    /// traffic, the kernel sends a probe every `interval`, and drops the
-    /// connection after `probes` of them go unanswered.  This finds a Redis
-    /// that vanished without closing the connection, which the response
-    /// timeout cannot do for a subscription that only waits for messages.
+    /// TCP keepalive for every connection to Redis and to the Sentinels of
+    /// a `redis+sentinel://` URL: after `idle` without traffic, the kernel
+    /// sends a probe every `interval`, and drops the connection after
+    /// `probes` of them go unanswered.  This finds a Redis that vanished
+    /// without closing the connection, for a command with no response
+    /// timeout and for a subscription that only waits for messages.
     /// The defaults are 30 seconds, 5 seconds, and 3 probes.  The kernel
     /// takes `idle` and `interval` in whole seconds, from 1 to 32767, and
     /// from 1 to 127 probes; other values fail at
