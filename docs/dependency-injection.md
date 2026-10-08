@@ -597,6 +597,52 @@ async with Worker(
     ...
 ```
 
+### Standalone workers
+
+[`Worker.run()`](api-reference.md#docket.Worker.run) accepts the same
+`dependencies` argument, while providing task registration, optional healthcheck
+and metrics servers, signal handling, and graceful shutdown for standalone workers:
+
+```python
+import asyncio
+from docket import Depends, Worker
+
+asyncio.run(
+    Worker.run(
+        docket_name="orders",
+        tasks=["myapp.tasks:tasks"],
+        dependencies=[Depends(trace_task)],
+        healthcheck_port=8080,
+    )
+)
+```
+
+For the CLI, export a mapping or sequence of configured dependency instances
+from an importable module, such as `myapp.dependencies`:
+
+```python
+# myapp/dependencies.py, alongside the trace_task function above
+worker_dependencies = [Depends(trace_task)]
+```
+
+Load that collection with `--dependencies`:
+
+```bash
+docket worker --tasks myapp.tasks:tasks \
+    --dependencies myapp.dependencies:worker_dependencies
+```
+
+For the CLI, you can also set `DOCKET_WORKER_DEPENDENCIES` to the `module:member`
+path. An explicit `--dependencies` option takes precedence. Direct calls to
+`Worker.run()` accept that path as the `dependencies` argument too, but do not
+read the CLI environment variables. Collections must contain dependency
+instances; wrap dependency functions with `Depends(...)`.
+
+As with the constructor, `Depends(...)` resolves per task execution: context
+managers are entered for each execution and cleaned up afterward, including when
+a task fails. See [Docket in Production](production.md#worker-configuration) for
+the other worker settings.
+
 ### `single=True` dependencies
 
 `Timeout`, `Retry`, `Perpetual`, `ConcurrencyLimit`, and `Debounce` are

@@ -75,6 +75,48 @@ def test_message_batch_option_reaches_the_worker(monkeypatch: pytest.MonkeyPatch
     assert passed["message_batch"] == 17
 
 
+@pytest.mark.skipif(
+    os.environ.get("REDIS_VERSION") == "memory",
+    reason="Memory backend doesn't share state across processes",
+)
+@pytest.mark.parametrize("from_env", [False, True])
+async def test_worker_loads_dependencies(docket: Docket, from_env: bool) -> None:
+    """A fresh CLI process loads dependencies and applies them to queued tasks."""
+    from tests.cli.worker_dependencies import task_with_context
+
+    await docket.add(task_with_context, key="cli-dependency")()
+
+    path = "tests.cli.worker_dependencies:dependencies"
+    args = [
+        "worker",
+        "--url",
+        docket.url,
+        "--docket",
+        docket.name,
+        "--tasks",
+        "tests.cli.worker_dependencies:tasks",
+        "--logging-level",
+        "WARNING",
+        "--until-finished",
+        "--no-schedule-automatic-tasks",
+    ]
+    env = {"DOCKET_WORKER_DEPENDENCIES": path}
+    if from_env:
+        result = await run_cli(*args, env=env)
+    else:
+        # An explicit flag takes precedence over an environment default.
+        env["DOCKET_WORKER_DEPENDENCIES"] = "missing_module:dependencies"
+        result = await run_cli(*args, "--dependencies", path, env=env)
+
+    assert result.exit_code == 0, result.output
+    assert "ERROR" not in result.output
+    assert result.stdout.splitlines() == [
+        "enter cli-dependency",
+        "task cli-dependency",
+        "exit cli-dependency",
+    ]
+
+
 def test_no_schedule_automatic_tasks_flag_reaches_the_worker(
     monkeypatch: pytest.MonkeyPatch,
 ):
