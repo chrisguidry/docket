@@ -166,7 +166,7 @@ async fn a_concurrency_limit_on_a_missing_field_fails_the_task() {
 /// second.
 #[rstest]
 #[case::cooldown(|hooks: &mut Hooks<'_, Noop>| Cooldown::per_field("customer", Duration::from_secs(60)).attach(hooks))]
-#[case::debounce(|hooks: &mut Hooks<'_, Noop>| Debounce::per_field("customer", Duration::from_secs(60)).attach(hooks))]
+#[case::debounce(|hooks: &mut Hooks<'_, Noop>| Debounce::per_field("customer", Duration::from_secs(60)).scope("tests").attach(hooks))]
 #[case::rate_limit(|hooks: &mut Hooks<'_, Noop>| RateLimit::per_field("customer", 1).attach(hooks))]
 #[tokio::test]
 async fn a_limit_on_a_missing_field_counts_it_as_null(#[case] attach: Attach) {

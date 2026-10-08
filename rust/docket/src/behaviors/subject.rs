@@ -22,13 +22,11 @@ pub(crate) fn subject(ctx: &Context, field: Option<&str>) -> String {
 /// The same subject, for a limit that refuses a task without the field, as
 /// pydocket's `ConcurrencyLimit` does.
 pub(crate) fn required_subject(ctx: &Context, field: Option<&str>) -> Result<String, NotAdmitted> {
-    if let Some(field) = field
-        && ctx.args().get(field).is_none()
-    {
-        return Err(NotAdmitted::failed(format!(
+    match field {
+        Some(field) if ctx.args().get(field).is_none() => Err(NotAdmitted::failed(format!(
             "the {} task's arguments have no {field} field to limit by",
             ctx.function()
-        )));
+        ))),
+        _ => Ok(subject(ctx, field)),
     }
-    Ok(subject(ctx, field))
 }

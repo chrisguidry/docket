@@ -402,6 +402,9 @@ async def test_clear_returns_while_tasks_keep_arriving(
         while True:
             await docket.add(the_task)()
             added.append(None)
+            # The memory backend can finish an add without yielding, and a
+            # producer that never yields would starve the clear.
+            await asyncio.sleep(0)
 
     producers = [asyncio.create_task(produce()) for _ in range(10)]
     await wait_until(lambda: len(added) >= 200, description="a backlog")
