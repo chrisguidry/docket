@@ -5,7 +5,7 @@ use std::time::Duration;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 
-use super::subject::subject;
+use super::subject::required_subject;
 use super::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks, NotAdmitted, Released};
 use crate::connection::Handle;
 use crate::context::Context;
@@ -45,7 +45,8 @@ impl ConcurrencyLimit {
         }
     }
 
-    /// At most `max` copies at once for each value of `field`.
+    /// At most `max` copies at once for each value of `field`.  A task
+    /// without the field fails.
     pub fn per_field(field: impl Into<String>, max: u32) -> Self {
         Self {
             field: Some(field.into()),
@@ -75,7 +76,10 @@ impl Admission for ConcurrencyLimit {
         let docket = ctx.docket().clone();
         let keys = docket.keys();
         let key = ctx.key().to_owned();
-        let slots = keys.concurrency(self.scope.as_deref(), &subject(ctx, self.field.as_deref())?);
+        let slots = keys.concurrency(
+            self.scope.as_deref(),
+            &required_subject(ctx, self.field.as_deref())?,
+        );
         let waiters = format!("{slots}:waiters");
         let delivery = ctx.delivery();
         let timeout = delivery.redelivery_timeout;

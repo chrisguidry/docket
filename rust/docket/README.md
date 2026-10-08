@@ -99,6 +99,8 @@ the connection.  As in pydocket, a command waits for Redis as long as it takes,
 because some of docket's Lua scripts, such as clearing a large docket, run for
 a long time.  Commands to a cluster retry up to 10 times, waiting from 10
 milliseconds to 1 second, so they survive the redirects of a slot migration.
+They wait about 5 seconds at most in all, less than a cluster failover takes,
+so a command sent during a failover fails, and a worker reconnects.
 `Docket::builder` changes each of these, and sets a response timeout:
 
 ```rust,no_run

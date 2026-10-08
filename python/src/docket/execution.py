@@ -681,6 +681,7 @@ class Execution:
         *,
         error: str | None = None,
         result_key: str | None = None,
+        publish: bool = True,
     ) -> None:
         """Mark task as having reached a terminal state.
 
@@ -688,6 +689,9 @@ class Execution:
             state: The terminal state (COMPLETED, FAILED, or CANCELLED)
             error: Optional error message (for FAILED state)
             result_key: Optional key where the result/exception is stored
+            publish: Whether to publish the terminal-state event.  A run that
+                a replace superseded passes False, because the key's task has
+                not ended.
 
         Uses a Lua script to atomically check supersession, write the
         terminal state, publish the completion event, delete the progress
@@ -722,7 +726,7 @@ class Execution:
         }
         if error:
             state_payload_data["error"] = error
-        state_payload = json.dumps(state_payload_data)
+        state_payload = json.dumps(state_payload_data) if publish else ""
 
         # Set ``_acked = True`` *before* the awaited Lua call: the server
         # commit is the source of truth, so once we hand the call off we own

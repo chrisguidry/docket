@@ -11,9 +11,22 @@ from unittest.mock import Mock, call
 import pytest
 from opentelemetry.metrics import Counter
 
-from docket import CurrentDocket, CurrentExecution, Docket, Retry, Worker
+from docket import (
+    CurrentDocket,
+    CurrentExecution,
+    Docket,
+    ExecutionState,
+    Retry,
+    Worker,
+)
 from docket.execution import Execution
 from tests.conftest import wait_until
+
+TERMINAL_STATES = (
+    ExecutionState.COMPLETED,
+    ExecutionState.FAILED,
+    ExecutionState.CANCELLED,
+)
 
 
 async def test_a_retry_gives_way_to_a_replacement(
@@ -61,11 +74,13 @@ async def test_a_retry_gives_way_to_a_replacement(
     ]
 
 
-async def test_a_retry_gives_way_to_a_replacement_that_already_finished(
+async def test_a_retry_runs_again_after_a_replacement_that_already_finished(
     zero_ttl_docket: Docket,
 ):
     """With no execution_ttl, a replacement that finishes first deletes the
-    key's runs hash, and the failed run still does not retry over it."""
+    key's runs hash, and the failed run then retries.  Redis cannot tell this
+    hash apart from one that an eviction or a 0.26.2 ``clear()`` removed,
+    and those runs retried in 0.26.2, so a missing hash lets the retry go on."""
     docket = zero_ttl_docket
     runs: list[tuple[str, int]] = []
 
@@ -80,9 +95,10 @@ async def test_a_retry_gives_way_to_a_replacement_that_already_finished(
     ):
         runs.append((round, execution.attempt))
         if round == "first":
-            now = datetime.now(timezone.utc)
-            await docket.replace(flaky, now, "flaky")("replacement")
-            await wait_until(replacement_finished, description="replacement ran")
+            if execution.attempt == 1:
+                now = datetime.now(timezone.utc)
+                await docket.replace(flaky, now, "flaky")("replacement")
+                await wait_until(replacement_finished, description="replacement ran")
             raise ValueError("the first run fails")
 
     await docket.add(flaky, key="flaky")("first")
@@ -93,4 +109,38 @@ async def test_a_retry_gives_way_to_a_replacement_that_already_finished(
     ) as worker:
         await asyncio.wait_for(worker.run_until_finished(), timeout=30)
 
-    assert runs == [("first", 1), ("replacement", 1)]
+    assert runs == [("first", 1), ("replacement", 1), ("first", 2)]
+
+
+async def test_a_retry_that_gives_way_publishes_no_ending(
+    docket: Docket, worker: Worker
+):
+    """A run that a replace superseded ends without a state event, so a
+    caller waiting on the key waits for the replacement, not the failure."""
+
+    async def flaky(
+        round: str,
+        retry: Retry = Retry(attempts=2),
+        docket: Docket = CurrentDocket(),
+    ):
+        if round == "first":
+            soon = datetime.now(timezone.utc) + timedelta(milliseconds=200)
+            await docket.replace(flaky, soon, "flaky")("replacement")
+            raise ValueError("the first run fails")
+
+    execution = await docket.add(flaky, key="flaky")("first")
+    subscribed = asyncio.Event()
+
+    async def first_ending() -> ExecutionState:
+        async for event in execution.subscribe(ready=subscribed):
+            if event["type"] == "state":
+                state = ExecutionState(event["state"])
+                if state in TERMINAL_STATES:
+                    return state
+        raise AssertionError("the events ended")  # pragma: no cover
+
+    ending = asyncio.create_task(first_ending())
+    await asyncio.wait_for(subscribed.wait(), timeout=10)
+    await worker.run_until_finished()
+
+    assert await asyncio.wait_for(ending, timeout=10) == ExecutionState.COMPLETED

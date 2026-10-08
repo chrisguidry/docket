@@ -21,10 +21,16 @@ local extra_fields_start = 8
 -- waiting on completion don't deadlock, and we still clean up this
 -- execution's progress hash and stream entry.  We do NOT recreate or
 -- mutate the runs hash on a supersession -- the successor owns it.
+--
+-- An empty state_payload publishes nothing.  A retry that a replace
+-- superseded passes it, because the key's task has not ended, and a
+-- caller waiting on the key must wait for the replacement.
 if generation > 0 then
     local current = redis.call('HGET', runs_key, 'generation')
     if not current or tonumber(current) > generation then
-        redis.call('PUBLISH', state_channel, state_payload)
+        if state_payload ~= '' then
+            redis.call('PUBLISH', state_channel, state_payload)
+        end
         -- Only DEL the progress hash if it belongs to us (matching
         -- generation tag) or is untagged (pre-fix / pre-tracking data,
         -- preserve the prior unconditional-DEL behaviour).  A newer
@@ -56,7 +62,9 @@ else
     redis.call('DEL', runs_key)
 end
 
-redis.call('PUBLISH', state_channel, state_payload)
+if state_payload ~= '' then
+    redis.call('PUBLISH', state_channel, state_payload)
+end
 redis.call('DEL', progress_key)
 if message_id ~= '' then
     redis.call('XACK', stream_key, worker_group_name, message_id)

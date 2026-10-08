@@ -17,7 +17,7 @@ from ._base import (
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
 
-from ..execution import Disposition
+from ..execution import Disposition, ExecutionState
 from ..instrumentation import TASKS_RETRIED, TASKS_SUPERSEDED
 
 logger = logging.getLogger("docket.dependencies")
@@ -139,8 +139,14 @@ class Retry(FailureHandler["Retry"]):
             )
             # The schedule left the failed delivery pending; ending it as
             # failed acknowledges it without touching the newer run's state.
+            # It publishes no state, so a caller waiting on the key waits for
+            # the replacement instead of taking this failure as its end.
             exception = outcome.exception
-            await execution.mark_as_failed(f"{type(exception).__name__}: {exception}")
+            await execution._mark_as_terminal(
+                ExecutionState.FAILED,
+                error=f"{type(exception).__name__}: {exception}",
+                publish=False,
+            )
             return True
 
         TASKS_RETRIED.add(1, {**worker.labels(), **execution.general_labels()})

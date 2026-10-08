@@ -78,7 +78,13 @@ async def _clear(
     docket_prefix: Arg[str],
     completed_at: Arg[str],
     ttl_seconds: Arg[int],
+    batch: Arg[int],
 ) -> int: ...
+
+
+# How many queue entries and stream messages one clear.lua call removes, so
+# that no one call blocks Redis for long.
+CLEAR_BATCH = 1000
 
 
 P = ParamSpec("P")
@@ -1059,7 +1065,13 @@ class Docket(DocketSnapshotMixin):
         cancels each task that has not started, as ``cancel()`` does: its
         key is free for a new task at once, and a caller waiting on its
         result receives ``ExecutionCancelled``.  Running tasks are not
-        affected.
+        affected, and neither are tasks that wait for a ``ConcurrencyLimit``
+        slot, which are in neither the stream nor the queue.
+
+        It clears the docket in batches, so other clients can use Redis
+        between them.  A worker can start a task between two batches, and
+        that task then runs.  A task added during a clear may or may not be
+        cleared.
 
         Returns:
             The total number of tasks that were cleared.
@@ -1068,12 +1080,21 @@ class Docket(DocketSnapshotMixin):
             "docket.clear",
             attributes=self.labels(),
         ):
+            total_cleared = 0
             async with self.redis() as redis:
-                return await _clear(
-                    redis,
-                    stream_key=self.stream_key,
-                    queue_key=self.queue_key,
-                    docket_prefix=self.prefix,
-                    completed_at=datetime.now(timezone.utc).isoformat(),
-                    ttl_seconds=int(self.execution_ttl.total_seconds()),
-                )
+                # A call that clears less than one batch emptied the stream
+                # and the queue, so the clear ends there even while new tasks
+                # keep arriving.
+                cleared = CLEAR_BATCH
+                while cleared >= CLEAR_BATCH:
+                    cleared = await _clear(
+                        redis,
+                        stream_key=self.stream_key,
+                        queue_key=self.queue_key,
+                        docket_prefix=self.prefix,
+                        completed_at=datetime.now(timezone.utc).isoformat(),
+                        ttl_seconds=int(self.execution_ttl.total_seconds()),
+                        batch=CLEAR_BATCH,
+                    )
+                    total_cleared += cleared
+            return total_cleared

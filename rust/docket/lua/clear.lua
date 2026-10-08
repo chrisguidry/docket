@@ -3,14 +3,18 @@ local queue_key = KEYS[2]
 local docket_prefix = ARGV[1]
 local completed_at = ARGV[2]
 local ttl_seconds = tonumber(ARGV[3])
+local batch = tonumber(ARGV[4])
 
 -- Clearing a docket cancels every task that has not started, the way
 -- cancel_task.lua cancels one, so that each cleared key is free for a new
 -- add() at once and a caller waiting on its result receives the cancelled
--- state.  One script reads the tasks and removes them, so a task added in
--- between cannot lose its message and keep its key reserved.  A worker that
--- read a queued task's message before the clear, but has not claimed it,
--- finds the task cancelled, and claim.lua refuses it.
+-- state.  Each call clears at most `batch` queue entries and `batch` stream
+-- messages, and the caller calls again until one clears less than that.  A
+-- script that cleared a large backlog at once would block every other
+-- client for as long as it ran.  Each call reads its tasks and removes them, so a task
+-- added in between cannot lose its message and keep its key reserved.  A
+-- worker that read a queued task's message before the clear, but has not
+-- claimed it, finds the task cancelled, and claim.lua refuses it.
 --
 -- The stream also holds the messages of tasks that are running.  Their
 -- messages go too, but their runs hashes stay as they are, because each
@@ -27,9 +31,6 @@ local function json_escape(s)
     return s
 end
 
-local stream_count = redis.call('XLEN', stream_key)
-local queue_count = redis.call('ZCARD', queue_key)
-
 local task_keys = {}
 local seen = {}
 local function remember(task_key)
@@ -43,14 +44,19 @@ end
 -- key.  A key from the stream gets no DEL there: for an immediate task with
 -- a key like "stream", that DEL would remove the stream itself.
 local scheduled = {}
-for _, task_key in ipairs(redis.call('ZRANGE', queue_key, 0, -1)) do
+local queued = redis.call('ZRANGE', queue_key, 0, batch - 1)
+for _, task_key in ipairs(queued) do
     scheduled[task_key] = true
     remember(task_key)
+end
+if #queued > 0 then
+    redis.call('ZREM', queue_key, unpack(queued))
 end
 
 -- XDEL each message, not DEL the stream, so the stream keeps its consumer
 -- group.  The in-memory backend does not run XTRIM inside Lua.
-for _, entry in ipairs(redis.call('XRANGE', stream_key, '-', '+')) do
+local messages = redis.call('XRANGE', stream_key, '-', '+', 'COUNT', batch)
+for _, entry in ipairs(messages) do
     local fields = entry[2]
     for i = 1, #fields, 2 do
         if fields[i] == 'key' then
@@ -60,7 +66,6 @@ for _, entry in ipairs(redis.call('XRANGE', stream_key, '-', '+')) do
     end
     redis.call('XDEL', stream_key, entry[1])
 end
-redis.call('DEL', queue_key)
 
 local prefix = docket_prefix .. ':'
 for _, task_key in ipairs(task_keys) do
@@ -87,4 +92,4 @@ for _, task_key in ipairs(task_keys) do
     end
 end
 
-return stream_count + queue_count
+return #messages + #queued

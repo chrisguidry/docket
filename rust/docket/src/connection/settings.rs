@@ -84,8 +84,11 @@ impl Default for Settings {
             // report them as failed while Redis still finished the work.
             // TCP keepalive finds a server that is gone.
             response_timeout: None,
-            // A slot migration answers with a burst of redirects, and a
-            // failover takes a few seconds; these ride out both.
+            // A slot migration answers with a burst of redirects, which
+            // these ride out.  They wait about 5 seconds at most in all, less
+            // than a failover takes (at least the cluster's node timeout,
+            // 15 seconds by default), so a command sent during a failover
+            // fails, and a worker reconnects.
             retries: 10,
             min_retry_wait: Duration::from_millis(10),
             max_retry_wait: Duration::from_secs(1),

@@ -132,6 +132,19 @@ impl Run<'_> {
         generation: i64,
         extra_fields: Vec<(String, Vec<u8>)>,
     ) -> Result<()> {
+        self.end(state, generation, extra_fields, true).await
+    }
+
+    /// Ends the delivery as `terminal` does, and publishes its state only
+    /// when `publish` is set.  A run that a replace superseded publishes
+    /// nothing, because the key's task has not ended.
+    async fn end(
+        &self,
+        state: State,
+        generation: i64,
+        extra_fields: Vec<(String, Vec<u8>)>,
+        publish: bool,
+    ) -> Result<()> {
         let keys = self.docket.keys();
         let key = self.key();
         let completed_at = iso(self.docket.now());
@@ -153,7 +166,11 @@ impl Run<'_> {
             state: state.as_str().to_owned(),
             completed_at,
             ttl_seconds: self.docket.ttl_seconds(),
-            state_payload: payload.to_string(),
+            state_payload: if publish {
+                payload.to_string()
+            } else {
+                String::new()
+            },
             worker_group_name: WORKER_GROUP.to_owned(),
             message_id: self.delivery.id.clone(),
             extra_fields,
@@ -210,10 +227,11 @@ impl Run<'_> {
             metrics.tasks_superseded.add(1, &self.labels_where("retry"));
             tracing::info!("↬ [{took}] {} (superseded)", self.call);
             return self
-                .terminal(
+                .end(
                     State::Failed,
                     generation,
                     vec![("error".into(), error.as_bytes().to_vec())],
+                    false,
                 )
                 .await;
         }

@@ -1,7 +1,6 @@
 //! Tasks on a cron schedule.
 
 use std::marker::PhantomData;
-use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
@@ -21,7 +20,8 @@ use crate::task::Task;
 /// `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`, `@midnight`, and
 /// `@hourly`.  They mean what they mean in pydocket, which refuses a field
 /// for the year, `?`, a `W` other than `LW`, and an expression that never
-/// matches, so this does too.
+/// matches, so this does too.  A task matches the day of the month or the
+/// day of the week, but both when either field starts with `*`.
 ///
 /// Each run's next match counts from when the run started, so a run still
 /// going at its next match is followed by that match's run at once.
@@ -40,9 +40,13 @@ impl Cron {
         } else {
             expression
         };
-        let schedule = croner::Cron::from_str(expression).map_err(|error| {
-            Error::Invalid(format!("{expression} is not a cron expression: {error}"))
-        })?;
+        let schedule = croner::parser::CronParser::builder()
+            .dom_and_dow(joins_days_with_and(expression))
+            .build()
+            .parse(expression)
+            .map_err(|error| {
+                Error::Invalid(format!("{expression} is not a cron expression: {error}"))
+            })?;
         if let Some(reason) = refused_by_pydocket(expression, &schedule) {
             return Err(Error::Invalid(format!(
                 "{expression} is not a cron expression: {reason}"
@@ -66,6 +70,15 @@ impl Cron {
     }
 }
 
+/// Whether a task must match both the day of the month and the day of the
+/// week, instead of either one.  pydocket's parser follows Vixie cron: AND
+/// when either field starts with `*`, as in `*/2` or `*/3`, and OR otherwise.
+fn joins_days_with_and(expression: &str) -> bool {
+    let fields: Vec<&str> = expression.split_whitespace().collect();
+    matches!(fields.len(), 5 | 6)
+        && (fields[fields.len() - 3].starts_with('*') || fields[fields.len() - 1].starts_with('*'))
+}
+
 /// Why pydocket's parser refuses an expression that croner accepts, if it
 /// does.  The day of the month is the third field from the end, both with
 /// and without a field for the seconds.
@@ -76,7 +89,12 @@ fn refused_by_pydocket(expression: &str, schedule: &croner::Cron) -> Option<&'st
         Some("it has a field for the year")
     } else if expression.contains('?') {
         Some("it uses ?")
-    } else if day_of_month.is_some_and(|day| day.contains('W') && day != "LW") {
+    } else if day_of_month.is_some_and(|day| {
+        day.split(',').any(|item| {
+            let item = item.to_ascii_uppercase();
+            item.contains('W') && item != "LW"
+        })
+    }) {
         Some("its day of the month uses W, other than LW")
     } else if schedule.find_next_occurrence(&Utc::now(), false).is_err() {
         Some("it never matches")

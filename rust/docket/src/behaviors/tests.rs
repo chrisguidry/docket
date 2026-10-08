@@ -150,19 +150,33 @@ async fn an_unreachable_redis_fails_the_task(#[case] attach: Attach, #[case] rea
     assert!(error.starts_with(reason), "{error}");
 }
 
-#[rstest]
-#[case::concurrency(|hooks: &mut Hooks<'_, Noop>| ConcurrencyLimit::per_field("customer", 1).attach(hooks))]
-#[case::cooldown(|hooks: &mut Hooks<'_, Noop>| Cooldown::per_field("customer", Duration::from_secs(1)).attach(hooks))]
-#[case::debounce(|hooks: &mut Hooks<'_, Noop>| Debounce::per_field("customer", Duration::from_secs(1)).scope("tests").attach(hooks))]
-#[case::rate_limit(|hooks: &mut Hooks<'_, Noop>| RateLimit::per_field("customer", 1).attach(hooks))]
 #[tokio::test]
-async fn a_limit_on_a_missing_field_fails_the_task(#[case] attach: Attach) {
+async fn a_concurrency_limit_on_a_missing_field_fails_the_task() {
     let docket = unreachable().await;
+    let attach: Attach = |hooks| ConcurrencyLimit::per_field("customer", 1).attach(hooks);
     let error = failed(admit(attach, context(&docket, "a")).await);
     assert_eq!(
         error,
         "the noop task's arguments have no customer field to limit by"
     );
+}
+
+/// A missing field counts as `null`, as an omitted argument counts as its
+/// default `None` in pydocket, so the first call holds the limit for the
+/// second.
+#[rstest]
+#[case::cooldown(|hooks: &mut Hooks<'_, Noop>| Cooldown::per_field("customer", Duration::from_secs(60)).attach(hooks))]
+#[case::debounce(|hooks: &mut Hooks<'_, Noop>| Debounce::per_field("customer", Duration::from_secs(60)).attach(hooks))]
+#[case::rate_limit(|hooks: &mut Hooks<'_, Noop>| RateLimit::per_field("customer", 1).attach(hooks))]
+#[tokio::test]
+async fn a_limit_on_a_missing_field_counts_it_as_null(#[case] attach: Attach) {
+    let docket = memory().await;
+
+    let first = admit(attach, context(&docket, "a")).await;
+    let second = admit(attach, context(&docket, "b")).await;
+
+    assert!(!matches!(first, Err(NotAdmitted::Failed(_))));
+    blocked(second);
 }
 
 #[tokio::test]

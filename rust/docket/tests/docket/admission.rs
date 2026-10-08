@@ -259,6 +259,62 @@ async fn a_block_without_a_delay_tries_the_task_again_shortly() {
     )));
 }
 
+/// pydocket checks every admission before it acts on any, so a block after
+/// a failure still wins, and the check after a failure still runs.
+#[tokio::test]
+async fn a_block_wins_over_a_failed_admission() {
+    let docket = docket().await;
+    let failures = Arc::new(AtomicU32::new(0));
+    let blocks = Arc::new(AtomicU32::new(0));
+    docket
+        .register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) })
+        .with(Unanswerable(Arc::clone(&failures)))
+        .with(NotYet(Arc::clone(&blocks)));
+    let execution = docket.add(Noop).await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    // The first attempt was blocked, and the second one failed.
+    assert_eq!(failures.load(Ordering::SeqCst), 2);
+    assert_eq!(blocks.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Failed
+    );
+}
+
+/// A failed admission counts as a run that failed, so a rate limit keeps
+/// the call it gave, as in pydocket.
+#[tokio::test]
+async fn a_failed_admission_spends_a_rate_limit_call() {
+    let docket = docket().await;
+    let failures = Arc::new(AtomicU32::new(0));
+    docket
+        .register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) })
+        .with(
+            RateLimit::new(1)
+                .per(Duration::from_secs(60))
+                .drop_excess()
+                .scope(docket.name()),
+        )
+        .with(Unanswerable(Arc::clone(&failures)))
+        .with(Retry::attempts(2));
+    let execution = docket.add(Noop).await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    // The retry found the window full, and the rate limit dropped it.
+    assert_eq!(failures.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Cancelled
+    );
+}
+
 /// A behavior whose check takes a while and then fails, so a cancel can
 /// arrive while it runs.
 struct SlowlyUnanswerable {
