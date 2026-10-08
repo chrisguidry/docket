@@ -29,6 +29,41 @@ pub(crate) struct Keepalive {
     pub probes: u32,
 }
 
+/// The longest keepalive idle time and interval Linux takes, in seconds.
+const MAX_KEEPALIVE_SECONDS: u64 = 32767;
+
+/// The most keepalive probes Linux takes.
+const MAX_KEEPALIVE_PROBES: u32 = 127;
+
+impl Keepalive {
+    /// Refuses timers the kernel would refuse.  The kernel takes the idle
+    /// time and interval in whole seconds, so they are checked as whole
+    /// seconds: 500 ms would be 0 s, which Linux refuses on every connect.
+    /// The limits are Linux's, and docket applies them everywhere, so a
+    /// setting that works on one system works on the others.
+    fn validate(&self) -> Result<()> {
+        let seconds = |name: &str, timer: Duration| {
+            if (1..=MAX_KEEPALIVE_SECONDS).contains(&timer.as_secs()) {
+                Ok(())
+            } else {
+                Err(Error::Invalid(format!(
+                    "the TCP keepalive {name} must be from 1 to {MAX_KEEPALIVE_SECONDS} \
+                     whole seconds, not {timer:?}"
+                )))
+            }
+        };
+        seconds("idle time", self.idle)?;
+        seconds("interval", self.interval)?;
+        if !(1..=MAX_KEEPALIVE_PROBES).contains(&self.probes) {
+            return Err(Error::Invalid(format!(
+                "the TCP keepalive probes must be from 1 to {MAX_KEEPALIVE_PROBES}, not {}",
+                self.probes
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -74,15 +109,7 @@ impl Settings {
                 "the shortest retry wait must not be longer than the longest".into(),
             ));
         }
-        if self.keepalive.idle.is_zero()
-            || self.keepalive.interval.is_zero()
-            || self.keepalive.probes == 0
-        {
-            return Err(Error::Invalid(
-                "the keepalive idle time, interval, and probes must be more than zero".into(),
-            ));
-        }
-        Ok(())
+        self.keepalive.validate()
     }
 
     /// How long a blocking read may block when it would like to block for

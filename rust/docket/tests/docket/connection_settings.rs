@@ -174,22 +174,72 @@ async fn a_worker_blocks_for_less_than_the_response_timeout() {
     );
 }
 
+/// A builder for a docket whose TCP keepalive is `idle`, `interval`, and
+/// `probes`.
+fn keepalive(idle: Duration, interval: Duration, probes: u32) -> docket::DocketBuilder {
+    Docket::builder("x", "memory://x").tcp_keepalive(idle, interval, probes)
+}
+
+const SECOND: Duration = Duration::from_secs(1);
+
 #[rstest]
-#[case::connection_timeout(Docket::builder("x", "memory://x").connection_timeout(Duration::ZERO))]
-#[case::response_timeout(Docket::builder("x", "memory://x").response_timeout(Duration::ZERO))]
+#[case::connection_timeout(
+    Docket::builder("x", "memory://x").connection_timeout(Duration::ZERO),
+    "connection timeout"
+)]
+#[case::response_timeout(
+    Docket::builder("x", "memory://x").response_timeout(Duration::ZERO),
+    "response timeout"
+)]
 #[case::backoff(
     Docket::builder("x", "memory://x")
-        .retry_backoff(Duration::from_secs(2), Duration::from_secs(1))
+        .retry_backoff(Duration::from_secs(2), Duration::from_secs(1)),
+    "retry wait"
 )]
-#[case::idle(Docket::builder("x", "memory://x").tcp_keepalive(Duration::ZERO, Duration::from_secs(1), 3))]
-#[case::interval(Docket::builder("x", "memory://x").tcp_keepalive(Duration::from_secs(1), Duration::ZERO, 3))]
-#[case::probes(Docket::builder("x", "memory://x").tcp_keepalive(Duration::from_secs(1), Duration::from_secs(1), 0))]
+#[case::idle(keepalive(Duration::ZERO, SECOND, 3), "keepalive idle time")]
+#[case::interval(keepalive(SECOND, Duration::ZERO, 3), "keepalive interval")]
+#[case::probes(keepalive(SECOND, SECOND, 0), "keepalive probes")]
+#[case::idle_under_a_second(
+    keepalive(Duration::from_millis(500), SECOND, 3),
+    "keepalive idle time"
+)]
+#[case::interval_under_a_second(
+    keepalive(SECOND, Duration::from_millis(999), 3),
+    "keepalive interval"
+)]
+#[case::idle_over_linux_limit(
+    keepalive(Duration::from_secs(32768), SECOND, 3),
+    "keepalive idle time"
+)]
+#[case::interval_over_linux_limit(
+    keepalive(SECOND, Duration::from_secs(32768), 3),
+    "keepalive interval"
+)]
+#[case::probes_over_linux_limit(keepalive(SECOND, SECOND, 128), "keepalive probes")]
 #[tokio::test]
 async fn settings_that_would_fail_every_connection_are_refused(
     #[case] builder: docket::DocketBuilder,
+    #[case] setting: &str,
 ) {
     let error = builder.connect().await.unwrap_err();
     assert!(matches!(error, Error::Invalid(_)), "{error}");
+    assert!(error.to_string().contains(setting), "{error}");
+}
+
+/// The kernel takes the keepalive idle time and interval in whole seconds,
+/// so a fraction of a second over a whole one is dropped, not refused.
+#[rstest]
+#[case::smallest(SECOND, SECOND, 1)]
+#[case::fractions(Duration::from_millis(1500), Duration::from_millis(1999), 3)]
+#[case::largest(Duration::from_secs(32767), Duration::from_secs(32767), 127)]
+#[tokio::test]
+async fn keepalive_settings_within_the_kernels_limits_connect(
+    #[case] idle: Duration,
+    #[case] interval: Duration,
+    #[case] probes: u32,
+) {
+    let docket = docket_with(|builder| builder.tcp_keepalive(idle, interval, probes)).await;
+    docket.snapshot().await.unwrap();
 }
 
 #[rstest]
