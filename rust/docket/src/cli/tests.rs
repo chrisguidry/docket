@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use rstest::rstest;
 
 use super::{WorkerArgs, parse_duration};
@@ -101,6 +101,47 @@ fn reads_every_option() {
         (args.healthcheck_port, args.metrics_port),
         (Some(8080), Some(9090))
     );
+}
+
+#[test]
+fn debug_output_hides_the_url_passwords() {
+    let args = parse(&[
+        "--url",
+        "redis+sentinel://docket:hunter2@sentinel:26379/mymaster?sentinel_password=swordfish",
+    ]);
+    let debug = format!("{args:?}");
+    assert!(
+        debug.contains("docket:***@sentinel:26379/mymaster?sentinel_password=***"),
+        "{debug}"
+    );
+    assert!(!debug.contains("hunter2"));
+    assert!(!debug.contains("swordfish"));
+}
+
+/// Prints the help.  `help_hides_the_url_from_the_environment` runs it in a
+/// child process with `DOCKET_URL` set, because clap reads the environment
+/// when it builds the command.
+#[test]
+#[ignore = "help_hides_the_url_from_the_environment runs it"]
+fn print_help() {
+    println!("{}", Cli::command().render_help());
+}
+
+#[test]
+fn help_hides_the_url_from_the_environment() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "cli::tests::print_help",
+            "--nocapture",
+        ])
+        .env("DOCKET_URL", "redis://docket:hunter2@redis:6379/0")
+        .output()
+        .unwrap();
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(help.contains("[env: DOCKET_URL]"), "{help}");
+    assert!(!help.contains("hunter2"));
 }
 
 #[cfg(feature = "memory")]

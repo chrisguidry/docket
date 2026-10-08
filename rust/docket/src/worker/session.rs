@@ -269,16 +269,16 @@ async fn poll(
 
 async fn read(worker: &Shared, reader: &mut Connection, count: usize) -> Result<Vec<Delivery>> {
     let docket = &worker.docket;
-    let block = worker
-        .settings
-        .minimum_check_interval
+    let block = docket
+        .backend()
+        .block(worker.settings.minimum_check_interval)
         .as_millis()
         .try_into()
         .unwrap_or(usize::MAX);
     let options = StreamReadOptions::default()
         .group(WORKER_GROUP, &worker.settings.name)
         .count(count)
-        .block(block.max(1));
+        .block(block);
     let stream = docket.keys().stream();
     let reply: RedisResult<Option<StreamReadReply>> = reader
         .xread_options(&[stream.as_str()], &[">"], &options)
@@ -341,7 +341,6 @@ pub(super) async fn deliveries(
     deliveries
 }
 
-/// Whether the docket holds any task, now or in the future.
 /// Moves the docket's clock to its next scheduled task, for a test that
 /// skips the time when nothing is due.  The scheduler moves the task onto
 /// the stream on its next pass.  A read that fails leaves the clock alone,
@@ -358,6 +357,7 @@ async fn skip_idle_time(docket: &Docket, clock: &Moved) {
     }
 }
 
+/// Whether the docket holds any task, now or in the future.
 async fn has_work(docket: &Docket) -> Result<bool> {
     let mut connection = docket.handle();
     let (stream, queue): (usize, usize) = redis::pipe()

@@ -29,22 +29,36 @@ use crate::task::Task;
 /// give it.  The run is a first attempt, due now, under a new key, unless
 /// the builder says otherwise.
 ///
-/// ```no_run
+/// ```
 /// # use docket::{Context, Task};
 /// # use serde::{Deserialize, Serialize};
 /// # #[derive(Serialize, Deserialize, Task)]
 /// # #[task(name = "sync")]
 /// # struct Sync { cursor: u32 }
-/// # async fn sync(ctx: Context, args: Sync) -> Result<(), std::io::Error> { Ok(()) }
+/// # const LAST_PAGE: u32 = 3;
+/// /// Syncs one page, and stops the perpetual task after the last one.
+/// async fn sync(ctx: Context, args: Sync) -> Result<(), std::io::Error> {
+///     if args.cursor == LAST_PAGE {
+///         ctx.perpetual().expect("the sync is perpetual").cancel();
+///     }
+///     Ok(())
+/// }
+///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// use docket::testing::ContextBuilder;
 ///
 /// let docket = docket::Docket::connect("tests", "memory://sync").await?;
-/// let args = Sync { cursor: 0 };
+/// let args = Sync { cursor: LAST_PAGE };
 /// let ctx = ContextBuilder::new(&docket, &args).perpetual().build();
 /// sync(ctx.clone(), args).await?;
 /// assert!(ctx.perpetual().unwrap().is_cancelled());
 /// # Ok(())
+/// # }
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() {
+/// #     // memory:// needs the memory feature.
+/// #     #[cfg(feature = "memory")]
+/// #     example().await.unwrap();
 /// # }
 /// ```
 pub struct ContextBuilder {
@@ -312,6 +326,10 @@ pub fn advance_time(docket: &Docket, by: std::time::Duration) {
 /// to the next scheduled task.  Perpetual intervals and retry delays then
 /// take no real time.  The keys that Redis expires, such as a
 /// [`Cooldown`](crate::Cooldown)'s, still expire in real time.
+///
+/// It assumes one worker per `memory://` URL.  The clock is shared, so an
+/// idle worker moves it for the busy workers too, and a task that a busy
+/// worker is running can find that hours passed while it ran.
 ///
 /// # Panics
 ///

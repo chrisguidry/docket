@@ -13,11 +13,11 @@ use docket::behaviors::{
 use docket::{Context, Docket, Registration, State, Strike, Task, Worker};
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 
 use crate::logs::Logs;
 use crate::support::proxy::Proxy;
-use crate::support::{Echo, Noop, docket_through, proxy, within, worker};
+use crate::support::{Echo, Noop, docket_through, proxy, telemetry, within, worker};
 
 /// A worker that takes over a lost delivery and reconnects quickly.
 fn hasty(docket: &Docket) -> Worker {
@@ -40,7 +40,7 @@ fn hasty(docket: &Docket) -> Worker {
     |proxy: &Proxy| proxy.fail_script(include_str!("../../lua/stream_due_tasks.lua"), 1),
     "Error in scheduler loop"
 )]
-#[case::beating(|proxy: &Proxy| proxy.fail("MULTI", 1), "Error sending worker heartbeat")]
+#[case::beating(|proxy: &Proxy| proxy.fail("ZADD", 1), "Error sending worker heartbeat")]
 #[case::measuring_the_depths(|proxy: &Proxy| proxy.fail("ZCOUNT", 1), "Error sending worker heartbeat")]
 #[tokio::test]
 async fn a_worker_finishes_its_tasks_after_redis_refuses_a_command(
@@ -63,6 +63,69 @@ async fn a_worker_finishes_its_tasks_after_redis_refuses_a_command(
         execution.status().await.unwrap().unwrap().state,
         State::Completed
     );
+}
+
+/// Registers an `Echo` handler that waits for a permit from the returned
+/// semaphore when its text is "held".
+fn register_held(docket: &Docket) -> Arc<Semaphore> {
+    let release = Arc::new(Semaphore::new(0));
+    let permits = Arc::clone(&release);
+    docket.register(move |_ctx, args: Echo| {
+        let permits = Arc::clone(&permits);
+        async move {
+            if args.text == "held" {
+                permits.acquire().await.unwrap().forget();
+            }
+            Ok::<_, std::io::Error>(args.text)
+        }
+    });
+    release
+}
+
+#[rstest::rstest]
+#[case::claiming(include_str!("../../lua/claim.lua"))]
+#[case::ending(include_str!("../../lua/terminal.lua"))]
+#[case::storing_the_result(include_str!("../../src/worker/store_result.lua"))]
+#[tokio::test]
+async fn other_runs_go_on_when_redis_refuses_one_runs_command(#[case] script: &str) {
+    let Some(proxy) = proxy().await else { return };
+    let (logs, _guard) = Logs::capture();
+    let docket = docket_through(&proxy).await;
+    let release = register_held(&docket);
+    let stop = Arc::new(Notify::new());
+    let stopped = Arc::clone(&stop);
+    let run = tokio::spawn(
+        hasty(&docket)
+            .concurrency(4)
+            .run_until(async move { stopped.notified().await }),
+    );
+    let held = docket.add(Echo::new("held")).await.unwrap();
+    within(10, async {
+        while held.status().await.unwrap().unwrap().state != State::Running {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    // Redis refuses the command for one of these two runs, and the other
+    // runs while the held task is still running.
+    proxy.fail_script(script, 1);
+    let first = docket.add(Echo::new("first")).await.unwrap();
+    let second = docket.add(Echo::new("second")).await.unwrap();
+
+    assert_eq!(within(10, first.result()).await.unwrap(), "first");
+    assert_eq!(within(10, second.result()).await.unwrap(), "second");
+    assert_eq!(held.status().await.unwrap().unwrap().state, State::Running);
+    assert!(logs.contains("injected failure"));
+    release.add_permits(1);
+    assert_eq!(within(10, held.result()).await.unwrap(), "held");
+    stop.notify_one();
+    within(10, run).await.unwrap().unwrap();
+    assert_eq!(
+        telemetry::value(&docket, "docket_redis_disruptions", &[]),
+        Some(1.0)
+    );
+    assert!(!logs.contains("Redis is unavailable"));
 }
 
 /// Ends each run the same way.
@@ -177,6 +240,36 @@ async fn a_struck_task_ends_after_redis_refuses_its_strike() {
     );
 }
 
+/// The reply of a server that a failover demoted to a replica.
+const READ_ONLY: &str = "READONLY You can't write against a read only replica.";
+
+/// The reply of a server at its `maxmemory` under the `noeviction` policy.
+const OUT_OF_MEMORY: &str = "OOM command not allowed when used memory > 'maxmemory'.";
+
+/// Replies that refuse every write the server gets, not one run's alone.
+#[rstest::rstest]
+#[case::read_only_replica(READ_ONLY)]
+#[case::out_of_memory(OUT_OF_MEMORY)]
+#[tokio::test]
+async fn a_worker_reconnects_when_redis_refuses_every_write(#[case] reply: &str) {
+    let Some(proxy) = proxy().await else { return };
+    let (logs, _guard) = Logs::capture();
+    let docket = docket_through(&proxy).await;
+    docket.register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) });
+    let execution = docket.add(Noop).await.unwrap();
+    proxy.fail_script_with(include_str!("../../lua/terminal.lua"), 1, reply);
+
+    within(20, hasty(&docket).concurrency(1).run_until_finished())
+        .await
+        .unwrap();
+
+    assert!(logs.contains("Redis is unavailable"));
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Completed
+    );
+}
+
 #[tokio::test]
 async fn shutdown_logs_each_running_task_whose_ending_redis_refuses() {
     let Some(proxy) = proxy().await else { return };
@@ -193,7 +286,7 @@ async fn shutdown_logs_each_running_task_whose_ending_redis_refuses() {
     });
     docket.add(Noop).await.unwrap();
     docket.add(Noop).await.unwrap();
-    proxy.fail_script(include_str!("../../lua/terminal.lua"), 2);
+    proxy.fail_script_with(include_str!("../../lua/terminal.lua"), 2, READ_ONLY);
 
     let shutdown = async move { started.acquire_many(2).await.unwrap().forget() };
     within(20, hasty(&docket).run_until(shutdown))

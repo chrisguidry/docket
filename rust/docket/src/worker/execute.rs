@@ -60,9 +60,28 @@ pub(super) async fn run(worker: Arc<Shared>, delivery: Delivery) -> Result<()> {
         "docket.attempt" = message.attempt,
     );
     let active = worker.start(&delivery.id, &message.key);
-    let result = execute(&worker, &delivery, &active).instrument(span).await;
+    let result = execute(&worker, &delivery, &active)
+        .instrument(span.clone())
+        .await;
     worker.finish(&delivery.id);
-    result
+    match result {
+        // Nothing acknowledged the delivery, so it stays pending, and the
+        // redelivery sweep hands it to a worker once its lease runs out.
+        // Ending the session here would stop every other run for one run's
+        // error.
+        Err(error) if error.is_refused_command() => {
+            worker.disrupted();
+            span.in_scope(|| {
+                tracing::warn!(
+                    %error,
+                    "Redis refused a command for task {:?}, so it will be redelivered",
+                    message.key
+                );
+            });
+            Ok(())
+        }
+        result => result,
+    }
 }
 
 async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Result<()> {

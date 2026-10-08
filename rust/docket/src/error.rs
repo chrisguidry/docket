@@ -9,7 +9,7 @@ pub enum Error {
     /// A docket URL that docket cannot connect to.
     #[error("{url} is not a docket URL: {reason}")]
     Url {
-        /// The URL as given.
+        /// The URL as given, with `***` in place of its passwords.
         url: String,
         /// What is wrong with it.
         reason: String,
@@ -47,7 +47,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 impl Error {
     pub(crate) fn url(url: &str, reason: impl Into<String>) -> Self {
         Self::Url {
-            url: url.to_owned(),
+            url: crate::connection::redact(url),
             reason: reason.into(),
         }
     }
@@ -59,5 +59,26 @@ impl Error {
     #[must_use]
     pub fn is_redis_unavailable(&self) -> bool {
         matches!(self, Self::Redis(_))
+    }
+
+    /// Whether Redis answered a command with an error that concerns that
+    /// command alone, such as a script error or a key of the wrong type.
+    /// The connection still works, so the other commands on it go on.  A
+    /// lost connection, a timeout, and a reply that says the server cannot
+    /// serve now (`READONLY` after a failover, `LOADING`, `CLUSTERDOWN`,
+    /// `MASTERDOWN`, `TRYAGAIN`, or a redirect the cluster client did not
+    /// follow) do not count, because they need a reconnect.  Nor does `OOM`:
+    /// a server at its `maxmemory` refuses every write but still serves a
+    /// worker's reads, so a worker that went on would read every ready task
+    /// into its pending list without a pause and run none of them.
+    pub(crate) fn is_refused_command(&self) -> bool {
+        matches!(
+            self,
+            Self::Redis(error) if matches!(
+                error.kind(),
+                redis::ErrorKind::Server(_) | redis::ErrorKind::Extension
+            ) && matches!(error.retry_method(), redis::RetryMethod::NoRetry)
+                && error.code() != Some("OOM")
+        )
     }
 }

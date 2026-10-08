@@ -1,5 +1,6 @@
 //! A docket: a named set of tasks in one Redis.
 
+mod builder;
 mod registry;
 mod run_limits;
 mod schedule;
@@ -15,7 +16,7 @@ use redis::AsyncCommands;
 
 use crate::behaviors::BoxError;
 use crate::clock::Clock;
-use crate::connection::{Backend, Handle, Provider, RedisConnection, Shared};
+use crate::connection::{Backend, Handle, RedisConnection, Shared};
 use crate::context::Context;
 use crate::error::Result;
 use crate::keys::Keys;
@@ -25,6 +26,7 @@ use crate::task::Task;
 use crate::telemetry::{self, Telemetry};
 use crate::wire::iso;
 
+pub use builder::DocketBuilder;
 pub use registry::Registration;
 pub(crate) use registry::{Registered, Registry};
 pub(crate) use run_limits::Limited;
@@ -68,87 +70,6 @@ pub(crate) struct Settings {
     pub missed_heartbeats: u32,
 }
 
-/// Opens a docket with settings other than the defaults.
-#[derive(Clone, Debug)]
-pub struct DocketBuilder {
-    name: String,
-    url: String,
-    settings: Settings,
-    credentials: Option<Provider>,
-}
-
-impl DocketBuilder {
-    /// How long a finished task's state and result stay in Redis.  Zero
-    /// deletes them as soon as the task ends.  The default is 15 minutes.
-    #[must_use]
-    pub fn execution_ttl(mut self, ttl: Duration) -> Self {
-        self.settings.execution_ttl = ttl;
-        self
-    }
-
-    /// How often each worker reports that it is alive.  The default is 2
-    /// seconds.
-    #[must_use]
-    pub fn heartbeat_interval(mut self, interval: Duration) -> Self {
-        self.settings.heartbeat_interval = interval;
-        self
-    }
-
-    /// How many heartbeats a worker may miss before the docket stops listing
-    /// it.  The default is 5.
-    #[must_use]
-    pub fn missed_heartbeats(mut self, missed: u32) -> Self {
-        self.settings.missed_heartbeats = missed;
-        self
-    }
-
-    /// Takes the username and password from `provider`, in place of the URL,
-    /// for servers whose passwords are tokens that rotate, such as Azure
-    /// Entra ID.  Command connections renew their credentials when the
-    /// provider gives new ones, and subscriptions take the credentials in
-    /// force when they open.  A URL that carries credentials of its own is
-    /// refused.
-    #[must_use]
-    pub fn credentials_provider(
-        mut self,
-        provider: impl redis::StreamingCredentialsProvider + 'static,
-    ) -> Self {
-        self.credentials = Some(Provider(Arc::new(provider)));
-        self
-    }
-
-    /// Connects to the docket.  The connection itself opens on first use, so
-    /// this fails only on a URL docket cannot use.
-    pub async fn connect(self) -> Result<Docket> {
-        let backend = Arc::new(Backend::open(&self.url, self.credentials)?);
-        let keys = Keys::new(backend.prefix(&self.name));
-        let clock = backend.clock();
-        let strikes: SharedStrikes = Arc::new(Strikes::default());
-        let telemetry = Arc::new(Telemetry::new());
-        let monitor = Monitor::start(
-            Arc::clone(&backend),
-            keys.strikes(),
-            Arc::clone(&strikes),
-            self.name.clone(),
-            Arc::clone(&telemetry),
-        );
-        Ok(Docket {
-            inner: Arc::new(Inner {
-                name: self.name,
-                keys,
-                shared: Arc::new(Shared::new(backend)),
-                registry: RwLock::new(Registry::default()),
-                strikes,
-                monitor,
-                settings: self.settings,
-                telemetry,
-                run_limits: Mutex::new(run_limits::RunLimits::default()),
-                clock,
-            }),
-        })
-    }
-}
-
 impl Docket {
     /// Connects to the docket `name` in the Redis at `url`, with the default
     /// settings.
@@ -163,16 +84,7 @@ impl Docket {
 
     /// Starts a docket with settings other than the defaults.
     pub fn builder(name: impl Into<String>, url: impl Into<String>) -> DocketBuilder {
-        DocketBuilder {
-            name: name.into(),
-            url: url.into(),
-            settings: Settings {
-                execution_ttl: Duration::from_mins(15),
-                heartbeat_interval: Duration::from_secs(2),
-                missed_heartbeats: 5,
-            },
-            credentials: None,
-        }
+        DocketBuilder::new(name.into(), url.into())
     }
 
     /// The docket's name.
@@ -184,6 +96,9 @@ impl Docket {
     /// Opens a connection to the docket's Redis, for an application's own
     /// keys, as pydocket's `docket.redis()` does.  Each call opens a new
     /// connection, so a blocking command on it holds up nothing of docket's.
+    /// As in pydocket, a command on it waits for Redis as long as it takes:
+    /// the docket's [`response_timeout`](DocketBuilder::response_timeout)
+    /// does not apply.
     ///
     /// It reaches a `memory://` docket's in-process Redis too, which no
     /// other client can.  That Redis knows the commands docket itself sends:
@@ -191,7 +106,11 @@ impl Docket {
     /// and not, for example, `INCR` or lists.
     pub async fn redis(&self) -> Result<RedisConnection> {
         Ok(RedisConnection(
-            self.inner.shared.backend().connect().await?,
+            self.inner
+                .shared
+                .backend()
+                .connect_for_application()
+                .await?,
         ))
     }
 

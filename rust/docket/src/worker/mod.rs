@@ -111,7 +111,9 @@ impl Worker {
         self
     }
 
-    /// How long one read waits for new tasks.  The default is 250 ms.
+    /// How long one read waits for new tasks.  When the docket has a
+    /// [`response_timeout`](crate::DocketBuilder::response_timeout), the
+    /// read waits for at most half of it.  The default is 250 ms.
     #[must_use]
     pub fn minimum_check_interval(mut self, interval: Duration) -> Self {
         self.settings.minimum_check_interval = interval;

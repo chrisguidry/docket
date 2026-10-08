@@ -145,13 +145,17 @@ fn decide(
     if attempts.is_some_and(|attempts| attempt >= attempts) {
         return AfterFailure::Fail;
     }
-    let delay = error
-        .downcast_ref::<ForcedRetry>()
-        .map_or(delay, |forced| forced.delay);
-    AfterFailure::RetryAt(now + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX))
+    let after =
+        |delay: Duration| now + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX);
+    AfterFailure::RetryAt(match error.downcast_ref::<ForcedRetry>() {
+        Some(ForcedRetry(When::After(delay))) => after(*delay),
+        Some(ForcedRetry(When::At(when))) => (*when).max(now),
+        None => after(delay),
+    })
 }
 
-/// An error that asks for a retry after a delay the handler chooses.
+/// An error that asks for a retry after a delay, or at a time, that the
+/// handler chooses.
 ///
 /// ```
 /// # use docket::behaviors::ForcedRetry;
@@ -161,24 +165,39 @@ fn decide(
 /// }
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("the task asked to run again in {delay:?}")]
-pub struct ForcedRetry {
-    delay: Duration,
+#[error("the task asked to run again {0}")]
+pub struct ForcedRetry(When);
+
+/// When a forced retry runs.  A time stays a time until the retry is
+/// decided, because only then is the docket's clock at hand, and a
+/// `memory://` docket's clock can be ahead of the system's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum When {
+    After(Duration),
+    At(DateTime<Utc>),
+}
+
+impl std::fmt::Display for When {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::After(delay) => write!(f, "in {delay:?}"),
+            Self::At(when) => write!(f, "at {}", when.to_rfc3339()),
+        }
+    }
 }
 
 impl ForcedRetry {
     /// Retries after `delay`.
     #[must_use]
     pub fn after(delay: Duration) -> Self {
-        Self { delay }
+        Self(When::After(delay))
     }
 
-    /// Retries at `when`, or now when `when` has passed.
+    /// Retries at `when` on the docket's clock, or now when `when` has
+    /// passed.
     #[must_use]
     pub fn at(when: DateTime<Utc>) -> Self {
-        Self {
-            delay: (when - Utc::now()).to_std().unwrap_or_default(),
-        }
+        Self(When::At(when))
     }
 }
 

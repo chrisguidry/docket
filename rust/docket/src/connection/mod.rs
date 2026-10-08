@@ -1,6 +1,10 @@
 //! Connections to the Redis behind a docket, whatever kind of server it is.
 
+mod clients;
 mod credentials;
+mod settings;
+#[cfg(test)]
+pub(crate) mod slots;
 #[cfg(test)]
 mod tests;
 mod url;
@@ -11,36 +15,31 @@ use std::time::Duration;
 use redis::aio::{ConnectionLike, MultiplexedConnection, PubSub};
 use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
-use redis::sentinel::{SentinelClient, SentinelClientBuilder, SentinelServerType};
-use redis::{
-    AsyncConnectionConfig, Client, Cmd, ConnectionAddr, Pipeline, RedisFuture, RedisResult,
-    TlsMode, Value,
-};
+use redis::sentinel::SentinelClient;
+use redis::{AsyncConnectionConfig, Client, Cmd, Pipeline, RedisFuture, RedisResult, Value};
 use tokio::sync::Mutex;
 
 use crate::error::Result;
+use clients::{client, cluster_client};
 pub(crate) use credentials::Provider;
+pub(crate) use settings::{Keepalive, Settings};
 use url::Target;
-
-/// A connect that stalls, for example on dropped SYN packets, has no server
-/// work to wait for, so it fails after this long.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Blocking reads such as `XREADGROUP BLOCK` wait for the server, so
-/// connections have no read timeout.  A cluster connection needs some value,
-/// so it gets one far longer than any block docket asks for.
-const CLUSTER_RESPONSE_TIMEOUT: Duration = Duration::from_hours(24);
+pub(crate) use url::redact;
 
 /// How to reach the Redis behind a docket.
 pub(crate) struct Backend {
     kind: Kind,
     credentials: Option<Provider>,
+    settings: Settings,
 }
 
 enum Kind {
     Standalone(Client),
     Cluster {
         client: Box<ClusterClient>,
+        /// The same cluster with no response timeout, for an application's
+        /// own commands.
+        application: Box<ClusterClient>,
         /// Pub/sub goes through a plain connection to one node, because every
         /// node relays every published message.
         pubsub: Client,
@@ -51,7 +50,7 @@ enum Kind {
 }
 
 impl Backend {
-    pub fn open(url: &str, credentials: Option<Provider>) -> Result<Self> {
+    pub fn open(url: &str, credentials: Option<Provider>, settings: Settings) -> Result<Self> {
         #[cfg(not(feature = "tls"))]
         if url.starts_with("rediss") {
             return Err(crate::Error::url(
@@ -59,24 +58,26 @@ impl Backend {
                 "rediss:// needs docket's tls feature",
             ));
         }
+        settings.validate()?;
         let kind = match url::parse(url)? {
-            Target::Standalone(url) => Client::open(url).map(Kind::Standalone),
-            Target::Cluster(node) => Client::open(node.as_str()).and_then(|pubsub| {
-                let builder = ClusterClient::builder([node.as_str()])
-                    .connection_timeout(CONNECT_TIMEOUT)
-                    .response_timeout(CLUSTER_RESPONSE_TIMEOUT);
-                let builder = match &credentials {
-                    Some(provider) => builder.set_credentials_provider(provider.clone()),
-                    None => builder,
+            Target::Standalone(url) => client(&url, &settings).map(Kind::Standalone),
+            Target::Cluster(node) => {
+                let cluster = |response_timeout| {
+                    cluster_client(&node, &settings, response_timeout, credentials.as_ref())
+                        .map(Box::new)
                 };
-                builder.build().map(|client| Kind::Cluster {
-                    client: Box::new(client),
-                    pubsub,
+                client(&node, &settings).and_then(|pubsub| {
+                    cluster(settings.response_timeout).and_then(|client| {
+                        cluster(None).map(|application| Kind::Cluster {
+                            client,
+                            application,
+                            pubsub,
+                        })
+                    })
                 })
-            }),
-            Target::Sentinel(sentinel) => {
-                sentinel_client(sentinel).map(|client| Kind::Sentinel(Mutex::new(client)))
             }
+            Target::Sentinel(sentinel) => clients::sentinel_client(sentinel, &settings)
+                .map(|client| Kind::Sentinel(Mutex::new(client))),
             #[cfg(feature = "memory")]
             Target::Memory(url) => Ok(Kind::Memory(crate::memory::MemoryServer::open(&url))),
             #[cfg(not(feature = "memory"))]
@@ -101,7 +102,11 @@ impl Backend {
                 "it carries credentials, and a credential provider gives them too",
             ));
         }
-        Ok(Self { kind, credentials })
+        Ok(Self {
+            kind,
+            credentials,
+            settings,
+        })
     }
 
     /// The prefix of every key in the docket.  On a cluster it is a hash tag,
@@ -114,12 +119,29 @@ impl Backend {
         }
     }
 
-    /// Opens a new connection.  Blocking reads hold their connection for the
-    /// whole block, so each loop that blocks opens its own.
+    /// Opens a new connection for docket's own commands.  Blocking reads
+    /// hold their connection for the whole block, so each loop that blocks
+    /// opens its own.
     pub async fn connect(&self) -> RedisResult<Connection> {
+        self.connect_for(Purpose::Docket).await
+    }
+
+    /// Opens a new connection for an application's own commands.  It has
+    /// no response timeout whatever the docket's is, as pydocket's
+    /// `docket.redis()` has none, so an application's blocking command waits
+    /// as long as it asks to.
+    pub async fn connect_for_application(&self) -> RedisResult<Connection> {
+        self.connect_for(Purpose::Application).await
+    }
+
+    async fn connect_for(&self, purpose: Purpose) -> RedisResult<Connection> {
+        let response_timeout = match purpose {
+            Purpose::Docket => self.settings.response_timeout,
+            Purpose::Application => None,
+        };
         let config = AsyncConnectionConfig::new()
-            .set_connection_timeout(Some(CONNECT_TIMEOUT))
-            .set_response_timeout(None);
+            .set_connection_timeout(Some(self.settings.connection_timeout))
+            .set_response_timeout(response_timeout);
         let config = match &self.credentials {
             Some(provider) => config.set_credentials_provider(provider.clone()),
             None => config,
@@ -129,7 +151,15 @@ impl Backend {
                 .get_multiplexed_async_connection_with_config(&config)
                 .await
                 .map(Connection::Single),
-            Kind::Cluster { client, .. } => {
+            Kind::Cluster {
+                client,
+                application,
+                ..
+            } => {
+                let client = match purpose {
+                    Purpose::Docket => client,
+                    Purpose::Application => application,
+                };
                 client.get_async_connection().await.map(Connection::Cluster)
             }
             Kind::Sentinel(client) => {
@@ -149,17 +179,28 @@ impl Backend {
     /// Opens a connection subscribed to `channels`.
     pub async fn subscribe(&self, channels: &[String]) -> RedisResult<PubSub> {
         let mut pubsub = self.pubsub().await?;
-        pubsub.subscribe(channels).await.map(|()| pubsub)
+        within(self.settings.response_timeout, pubsub.subscribe(channels))
+            .await
+            .map(|()| pubsub)
     }
 
     /// Opens a connection subscribed to the channels that match `pattern`.
     pub async fn psubscribe(&self, pattern: String) -> RedisResult<PubSub> {
         let mut pubsub = self.pubsub().await?;
-        pubsub.psubscribe(pattern).await.map(|()| pubsub)
+        within(self.settings.response_timeout, pubsub.psubscribe(pattern))
+            .await
+            .map(|()| pubsub)
     }
 
-    /// Opens a connection for subscriptions.
+    /// Opens a connection for subscriptions.  redis-rs takes no timeouts
+    /// for these, so docket bounds the connect itself, and the subscribe
+    /// when the docket has a response timeout.  Once subscribed, the connection waits for messages as long as it
+    /// takes, and TCP keepalive finds a peer that is gone.
     async fn pubsub(&self) -> RedisResult<PubSub> {
+        within(Some(self.settings.connection_timeout), self.open_pubsub()).await
+    }
+
+    async fn open_pubsub(&self) -> RedisResult<PubSub> {
         let client = match &self.kind {
             Kind::Standalone(client) | Kind::Cluster { pubsub: client, .. } => client.clone(),
             Kind::Sentinel(client) => client.lock().await.async_get_client().await?,
@@ -187,6 +228,12 @@ impl Backend {
         }
     }
 
+    /// How long a blocking read may block when it would like to block for
+    /// `wanted`.
+    pub fn block(&self, wanted: Duration) -> Duration {
+        self.settings.block(wanted)
+    }
+
     /// Whether this backend is a cluster, whose nodes cannot be trusted to
     /// keep a script loaded for pipelined `EVALSHA`.
     pub fn is_cluster(&self) -> bool {
@@ -194,44 +241,24 @@ impl Backend {
     }
 }
 
-fn sentinel_client(sentinel: url::SentinelUrl) -> RedisResult<SentinelClient> {
-    let tls = sentinel.tls.then_some(TlsMode::Secure);
-    let addresses = sentinel
-        .sentinels
-        .into_iter()
-        .map(|(host, port)| match tls {
-            Some(_) => ConnectionAddr::TcpTls {
-                host,
-                port,
-                insecure: false,
-                tls_params: None,
-            },
-            None => ConnectionAddr::Tcp(host, port),
-        });
-    // Neither step fails for the addresses and TLS settings built here.
-    SentinelClientBuilder::new(addresses, sentinel.service, SentinelServerType::Master).and_then(
-        |builder| {
-            let mut builder = builder.set_client_to_redis_db(sentinel.db);
-            if let Some(tls) = tls {
-                builder = builder
-                    .set_client_to_redis_tls_mode(tls)
-                    .set_client_to_sentinel_tls_mode(tls);
-            }
-            if let Some(username) = sentinel.username {
-                builder = builder.set_client_to_redis_username(username);
-            }
-            if let Some(password) = sentinel.password {
-                builder = builder.set_client_to_redis_password(password);
-            }
-            if let Some(username) = sentinel.daemon_username {
-                builder = builder.set_client_to_sentinel_username(username);
-            }
-            if let Some(password) = sentinel.daemon_password {
-                builder = builder.set_client_to_sentinel_password(password);
-            }
-            builder.build()
-        },
-    )
+/// Whose commands a connection carries.
+#[derive(Clone, Copy)]
+enum Purpose {
+    Docket,
+    Application,
+}
+
+/// `future`, or a timeout error once `timeout` passes.
+async fn within<T>(
+    timeout: Option<Duration>,
+    future: impl Future<Output = RedisResult<T>>,
+) -> RedisResult<T> {
+    let Some(timeout) = timeout else {
+        return future.await;
+    };
+    tokio::time::timeout(timeout, future)
+        .await
+        .unwrap_or_else(|_| Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into()))
 }
 
 /// One connection to a single server or to a cluster.
