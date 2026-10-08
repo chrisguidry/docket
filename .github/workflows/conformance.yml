@@ -76,6 +76,17 @@ jobs:
       - name: admission-failure
         run: uv run python -m conformance admission-failure --implementation ${{ matrix.implementation }}
 
+      # The newest pydocket release predates the generation checks on a
+      # perpetual task's cancel of itself and on a retry, so these two hold
+      # only the working trees to them.
+      - name: stop-after-replace
+        if: matrix.implementation != 'python@release'
+        run: uv run python -m conformance stop-after-replace --implementation ${{ matrix.implementation }}
+
+      - name: retry-after-replace
+        if: matrix.implementation != 'python@release'
+        run: uv run python -m conformance retry-after-replace --implementation ${{ matrix.implementation }}
+
   telemetry:
     name: Telemetry, python@main and rust@main
     runs-on: ubuntu-26.04

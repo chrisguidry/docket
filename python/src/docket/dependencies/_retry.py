@@ -17,7 +17,8 @@ from ._base import (
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
 
-from ..instrumentation import TASKS_RETRIED
+from ..execution import Disposition
+from ..instrumentation import TASKS_RETRIED, TASKS_SUPERSEDED
 
 logger = logging.getLogger("docket.dependencies")
 
@@ -105,18 +106,44 @@ class Retry(FailureHandler["Retry"]):
         # Pass both replace=True and the original message_id.  The reschedule
         # branch handles the ACK+XDEL of the failed message when message_id is
         # set; replace=True keeps correct behavior in the (otherwise
-        # impossible) case where message_id is None.
-        await execution.schedule(replace=True, reschedule_message=execution.message_id)
+        # impossible) case where message_id is None.  The retry carries this
+        # attempt's generation, so a replace made while it ran keeps its own
+        # time and arguments instead of giving way to the retry.
+        disposition = await execution.schedule(
+            replace=True,
+            reschedule_message=execution.message_id,
+            expected_generation=execution.generation,
+        )
 
         worker = current_worker.get()
-        TASKS_RETRIED.add(1, {**worker.labels(), **execution.general_labels()})
-
         logger.error(
             "↩ [%s] %s",
             format_duration(outcome.duration.total_seconds()),
             execution.call_repr(),
             exc_info=outcome.exception,
         )
+
+        if disposition is Disposition.SUPERSEDED:
+            TASKS_SUPERSEDED.add(
+                1,
+                {
+                    **worker.labels(),
+                    **execution.general_labels(),
+                    "docket.where": "retry",
+                },
+            )
+            logger.info(
+                "↬ [%s] %s (superseded)",
+                format_duration(outcome.duration.total_seconds()),
+                execution.call_repr(),
+            )
+            # The schedule left the failed delivery pending; ending it as
+            # failed acknowledges it without touching the newer run's state.
+            exception = outcome.exception
+            await execution.mark_as_failed(f"{type(exception).__name__}: {exception}")
+            return True
+
+        TASKS_RETRIED.add(1, {**worker.labels(), **execution.general_labels()})
 
         logger.info(
             "↫ [%s] %s",

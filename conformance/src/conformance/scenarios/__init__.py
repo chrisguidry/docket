@@ -16,7 +16,9 @@ from . import (
     perpetual,
     perpetual_single_flight,
     redelivery,
+    retry_after_replace,
     same_key,
+    stop_after_replace,
     telemetry,
 )
 
@@ -32,4 +34,6 @@ SCENARIOS: dict[str, ModuleType] = {
     "chaos": chaos,
     "telemetry": telemetry,
     "admission-failure": admission_failure,
+    "stop-after-replace": stop_after_replace,
+    "retry-after-replace": retry_after_replace,
 }

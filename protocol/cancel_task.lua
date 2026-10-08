@@ -9,9 +9,21 @@ local state_channel = KEYS[8]
 local task_key = ARGV[1]
 local completed_at = ARGV[2]
 local state_payload = ARGV[3]
+local expected_generation = tonumber(ARGV[4])
 
 -- TODO: Remove known_key / parked_key / stream_id_key handling in
 -- v0.14.0 (legacy key locations).
+
+-- A run that cancels its own key (a Perpetual that stops itself) passes
+-- the generation it holds.  A newer stored generation means a replace took
+-- the key while that run ran, and the cancel must leave the replacement
+-- alone.  0 means "no check", for a cancel from outside any run.
+if expected_generation > 0 then
+    local stored = redis.call('HGET', runs_key, 'generation')
+    if stored and tonumber(stored) > expected_generation then
+        return 'SUPERSEDED'
+    end
+end
 
 -- Get stream ID (check new location first, then legacy)
 local message_id = redis.call('HGET', runs_key, 'stream_id')

@@ -94,4 +94,5 @@ async def _cancel_task(
     task_key: Arg[str],
     completed_at: Arg[str],
     state_payload: Arg[str],
-) -> bytes: ...
+    expected_generation: Arg[int],
+) -> bytes | str: ...

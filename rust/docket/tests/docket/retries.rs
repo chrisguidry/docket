@@ -1,11 +1,14 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use chrono::Utc;
 use docket::behaviors::ForcedRetry;
-use docket::{ExponentialRetry, Retry, State};
+use docket::{Docket, ExponentialRetry, Retry, State, Task};
+use serde::{Deserialize, Serialize};
 
-use crate::support::{Noop, docket, within, worker};
+use crate::support::telemetry::value;
+use crate::support::{Noop, docket, url, within, worker};
 
 fn failing(
     attempts: &Arc<AtomicU32>,
@@ -189,4 +192,112 @@ async fn exponential_retry_can_retry_forever() {
         execution.status().await.unwrap().unwrap().state,
         State::Completed
     );
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Task)]
+#[task(name = "flaky")]
+struct Flaky {
+    round: String,
+}
+
+#[tokio::test]
+async fn a_retry_gives_way_to_a_replacement() {
+    let docket = docket().await;
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&runs);
+    let replacement_due = Utc::now() + chrono::Duration::milliseconds(500);
+    docket
+        .register(move |ctx: docket::Context, args: Flaky| {
+            recorded
+                .lock()
+                .unwrap()
+                .push((args.round.clone(), ctx.attempt(), Utc::now()));
+            async move {
+                if args.round == "first" {
+                    if ctx.attempt() == 1 {
+                        let replacement = Flaky {
+                            round: "replacement".to_owned(),
+                        };
+                        ctx.docket()
+                            .replace(replacement, ctx.key(), replacement_due)
+                            .await?;
+                    }
+                    return Err("the first run fails".into());
+                }
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            }
+        })
+        .with(Retry::attempts(2));
+    let first = Flaky {
+        round: "first".to_owned(),
+    };
+    docket.add(first).key("flaky").await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    let runs = runs.lock().unwrap().clone();
+    let rounds: Vec<(&str, u32)> = runs
+        .iter()
+        .map(|(round, attempt, _)| (round.as_str(), *attempt))
+        .collect();
+    assert_eq!(rounds, [("first", 1), ("replacement", 1)]);
+    assert!(runs[1].2 >= replacement_due);
+    let labels = ["docket.task=flaky", "docket.where=retry"];
+    assert_eq!(
+        value(&docket, "docket_tasks_superseded", &labels),
+        Some(1.0)
+    );
+}
+
+#[tokio::test]
+async fn a_retry_gives_way_to_a_replacement_that_already_finished() {
+    // With no execution_ttl, the replacement deletes the key's runs hash when
+    // it ends, before the first run fails.
+    let docket = Docket::builder(format!("docket-test-{}", uuid::Uuid::now_v7()), url())
+        .execution_ttl(Duration::ZERO)
+        .connect()
+        .await
+        .unwrap();
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&runs);
+    docket
+        .register(move |ctx: docket::Context, args: Flaky| {
+            recorded
+                .lock()
+                .unwrap()
+                .push((args.round.clone(), ctx.attempt()));
+            async move {
+                if args.round == "first" {
+                    let replacement = Flaky {
+                        round: "replacement".to_owned(),
+                    };
+                    ctx.docket()
+                        .replace(replacement, ctx.key(), Utc::now())
+                        .await?;
+                    while ctx.docket().execution(ctx.key()).await?.is_some() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    return Err("the first run fails".into());
+                }
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            }
+        })
+        .with(Retry::attempts(2));
+    let first = Flaky {
+        round: "first".to_owned(),
+    };
+    docket.add(first).key("flaky").await.unwrap();
+
+    within(10, worker(&docket).concurrency(2).run_until_finished())
+        .await
+        .unwrap();
+
+    let runs = runs.lock().unwrap().clone();
+    let rounds: Vec<(&str, u32)> = runs
+        .iter()
+        .map(|(round, attempt)| (round.as_str(), *attempt))
+        .collect();
+    assert_eq!(rounds, [("first", 1), ("replacement", 1)]);
 }

@@ -925,7 +925,9 @@ class Docket(DocketSnapshotMixin):
             if "BUSYGROUP" not in str(e):
                 raise  # pragma: no cover
 
-    async def _cancel(self, redis: RedisClient, key: str) -> None:
+    async def _cancel(
+        self, redis: RedisClient, key: str, expected_generation: int = 0
+    ) -> bool:
         """Cancel a task atomically.
 
         Handles cancellation regardless of task location:
@@ -938,6 +940,17 @@ class Docket(DocketSnapshotMixin):
         waiter streams) clean up via the cancel pub/sub channel
         published by ``Docket.cancel`` -- Docket itself stays unaware of any
         dependency-specific storage.
+
+        Args:
+            redis: The connection to run the cancel on.
+            key: The key of the task to cancel.
+            expected_generation: The generation the caller believes holds
+                ``key``.  When it is non-zero and Redis holds a newer one,
+                the cancel leaves the key alone.  0 skips the check.
+
+        Returns:
+            False when a newer generation holds the key and nothing changed,
+            otherwise True.
         """
         # Create tombstone with CANCELLED state
         completed_at = datetime.now(timezone.utc).isoformat()
@@ -951,8 +964,7 @@ class Docket(DocketSnapshotMixin):
             }
         )
 
-        # Execute the cancellation script
-        await _cancel_task(
+        reply = await _cancel_task(
             redis,
             stream_key=self.stream_key,
             known_key=self.known_task_key(key),
@@ -965,7 +977,12 @@ class Docket(DocketSnapshotMixin):
             task_key=key,
             completed_at=completed_at,
             state_payload=state_payload,
+            expected_generation=expected_generation,
         )
+        # The runs hash belongs to the newer generation, so it keeps its own
+        # lifetime.
+        if reply in (b"SUPERSEDED", "SUPERSEDED"):
+            return False
 
         # Apply TTL or delete tombstone based on execution_ttl
         if self.execution_ttl:
@@ -974,6 +991,7 @@ class Docket(DocketSnapshotMixin):
         else:
             # execution_ttl=0 means no observability - delete tombstone immediately
             await redis.delete(task_runs_key)
+        return True
 
     async def strike(
         self,

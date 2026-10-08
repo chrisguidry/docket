@@ -248,7 +248,12 @@ scripts! {
             progress_key,
             state_channel,
         ],
-        args: [task_key: Text, completed_at: Text, state_payload: Text],
+        args: [
+            task_key: Text,
+            completed_at: Text,
+            state_payload: Text,
+            expected_generation: Integer,
+        ],
     }
 
     /// Cancels every task that has not started, and empties the stream and

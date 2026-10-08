@@ -46,7 +46,8 @@ The meter is named `docket`.  Every counter has the unit `1`.
 | `docket_tasks_stricken` | counter | `1` | docket, task, where=`docket` | an add or replace that a strike blocked |
 | `docket_tasks_stricken` | counter | `1` | docket, worker, task, where=`worker` | a delivery that a strike blocked |
 | `docket_tasks_superseded` | counter | `1` | docket, worker, task, where=`worker` | a claim refused because a newer copy took the key |
-| `docket_tasks_superseded` | counter | `1` | docket, worker, task, where=`on_complete` | a perpetual reschedule refused for the same reason |
+| `docket_tasks_superseded` | counter | `1` | docket, worker, task, where=`on_complete` | a perpetual reschedule, or a perpetual task's cancel of itself, refused for the same reason |
+| `docket_tasks_superseded` | counter | `1` | docket, worker, task, where=`retry` | a retry refused for the same reason |
 | `docket_tasks_started` | counter | `1` | docket, worker, task | each claimed run, before admission |
 | `docket_tasks_redelivered` | counter | `1` | docket, worker, task | a started run that came from the redelivery sweep |
 | `docket_tasks_running` | up-down counter | `1` | docket, worker, task | +1 at start, -1 at the end of the run |

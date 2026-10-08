@@ -5,6 +5,7 @@ use std::time::Duration;
 use docket::{Perpetual, State, Task};
 use serde::{Deserialize, Serialize};
 
+use crate::support::telemetry::value;
 use crate::support::{Noop, docket, within, worker};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Task)]
@@ -161,4 +162,55 @@ async fn a_perpetual_task_runs_again_after_it_fails() {
         .unwrap();
 
     assert_eq!(*runs.lock().unwrap(), 2);
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Task)]
+#[task(name = "stopping")]
+struct Stopping {
+    round: String,
+}
+
+impl Stopping {
+    fn new(round: &str) -> Self {
+        Self {
+            round: round.to_owned(),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_perpetual_task_that_stops_itself_keeps_a_replacement() {
+    let docket = docket().await;
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&runs);
+    docket
+        .register(move |ctx: docket::Context, args: Stopping| {
+            recorded.lock().unwrap().push(args.round.clone());
+            async move {
+                if args.round == "first" {
+                    let soon = chrono::Utc::now() + chrono::Duration::milliseconds(200);
+                    let replacement = Stopping::new("replacement");
+                    ctx.docket().replace(replacement, ctx.key(), soon).await?;
+                }
+                ctx.perpetual().unwrap().cancel();
+                Ok::<_, docket::Error>(())
+            }
+        })
+        .with(Perpetual::every(Duration::from_secs(3600)));
+    docket
+        .add(Stopping::new("first"))
+        .key("stopping")
+        .await
+        .unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert_eq!(*runs.lock().unwrap(), ["first", "replacement"]);
+    let labels = ["docket.task=stopping", "docket.where=on_complete"];
+    assert_eq!(
+        value(&docket, "docket_tasks_superseded", &labels),
+        Some(1.0)
+    );
 }
