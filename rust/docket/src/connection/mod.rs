@@ -38,6 +38,9 @@ enum Kind {
     Standalone(Client),
     Cluster {
         client: Box<ClusterClient>,
+        /// The same cluster with no response timeout, for an application's
+        /// own commands.
+        application: Box<ClusterClient>,
         /// Pub/sub goes through a plain connection to one node, because every
         /// node relays every published message.
         pubsub: Client,
@@ -59,27 +62,19 @@ impl Backend {
         settings.validate()?;
         let kind = match url::parse(url)? {
             Target::Standalone(url) => client(&url, &settings).map(Kind::Standalone),
-            Target::Cluster(node) => client(&node, &settings).and_then(|pubsub| {
-                let (min_wait, max_wait) = settings.retry_millis();
-                let builder = ClusterClient::builder([node.as_str()])
-                    .connection_timeout(settings.connection_timeout)
-                    .retries(settings.retries)
-                    .min_retry_wait(min_wait)
-                    .max_retry_wait(max_wait)
-                    .tcp_settings(settings.tcp());
-                let builder = match settings.response_timeout {
-                    Some(timeout) => builder.response_timeout(timeout),
-                    None => builder,
+            Target::Cluster(node) => {
+                let cluster = |response_timeout| {
+                    cluster_client(&node, &settings, response_timeout, credentials.as_ref())
+                        .map(Box::new)
                 };
-                let builder = match &credentials {
-                    Some(provider) => builder.set_credentials_provider(provider.clone()),
-                    None => builder,
-                };
-                builder.build().map(|client| Kind::Cluster {
-                    client: Box::new(client),
-                    pubsub,
+                client(&node, &settings).and_then(|pubsub| {
+                    Ok(Kind::Cluster {
+                        client: cluster(settings.response_timeout)?,
+                        application: cluster(None)?,
+                        pubsub,
+                    })
                 })
-            }),
+            }
             Target::Sentinel(sentinel) => sentinel_client(sentinel, &settings)
                 .map(|client| Kind::Sentinel(Mutex::new(client))),
             #[cfg(feature = "memory")]
@@ -123,12 +118,29 @@ impl Backend {
         }
     }
 
-    /// Opens a new connection.  Blocking reads hold their connection for the
-    /// whole block, so each loop that blocks opens its own.
+    /// Opens a new connection for docket's own commands.  Blocking reads
+    /// hold their connection for the whole block, so each loop that blocks
+    /// opens its own.
     pub async fn connect(&self) -> RedisResult<Connection> {
+        self.connect_for(Purpose::Docket).await
+    }
+
+    /// Opens a new connection for an application's own commands.  It has
+    /// no response timeout whatever the docket's is, as pydocket's
+    /// `docket.redis()` has none, so an application's blocking command waits
+    /// as long as it asks to.
+    pub async fn connect_for_application(&self) -> RedisResult<Connection> {
+        self.connect_for(Purpose::Application).await
+    }
+
+    async fn connect_for(&self, purpose: Purpose) -> RedisResult<Connection> {
+        let response_timeout = match purpose {
+            Purpose::Docket => self.settings.response_timeout,
+            Purpose::Application => None,
+        };
         let config = AsyncConnectionConfig::new()
             .set_connection_timeout(Some(self.settings.connection_timeout))
-            .set_response_timeout(self.settings.response_timeout);
+            .set_response_timeout(response_timeout);
         let config = match &self.credentials {
             Some(provider) => config.set_credentials_provider(provider.clone()),
             None => config,
@@ -138,7 +150,15 @@ impl Backend {
                 .get_multiplexed_async_connection_with_config(&config)
                 .await
                 .map(Connection::Single),
-            Kind::Cluster { client, .. } => {
+            Kind::Cluster {
+                client,
+                application,
+                ..
+            } => {
+                let client = match purpose {
+                    Purpose::Docket => client,
+                    Purpose::Application => application,
+                };
                 client.get_async_connection().await.map(Connection::Cluster)
             }
             Kind::Sentinel(client) => {
@@ -218,6 +238,38 @@ impl Backend {
     pub fn is_cluster(&self) -> bool {
         matches!(self.kind, Kind::Cluster { .. })
     }
+}
+
+/// Whose commands a connection carries.
+#[derive(Clone, Copy)]
+enum Purpose {
+    Docket,
+    Application,
+}
+
+/// A client for the cluster that `node` belongs to.
+fn cluster_client(
+    node: &str,
+    settings: &Settings,
+    response_timeout: Option<Duration>,
+    credentials: Option<&Provider>,
+) -> RedisResult<ClusterClient> {
+    let (min_wait, max_wait) = settings.retry_millis();
+    let builder = ClusterClient::builder([node])
+        .connection_timeout(settings.connection_timeout)
+        .retries(settings.retries)
+        .min_retry_wait(min_wait)
+        .max_retry_wait(max_wait)
+        .tcp_settings(settings.tcp());
+    let builder = match response_timeout {
+        Some(timeout) => builder.response_timeout(timeout),
+        None => builder,
+    };
+    let builder = match credentials {
+        Some(provider) => builder.set_credentials_provider(provider.clone()),
+        None => builder,
+    };
+    builder.build()
 }
 
 /// A client for one server, with docket's TCP settings.

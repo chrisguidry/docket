@@ -96,6 +96,9 @@ impl Docket {
     /// Opens a connection to the docket's Redis, for an application's own
     /// keys, as pydocket's `docket.redis()` does.  Each call opens a new
     /// connection, so a blocking command on it holds up nothing of docket's.
+    /// As in pydocket, a command on it waits for Redis as long as it takes:
+    /// the docket's [`response_timeout`](DocketBuilder::response_timeout)
+    /// does not apply.
     ///
     /// It reaches a `memory://` docket's in-process Redis too, which no
     /// other client can.  That Redis knows the commands docket itself sends:
@@ -103,7 +106,11 @@ impl Docket {
     /// and not, for example, `INCR` or lists.
     pub async fn redis(&self) -> Result<RedisConnection> {
         Ok(RedisConnection(
-            self.inner.shared.backend().connect().await?,
+            self.inner
+                .shared
+                .backend()
+                .connect_for_application()
+                .await?,
         ))
     }
 
