@@ -9,7 +9,7 @@ pub enum Error {
     /// A docket URL that docket cannot connect to.
     #[error("{url} is not a docket URL: {reason}")]
     Url {
-        /// The URL as given.
+        /// The URL as given, with `***` in place of its passwords.
         url: String,
         /// What is wrong with it.
         reason: String,
@@ -47,7 +47,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 impl Error {
     pub(crate) fn url(url: &str, reason: impl Into<String>) -> Self {
         Self::Url {
-            url: url.to_owned(),
+            url: crate::connection::redact(url),
             reason: reason.into(),
         }
     }

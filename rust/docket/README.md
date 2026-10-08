@@ -93,6 +93,35 @@ TLS, turn off the default features:
 docket-rs = { version = "0.2", default-features = false }
 ```
 
+Every connection docket-rs opens gives up on a connect after 10 seconds and
+on a command after 10 seconds, and uses TCP keepalive to find a Redis that
+vanished without closing the connection.  Commands to a cluster retry up to 10
+times, waiting from 10 milliseconds to 1 second, so they survive the redirects
+of a slot migration.  `Docket::builder` changes each of these:
+
+```rust,no_run
+use std::time::Duration;
+
+use docket::Docket;
+
+#[tokio::main]
+async fn main() -> docket::Result<()> {
+    let docket = Docket::builder("orders", "redis+cluster://node-1:6379")
+        .connection_timeout(Duration::from_secs(5))
+        .response_timeout(Duration::from_secs(10))
+        .retries(10)
+        .retry_backoff(Duration::from_millis(10), Duration::from_secs(1))
+        .tcp_keepalive(Duration::from_secs(30), Duration::from_secs(5), 3)
+        .connect()
+        .await?;
+    Ok(())
+}
+```
+
+Blocking reads, such as a worker's wait for new tasks, block for at most half
+of the response timeout, so a short response timeout makes them poll more
+often.
+
 `memory://`, behind the `memory` feature, runs an in-process Redis, so your
 own tests need no server.  Each `memory://` URL keeps its data for the life of
 the process, as in pydocket, so a docket opened again on a URL finds what the

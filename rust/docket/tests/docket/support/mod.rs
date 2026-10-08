@@ -3,7 +3,7 @@ pub mod telemetry;
 
 use std::time::Duration;
 
-use docket::{Docket, Task, Worker};
+use docket::{Docket, DocketBuilder, Task, Worker};
 use serde::{Deserialize, Serialize};
 
 /// Where the tests' Redis is.  Each `memory://` URL is its own server, so
@@ -17,9 +17,15 @@ pub fn url() -> String {
 
 /// A docket of the test's own.
 pub async fn docket() -> Docket {
+    docket_with(|builder| builder).await
+}
+
+/// A docket of the test's own, with the settings `configure` chooses.
+pub async fn docket_with(configure: impl FnOnce(DocketBuilder) -> DocketBuilder) -> Docket {
     telemetry::install();
     let url = url();
-    let docket = Docket::builder(format!("docket-test-{}", uuid::Uuid::now_v7()), &url)
+    let builder = Docket::builder(format!("docket-test-{}", uuid::Uuid::now_v7()), &url);
+    let docket = configure(builder)
         .connect()
         .await
         .expect("the test docket connects");

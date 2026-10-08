@@ -11,6 +11,7 @@ mod batches;
 mod behavior_faults;
 mod cancellation;
 mod concurrency;
+mod connection_settings;
 mod context;
 mod credentials;
 mod cron;

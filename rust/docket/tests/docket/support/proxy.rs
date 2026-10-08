@@ -26,6 +26,9 @@ struct Rule {
 struct State {
     rules: Vec<Rule>,
     cut: bool,
+    /// Drops every command without an answer, as if Redis stopped
+    /// answering without closing its connections.
+    silent: bool,
     connections: JoinSet<()>,
     /// How many of each command reached Redis, by upper-case name.
     counts: std::collections::HashMap<String, usize>,
@@ -122,9 +125,17 @@ impl Proxy {
         state.connections.abort_all();
     }
 
-    /// Accepts connections again.
+    /// Drops every command from now on without an answer, on the open
+    /// connections and on new ones.
+    pub fn silence(&self) {
+        self.state.lock().unwrap().silent = true;
+    }
+
+    /// Accepts connections and answers commands again.
     pub fn heal(&self) {
-        self.state.lock().unwrap().cut = false;
+        let mut state = self.state.lock().unwrap();
+        state.cut = false;
+        state.silent = false;
     }
 
     /// Drops every connection that has subscribed to a channel, as if Redis
@@ -267,6 +278,9 @@ async fn commands(
                 .first()
                 .map(|arg| arg.to_ascii_uppercase())
                 .unwrap_or_default();
+            if state.lock().unwrap().silent {
+                continue;
+            }
             if name == b"SUBSCRIBE" || name == b"PSUBSCRIBE" {
                 connection.transparent.store(true, Ordering::SeqCst);
             }
