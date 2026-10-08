@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, TimeZone, Utc};
+use docket::behaviors::ForcedRetry;
 use docket::testing::{advance_time, assert_task_count, skip_idle_time};
 use docket::{Context, Cron, Docket, Perpetual, Retry};
 
@@ -68,6 +69,43 @@ async fn skipped_time_runs_an_hourly_perpetual_task_at_once() {
     let due = due.lock().unwrap();
     assert_eq!(due.len(), 3);
     assert_apart(&due, HOUR);
+}
+
+/// A retry that the handler asks for at a time runs at that time on the
+/// docket's clock, however far a test has moved the clock.
+#[tokio::test]
+async fn a_forced_retry_at_a_time_runs_then_on_a_moved_clock() {
+    let docket = memory(&unique_url()).await;
+    advance_time(&docket, Duration::from_hours(24));
+    skip_idle_time(&docket);
+    let retry_at = Utc::now() + chrono::Duration::hours(25);
+    let due: Due = Arc::default();
+    let recorded = Arc::clone(&due);
+    docket
+        .register(move |ctx: Context, _: Noop| {
+            recorded.lock().unwrap().push(ctx.when());
+            let first = ctx.attempt() == 1;
+            async move {
+                if first {
+                    Err(ForcedRetry::at(retry_at))
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .with(Retry::attempts(2));
+    docket.add(Noop).await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    let due = due.lock().unwrap();
+    assert_eq!(due.len(), 2);
+    assert!(
+        (due[1] - retry_at).abs() < chrono::Duration::seconds(10),
+        "{due:?}"
+    );
 }
 
 #[tokio::test]

@@ -76,6 +76,23 @@ fn a_forced_retry_chooses_the_delay() {
 
 #[test]
 fn a_forced_retry_in_the_past_runs_now() {
-    let forced = ForcedRetry::at(chrono::Utc::now() - chrono::Duration::hours(1));
-    assert_eq!(forced, ForcedRetry::after(Duration::ZERO));
+    let now = chrono::Utc::now();
+    let error: BoxError = Box::new(ForcedRetry::at(now - chrono::Duration::hours(1)));
+    assert_eq!(
+        decide(None, 1, &error, Duration::ZERO, now),
+        AfterFailure::RetryAt(now)
+    );
+}
+
+#[rstest]
+#[case::after(
+    ForcedRetry::after(Duration::from_secs(90)),
+    "the task asked to run again in 90s"
+)]
+#[case::at(
+    ForcedRetry::at(chrono::DateTime::UNIX_EPOCH),
+    "the task asked to run again at 1970-01-01T00:00:00+00:00"
+)]
+fn a_forced_retry_says_when_it_runs(#[case] forced: ForcedRetry, #[case] message: &str) {
+    assert_eq!(forced.to_string(), message);
 }
