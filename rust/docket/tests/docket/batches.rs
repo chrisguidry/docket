@@ -1,8 +1,10 @@
 //! Adding and replacing many tasks at once, and the names a task answers to.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use docket::{Disposition, Retry, State, Task};
+use docket::{Disposition, Perpetual, Retry, State, Task};
 use serde::{Deserialize, Serialize};
 
 use crate::support::{Echo, Noop, docket, docket_through, proxy, within, worker};
@@ -111,4 +113,29 @@ async fn a_task_also_runs_under_its_other_names_with_its_behaviors() {
     assert_eq!(old.result().await.unwrap(), "renamed");
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert!(docket.task_names().contains(&"echo-v1".to_owned()));
+}
+
+#[tokio::test]
+async fn a_perpetual_task_under_another_name_runs_next_under_its_own() {
+    let docket = docket().await;
+    let names = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&names);
+    docket
+        .register(move |ctx, args: Echo| {
+            recorded.lock().unwrap().push(ctx.function().to_owned());
+            async move { Ok::<_, std::io::Error>(args.text) }
+        })
+        .also_named("echo-v1")
+        .with(Perpetual::every(Duration::from_millis(10)));
+    let old = OldEcho {
+        text: "renamed".into(),
+    };
+    docket.add(old).key("renamed").await.unwrap();
+
+    let limits = HashMap::from([("renamed".to_owned(), 2)]);
+    within(10, worker(&docket).run_at_most(limits))
+        .await
+        .unwrap();
+
+    assert_eq!(*names.lock().unwrap(), ["echo-v1", "echo"]);
 }

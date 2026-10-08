@@ -23,6 +23,9 @@ pub(crate) struct Registered {
     pub hooks: ErasedHooks,
     /// The task's fields, for the call its log lines show.
     pub fields: &'static [TaskField],
+    /// The task's own name, which its next perpetual run carries even when
+    /// this run came under another name.  A fallback has none.
+    pub name: Option<&'static str>,
 }
 
 impl Registered {
@@ -50,6 +53,7 @@ impl Registered {
             handler,
             hooks: ErasedHooks::default(),
             fields: T::FIELDS,
+            name: Some(T::NAME),
         }
     }
 
@@ -72,6 +76,7 @@ impl Registered {
             handler,
             hooks: ErasedHooks::default(),
             fields: &[],
+            name: None,
         }
     }
 }
@@ -185,7 +190,8 @@ impl<T: Task> Registration<T> {
 
     /// Runs the task for messages under `name` too, with the same handler
     /// and behaviors, so tasks added under an old name still run after a
-    /// rename.  Adding the task still uses its own name.
+    /// rename.  Adding the task still uses its own name, and a perpetual
+    /// run under another name schedules its next run under the own name.
     #[expect(
         clippy::return_self_not_must_use,
         reason = "a registration chain ends in a statement, and that must not warn"
