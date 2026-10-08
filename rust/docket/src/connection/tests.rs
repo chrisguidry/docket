@@ -3,8 +3,9 @@ use std::sync::Arc;
 use redis::aio::ConnectionLike;
 use rstest::rstest;
 
+use super::clients::sentinel_client;
 use super::url::SentinelUrl;
-use super::{Backend, Provider, Settings, Shared, sentinel_client};
+use super::{Backend, Provider, Settings, Shared};
 
 /// Opens a backend with the default connection settings.
 fn open(url: &str, credentials: Option<Provider>) -> crate::Result<Backend> {

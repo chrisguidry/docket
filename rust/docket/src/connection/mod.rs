@@ -1,5 +1,6 @@
 //! Connections to the Redis behind a docket, whatever kind of server it is.
 
+mod clients;
 mod credentials;
 mod settings;
 #[cfg(test)]
@@ -14,14 +15,12 @@ use std::time::Duration;
 use redis::aio::{ConnectionLike, MultiplexedConnection, PubSub};
 use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
-use redis::sentinel::{SentinelClient, SentinelClientBuilder, SentinelServerType};
-use redis::{
-    AsyncConnectionConfig, Client, Cmd, ConnectionAddr, IntoConnectionInfo, Pipeline, RedisFuture,
-    RedisResult, TlsMode, Value,
-};
+use redis::sentinel::SentinelClient;
+use redis::{AsyncConnectionConfig, Client, Cmd, Pipeline, RedisFuture, RedisResult, Value};
 use tokio::sync::Mutex;
 
 use crate::error::Result;
+use clients::{client, cluster_client};
 pub(crate) use credentials::Provider;
 pub(crate) use settings::{Keepalive, Settings};
 use url::Target;
@@ -68,14 +67,16 @@ impl Backend {
                         .map(Box::new)
                 };
                 client(&node, &settings).and_then(|pubsub| {
-                    Ok(Kind::Cluster {
-                        client: cluster(settings.response_timeout)?,
-                        application: cluster(None)?,
-                        pubsub,
+                    cluster(settings.response_timeout).and_then(|client| {
+                        cluster(None).map(|application| Kind::Cluster {
+                            client,
+                            application,
+                            pubsub,
+                        })
                     })
                 })
             }
-            Target::Sentinel(sentinel) => sentinel_client(sentinel, &settings)
+            Target::Sentinel(sentinel) => clients::sentinel_client(sentinel, &settings)
                 .map(|client| Kind::Sentinel(Mutex::new(client))),
             #[cfg(feature = "memory")]
             Target::Memory(url) => Ok(Kind::Memory(crate::memory::MemoryServer::open(&url))),
@@ -247,37 +248,6 @@ enum Purpose {
     Application,
 }
 
-/// A client for the cluster that `node` belongs to.
-fn cluster_client(
-    node: &str,
-    settings: &Settings,
-    response_timeout: Option<Duration>,
-    credentials: Option<&Provider>,
-) -> RedisResult<ClusterClient> {
-    let (min_wait, max_wait) = settings.retry_millis();
-    let builder = ClusterClient::builder([node])
-        .connection_timeout(settings.connection_timeout)
-        .retries(settings.retries)
-        .min_retry_wait(min_wait)
-        .max_retry_wait(max_wait)
-        .tcp_settings(settings.tcp());
-    let builder = match response_timeout {
-        Some(timeout) => builder.response_timeout(timeout),
-        None => builder,
-    };
-    let builder = match credentials {
-        Some(provider) => builder.set_credentials_provider(provider.clone()),
-        None => builder,
-    };
-    builder.build()
-}
-
-/// A client for one server, with docket's TCP settings.
-fn client(url: &str, settings: &Settings) -> RedisResult<Client> {
-    let info = url.into_connection_info()?.set_tcp_settings(settings.tcp());
-    Client::open(info)
-}
-
 /// `future`, or a timeout error once `timeout` passes.
 async fn within<T>(
     timeout: Option<Duration>,
@@ -289,49 +259,6 @@ async fn within<T>(
     tokio::time::timeout(timeout, future)
         .await
         .unwrap_or_else(|_| Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into()))
-}
-
-fn sentinel_client(sentinel: url::SentinelUrl, settings: &Settings) -> RedisResult<SentinelClient> {
-    let tls = sentinel.tls.then_some(TlsMode::Secure);
-    let addresses = sentinel
-        .sentinels
-        .into_iter()
-        .map(|(host, port)| match tls {
-            Some(_) => ConnectionAddr::TcpTls {
-                host,
-                port,
-                insecure: false,
-                tls_params: None,
-            },
-            None => ConnectionAddr::Tcp(host, port),
-        });
-    // Neither step fails for the addresses and TLS settings built here.
-    SentinelClientBuilder::new(addresses, sentinel.service, SentinelServerType::Master).and_then(
-        |builder| {
-            let mut builder = builder
-                .set_client_to_redis_db(sentinel.db)
-                .set_client_to_redis_tcp_settings(settings.tcp())
-                .set_client_to_sentinel_tcp_settings(settings.tcp());
-            if let Some(tls) = tls {
-                builder = builder
-                    .set_client_to_redis_tls_mode(tls)
-                    .set_client_to_sentinel_tls_mode(tls);
-            }
-            if let Some(username) = sentinel.username {
-                builder = builder.set_client_to_redis_username(username);
-            }
-            if let Some(password) = sentinel.password {
-                builder = builder.set_client_to_redis_password(password);
-            }
-            if let Some(username) = sentinel.daemon_username {
-                builder = builder.set_client_to_sentinel_username(username);
-            }
-            if let Some(password) = sentinel.daemon_password {
-                builder = builder.set_client_to_sentinel_password(password);
-            }
-            builder.build()
-        },
-    )
 }
 
 /// One connection to a single server or to a cluster.
