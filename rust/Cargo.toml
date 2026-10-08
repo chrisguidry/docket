@@ -28,8 +28,9 @@ percent-encoding = "2.3.2"
 proc-macro2 = "1.0.107"
 quote = "1.0.47"
 rand = "0.10.3"
-redis = "1.7.1"
+redis = { version = "1.7.1", default-features = false }
 rstest = "0.27.0"
+rustls = { version = "0.23", default-features = false }
 serde = "1.0.229"
 serde_json = "1.0.151"
 syn = "3.0.6"

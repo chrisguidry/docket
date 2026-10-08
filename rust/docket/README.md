@@ -81,6 +81,18 @@ A docket URL is `redis://`, `rediss://`, `unix://`, `redis+cluster://`,
 with Redis 6.2 and 8.10, Redis 8.10 in cluster mode, with ACLs, and behind
 Sentinel, and Valkey 8.0 and 9.1.
 
+`rediss://`, `rediss+cluster://`, and `rediss+sentinel://` connect over TLS
+through rustls, with its `ring` crypto backend.  The default `tls` feature
+brings both.  If another crate in your build turns on rustls's `aws-lc-rs`
+backend too, rustls cannot pick one, so call
+`rustls::crypto::CryptoProvider::install_default` before connecting.  Without
+TLS, turn off the default features:
+
+```toml
+[dependencies]
+docket-rs = { version = "0.2", default-features = false }
+```
+
 `memory://`, behind the `memory` feature, runs an in-process Redis, so your
 own tests need no server.  Each `memory://` URL keeps its data for the life of
 the process, as in pydocket, so a docket opened again on a URL finds what the

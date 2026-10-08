@@ -15,10 +15,13 @@ include = ["src/**", "lua/*.lua", "LICENSE", "README.md"]
 name = "docket"
 
 [features]
+default = ["tls"]
 # docket::cli: a worker's command-line options for an application's own CLI.
 cli = ["dep:clap", "tokio/signal", "prometheus"]
 # memory:// runs the in-process engine in src/memory, for users' test suites.
 memory = ["dep:mlua", "dep:parking_lot", "dep:bytes", "dep:ordered-float", "dep:sha1"]
+# rediss:// connections, through rustls with its ring crypto backend.
+tls = ["redis/tokio-rustls-comp", "redis/tls-rustls-webpki-roots", "dep:rustls"]
 # docket::prometheus: serves the metrics in the Prometheus text format.  It
 # reads them on demand, through the SDK's custom reader.
 prometheus = [
@@ -33,7 +36,7 @@ chrono-tz.workspace = true
 clap = { workspace = true, features = ["derive", "env"], optional = true }
 croner.workspace = true
 docket-rs-macros.workspace = true
-redis = { workspace = true, features = ["aio", "tokio-comp", "tokio-rustls-comp", "tls-rustls-webpki-roots", "script", "streams", "cluster-async", "sentinel", "token-based-authentication"] }
+redis = { workspace = true, features = ["aio", "tokio-comp", "script", "streams", "cluster-async", "sentinel", "token-based-authentication"] }
 futures.workspace = true
 gethostname.workspace = true
 opentelemetry = { workspace = true, features = ["trace", "metrics"] }
@@ -54,6 +57,9 @@ mlua = { workspace = true, features = ["lua54", "send", "vendored"], optional = 
 ordered-float = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
 sha1 = { workspace = true, optional = true }
+# redis turns off rustls's default features, which leaves rustls no crypto
+# backend; the tls feature gives it ring.
+rustls = { workspace = true, features = ["ring", "std", "tls12"], optional = true }
 
 [dev-dependencies]
 futures-util.workspace = true
