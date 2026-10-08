@@ -28,9 +28,13 @@ async fn once(worker: &Shared) -> crate::Result<()> {
     let oldest = now - window.as_secs_f64();
     let tasks = docket.task_names();
 
+    // Each command is correct on its own, so the pipeline is not a
+    // transaction.  After a cluster moves the docket's slot, it aborts a
+    // transaction whose commands it redirects, and redis-rs neither follows
+    // those redirects nor refreshes its slot map.  Each heartbeat would fail
+    // until some other command on the connection refreshed the map.
     let mut pipeline = redis::pipe();
     pipeline
-        .atomic()
         .zrembyscore(keys.workers(), 0, oldest)
         .ignore()
         .zadd(keys.workers(), name, now)
@@ -82,5 +86,33 @@ pub(super) async fn remove(worker: &Shared) {
     // own, because every heartbeat prunes the members it has not heard from.
     if removed.is_err() {
         tracing::debug!("Could not clear worker heartbeat, Redis is unavailable");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::once;
+    use crate::Docket;
+    use crate::connection::slots;
+    use crate::worker::Worker;
+    use crate::worker::session::Shared;
+
+    /// A cluster that moves the docket's slot answers the heartbeat's
+    /// commands with redirects, which the heartbeat follows.
+    #[tokio::test]
+    async fn a_heartbeat_follows_its_slot_to_another_node() {
+        let Some(url) = slots::cluster_url() else {
+            return;
+        };
+        let name = format!("heartbeat-{}", uuid::Uuid::now_v7());
+        let docket = Docket::connect(name, &url).await.unwrap();
+        let settings = Worker::new(docket.clone()).settings;
+        let worker = Shared::new(docket.clone(), settings, docket.limit_runs(&HashMap::new()));
+        once(&worker).await.unwrap();
+
+        slots::move_slot(&url, &docket.keys().workers()).await;
+        once(&worker).await.unwrap();
     }
 }

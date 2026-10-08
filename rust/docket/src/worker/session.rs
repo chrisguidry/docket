@@ -261,16 +261,16 @@ async fn poll(
 
 async fn read(worker: &Shared, reader: &mut Connection, count: usize) -> Result<Vec<Delivery>> {
     let docket = &worker.docket;
-    let block = worker
-        .settings
-        .minimum_check_interval
+    let block = docket
+        .backend()
+        .block(worker.settings.minimum_check_interval)
         .as_millis()
         .try_into()
         .unwrap_or(usize::MAX);
     let options = StreamReadOptions::default()
         .group(WORKER_GROUP, &worker.settings.name)
         .count(count)
-        .block(block.max(1));
+        .block(block);
     let stream = docket.keys().stream();
     let reply: RedisResult<Option<StreamReadReply>> = reader
         .xread_options(&[stream.as_str()], &[">"], &options)

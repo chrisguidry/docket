@@ -40,7 +40,7 @@ fn hasty(docket: &Docket) -> Worker {
     |proxy: &Proxy| proxy.fail_script(include_str!("../../lua/stream_due_tasks.lua"), 1),
     "Error in scheduler loop"
 )]
-#[case::beating(|proxy: &Proxy| proxy.fail("MULTI", 1), "Error sending worker heartbeat")]
+#[case::beating(|proxy: &Proxy| proxy.fail("ZADD", 1), "Error sending worker heartbeat")]
 #[case::measuring_the_depths(|proxy: &Proxy| proxy.fail("ZCOUNT", 1), "Error sending worker heartbeat")]
 #[tokio::test]
 async fn a_worker_finishes_its_tasks_after_redis_refuses_a_command(

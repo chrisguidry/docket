@@ -37,6 +37,41 @@ pub(crate) struct SentinelUrl {
     pub daemon_password: Option<String>,
 }
 
+/// The query parameters whose values are passwords.
+const SECRET_PARAMETERS: [&str; 1] = ["sentinel_password"];
+
+/// `url` with `***` in place of each password, for error messages and debug
+/// output.  It works on URLs that do not parse, since those are the ones
+/// that end up in errors.
+pub(crate) fn redact(url: &str) -> String {
+    let (rest, query) = match url.split_once('?') {
+        Some((rest, query)) => (rest, Some(query)),
+        None => (url, None),
+    };
+    // The userinfo ends at the last `@`, since a password may hold an
+    // unescaped `@` or `/`.
+    let start = rest.find("://").map_or(0, |scheme| scheme + 3);
+    let mut redacted = match rest.rfind('@').filter(|at| *at > start) {
+        Some(at) => match rest[start..at].split_once(':') {
+            Some((username, _)) => format!("{}{username}:***{}", &rest[..start], &rest[at..]),
+            None => rest.to_owned(),
+        },
+        None => rest.to_owned(),
+    };
+    if let Some(query) = query {
+        let parameters: Vec<String> = query
+            .split('&')
+            .map(|parameter| match parameter.split_once('=') {
+                Some((name, _)) if SECRET_PARAMETERS.contains(&name) => format!("{name}=***"),
+                _ => parameter.to_owned(),
+            })
+            .collect();
+        redacted.push('?');
+        redacted.push_str(&parameters.join("&"));
+    }
+    redacted
+}
+
 pub(crate) fn parse(url: &str) -> Result<Target> {
     let Some((scheme, rest)) = url.split_once("://") else {
         return Err(Error::url(url, "it has no scheme"));

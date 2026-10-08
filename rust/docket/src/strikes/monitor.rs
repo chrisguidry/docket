@@ -11,7 +11,8 @@ use super::{Condition, Operator, SharedStrikes, Strike};
 use crate::connection::Backend;
 use crate::telemetry::{self, Telemetry};
 
-/// How long one read of the strike stream waits for a new instruction.
+/// How long one read of the strike stream waits for a new instruction,
+/// unless the response timeout is too short for it.
 const BLOCK: Duration = Duration::from_secs(60);
 
 /// How long the monitor waits before it tries Redis again.
@@ -92,10 +93,11 @@ impl Follower {
         last_id: &mut String,
         loaded: &watch::Sender<bool>,
     ) {
+        let block = self.backend.block(BLOCK);
         loop {
             let mut options = StreamReadOptions::default().count(100);
             if *loaded.borrow() {
-                options = options.block(BLOCK.as_millis().try_into().unwrap_or(usize::MAX));
+                options = options.block(block.as_millis().try_into().unwrap_or(usize::MAX));
             }
             let reply: Option<StreamReadReply> = match connection
                 .xread_options(&[self.stream.as_str()], &[last_id.as_str()], &options)
