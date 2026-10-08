@@ -220,6 +220,24 @@ pub async fn assert_task_not_scheduled<'a>(
     );
 }
 
+/// Asserts that a `T` task is scheduled, with `key` when one is given.
+///
+/// # Panics
+///
+/// When no such task is scheduled, or the snapshot cannot be read.
+pub async fn assert_scheduled<'a, T: Task>(docket: &Docket, key: impl Into<Option<&'a str>>) {
+    assert_task_scheduled(docket, T::NAME, key).await;
+}
+
+/// Asserts that no `T` task is scheduled, with `key` when one is given.
+///
+/// # Panics
+///
+/// When such a task is scheduled, or the snapshot cannot be read.
+pub async fn assert_not_scheduled<'a, T: Task>(docket: &Docket, key: impl Into<Option<&'a str>>) {
+    assert_task_not_scheduled(docket, T::NAME, key).await;
+}
+
 /// Asserts that a task with exactly these arguments is scheduled.
 ///
 /// # Panics
@@ -262,6 +280,15 @@ pub async fn assert_task_count<'a>(
         "expected {count} scheduled tasks, found {found}; scheduled:\n{}",
         describe(&tasks)
     );
+}
+
+/// Asserts that exactly `count` `T` tasks are scheduled.
+///
+/// # Panics
+///
+/// When the count differs, or the snapshot cannot be read.
+pub async fn assert_scheduled_count<T: Task>(docket: &Docket, count: usize) {
+    assert_task_count(docket, T::NAME, count).await;
 }
 
 /// Asserts that no task is scheduled.

@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use docket::Docket;
 use docket::testing::{
-    assert_args_scheduled, assert_no_tasks, assert_task_count, assert_task_not_scheduled,
-    assert_task_scheduled,
+    assert_args_scheduled, assert_no_tasks, assert_not_scheduled, assert_scheduled,
+    assert_scheduled_count, assert_task_count, assert_task_not_scheduled, assert_task_scheduled,
 };
 
 use crate::support::{Echo, Noop, docket};
@@ -32,6 +32,16 @@ async fn a_scheduled_task_passes_the_assertions() {
     assert_args_scheduled(&docket, &Echo::new("hello")).await;
     assert_task_count(&docket, "echo", 1).await;
     assert_task_count(&docket, None, 2).await;
+}
+
+#[tokio::test]
+async fn a_scheduled_task_passes_the_typed_assertions() {
+    let docket = scheduled().await;
+    assert_scheduled::<Echo>(&docket, None).await;
+    assert_scheduled::<Echo>(&docket, "greeting").await;
+    assert_not_scheduled::<Echo>(&docket, "farewell").await;
+    assert_scheduled_count::<Echo>(&docket, 1).await;
+    assert_scheduled_count::<Noop>(&docket, 1).await;
 }
 
 #[tokio::test]
@@ -84,4 +94,25 @@ async fn a_wrong_count_fails_the_count_assertion() {
 async fn a_scheduled_task_fails_the_no_tasks_assertion() {
     let docket = scheduled().await;
     assert_no_tasks(&docket).await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "no echo task is scheduled with key Some(\"farewell\")")]
+async fn a_missing_key_fails_the_typed_scheduled_assertion() {
+    let docket = scheduled().await;
+    assert_scheduled::<Echo>(&docket, "farewell").await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "a noop task is scheduled with key None")]
+async fn a_scheduled_task_fails_the_typed_not_scheduled_assertion() {
+    let docket = scheduled().await;
+    assert_not_scheduled::<Noop>(&docket, None).await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "expected 2 scheduled tasks, found 1")]
+async fn a_wrong_count_fails_the_typed_count_assertion() {
+    let docket = scheduled().await;
+    assert_scheduled_count::<Echo>(&docket, 2).await;
 }
