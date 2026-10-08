@@ -58,7 +58,7 @@ The meter is named `docket`.  Every counter has the unit `1`.
 | `docket_tasks_perpetuated` | counter | `1` | docket, worker, task | a perpetual task scheduled its next run |
 | `docket_tasks_completed` | counter | `1` | docket, worker, task | every started run, at its end |
 | `docket_task_duration` | histogram | `s` | docket, worker, task | every started run, at its end |
-| `docket_redis_disruptions` | counter | `1` | docket, worker | the worker retried after Redis dropped, refused, or timed out |
+| `docket_redis_disruptions` | counter | `1` | docket, worker | the worker retried after Redis dropped, refused, or timed out, or after Redis refused one run's command |
 | `docket_strikes_in_effect` | up-down counter | `1` | docket, strike labels | +1 for each strike the monitor reads, -1 for each restore |
 | `docket_queue_depth` | gauge | `1` | docket | each heartbeat: stream length plus due queued tasks |
 | `docket_schedule_depth` | gauge | `1` | docket | each heartbeat: queued tasks not yet due |
@@ -129,6 +129,14 @@ worker's startup list.  A run's log fields are `docket.name`,
 `docket.worker`, `docket.task`, `docket.key`, `docket.when`, and
 `docket.attempt`, as in pydocket's `extra`.
 
+When Redis refuses one run's command with an error that concerns that
+command alone, such as a script error or `OOM`, docket-rs logs a warning,
+`Redis refused a command for task "KEY", so it will be redelivered`, with
+the run's fields.  The other runs go on, and the delivery stays pending
+until the redelivery sweep claims it.  A lost connection, a timeout, or a
+reply that needs a reconnect, such as `READONLY`, still ends the worker's
+session as it does in pydocket.
+
 A task's call in a log line shows only the arguments marked to be logged,
 the way `Logged` marks them in pydocket.  In docket-rs, a field takes
 `#[task(logged)]` or `#[task(logged(length_only))]`.
@@ -164,5 +172,13 @@ Each of these is a defect in pydocket, and each is a fix of its own:
   `docket`, where every other recording uses `docket.name`
   (`python/src/docket/strikelist.py`).  docket-rs uses `docket.name`; the
   conformance workload does not disrupt Redis, so it does not see this.
+- When Redis refuses one run's claim, pydocket's worker loop ends, waits
+  for the other running tasks, and reconnects
+  (`python/src/docket/worker.py`).  When Redis refuses the result or the
+  completed state of a run whose handler returned, pydocket handles the
+  refusal as the task's own failure: it counts the run as failed, and it
+  retries the run or records it as failed.  Only when that write is
+  refused too does the loop end.  docket-rs logs and counts the refusal
+  for that run only and goes on, as the Logs section says.
 - `docs/production.md` names a run's span `docket.task.{function_name}`,
   but the span is named for the function alone.
