@@ -17,6 +17,33 @@
 //! An application with a meter provider of its own can take
 //! [`Exporter::meter_provider`] for its instruments, or render the page
 //! with [`Exporter::render`] from its own HTTP server.
+//!
+//! [`Exporter::with_provider`] builds the provider from the application's
+//! builder, so that its resource and views apply to the page, here with
+//! buckets of the application's choosing for how late tasks start:
+//!
+//! ```no_run
+//! use opentelemetry_sdk::metrics::{Aggregation, Instrument, SdkMeterProvider, Stream};
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let punctuality = |instrument: &Instrument| {
+//!     Stream::builder()
+//!         .with_aggregation(Aggregation::ExplicitBucketHistogram {
+//!             boundaries: vec![0.01, 0.1, 1.0, 10.0, 60.0],
+//!             record_min_max: true,
+//!         })
+//!         .build()
+//!         .ok()
+//!         .filter(|_| instrument.name() == "docket_task_punctuality")
+//! };
+//! let exporter = docket::prometheus::Exporter::with_provider(
+//!     SdkMeterProvider::builder().with_view(punctuality),
+//! );
+//! opentelemetry::global::set_meter_provider(exporter.meter_provider().clone());
+//! let docket = docket::Docket::connect("orders", "redis://localhost:6379/0").await?;
+//! # Ok(())
+//! # }
+//! ```
 
 mod names;
 mod text;
@@ -62,8 +89,14 @@ impl Exporter {
         exporter
     }
 
-    /// Builds the provider from `builder`, with this exporter's reader.
-    fn with_provider(builder: MeterProviderBuilder) -> Self {
+    /// An exporter whose meter provider `builder` builds, with this
+    /// exporter's reader added, so that the application's resource, views,
+    /// and other readers apply.  Like [`new`](Self::new), it does not
+    /// install the provider; an application that wants dockets to record
+    /// into it passes [`meter_provider`](Self::meter_provider) to
+    /// `opentelemetry::global::set_meter_provider` before they connect.
+    #[must_use]
+    pub fn with_provider(builder: MeterProviderBuilder) -> Self {
         let reader = SharedReader(Arc::new(ManualReader::builder().build()));
         let provider = builder.with_reader(reader.clone()).build();
         Self { provider, reader }
