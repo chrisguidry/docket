@@ -35,6 +35,11 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+      # A build without TLS, or without any of docket-rs's features, is one
+      # that users can choose.
+      - name: Run clippy without default features
+        run: cargo clippy -p docket-rs --all-targets --no-default-features --locked -- -D warnings
+
       - name: Build the docs
         env:
           RUSTDOCFLAGS: -D warnings

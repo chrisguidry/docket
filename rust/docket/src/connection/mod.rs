@@ -91,7 +91,9 @@ impl Backend {
             Kind::Standalone(client) | Kind::Cluster { pubsub: client, .. } => {
                 credentials::has_credentials(client)
             }
-            _ => false,
+            Kind::Sentinel(_) => false,
+            #[cfg(feature = "memory")]
+            Kind::Memory(_) => false,
         };
         if credentials.is_some() && url_credentials {
             return Err(crate::Error::url(
