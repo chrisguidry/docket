@@ -61,6 +61,13 @@ sha1 = { workspace = true, optional = true }
 # backend; the tls feature gives it ring.
 rustls = { workspace = true, features = ["ring", "std", "tls12"], optional = true }
 
+# An application's tasks and the tests it writes for them; `cargo test`
+# runs its tests.
+[[example]]
+name = "testing"
+required-features = ["cli", "memory"]
+test = true
+
 [dev-dependencies]
 futures-util.workspace = true
 # The tests read docket's spans and metrics back from the SDK's in-memory

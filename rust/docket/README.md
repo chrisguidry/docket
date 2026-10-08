@@ -112,6 +112,9 @@ or have idle workers skip ahead to the next scheduled task with
 `docket::testing::skip_idle_time`, so that perpetual intervals and retry
 delays take no real time.
 
+[`examples/testing.rs`](examples/testing.rs) is a small application with the
+tests it writes for its tasks this way.
+
 ## Logs, metrics, and traces
 
 docket-rs logs, counts, and traces the same things as pydocket, with the same
