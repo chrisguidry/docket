@@ -225,6 +225,18 @@ def worker(
             envvar="DOCKET_FALLBACK_TASK",
         ),
     ] = None,
+    dependencies: Annotated[
+        str | None,
+        typer.Option(
+            "--dependencies",
+            help=(
+                "Path to a worker dependency collection (module:member). "
+                "The collection is a mapping or sequence of Dependency instances "
+                "(e.g., Depends(fn)) that run around every task."
+            ),
+            envvar="DOCKET_WORKER_DEPENDENCIES",
+        ),
+    ] = None,
 ) -> None:
     asyncio.run(
         Worker.run(
@@ -244,6 +256,7 @@ def worker(
             metrics_port=metrics_port,
             tasks=tasks,
             fallback_task=fallback_task,
+            dependencies=dependencies,
         )
     )
 

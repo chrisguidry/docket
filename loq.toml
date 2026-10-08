@@ -16,7 +16,7 @@ max_lines = 1471
 
 [[rules]]
 path = "python/src/docket/cli/__init__.py"
-max_lines = 969
+max_lines = 982
 
 [[rules]]
 path = "python/src/docket/execution.py"

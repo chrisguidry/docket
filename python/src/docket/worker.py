@@ -359,11 +359,15 @@ class Worker:
         metrics_port: int | None = None,
         tasks: list[str] = ["docket.tasks:standard_tasks"],
         fallback_task: str | None = None,
-        # Last in the list so that every positional call written against an
-        # earlier version keeps its meaning.
+        # Append new options so that existing positional calls keep their meaning.
         message_batch: int = MESSAGE_BATCH,
+        dependencies: (Mapping[str, Any] | Sequence[Any] | str | None) = None,
     ) -> None:
         """Run a worker as the main entry point (CLI).
+
+        ``dependencies`` accepts the same mapping or sequence of dependency
+        instances as the constructor, or a ``module:member`` path to such a
+        collection. These dependencies run around every task the worker executes.
 
         This method installs signal handlers for graceful shutdown since it
         assumes ownership of the event loop. When embedding Docket in another
@@ -377,6 +381,11 @@ class Worker:
             module_name, _, member_name = fallback_task.rpartition(":")
             module = importlib.import_module(module_name)
             resolved_fallback_task = getattr(module, member_name)
+
+        if isinstance(dependencies, str):
+            module_name, _, member_name = dependencies.rpartition(":")
+            module = importlib.import_module(module_name)
+            dependencies = getattr(module, member_name)
 
         with (
             healthcheck_server(port=healthcheck_port),
@@ -403,6 +412,7 @@ class Worker:
                         schedule_automatic_tasks=schedule_automatic_tasks,
                         enable_internal_instrumentation=enable_internal_instrumentation,
                         fallback_task=resolved_fallback_task,
+                        dependencies=dependencies,
                     ) as worker
                 ):
                     # Install signal handlers for graceful shutdown.
