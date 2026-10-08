@@ -52,6 +52,13 @@ enum Kind {
 
 impl Backend {
     pub fn open(url: &str, credentials: Option<Provider>) -> Result<Self> {
+        #[cfg(not(feature = "tls"))]
+        if url.starts_with("rediss") {
+            return Err(crate::Error::url(
+                url,
+                "rediss:// needs docket's tls feature",
+            ));
+        }
         let kind = match url::parse(url)? {
             Target::Standalone(url) => Client::open(url).map(Kind::Standalone),
             Target::Cluster(node) => Client::open(node.as_str()).and_then(|pubsub| {
@@ -84,7 +91,9 @@ impl Backend {
             Kind::Standalone(client) | Kind::Cluster { pubsub: client, .. } => {
                 credentials::has_credentials(client)
             }
-            _ => false,
+            Kind::Sentinel(_) => false,
+            #[cfg(feature = "memory")]
+            Kind::Memory(_) => false,
         };
         if credentials.is_some() && url_credentials {
             return Err(crate::Error::url(

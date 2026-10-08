@@ -471,6 +471,7 @@ dependencies = [
  "rand 0.10.3",
  "redis",
  "rstest",
+ "rustls",
  "serde",
  "serde_json",
  "sha1",
@@ -1119,25 +1120,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num-bigint"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
-dependencies = [
- "num-integer",
- "num-traits",
-]
-
-[[package]]
-name = "num-integer"
-version = "0.1.47"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1459,7 +1441,6 @@ dependencies = [
  "futures-util",
  "itoa",
  "log",
- "num-bigint",
  "percent-encoding",
  "pin-project-lite",
  "rand 0.10.3",
@@ -1629,6 +1610,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",

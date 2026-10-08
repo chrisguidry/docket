@@ -137,7 +137,7 @@ impl Context {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "memory"))]
 impl Context {
     /// A context for a run of `function` with empty arguments, for unit
     /// tests of handlers and hooks.

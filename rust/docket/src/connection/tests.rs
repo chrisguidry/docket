@@ -33,6 +33,18 @@ fn a_sentinel_client_builds_without_connecting(
     assert!(sentinel_client(sentinel_url(tls, credentials)).is_ok());
 }
 
+/// rustls has no crypto backend of its own, so without the one the `tls`
+/// feature brings, a TLS connect panics before it reaches the network.
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn a_tls_connect_reaches_the_network() {
+    let backend = Backend::open("rediss://127.0.0.1:1", None).unwrap();
+    let Err(error) = backend.connect().await else {
+        panic!("nothing listens on port 1");
+    };
+    assert!(error.is_connection_refusal(), "{error}");
+}
+
 /// The Redis the suite runs against, or an in-process one.
 fn url() -> String {
     std::env::var("DOCKET_TEST_URL")

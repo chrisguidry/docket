@@ -35,6 +35,11 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+      # A build without TLS, or without any of docket-rs's features, is one
+      # that users can choose.
+      - name: Run clippy without default features
+        run: cargo clippy -p docket-rs --all-targets --no-default-features --locked -- -D warnings
+
       - name: Build the docs
         env:
           RUSTDOCFLAGS: -D warnings
@@ -79,13 +84,16 @@ jobs:
     name: Rust coverage
     runs-on: ubuntu-26.04
     timeout-minutes: 20
+    # Coverage runs on nightly, where `coverage(off)` works.  This overrides
+    # the release that rust/rust-toolchain.toml pins.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
     defaults:
       run:
         working-directory: rust
     steps:
       - uses: actions/checkout@v7
 
-      # Coverage runs on nightly, where `coverage(off)` works.
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools-preview

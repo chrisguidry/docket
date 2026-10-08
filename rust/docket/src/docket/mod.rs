@@ -149,9 +149,10 @@ impl Docket {
     /// Connects to the docket `name` in the Redis at `url`, with the default
     /// settings.
     ///
-    /// `url` takes the same forms as in pydocket: `redis://`, `rediss://`,
-    /// `unix://`, `redis+cluster://`, `redis+sentinel://host:port/service`,
-    /// and, with the `memory` feature, `memory://` for an in-process Redis.
+    /// `url` takes the same forms as in pydocket: `redis://`,
+    /// `redis+cluster://`, `redis+sentinel://host:port/service`, their
+    /// `rediss` forms with the default `tls` feature, `unix://`, and, with
+    /// the `memory` feature, `memory://` for an in-process Redis.
     pub async fn connect(name: impl Into<String>, url: impl Into<String>) -> Result<Self> {
         Self::builder(name, url).connect().await
     }
