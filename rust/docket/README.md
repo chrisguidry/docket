@@ -103,6 +103,10 @@ last one left there:
 docket-rs = { version = "0.2", features = ["memory"] }
 ```
 
+An application that keeps keys of its own in the docket's Redis reaches them
+with `Docket::redis`, which opens a redis-rs connection on any of these URLs,
+`memory://` included.
+
 ## Logs, metrics, and traces
 
 docket-rs logs, counts, and traces the same things as pydocket, with the same

@@ -18,6 +18,7 @@ mod events;
 mod faults;
 mod logs;
 mod metrics;
+mod own_keys;
 mod perpetual;
 mod results;
 mod retries;

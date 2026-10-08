@@ -260,6 +260,31 @@ impl ConnectionLike for Connection {
     }
 }
 
+/// A connection to the Redis behind a docket, for an application's own
+/// keys; see [`Docket::redis`](crate::Docket::redis).  redis-rs's
+/// [`AsyncCommands`](redis::AsyncCommands) work on it.
+#[derive(Clone)]
+pub struct RedisConnection(pub(crate) Connection);
+
+impl ConnectionLike for RedisConnection {
+    fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
+        self.0.req_packed_command(cmd)
+    }
+
+    fn req_packed_commands<'a>(
+        &'a mut self,
+        pipeline: &'a Pipeline,
+        offset: usize,
+        count: usize,
+    ) -> RedisFuture<'a, Vec<Value>> {
+        self.0.req_packed_commands(pipeline, offset, count)
+    }
+
+    fn get_db(&self) -> i64 {
+        self.0.get_db()
+    }
+}
+
 /// The connection that a docket shares among its callers.  It opens the
 /// connection on first use, and opens a new one after Redis drops it, so a
 /// producer survives a Redis restart without help.

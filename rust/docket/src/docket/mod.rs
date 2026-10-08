@@ -14,7 +14,7 @@ use opentelemetry::context::FutureExt as _;
 use redis::AsyncCommands;
 
 use crate::behaviors::BoxError;
-use crate::connection::{Backend, Handle, Provider, Shared};
+use crate::connection::{Backend, Handle, Provider, RedisConnection, Shared};
 use crate::context::Context;
 use crate::error::Result;
 use crate::keys::Keys;
@@ -175,6 +175,20 @@ impl Docket {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.inner.name
+    }
+
+    /// Opens a connection to the docket's Redis, for an application's own
+    /// keys, as pydocket's `docket.redis()` does.  Each call opens a new
+    /// connection, so a blocking command on it holds up nothing of docket's.
+    ///
+    /// It reaches a `memory://` docket's in-process Redis too, which no
+    /// other client can.  That Redis knows the commands docket itself sends:
+    /// those for strings, hashes, sets, sorted sets, streams, and scripts,
+    /// and not, for example, `INCR` or lists.
+    pub async fn redis(&self) -> Result<RedisConnection> {
+        Ok(RedisConnection(
+            self.inner.shared.backend().connect().await?,
+        ))
     }
 
     /// Registers the handler for a task.  The argument type names the task.

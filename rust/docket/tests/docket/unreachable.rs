@@ -36,6 +36,7 @@ type Call = fn(Docket) -> BoxFuture<'static, docket::Result<()>>;
     docket.task_workers("noop").await.map(drop)
 }.boxed())]
 #[case::clear(|docket: Docket| async move { docket.clear().await.map(drop) }.boxed())]
+#[case::redis(|docket: Docket| async move { docket.redis().await.map(drop) }.boxed())]
 #[tokio::test]
 async fn every_call_reports_that_redis_is_unreachable(#[case] call: Call) {
     let error = call(unreachable().await).await.unwrap_err();
