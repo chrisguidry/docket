@@ -85,8 +85,7 @@ impl Default for Settings {
             // TCP keepalive finds a server that is gone.
             response_timeout: None,
             // A slot migration answers with a burst of redirects, and a
-            // failover takes a few seconds; these ride out both within the
-            // response timeout.
+            // failover takes a few seconds; these ride out both.
             retries: 10,
             min_retry_wait: Duration::from_millis(10),
             max_retry_wait: Duration::from_secs(1),

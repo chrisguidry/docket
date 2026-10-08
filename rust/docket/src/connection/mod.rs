@@ -192,8 +192,8 @@ impl Backend {
     }
 
     /// Opens a connection for subscriptions.  redis-rs takes no timeouts
-    /// for these, so docket bounds the connect and the subscribe itself.
-    /// Once subscribed, the connection waits for messages as long as it
+    /// for these, so docket bounds the connect itself, and the subscribe
+    /// when the docket has a response timeout.  Once subscribed, the connection waits for messages as long as it
     /// takes, and TCP keepalive finds a peer that is gone.
     async fn pubsub(&self) -> RedisResult<PubSub> {
         within(Some(self.settings.connection_timeout), self.open_pubsub()).await

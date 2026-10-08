@@ -143,7 +143,8 @@ docket-rs = { version = "0.2", features = ["memory"] }
 
 An application that keeps keys of its own in the docket's Redis reaches them
 with `Docket::redis`, which opens a redis-rs connection on any of these URLs,
-`memory://` included.
+`memory://` included.  As with pydocket's `docket.redis()`, commands on it
+have no response timeout, whatever the docket's is.
 
 A test can move a `memory://` docket's clock with `docket::testing::advance_time`,
 or have idle workers skip ahead to the next scheduled task with
