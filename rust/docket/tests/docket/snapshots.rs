@@ -133,6 +133,32 @@ async fn clear_cancels_each_task_it_removes(#[case] delay: Duration) {
     );
 }
 
+#[tokio::test]
+async fn clear_cancels_every_task_across_its_batches() {
+    // One clear.lua call removes at most 1000 queue entries and 1000 stream
+    // messages, so 1500 of each take two calls.
+    let docket = docket().await;
+    let queued = (0..1500).map(|n| docket.call(Noop).key(format!("queued-{n}")));
+    docket.add_many(queued).await.unwrap();
+    let later = Utc::now() + chrono::Duration::seconds(60);
+    let scheduled = (0..1500).map(|n| docket.call(Noop).key(format!("scheduled-{n}")).at(later));
+    docket.add_many(scheduled).await.unwrap();
+
+    assert_eq!(docket.clear().await.unwrap(), 3000);
+
+    assert_eq!(docket.snapshot().await.unwrap().future.len(), 0);
+    let queued = docket.execution("queued-1499").await.unwrap().unwrap();
+    let scheduled = docket.execution("scheduled-1499").await.unwrap().unwrap();
+    assert_eq!(
+        queued.status().await.unwrap().unwrap().state,
+        State::Cancelled
+    );
+    assert_eq!(
+        scheduled.status().await.unwrap().unwrap().state,
+        State::Cancelled
+    );
+}
+
 #[rstest]
 #[case::queued(Duration::ZERO)]
 #[case::scheduled(Duration::from_secs(60))]

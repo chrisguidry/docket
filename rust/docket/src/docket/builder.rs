@@ -102,8 +102,10 @@ impl DocketBuilder {
     /// How many times a command to a Redis Cluster is sent again after a
     /// redirect, a lost node, or a busy node, before it fails.  A cluster
     /// redirects commands while it moves slots between nodes, and with no
-    /// retries those commands fail.  The default is 10.  Connections to one
-    /// server do not retry.
+    /// retries those commands fail.  The default is 10, which with the
+    /// default backoff waits about 5 seconds at most in all.  That is less
+    /// than a failover takes, so a command sent during one fails.
+    /// Connections to one server do not retry.
     #[must_use]
     pub fn retries(mut self, retries: u32) -> Self {
         self.connection.retries = retries;

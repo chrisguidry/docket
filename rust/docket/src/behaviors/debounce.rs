@@ -30,7 +30,8 @@ impl Debounce {
         }
     }
 
-    /// Debounces each value of `field` on its own.
+    /// Debounces each value of `field` on its own.  A task without the
+    /// field counts as `null`.
     pub fn per_field(field: impl Into<String>, settle: Duration) -> Self {
         Self {
             field: Some(field.into()),
@@ -58,7 +59,7 @@ const RESCHEDULE: i64 = 2;
 impl Admission for Debounce {
     async fn admit(&self, ctx: &Context) -> Result<Admitted, NotAdmitted> {
         let base = self.scope.as_deref().unwrap_or(ctx.docket().name());
-        let tag = subject(ctx, self.field.as_deref())?;
+        let tag = subject(ctx, self.field.as_deref());
         // The braces make the two keys one cluster slot, so that the script
         // can touch both.
         let prefix = format!("{base}:debounce:{tag}:{{{tag}}}");

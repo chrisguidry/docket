@@ -382,7 +382,9 @@ class Worker:
             module = importlib.import_module(module_name)
             resolved_fallback_task = getattr(module, member_name)
 
-        if isinstance(dependencies, str):
+        if dependencies == "":
+            dependencies = None
+        elif isinstance(dependencies, str):
             module_name, _, member_name = dependencies.rpartition(":")
             module = importlib.import_module(module_name)
             dependencies = getattr(module, member_name)

@@ -84,9 +84,10 @@ pub(crate) type Release = Box<dyn FnOnce(Released) -> BoxFuture<'static, ()> + S
 /// Why an admission is released.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Released {
-    /// The task ran, whatever its outcome.
+    /// The task ran, whatever its outcome, or another admission hook
+    /// failed, which counts as a run that failed.
     Ran,
-    /// A later admission hook blocked the task, so it did not run.
+    /// Another admission hook blocked the task, so it did not run.
     Blocked,
 }
 

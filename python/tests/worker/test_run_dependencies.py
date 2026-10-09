@@ -93,6 +93,12 @@ async def test_run_dependency_import_errors(path: str, error: type[Exception]) -
         await Worker.run(url="memory://", dependencies=path)
 
 
+async def test_run_treats_an_empty_dependency_path_as_none() -> None:
+    """An empty --dependencies or DOCKET_WORKER_DEPENDENCIES means no
+    dependencies, as an empty --fallback-task means no fallback task."""
+    await Worker.run(url="memory://", dependencies="", until_finished=True)
+
+
 @pytest.mark.parametrize("by_path", [False, True])
 async def test_run_rejects_bare_dependency_functions(
     monkeypatch: pytest.MonkeyPatch, by_path: bool

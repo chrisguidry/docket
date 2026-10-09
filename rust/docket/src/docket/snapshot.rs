@@ -18,6 +18,10 @@ use crate::wire::{iso, seconds};
 /// How many stream entries a snapshot reads.
 const SNAPSHOT_LIMIT: usize = 1000;
 
+/// How many queue entries and stream messages one `clear.lua` call removes,
+/// so that no one call blocks Redis for long.
+const CLEAR_BATCH: i64 = 1000;
+
 /// What a docket holds at one moment.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -199,7 +203,15 @@ impl Docket {
     /// [`Docket::cancel`] cancels one: its key is free for a new task at
     /// once, and a caller waiting on its result gets
     /// [`Error::TaskCancelled`](crate::Error::TaskCancelled).  Running tasks
-    /// finish.
+    /// finish, and tasks that wait for a [`ConcurrencyLimit`] slot stay, since
+    /// they are in neither the stream nor the queue.
+    ///
+    /// It clears the docket in batches, so other clients can use Redis
+    /// between them.  A worker can start a task between two batches, and
+    /// that task then runs.  A task added during a clear may or may not be
+    /// cleared.
+    ///
+    /// [`ConcurrencyLimit`]: crate::ConcurrencyLimit
     pub async fn clear(&self) -> Result<usize> {
         let span = self
             .telemetry()
@@ -211,15 +223,27 @@ impl Docket {
 
     async fn clear_tasks(&self) -> Result<usize> {
         let keys = self.keys();
-        let call = scripts::Clear {
-            stream_key: keys.stream(),
-            queue_key: keys.queue(),
-            docket_prefix: keys.prefix().to_owned(),
-            completed_at: iso(self.now()),
-            ttl_seconds: self.ttl_seconds(),
+        let mut connection = self.handle();
+        let mut total: usize = 0;
+        loop {
+            let call = scripts::Clear {
+                stream_key: keys.stream(),
+                queue_key: keys.queue(),
+                docket_prefix: keys.prefix().to_owned(),
+                completed_at: iso(self.now()),
+                ttl_seconds: self.ttl_seconds(),
+                batch: CLEAR_BATCH,
+            }
+            .call();
+            let cleared: i64 = call.run(&mut connection).await?;
+            total += usize::try_from(cleared).unwrap_or_default();
+            // A call that clears less than one batch emptied the stream and
+            // the queue, so the clear ends there even while new tasks keep
+            // arriving.
+            if cleared < CLEAR_BATCH {
+                return Ok(total);
+            }
         }
-        .call();
-        Ok(call.run(&mut self.handle()).await?)
     }
 
     /// Creates the workers' consumer group if it does not exist yet.

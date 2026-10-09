@@ -260,7 +260,7 @@ scripts! {
     /// the queue.
     Clear = "clear" {
         keys: [stream_key, queue_key],
-        args: [docket_prefix: Text, completed_at: Text, ttl_seconds: Integer],
+        args: [docket_prefix: Text, completed_at: Text, ttl_seconds: Integer, batch: Integer],
     }
 
     /// Marks a delivered task as running on a worker.

@@ -199,7 +199,7 @@ async fn attempt(
     let was_cancelled = active.cancelled_by_docket.load(Ordering::SeqCst);
     let result = match outcome {
         _ if was_cancelled => {
-            release(releases).await;
+            release(releases, Released::Ran).await;
             cancelled(run, &span, generation, duration).await
         }
         Ok(output) => {
@@ -209,11 +209,11 @@ async fn attempt(
             let result = run
                 .succeed(after.as_ref(), output, generation, duration)
                 .await;
-            release(releases).await;
+            release(releases, Released::Ran).await;
             result
         }
         Err(error) => {
-            release(releases).await;
+            release(releases, Released::Ran).await;
             metrics.tasks_failed.add(1, &run.labels());
             let message = error.to_string();
             telemetry::fail(&span, &message);
@@ -303,30 +303,45 @@ fn context(worker: &Shared, delivery: &Delivery, registered: &Registered) -> Con
     })
 }
 
-/// Runs the admission hooks in order.  When one blocks, the ones that
-/// already admitted the task release what they gave it, newest first.
+/// Runs every admission hook in order, even after one refuses, as pydocket
+/// enters every dependency before it acts on any.  The first block wins
+/// over any failure, as a block does in pydocket over a failure from
+/// another parameter, and the hooks that admitted the task give back what
+/// they gave it.  A failure counts as a run that failed, so those hooks
+/// release as they do after a run, and a rate limit keeps its call.
 async fn admit(
     registered: &Registered,
     ctx: &Context,
 ) -> std::result::Result<Vec<Release>, NotAdmitted> {
     let mut releases = Vec::new();
+    let mut blocked = None;
+    let mut failed = None;
     for admission in &registered.hooks.admissions {
         match admission(ctx.clone()).await {
             Ok(admitted) => releases.extend(admitted.release),
-            Err(refused) => {
-                while let Some(release) = releases.pop() {
-                    release(Released::Blocked).await;
-                }
-                return Err(refused);
+            Err(NotAdmitted::Blocked(block)) => {
+                blocked.get_or_insert(block);
+            }
+            Err(NotAdmitted::Failed(error)) => {
+                failed.get_or_insert(error);
             }
         }
+    }
+    if let Some(block) = blocked {
+        release(releases, Released::Blocked).await;
+        return Err(NotAdmitted::Blocked(block));
+    }
+    if let Some(error) = failed {
+        release(releases, Released::Ran).await;
+        return Err(NotAdmitted::Failed(error));
     }
     Ok(releases)
 }
 
-async fn release(mut releases: Vec<Release>) {
+/// Releases what the admission hooks gave a task, newest first.
+async fn release(mut releases: Vec<Release>, why: Released) {
     while let Some(release) = releases.pop() {
-        release(Released::Ran).await;
+        release(why).await;
     }
 }
 

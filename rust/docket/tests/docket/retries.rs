@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use chrono::Utc;
 use docket::behaviors::ForcedRetry;
-use docket::{Docket, ExponentialRetry, Retry, State, Task};
+use docket::{Docket, Event, ExponentialRetry, Retry, State, Task};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::support::telemetry::value;
@@ -252,9 +253,52 @@ async fn a_retry_gives_way_to_a_replacement() {
 }
 
 #[tokio::test]
-async fn a_retry_gives_way_to_a_replacement_that_already_finished() {
+async fn a_retry_that_gives_way_publishes_no_ending() {
+    // A run that a replace superseded ends without a state event, so a
+    // caller waiting on the key waits for the replacement, not the failure.
+    let docket = docket().await;
+    docket
+        .register(move |ctx: docket::Context, args: Flaky| async move {
+            if args.round == "first" {
+                let replacement = Flaky {
+                    round: "replacement".to_owned(),
+                };
+                let soon = Utc::now() + chrono::Duration::milliseconds(200);
+                ctx.docket().replace(replacement, ctx.key(), soon).await?;
+                return Err("the first run fails".into());
+            }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })
+        .with(Retry::attempts(2));
+    let first = Flaky {
+        round: "first".to_owned(),
+    };
+    let execution = docket.add(first).key("flaky").await.unwrap();
+    let mut events = execution.subscribe().await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    let ending = within(10, async {
+        loop {
+            if let Some(Ok(Event::State(event))) = events.next().await
+                && event.state.is_terminal()
+            {
+                return event.state;
+            }
+        }
+    })
+    .await;
+    assert_eq!(ending, State::Completed);
+}
+
+#[tokio::test]
+async fn a_retry_runs_again_after_a_replacement_that_already_finished() {
     // With no execution_ttl, the replacement deletes the key's runs hash when
-    // it ends, before the first run fails.
+    // it ends, before the first run fails.  Redis cannot tell this hash apart
+    // from one that an eviction removed, and pydocket 0.26.2 retried those
+    // runs, so a missing hash lets the retry go on.
     let docket = Docket::builder(format!("docket-test-{}", uuid::Uuid::now_v7()), url())
         .execution_ttl(Duration::ZERO)
         .connect()
@@ -270,14 +314,16 @@ async fn a_retry_gives_way_to_a_replacement_that_already_finished() {
                 .push((args.round.clone(), ctx.attempt()));
             async move {
                 if args.round == "first" {
-                    let replacement = Flaky {
-                        round: "replacement".to_owned(),
-                    };
-                    ctx.docket()
-                        .replace(replacement, ctx.key(), Utc::now())
-                        .await?;
-                    while ctx.docket().execution(ctx.key()).await?.is_some() {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    if ctx.attempt() == 1 {
+                        let replacement = Flaky {
+                            round: "replacement".to_owned(),
+                        };
+                        ctx.docket()
+                            .replace(replacement, ctx.key(), Utc::now())
+                            .await?;
+                        while ctx.docket().execution(ctx.key()).await?.is_some() {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
                     }
                     return Err("the first run fails".into());
                 }
@@ -299,5 +345,5 @@ async fn a_retry_gives_way_to_a_replacement_that_already_finished() {
         .iter()
         .map(|(round, attempt)| (round.as_str(), *attempt))
         .collect();
-    assert_eq!(rounds, [("first", 1), ("replacement", 1)]);
+    assert_eq!(rounds, [("first", 1), ("replacement", 1), ("first", 2)]);
 }

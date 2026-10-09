@@ -27,7 +27,8 @@ impl Cooldown {
         }
     }
 
-    /// Cools down each value of `field` on its own.
+    /// Cools down each value of `field` on its own.  A task without the
+    /// field counts as `null`.
     pub fn per_field(field: impl Into<String>, window: Duration) -> Self {
         Self {
             field: Some(field.into()),
@@ -52,7 +53,7 @@ impl<T: Task> Behavior<T> for Cooldown {
 impl Admission for Cooldown {
     async fn admit(&self, ctx: &Context) -> Result<Admitted, NotAdmitted> {
         let base = self.scope.as_deref().unwrap_or(ctx.docket().name());
-        let key = format!("{base}:cooldown:{}", subject(ctx, self.field.as_deref())?);
+        let key = format!("{base}:cooldown:{}", subject(ctx, self.field.as_deref()));
         let window = u64::try_from(self.window.as_millis())
             .unwrap_or(u64::MAX)
             .max(1);

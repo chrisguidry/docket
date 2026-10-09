@@ -246,10 +246,16 @@ const READ_ONLY: &str = "READONLY You can't write against a read only replica.";
 /// The reply of a server at its `maxmemory` under the `noeviction` policy.
 const OUT_OF_MEMORY: &str = "OOM command not allowed when used memory > 'maxmemory'.";
 
+/// The same reply from Redis 6.2, which wraps an error inside a script in an
+/// `ERR` of its own.
+const OUT_OF_MEMORY_IN_A_SCRIPT: &str = "ERR Error running script (call to f_0123): \
+    @user_script:12: -OOM command not allowed when used memory > 'maxmemory'.";
+
 /// Replies that refuse every write the server gets, not one run's alone.
 #[rstest::rstest]
 #[case::read_only_replica(READ_ONLY)]
 #[case::out_of_memory(OUT_OF_MEMORY)]
+#[case::out_of_memory_in_a_script(OUT_OF_MEMORY_IN_A_SCRIPT)]
 #[tokio::test]
 async fn a_worker_reconnects_when_redis_refuses_every_write(#[case] reply: &str) {
     let Some(proxy) = proxy().await else { return };

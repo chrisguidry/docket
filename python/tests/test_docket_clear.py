@@ -9,6 +9,7 @@ import pytest
 
 from docket import ExecutionState, Worker
 from docket.docket import Docket
+from tests.conftest import wait_until
 
 # Tests for docket.clear()
 
@@ -367,3 +368,49 @@ async def test_snapshot_handles_nogroup_with_real_redis(
         async with docket.redis() as redis:
             groups = await redis.xinfo_groups(docket.stream_key)
             assert len(groups) == 1
+
+
+async def test_clear_cancels_every_task_across_its_batches(
+    docket: Docket, the_task: AsyncMock, monkeypatch: pytest.MonkeyPatch
+):
+    """clear() works through the docket in batches until none is left."""
+    monkeypatch.setattr("docket.docket.CLEAR_BATCH", 2)
+    docket.register(the_task)
+    future = datetime.now(timezone.utc) + timedelta(seconds=60)
+    for n in range(5):
+        await docket.add(the_task, key=f"queued-{n}")()
+        await docket.add(the_task, when=future, key=f"scheduled-{n}")()
+
+    assert await docket.clear() == 10
+
+    assert (await docket.snapshot()).future == []
+    keys = [f"{kind}-{n}" for kind in ("queued", "scheduled") for n in range(5)]
+    executions = [await docket.get_execution(key) for key in keys]
+    assert [e and e.state for e in executions] == [ExecutionState.CANCELLED] * 10
+
+
+async def test_clear_returns_while_tasks_keep_arriving(
+    docket: Docket, the_task: AsyncMock, monkeypatch: pytest.MonkeyPatch
+):
+    """clear() stops after a batch that finds the docket nearly empty, so
+    producers that keep adding tasks cannot keep it going."""
+    monkeypatch.setattr("docket.docket.CLEAR_BATCH", 50)
+    docket.register(the_task)
+    added: list[None] = []
+
+    async def produce() -> None:
+        while True:
+            await docket.add(the_task)()
+            added.append(None)
+            # The memory backend can finish an add without yielding, and a
+            # producer that never yields would starve the clear.
+            await asyncio.sleep(0)
+
+    producers = [asyncio.create_task(produce()) for _ in range(10)]
+    await wait_until(lambda: len(added) >= 200, description="a backlog")
+    try:
+        await asyncio.wait_for(docket.clear(), timeout=10)
+    finally:
+        for producer in producers:
+            producer.cancel()
+        await asyncio.gather(*producers, return_exceptions=True)

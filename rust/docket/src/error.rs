@@ -70,7 +70,9 @@ impl Error {
     /// follow) do not count, because they need a reconnect.  Nor does `OOM`:
     /// a server at its `maxmemory` refuses every write but still serves a
     /// worker's reads, so a worker that went on would read every ready task
-    /// into its pending list without a pause and run none of them.
+    /// into its pending list without a pause and run none of them.  Redis
+    /// 6.2 reports an `OOM` inside a script as an `ERR` whose text holds
+    /// `-OOM`, so the text counts too.
     pub(crate) fn is_refused_command(&self) -> bool {
         matches!(
             self,
@@ -79,6 +81,7 @@ impl Error {
                 redis::ErrorKind::Server(_) | redis::ErrorKind::Extension
             ) && matches!(error.retry_method(), redis::RetryMethod::NoRetry)
                 && error.code() != Some("OOM")
+                && !error.detail().is_some_and(|detail| detail.contains("-OOM "))
         )
     }
 }

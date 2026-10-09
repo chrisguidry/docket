@@ -132,3 +132,28 @@ async def test_a_perpetual_that_stops_itself_keeps_a_replacement(
             },
         )
     ]
+
+
+async def test_a_perpetual_goes_on_when_its_runs_hash_disappears(
+    docket: Docket, worker: Worker
+):
+    """A Perpetual whose runs hash is gone when it ends still schedules its
+    next run, as in 0.26.2.  An eviction, or a 0.26.2 ``clear()`` during a
+    rolling upgrade, can remove the hash of a task that is running."""
+    runs: list[int] = []
+
+    async def evicted_perpetual(
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
+        docket: Docket = CurrentDocket(),
+    ):
+        runs.append(len(runs) + 1)
+        if len(runs) == 1:
+            async with docket.redis() as redis:
+                await redis.delete(docket.runs_key("evicted"))
+        else:
+            perpetual.cancel()
+
+    await docket.add(evicted_perpetual, key="evicted")()
+    await asyncio.wait_for(worker.run_until_finished(), timeout=10)
+
+    assert runs == [1, 2]

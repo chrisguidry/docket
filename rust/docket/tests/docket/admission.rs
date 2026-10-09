@@ -1,9 +1,10 @@
-use std::sync::Arc;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use docket::behaviors::{Admission, AdmissionBlocked, Admitted, Behavior, Hooks, NotAdmitted};
-use docket::{Context, Cooldown, Debounce, RateLimit, Retry, State, Task};
+use docket::{ConcurrencyLimit, Context, Cooldown, Debounce, RateLimit, Retry, State, Task};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
@@ -97,6 +98,34 @@ async fn a_rate_limit_can_drop_the_excess() {
     for _ in 0..3 {
         docket.add(PerCustomer { customer: 7 }).await.unwrap();
     }
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+}
+
+/// A task without the limit's field runs, as an omitted argument does in
+/// pydocket, and every such task counts under the one missing value.
+#[tokio::test]
+async fn a_rate_limit_counts_a_missing_field_as_one_value() {
+    let docket = docket().await;
+    let runs = Arc::new(AtomicU32::new(0));
+    let counted = Arc::clone(&runs);
+    docket
+        .register(move |_ctx, _: Noop| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            async { Ok::<_, std::io::Error>(()) }
+        })
+        .with(
+            RateLimit::per_field("customer", 1)
+                .per(Duration::from_secs(60))
+                .drop_excess()
+                .scope(docket.name()),
+        );
+    docket.add(Noop).await.unwrap();
+    docket.add(Noop).await.unwrap();
 
     within(10, worker(&docket).run_until_finished())
         .await
@@ -259,6 +288,62 @@ async fn a_block_without_a_delay_tries_the_task_again_shortly() {
     )));
 }
 
+/// pydocket checks every admission before it acts on any, so a block after
+/// a failure still wins, and the check after a failure still runs.
+#[tokio::test]
+async fn a_block_wins_over_a_failed_admission() {
+    let docket = docket().await;
+    let failures = Arc::new(AtomicU32::new(0));
+    let blocks = Arc::new(AtomicU32::new(0));
+    docket
+        .register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) })
+        .with(Unanswerable(Arc::clone(&failures)))
+        .with(NotYet(Arc::clone(&blocks)));
+    let execution = docket.add(Noop).await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    // The first attempt was blocked, and the second one failed.
+    assert_eq!(failures.load(Ordering::SeqCst), 2);
+    assert_eq!(blocks.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Failed
+    );
+}
+
+/// A failed admission counts as a run that failed, so a rate limit keeps
+/// the call it gave, as in pydocket.
+#[tokio::test]
+async fn a_failed_admission_spends_a_rate_limit_call() {
+    let docket = docket().await;
+    let failures = Arc::new(AtomicU32::new(0));
+    docket
+        .register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) })
+        .with(
+            RateLimit::new(1)
+                .per(Duration::from_secs(60))
+                .drop_excess()
+                .scope(docket.name()),
+        )
+        .with(Unanswerable(Arc::clone(&failures)))
+        .with(Retry::attempts(2));
+    let execution = docket.add(Noop).await.unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    // The retry found the window full, and the rate limit dropped it.
+    assert_eq!(failures.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Cancelled
+    );
+}
+
 /// A behavior whose check takes a while and then fails, so a cancel can
 /// arrive while it runs.
 struct SlowlyUnanswerable {
@@ -305,4 +390,81 @@ async fn a_cancel_during_a_failing_admission_is_not_retried() {
         execution.status().await.unwrap().unwrap().state,
         State::Cancelled
     );
+}
+
+/// Blocks each key once with a short delay, then admits it.
+#[derive(Default)]
+struct BlockOnce(Mutex<HashSet<String>>);
+
+impl Admission for BlockOnce {
+    async fn admit(&self, ctx: &Context) -> Result<Admitted, NotAdmitted> {
+        if self.0.lock().unwrap().insert(ctx.key().to_owned()) {
+            return Err(AdmissionBlocked::new("once")
+                .retry_delay(Duration::from_millis(50))
+                .into());
+        }
+        Ok(Admitted::now())
+    }
+}
+
+impl<T: Task> Behavior<T> for BlockOnce {
+    fn attach(self, hooks: &mut Hooks<'_, T>) {
+        hooks.admission(self);
+    }
+}
+
+/// A concurrency limit that parks the task takes the delivery, so a block
+/// from an earlier hook must not also put the task back in the docket.
+#[tokio::test]
+async fn a_parked_task_runs_once_after_an_earlier_block() {
+    let docket = docket().await;
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&runs);
+    let release = Arc::new(Notify::new());
+    let held = Arc::clone(&release);
+    docket
+        .register(move |ctx: Context, _: PerCustomer| {
+            recorded.lock().unwrap().push(ctx.key().to_owned());
+            let held = Arc::clone(&held);
+            let key = ctx.key().to_owned();
+            async move {
+                if key == "holder" {
+                    held.notified().await;
+                }
+                Ok::<_, std::io::Error>(())
+            }
+        })
+        .with(BlockOnce::default())
+        .with(ConcurrencyLimit::new(1));
+    docket
+        .add(PerCustomer { customer: 1 })
+        .key("holder")
+        .await
+        .unwrap();
+
+    let run = async {
+        while !runs.lock().unwrap().contains(&"holder".to_owned()) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        docket
+            .add(PerCustomer { customer: 2 })
+            .key("parked")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        release.notify_one();
+    };
+    let ((), finished) = tokio::join!(
+        run,
+        within(20, worker(&docket).concurrency(4).run_until_finished())
+    );
+    finished.unwrap();
+
+    let parked = runs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|key| *key == "parked")
+        .count();
+    assert_eq!(parked, 1);
 }
