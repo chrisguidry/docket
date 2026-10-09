@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use docket::{Disposition, Perpetual, Retry, State, Task};
+use docket::{Disposition, Docket, Perpetual, Retry, State, Task};
 use serde::{Deserialize, Serialize};
 
 use crate::support::{Echo, Noop, docket, docket_through, proxy, within, worker};
@@ -43,6 +43,33 @@ async fn one_pipeline_sends_the_whole_batch_at_once() {
     docket.replace_many(calls).one_pipeline().await.unwrap();
 
     assert_eq!(proxy.batches("EVALSHA"), 1);
+}
+
+#[tokio::test]
+async fn a_batch_that_fails_partway_keeps_the_chunks_that_went_in() {
+    let Some(proxy) = proxy().await else { return };
+    let docket = Docket::builder(format!("docket-test-{}", uuid::Uuid::now_v7()), proxy.url())
+        .response_timeout(Duration::from_millis(300))
+        .connect()
+        .await
+        .unwrap();
+    proxy.silence_after("EVALSHA", 4);
+    let calls = (0..10).map(|n| docket.call(Noop).key(format!("partway-{n}")));
+
+    let executions = within(10, docket.add_many(calls).chunk_size(4).into_future())
+        .await
+        .unwrap();
+
+    let scheduled: Vec<bool> = executions
+        .iter()
+        .map(|execution| *execution.disposition() == Disposition::Scheduled)
+        .collect();
+    assert_eq!(scheduled, [[true; 4].as_slice(), &[false; 6]].concat());
+    assert!(
+        executions[4..]
+            .iter()
+            .all(|execution| matches!(execution.disposition(), Disposition::Failed(_)))
+    );
 }
 
 #[tokio::test]

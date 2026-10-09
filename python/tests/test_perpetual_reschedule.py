@@ -13,8 +13,14 @@ from unittest.mock import Mock, call
 import pytest
 from opentelemetry.metrics import Counter
 
-from docket import CurrentDocket, Docket, Perpetual, Worker
+from docket import CurrentDocket, Docket, ExecutionState, Perpetual, Worker
 from tests.conftest import wait_until
+
+TERMINAL_STATES = (
+    ExecutionState.COMPLETED,
+    ExecutionState.FAILED,
+    ExecutionState.CANCELLED,
+)
 
 
 async def test_a_replaced_perpetual_does_not_reschedule_itself(
@@ -132,6 +138,50 @@ async def test_a_perpetual_that_stops_itself_keeps_a_replacement(
             },
         )
     ]
+
+
+@pytest.mark.parametrize("stops", [True, False], ids=["stops", "reschedules"])
+@pytest.mark.parametrize("fails", [False, True], ids=["succeeds", "fails"])
+async def test_a_perpetual_that_gives_way_publishes_no_ending(
+    docket: Docket, worker: Worker, stops: bool, fails: bool
+):
+    """A run that a replace superseded ends without a state event, so a
+    caller waiting on the key waits for the replacement, not the old run."""
+    runs: list[str] = []
+
+    async def giving_way(
+        round: str,
+        perpetual: Perpetual = Perpetual(every=timedelta(hours=1)),
+        docket: Docket = CurrentDocket(),
+    ):
+        runs.append(round)
+        if round == "replacement":
+            perpetual.cancel()
+            return
+        soon = datetime.now(timezone.utc) + timedelta(milliseconds=200)
+        await docket.replace(giving_way, soon, "giving-way")("replacement")
+        if stops:
+            perpetual.cancel()
+        if fails:
+            raise ValueError("the first run fails")
+
+    execution = await docket.add(giving_way, key="giving-way")("first")
+    subscribed = asyncio.Event()
+
+    async def runs_at_first_ending() -> list[str]:
+        async for event in execution.subscribe(ready=subscribed):
+            if (
+                event["type"] == "state"
+                and ExecutionState(event["state"]) in TERMINAL_STATES
+            ):
+                return list(runs)
+        raise AssertionError("the events ended")  # pragma: no cover
+
+    ending = asyncio.create_task(runs_at_first_ending())
+    await asyncio.wait_for(subscribed.wait(), timeout=10)
+    await asyncio.wait_for(worker.run_until_finished(), timeout=30)
+
+    assert await asyncio.wait_for(ending, timeout=10) == ["first", "replacement"]
 
 
 async def test_a_perpetual_goes_on_when_its_runs_hash_disappears(

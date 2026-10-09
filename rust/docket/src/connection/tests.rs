@@ -39,9 +39,10 @@ fn a_sentinel_client_builds_without_connecting(
     assert!(sentinel_client(sentinel_url(tls, credentials), &Settings::default()).is_ok());
 }
 
-/// rustls has no crypto backend of its own, so without the one the `tls`
-/// feature brings, a TLS connect panics before it reaches the network.
-#[cfg(feature = "tls")]
+/// rustls has no crypto backend of its own, so without the one the
+/// `tls-ring` feature brings, a TLS connect panics before it reaches the
+/// network.
+#[cfg(feature = "tls-ring")]
 #[tokio::test]
 async fn a_tls_connect_reaches_the_network() {
     let backend = open("rediss://127.0.0.1:1", None).unwrap();

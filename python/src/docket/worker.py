@@ -1151,8 +1151,11 @@ class Worker:
                     if completion_handler and await completion_handler.on_complete(
                         execution, outcome
                     ):
-                        # Handler took responsibility (rescheduled, logged, recorded metrics)
-                        await execution.mark_as_completed(result_key=None)
+                        # Handler took responsibility (rescheduled, logged, recorded
+                        # metrics).  A handler that already ended the run, as a
+                        # superseded Perpetual does, must not publish a second end.
+                        if not execution._ended:
+                            await execution.mark_as_completed(result_key=None)
                     else:
                         # No handler or handler didn't handle - normal completion
                         result_key = None
@@ -1246,23 +1249,26 @@ class Worker:
                             extra=log_context,
                         )
 
-                    # Store exception in result_storage (only when not retrying)
-                    result_key = None
-                    if self.docket.execution_ttl:
-                        pickled_exception = cloudpickle.dumps(e)  # type: ignore[arg-type]
-                        # Base64-encode for JSON serialization
-                        encoded_exception = base64.b64encode(pickled_exception).decode(
-                            "ascii"
-                        )
-                        result_key = f"{execution.key}:{execution.generation}"
-                        ttl_seconds = int(self.docket.execution_ttl.total_seconds())
-                        await self.docket.result_storage.put(
-                            result_key, {"data": encoded_exception}, ttl=ttl_seconds
-                        )
+                    # A handler that already ended the run, as a superseded
+                    # Perpetual does, must not publish a second end.
+                    if not execution._ended:
+                        # Store exception in result_storage (only when not retrying)
+                        result_key = None
+                        if self.docket.execution_ttl:
+                            pickled_exception = cloudpickle.dumps(e)  # type: ignore[arg-type]
+                            # Base64-encode for JSON serialization
+                            encoded_exception = base64.b64encode(
+                                pickled_exception
+                            ).decode("ascii")
+                            result_key = f"{execution.key}:{execution.generation}"
+                            ttl_seconds = int(self.docket.execution_ttl.total_seconds())
+                            await self.docket.result_storage.put(
+                                result_key, {"data": encoded_exception}, ttl=ttl_seconds
+                            )
 
-                    # Mark execution as failed with error message
-                    error_msg = f"{type(e).__name__}: {str(e)}"
-                    await execution.mark_as_failed(error_msg, result_key=result_key)
+                        # Mark execution as failed with error message
+                        error_msg = f"{type(e).__name__}: {str(e)}"
+                        await execution.mark_as_failed(error_msg, result_key=result_key)
             finally:
                 TASKS_RUNNING.add(-1, counter_labels)
                 TASKS_COMPLETED.add(1, counter_labels)

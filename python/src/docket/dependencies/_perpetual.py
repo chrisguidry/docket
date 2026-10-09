@@ -20,7 +20,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..docket import Docket
     from ..execution import Execution
 
-from ..execution import Disposition
+from ..execution import Disposition, ExecutionState
 from ..instrumentation import TASKS_PERPETUATED, TASKS_SUPERSEDED
 
 logger = logging.getLogger("docket.dependencies")
@@ -124,7 +124,7 @@ class Perpetual(CompletionHandler["Perpetual"]):
                     redis, execution.key, execution.generation
                 )
             if not cancelled:
-                self._record_superseded(execution, outcome)
+                await self._end_superseded(execution, outcome)
                 return True
             return False
 
@@ -147,7 +147,7 @@ class Perpetual(CompletionHandler["Perpetual"]):
         )
 
         if successor.disposition is Disposition.SUPERSEDED:
-            self._record_superseded(execution, outcome)
+            await self._end_superseded(execution, outcome)
             return True
 
         TASKS_PERPETUATED.add(1, {**worker.labels(), **execution.general_labels()})
@@ -168,7 +168,10 @@ class Perpetual(CompletionHandler["Perpetual"]):
 
         return True
 
-    def _record_superseded(self, execution: Execution, outcome: TaskOutcome) -> None:
+    async def _end_superseded(self, execution: Execution, outcome: TaskOutcome) -> None:
+        """Ends a run whose stop or reschedule gave way to a replace.  It
+        publishes no state, so a caller waiting on the key waits for the
+        replacement instead of taking this run as its end."""
         worker = current_worker.get()
         TASKS_SUPERSEDED.add(
             1,
@@ -183,3 +186,12 @@ class Perpetual(CompletionHandler["Perpetual"]):
             format_duration(outcome.duration.total_seconds()),
             execution.call_repr(),
         )
+        exception = outcome.exception
+        if exception is None:
+            await execution._mark_as_terminal(ExecutionState.COMPLETED, publish=False)
+        else:
+            await execution._mark_as_terminal(
+                ExecutionState.FAILED,
+                error=f"{type(exception).__name__}: {exception}",
+                publish=False,
+            )

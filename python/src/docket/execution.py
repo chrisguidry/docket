@@ -279,6 +279,11 @@ class Execution:
         # False, and the worker can ack defensively.
         self._acked: bool = False
 
+        # True once ``_mark_as_terminal`` has ended this run.  A completion
+        # handler that ends the run itself, as a superseded Perpetual does,
+        # sets it, and the worker then leaves out its own terminal write.
+        self._ended: bool = False
+
         # True when the last claim() refused this task as cancelled.  The worker
         # reads it because a superseded task's state is also CANCELLED when the
         # newer generation was cancelled.
@@ -735,6 +740,7 @@ class Execution:
         # and let the worker safety net overwrite the committed terminal
         # state with FAILED/None.
         self._acked = True
+        self._ended = True
 
         with self._maybe_suppress_instrumentation():
             async with self.docket.redis() as redis:

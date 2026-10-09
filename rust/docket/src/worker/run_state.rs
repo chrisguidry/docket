@@ -138,7 +138,7 @@ impl Run<'_> {
     /// Ends the delivery as `terminal` does, and publishes its state only
     /// when `publish` is set.  A run that a replace superseded publishes
     /// nothing, because the key's task has not ended.
-    async fn end(
+    pub async fn end(
         &self,
         state: State,
         generation: i64,
@@ -278,13 +278,14 @@ impl Run<'_> {
         generation: i64,
         duration: f64,
     ) -> Result<()> {
-        let handled = match after {
+        let ending = match after {
             Some(after) => self.after_completion(after, generation, duration).await?,
-            None => false,
+            None => Ending::Normal,
         };
-        if handled {
+        if ending != Ending::Normal {
+            let publish = ending == Ending::Handled;
             return self
-                .terminal(State::Completed, generation, Vec::new())
+                .end(State::Completed, generation, Vec::new(), publish)
                 .await;
         }
         self.store(output, generation).await?;
@@ -298,24 +299,24 @@ impl Run<'_> {
         vec![("result_key".to_owned(), self.key().as_bytes().to_vec())]
     }
 
-    /// Acts on a completion hook's decision, and returns whether it took the
-    /// place of the task's normal ending.
+    /// Acts on a completion hook's decision, and returns what it leaves for
+    /// the task's own ending.
     pub async fn after_completion(
         &self,
         after: &AfterCompletion,
         generation: i64,
         duration: f64,
-    ) -> Result<bool> {
+    ) -> Result<Ending> {
         match after {
-            AfterCompletion::Finish => Ok(false),
+            AfterCompletion::Finish => Ok(Ending::Normal),
             AfterCompletion::Cancel => {
                 // Cancel under this run's generation, so a replace made
                 // while it ran survives the stop.
                 if self.docket.cancel_quietly(self.key(), generation).await? {
-                    return Ok(false);
+                    return Ok(Ending::Normal);
                 }
                 self.superseded(duration);
-                Ok(true)
+                Ok(Ending::Superseded)
             }
             AfterCompletion::Reschedule { when, args } => {
                 let mut message = self.message().clone();
@@ -338,13 +339,13 @@ impl Run<'_> {
                     .await?;
                 if disposition == Disposition::Superseded {
                     self.superseded(duration);
-                } else {
-                    let metrics = &self.docket.telemetry().metrics;
-                    metrics.tasks_perpetuated.add(1, &self.labels());
-                    let took = format_duration(duration);
-                    tracing::info!("↫ [{took}] {}", self.call);
+                    return Ok(Ending::Superseded);
                 }
-                Ok(true)
+                let metrics = &self.docket.telemetry().metrics;
+                metrics.tasks_perpetuated.add(1, &self.labels());
+                let took = format_duration(duration);
+                tracing::info!("↫ [{took}] {}", self.call);
+                Ok(Ending::Handled)
             }
         }
     }
@@ -382,6 +383,18 @@ impl Run<'_> {
             .await?;
         Ok(())
     }
+}
+
+/// What a completion hook's decision leaves for a run's own ending.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ending {
+    /// The run ends as it would without the hook, and stores its output.
+    Normal,
+    /// The hook stopped or rescheduled the task, so the run stores nothing.
+    Handled,
+    /// A replace took the key while the run ran, so the run stores and
+    /// publishes nothing: the key's task has not ended.
+    Superseded,
 }
 
 /// docket-rs's own result layout, so this script is not one of the shared

@@ -10,7 +10,7 @@ tasks, and runs a worker.
 
 ```toml
 [dependencies]
-docket-rs = "0.2"
+docket-rs = "0.3"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 ```
@@ -82,15 +82,24 @@ with Redis 6.2 and 8.10, Redis 8.10 in cluster mode, with ACLs, and behind
 Sentinel, and Valkey 8.0 and 9.1.
 
 `rediss://`, `rediss+cluster://`, and `rediss+sentinel://` connect over TLS
-through rustls, with its `ring` crypto backend.  The default `tls` feature
-brings both.  If another crate in your build turns on rustls's `aws-lc-rs`
-backend too, rustls cannot pick one, so call
-`rustls::crypto::CryptoProvider::install_default` before connecting.  Without
-TLS, turn off the default features:
+through rustls.  The default `tls` feature brings rustls without a crypto
+backend, so it uses the one your build already has.  rustls with its default
+features brings `aws-lc-rs`.  If your build has no backend, turn on
+`tls-ring`:
 
 ```toml
 [dependencies]
-docket-rs = { version = "0.2", default-features = false }
+docket-rs = { version = "0.3", features = ["tls-ring"] }
+```
+
+With no backend, the first `rediss://` connect panics.  With two backends,
+every rustls config in the process panics, the application's own included,
+unless it calls `rustls::crypto::CryptoProvider::install_default` first.
+Without TLS, turn off the default features:
+
+```toml
+[dependencies]
+docket-rs = { version = "0.3", default-features = false }
 ```
 
 Every connection docket-rs opens to Redis gives up on a connect after 10
@@ -140,7 +149,7 @@ last one left there:
 
 ```toml
 [dev-dependencies]
-docket-rs = { version = "0.2", features = ["memory"] }
+docket-rs = { version = "0.3", features = ["memory"] }
 ```
 
 An application that keeps keys of its own in the docket's Redis reaches them
