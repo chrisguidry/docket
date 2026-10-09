@@ -12,7 +12,7 @@ use opentelemetry::context::FutureExt as _;
 use opentelemetry::trace::{Status, TraceContextExt};
 use tracing::Instrument;
 
-use super::run_state::{Claim, Run};
+use super::run_state::{Claim, Ending, Run};
 use super::session::{Active, Delivery, Shared};
 use crate::behaviors::{AfterFailure, BoxError, NotAdmitted, Outcome, Release, Released};
 use crate::context::{self, Context};
@@ -253,11 +253,11 @@ async fn fail(
         return run.retry(when, generation, duration, &message).await;
     }
     let outcome: Outcome = Err(Box::new(Failed(message.clone())));
-    let handled = match complete(registered, ctx, outcome).await {
+    let ending = match complete(registered, ctx, outcome).await {
         Some(after) => run.after_completion(&after, generation, duration).await?,
-        None => false,
+        None => Ending::Normal,
     };
-    if !handled {
+    if ending == Ending::Normal {
         tracing::error!(
             error = message,
             "↩ [{}] {}",
@@ -265,10 +265,11 @@ async fn fail(
             run.call
         );
     }
-    run.terminal(
+    run.end(
         State::Failed,
         generation,
         vec![("error".into(), message.into_bytes())],
+        ending != Ending::Superseded,
     )
     .await
 }

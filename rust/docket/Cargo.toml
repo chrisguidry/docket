@@ -20,8 +20,13 @@ default = ["tls"]
 cli = ["dep:clap", "tokio/signal", "prometheus"]
 # memory:// runs the in-process engine in src/memory, for users' test suites.
 memory = ["dep:mlua", "dep:parking_lot", "dep:bytes", "dep:ordered-float", "dep:sha1"]
-# rediss:// connections, through rustls with its ring crypto backend.
+# rediss:// connections, through rustls.  It turns on no crypto backend, so
+# an application that already has one, such as rustls's default aws-lc-rs,
+# keeps exactly one.  Two backends make every rustls config in the process
+# panic, not only docket's.
 tls = ["redis/tokio-rustls-comp", "redis/tls-rustls-webpki-roots", "dep:rustls"]
+# rustls's ring backend, for an application with no backend of its own.
+tls-ring = ["tls", "rustls/ring"]
 # docket::prometheus: serves the metrics in the Prometheus text format.  It
 # reads them on demand, through the SDK's custom reader.
 prometheus = [
@@ -58,8 +63,8 @@ ordered-float = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
 sha1 = { workspace = true, optional = true }
 # redis turns off rustls's default features, which leaves rustls no crypto
-# backend; the tls feature gives it ring.
-rustls = { workspace = true, features = ["ring", "std", "tls12"], optional = true }
+# backend; the tls-ring feature gives it ring.
+rustls = { workspace = true, features = ["std", "tls12"], optional = true }
 
 # An application's tasks and the tests it writes for them; `cargo test`
 # runs its tests.

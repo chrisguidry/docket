@@ -5,7 +5,7 @@ members = ["docket", "docket-macros", "conformance-agent"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -17,7 +17,7 @@ chrono-tz = "0.10.4"
 clap = "4.6.7"
 croner = "4.0.1"
 docket-rs = { path = "docket" }
-docket-rs-macros = { version = "=0.2.0", path = "docket-macros" }
+docket-rs-macros = { version = "=0.3.0", path = "docket-macros" }
 futures = "0.3.34"
 futures-util = "0.3.34"
 gethostname = "1.1.0"

@@ -1,4 +1,4 @@
-//! Adding and replacing tasks, one at a time or in batches.
+//! Adding and replacing tasks one at a time.
 
 use std::collections::HashMap;
 use std::future::IntoFuture;
@@ -8,10 +8,9 @@ use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use opentelemetry::KeyValue;
 use opentelemetry::context::FutureExt as _;
-use redis::{RedisResult, Value};
 
 use super::Docket;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::execution::{Disposition, Execution, Message};
 use crate::keys::WORKER_GROUP;
 use crate::scripts;
@@ -107,28 +106,6 @@ impl Docket {
         self.submit(message, true).await
     }
 
-    /// Captures a task for [`Docket::add_many`] or [`Docket::replace_many`].
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "callers build the arguments in place, as with Docket::add"
-    )]
-    pub fn call<T: Task>(&self, args: T) -> Call {
-        Call::new(&args)
-    }
-
-    /// Adds many tasks, sending them to Redis in pipelines of 1,000 unless
-    /// the [`Batch`] says otherwise.  Await it to add them.
-    pub fn add_many(&self, calls: impl IntoIterator<Item = Call>) -> Batch<'_> {
-        Batch::new(self, calls, false)
-    }
-
-    /// Replaces many tasks, sending them to Redis in pipelines of 1,000
-    /// unless the [`Batch`] says otherwise.  A call without a key gets a new
-    /// one, as it does in an add.  Await it to replace them.
-    pub fn replace_many(&self, calls: impl IntoIterator<Item = Call>) -> Batch<'_> {
-        Batch::new(self, calls, true)
-    }
-
     fn message<T: Task>(
         function: &str,
         args: &T,
@@ -190,7 +167,7 @@ impl Docket {
 
     /// Whether a strike blocks `message`, and if one does, logs and counts
     /// it the way every scheduling path in pydocket does.
-    fn refuse_struck(&self, message: &Message) -> bool {
+    pub(super) fn refuse_struck(&self, message: &Message) -> bool {
         if !self.is_struck(message) {
             return false;
         }
@@ -209,7 +186,7 @@ impl Docket {
     /// or that a newer copy superseded was neither added nor replaced, so it
     /// does not count.  A replace also counts as a cancel of what it
     /// replaced.
-    fn count_scheduled(&self, function: &str, disposition: &Disposition, replace: bool) {
+    pub(super) fn count_scheduled(&self, function: &str, disposition: &Disposition, replace: bool) {
         if matches!(
             disposition,
             Disposition::Struck | Disposition::Failed(_) | Disposition::Superseded
@@ -228,179 +205,6 @@ impl Docket {
                 metrics.tasks_scheduled.add(1, &labels);
             }
         }
-    }
-
-    async fn place_many(
-        &self,
-        calls: Vec<Call>,
-        replace: bool,
-        chunk_size: Option<usize>,
-    ) -> Result<Vec<Execution>> {
-        // Checked before anything else, so a bad size is refused even for an
-        // empty or entirely struck batch, as in pydocket.
-        if chunk_size == Some(0) {
-            return Err(Error::Invalid(
-                "a batch's chunk size must be at least 1".into(),
-            ));
-        }
-        let mut messages = Vec::new();
-        for call in calls {
-            messages.push(Message {
-                key: call.key.unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
-                when: call.when.unwrap_or_else(|| self.now()),
-                function: call.function.to_owned(),
-                args: call
-                    .args
-                    .map_err(|error| Error::Json(serde::ser::Error::custom(error)))?,
-                attempt: 1,
-                generation: 0,
-                trace: HashMap::new(),
-            });
-        }
-
-        let name = if replace {
-            "docket.replace_many"
-        } else {
-            "docket.add_many"
-        };
-        let mut attributes = self.labels();
-        attributes.push(KeyValue::new(
-            "docket.batch.count",
-            i64::try_from(messages.len()).unwrap_or(i64::MAX),
-        ));
-        let span = self.telemetry().producer_span(name, attributes);
-        // A strike can arrive while the batch is in flight, so each message
-        // is judged once, and only the placed ones take a reply.
-        let struck: Vec<bool> = messages
-            .iter()
-            .map(|message| self.refuse_struck(message))
-            .collect();
-        let stricken = struck.iter().filter(|struck| **struck).count();
-        let replies = self
-            .place_batch(&messages, &struck, replace, chunk_size)
-            .with_context(span.clone())
-            .await;
-        telemetry::end(
-            &span,
-            replies.as_ref().map(|_| {
-                vec![KeyValue::new(
-                    "docket.batch.stricken",
-                    i64::try_from(stricken).unwrap_or(i64::MAX),
-                )]
-            }),
-        );
-        let mut dispositions = replies?.into_iter().map(|reply| match reply {
-            Ok(value) => Disposition::from_value(&value),
-            Err(error) => Disposition::Failed(error.to_string()),
-        });
-        Ok(messages
-            .iter()
-            .zip(struck)
-            .map(|(message, struck)| {
-                let disposition = if struck {
-                    Disposition::Struck
-                } else {
-                    // Redis answers every command of a pipeline.
-                    let disposition = dispositions
-                        .next()
-                        .unwrap_or(Disposition::Failed("Redis sent no reply".to_owned()));
-                    self.count_scheduled(&message.function, &disposition, replace);
-                    disposition
-                };
-                Execution::new(self.clone(), message, disposition)
-            })
-            .collect())
-    }
-
-    /// Sends the messages that no strike blocked, in pipelines of at most
-    /// `chunk_size`, or all in one, and returns Redis's reply to each.
-    async fn place_batch(
-        &self,
-        messages: &[Message],
-        struck: &[bool],
-        replace: bool,
-        chunk_size: Option<usize>,
-    ) -> Result<Vec<RedisResult<Value>>> {
-        let placed: Vec<scripts::Call> = messages
-            .iter()
-            .zip(struck)
-            .filter(|(_, struck)| !**struck)
-            .map(|(message, _)| self.schedule_call(Placement::new(message.clone(), replace)))
-            .collect();
-        let mut replies: Vec<RedisResult<Value>> = Vec::new();
-        let Some(first) = placed.first() else {
-            return Ok(replies);
-        };
-        let mut connection = self.handle();
-        if !self.backend().is_cluster() {
-            first.load(&mut connection).await?;
-        }
-        for chunk in placed.chunks(chunk_size.unwrap_or(placed.len())) {
-            let mut pipeline = redis::pipe();
-            pipeline.ignore_errors();
-            for call in chunk {
-                if self.backend().is_cluster() {
-                    call.queue_eval(&mut pipeline);
-                } else {
-                    call.queue(&mut pipeline);
-                }
-            }
-            let chunk_replies: Vec<RedisResult<Value>> =
-                pipeline.query_async(&mut connection).await?;
-            replies.extend(chunk_replies);
-        }
-        Ok(replies)
-    }
-}
-
-/// How many tasks a [`Batch`] sends in each pipeline unless it says
-/// otherwise, the same as pydocket's default.
-const CHUNK_SIZE: usize = 1000;
-
-/// Many tasks waiting to be added or replaced.  Await it to send them.
-#[must_use = "a batch does nothing until it is awaited"]
-pub struct Batch<'a> {
-    docket: &'a Docket,
-    calls: Vec<Call>,
-    replace: bool,
-    chunk_size: Option<usize>,
-}
-
-impl<'a> Batch<'a> {
-    fn new(docket: &'a Docket, calls: impl IntoIterator<Item = Call>, replace: bool) -> Self {
-        Self {
-            docket,
-            calls: calls.into_iter().collect(),
-            replace,
-            chunk_size: Some(CHUNK_SIZE),
-        }
-    }
-
-    /// Sends at most `size` tasks in each pipeline.  Smaller pipelines hold
-    /// less in memory and let other clients in between; larger ones take
-    /// fewer round trips.  Awaiting the batch fails when `size` is 0.
-    pub fn chunk_size(mut self, size: usize) -> Self {
-        self.chunk_size = Some(size);
-        self
-    }
-
-    /// Sends the whole batch in one pipeline.
-    pub fn one_pipeline(mut self) -> Self {
-        self.chunk_size = None;
-        self
-    }
-}
-
-impl<'a> IntoFuture for Batch<'a> {
-    type Output = Result<Vec<Execution>>;
-    type IntoFuture = BoxFuture<'a, Self::Output>;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move {
-            self.docket
-                .place_many(self.calls, self.replace, self.chunk_size)
-                .await
-        })
     }
 }
 
@@ -450,39 +254,5 @@ impl<'a, T: Task> IntoFuture for Add<'a, T> {
             let message = Docket::message(T::NAME, &self.args, self.key, when)?;
             self.docket.submit(message, false).await
         })
-    }
-}
-
-/// A task captured by [`Docket::call`], for a batch.
-#[must_use = "a call does nothing until it goes into a batch"]
-#[derive(Clone, Debug)]
-pub struct Call {
-    function: &'static str,
-    /// The arguments as JSON text, or why they did not convert.
-    args: std::result::Result<String, String>,
-    key: Option<String>,
-    when: Option<DateTime<Utc>>,
-}
-
-impl Call {
-    pub(crate) fn new<T: Task>(args: &T) -> Self {
-        Self {
-            function: T::NAME,
-            args: serde_json::to_string(args).map_err(|error| error.to_string()),
-            key: None,
-            when: None,
-        }
-    }
-
-    /// Gives the task a key.
-    pub fn key(mut self, key: impl Into<String>) -> Self {
-        self.key = Some(key.into());
-        self
-    }
-
-    /// Schedules the task for a time.
-    pub fn at(mut self, when: DateTime<Utc>) -> Self {
-        self.when = Some(when);
-        self
     }
 }

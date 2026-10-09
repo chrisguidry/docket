@@ -1,5 +1,6 @@
 //! A docket: a named set of tasks in one Redis.
 
+mod batch;
 mod builder;
 mod registry;
 mod run_limits;
@@ -26,12 +27,13 @@ use crate::task::Task;
 use crate::telemetry::{self, Telemetry};
 use crate::wire::iso;
 
+pub use batch::{Batch, Call};
 pub use builder::DocketBuilder;
 pub use registry::Registration;
 pub(crate) use registry::{Registered, Registry};
 pub(crate) use run_limits::Limited;
+pub use schedule::Add;
 pub(crate) use schedule::Placement;
-pub use schedule::{Add, Batch, Call};
 pub use snapshot::{Snapshot, TaskSummary, WorkerSummary};
 
 /// A named set of tasks in one Redis.  Producers add tasks to it, and

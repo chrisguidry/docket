@@ -237,8 +237,8 @@ async def test_chain_survives_terminal_failure_after_on_complete_via_supersessio
     docket: Docket,
 ):
     """Worker dies AFTER ``on_complete`` already scheduled the successor:
-    ``mark_as_completed`` raises in the success path, the in-place recovery's
-    ``mark_as_failed`` also raises, and the worker exits. The successor is
+    the terminal write raises in the success path, the in-place recovery's
+    terminal write also raises, and the worker exits. The successor is
     already in Redis with an incremented generation, so when redelivery brings
     the original back to a fresh worker, ``claim()`` sees it superseded and
     ACKs cleanly without re-running the body. The successor then runs as
@@ -259,15 +259,10 @@ async def test_chain_survives_terminal_failure_after_on_complete_via_supersessio
 
     await docket.add(perpetual_task, key="perpetual")()
 
-    async def crashing_mark_as_completed(
+    async def crashing_mark_as_terminal(
         self: Execution, *args: Any, **kwargs: Any
     ) -> None:
-        raise RuntimeError("simulated blip in mark_as_completed")
-
-    async def crashing_mark_as_failed(
-        self: Execution, *args: Any, **kwargs: Any
-    ) -> None:
-        raise RuntimeError("simulated blip in mark_as_failed")
+        raise RuntimeError("simulated blip in the terminal write")
 
     async with Worker(
         docket,
@@ -276,10 +271,7 @@ async def test_chain_survives_terminal_failure_after_on_complete_via_supersessio
         # before the worker has a chance to crash from this iteration.
         scheduling_resolution=timedelta(seconds=5),
     ) as worker_a:
-        with (
-            patch.object(Execution, "mark_as_completed", crashing_mark_as_completed),
-            patch.object(Execution, "mark_as_failed", crashing_mark_as_failed),
-        ):
+        with patch.object(Execution, "_mark_as_terminal", crashing_mark_as_terminal):
             with pytest.raises((ExceptionGroup, RuntimeError)):
                 await worker_a.run_until_finished()
         assert len(executions) == 1  # body ran once before worker_a died

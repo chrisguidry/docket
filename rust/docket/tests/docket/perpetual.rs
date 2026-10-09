@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use docket::{Perpetual, State, Task};
+use docket::{Event, Perpetual, State, Task};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::support::telemetry::value;
@@ -213,4 +214,65 @@ async fn a_perpetual_task_that_stops_itself_keeps_a_replacement() {
         value(&docket, "docket_tasks_superseded", &labels),
         Some(1.0)
     );
+}
+
+/// A run that a replace superseded ends without a state event, so a caller
+/// waiting on the key waits for the replacement, not the old run.
+#[rstest::rstest]
+#[case::stops_and_succeeds(true, false)]
+#[case::stops_and_fails(true, true)]
+#[case::reschedules_and_succeeds(false, false)]
+#[case::reschedules_and_fails(false, true)]
+#[tokio::test]
+async fn a_perpetual_task_that_gives_way_publishes_no_ending(
+    #[case] stops: bool,
+    #[case] fails: bool,
+) {
+    let docket = docket().await;
+    let runs = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&runs);
+    docket
+        .register(move |ctx: docket::Context, args: Stopping| {
+            recorded.lock().unwrap().push(args.round.clone());
+            async move {
+                if args.round == "replacement" {
+                    ctx.perpetual().unwrap().cancel();
+                    return Ok(());
+                }
+                let soon = chrono::Utc::now() + chrono::Duration::milliseconds(200);
+                let replacement = Stopping::new("replacement");
+                ctx.docket().replace(replacement, ctx.key(), soon).await?;
+                if stops {
+                    ctx.perpetual().unwrap().cancel();
+                }
+                if fails {
+                    return Err("the first run fails".into());
+                }
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            }
+        })
+        .with(Perpetual::every(Duration::from_secs(3600)));
+    let execution = docket
+        .add(Stopping::new("first"))
+        .key("stopping")
+        .await
+        .unwrap();
+    let mut events = execution.subscribe().await.unwrap();
+
+    let first_ending = async {
+        loop {
+            if let Some(Ok(Event::State(event))) = events.next().await
+                && event.state.is_terminal()
+            {
+                return runs.lock().unwrap().clone();
+            }
+        }
+    };
+    let (finished, seen) = within(10, async {
+        tokio::join!(worker(&docket).run_until_finished(), first_ending)
+    })
+    .await;
+    finished.unwrap();
+
+    assert_eq!(seen, ["first", "replacement"]);
 }

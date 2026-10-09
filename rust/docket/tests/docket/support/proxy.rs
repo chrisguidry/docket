@@ -31,6 +31,9 @@ struct State {
     /// Drops every command without an answer, as if Redis stopped
     /// answering without closing its connections.
     silent: bool,
+    /// Goes silent at the command with this upper-case name once this many
+    /// of them have passed.
+    silence_after: Option<(Vec<u8>, usize)>,
     connections: JoinSet<()>,
     /// How many of each command reached Redis, by upper-case name.
     counts: std::collections::HashMap<String, usize>,
@@ -43,6 +46,22 @@ struct State {
 }
 
 impl State {
+    /// Whether this command goes unanswered, spending one of the commands
+    /// that `silence_after` lets through.
+    fn silences(&mut self, name: &[u8]) -> bool {
+        if let Some((command, left)) = self.silence_after.as_mut()
+            && command == name
+        {
+            if *left == 0 {
+                self.silence_after = None;
+                self.silent = true;
+            } else {
+                *left -= 1;
+            }
+        }
+        self.silent
+    }
+
     /// The error reply for this command when it should fail, spending one
     /// of a rule's failures.
     fn failure(&mut self, args: &[Vec<u8>], name: &[u8]) -> Option<Vec<u8>> {
@@ -149,6 +168,13 @@ impl Proxy {
     /// connections and on new ones.
     pub fn silence(&self) {
         self.state.lock().unwrap().silent = true;
+    }
+
+    /// Answers the next `times` commands named `command`, then goes silent
+    /// as `silence` does, from the one after them on.
+    pub fn silence_after(&self, command: &str, times: usize) {
+        let command = command.to_ascii_uppercase().into_bytes();
+        self.state.lock().unwrap().silence_after = Some((command, times));
     }
 
     /// Accepts connections and answers commands again.
@@ -298,7 +324,7 @@ async fn commands(
                 .first()
                 .map(|arg| arg.to_ascii_uppercase())
                 .unwrap_or_default();
-            if state.lock().unwrap().silent {
+            if state.lock().unwrap().silences(&name) {
                 continue;
             }
             if name == b"SUBSCRIBE" || name == b"PSUBSCRIBE" {
