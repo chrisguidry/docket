@@ -1,4 +1,5 @@
-//! A worker's command-line options, for an application's own command line.
+//! A worker's command-line options and pydocket's operator commands, for an
+//! application's own command line.
 //!
 //! docket-rs is a library, so it ships no worker binary.  [`WorkerArgs`]
 //! gives an application's binary the same options, with the same
@@ -51,6 +52,73 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Operator commands
+//!
+//! [`Command`] holds pydocket's commands for operating a docket:
+//! `snapshot`, `workers ls`, `workers for-task`, `strike`, `restore`,
+//! `clear`, and `watch`.  pydocket's own CLI cannot serve a docket that
+//! docket-rs workers use, because it reads task arguments and strike values
+//! as pickles where docket-rs writes JSON.  A worker binary can carry the
+//! commands under a subcommand of its own, so an operator runs them through
+//! the binary, for example with `kubectl exec deploy/my-worker --
+//! my-worker docket snapshot`.  The commands connect with the binary's
+//! `--docket` and `--url` options, or `DOCKET_NAME` and `DOCKET_URL`, and
+//! the defaults the binary gives them:
+//!
+//! ```no_run
+//! use clap::{Parser, Subcommand};
+//!
+//! #[derive(Parser)]
+//! struct Cli {
+//!     #[command(flatten)]
+//!     worker: docket::cli::WorkerArgs,
+//!     #[command(subcommand)]
+//!     command: Option<Commands>,
+//! }
+//!
+//! #[derive(Subcommand)]
+//! enum Commands {
+//!     /// Inspect and manage the docket.
+//!     #[command(subcommand)]
+//!     Docket(docket::cli::Command),
+//! }
+//!
+//! # async fn example() -> docket::Result<()> {
+//! let cli = Cli::parse();
+//! let docket = cli.worker.docket().await?;
+//! match &cli.command {
+//!     Some(Commands::Docket(command)) => command.run(&docket).await,
+//!     None => {
+//!         // Register the application's tasks here.
+//!         cli.worker.run(&docket).await
+//!     }
+//! }
+//! # }
+//! ```
+//!
+//! The worker's options belong to the binary's top-level command, so they
+//! come before the subcommand: `my-worker --docket orders docket snapshot`.
+//! [`Command::run`] prints to stdout and returns any error, for the binary
+//! to print to stderr before it exits with a failure.  A binary without a
+//! worker can flatten [`DocketArgs`] in place of [`WorkerArgs`].  With the
+//! `cli` feature, docket-rs also builds a `docket-rs` binary that does
+//! exactly that.
+//!
+//! The commands differ from pydocket's in a few ways:
+//!
+//! - The tables have no colors, and they do not wrap to the terminal.
+//! - `snapshot` has an `Arguments` column with each task's arguments as
+//!   JSON, and no `--tasks` option, since it needs no tasks registered.
+//! - A strike's value is JSON, so `strike` takes the types that JSON has:
+//!   text is a string, and `str:`, `int:`, `float:`, `bool:`, and `json:`
+//!   prefixes give the type, such as `int:7` or `json:[1,10]` for
+//!   `between`.  A docket-rs worker cannot read a strike that pydocket's
+//!   CLI writes, and a pydocket worker cannot read one that these commands
+//!   write.
+//! - `watch` prints a line for each change instead of redrawing a panel,
+//!   and it fails when the docket knows nothing of the key.
+//! - `workers for-task` does not set the task in bold.
 
 use std::future::Future;
 use std::sync::OnceLock;
@@ -63,6 +131,71 @@ use crate::docket::{Docket, DocketBuilder};
 use crate::error::{Error, Result};
 use crate::prometheus::Exporter;
 use crate::worker::Worker;
+
+mod commands;
+mod display;
+mod strike;
+mod watch;
+
+pub use commands::{Command, SnapshotArgs, WatchArgs, WorkersCommand};
+pub use strike::StrikeArgs;
+
+/// The options that name a docket, the same as [`WorkerArgs`]'s, for a
+/// binary that runs [`Command`]s without a worker.  They are global, so
+/// they can come before or after the command, as they come after it in
+/// pydocket.
+#[derive(clap::Args, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DocketArgs {
+    /// The name of the docket.
+    #[arg(
+        long = "docket",
+        env = "DOCKET_NAME",
+        default_value = "docket",
+        global = true
+    )]
+    pub docket: String,
+
+    /// The URL of the Redis server.
+    #[arg(
+        long,
+        env = "DOCKET_URL",
+        hide_env_values = true,
+        default_value = "redis://localhost:6379/0",
+        global = true,
+        value_parser = persistent_url
+    )]
+    pub url: String,
+}
+
+impl std::fmt::Debug for DocketArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DocketArgs")
+            .field("docket", &self.docket)
+            .field("url", &crate::connection::redact(&self.url))
+            .finish()
+    }
+}
+
+impl DocketArgs {
+    /// Connects to the docket the options name.
+    pub async fn docket(&self) -> Result<Docket> {
+        Docket::connect(&self.docket, &self.url).await
+    }
+}
+
+/// pydocket's `validate_url`: a `memory://` docket lives in one process, so
+/// a command run from another one cannot see it.
+fn persistent_url(url: &str) -> std::result::Result<String, String> {
+    if url.starts_with("memory://") {
+        return Err(
+            "The memory:// URL scheme is not supported by the CLI.  The memory \
+                    backend does not persist across processes; use Redis or Valkey."
+                .to_owned(),
+        );
+    }
+    Ok(url.to_owned())
+}
 
 /// A docket worker's command-line options.
 #[derive(clap::Args, Clone, PartialEq, Eq)]

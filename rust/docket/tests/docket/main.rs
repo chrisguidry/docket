@@ -10,6 +10,8 @@ mod automatic;
 mod batches;
 mod behavior_faults;
 mod cancellation;
+#[cfg(feature = "cli")]
+mod cli;
 mod concurrency;
 mod connection_settings;
 mod context;

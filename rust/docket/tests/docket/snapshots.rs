@@ -267,3 +267,34 @@ async fn clear_leaves_a_running_task_alone() {
 
     assert_eq!(during, Some(State::Running));
 }
+
+#[tokio::test]
+async fn a_snapshot_reads_when_each_running_task_started() {
+    let Some(proxy) = crate::support::proxy().await else {
+        return;
+    };
+    let docket = crate::support::docket_through(&proxy).await;
+    let (started, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let (on_start, on_release) = (Arc::clone(&started), Arc::clone(&release));
+    docket.register(move |_ctx, _: Noop| {
+        let (on_start, on_release) = (Arc::clone(&on_start), Arc::clone(&on_release));
+        async move {
+            on_start.notify_one();
+            on_release.notified().await;
+            Ok::<_, std::io::Error>(())
+        }
+    });
+    docket.add(Noop).await.unwrap();
+    let running = tokio::spawn(worker(&docket).run_until_finished());
+    within(10, started.notified()).await;
+
+    proxy.fail("HGET", 1);
+    let error = docket.snapshot().await.unwrap_err();
+    assert!(error.to_string().contains("injected failure"), "{error}");
+    let snapshot = docket.snapshot().await.unwrap();
+    release.notify_one();
+    within(10, running).await.unwrap().unwrap();
+
+    let started = snapshot.running[0].started.unwrap();
+    assert!(started <= snapshot.taken, "{started} {}", snapshot.taken);
+}

@@ -36,9 +36,15 @@ pub enum Error {
         key: String,
     },
 
-    /// A setting that docket cannot use, such as a concurrency of zero.
+    /// A setting or argument that docket cannot use, such as a
+    /// concurrency of zero.
     #[error("{0}")]
     Invalid(String),
+
+    /// A command of [`docket::cli`](crate::cli) could not write its output.
+    #[cfg(feature = "cli")]
+    #[error("could not write the output: {0}")]
+    Output(std::io::Error),
 }
 
 /// A `Result` whose error is docket's [`Error`].

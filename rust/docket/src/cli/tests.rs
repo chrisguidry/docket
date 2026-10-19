@@ -3,7 +3,7 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser};
 use rstest::rstest;
 
-use super::{WorkerArgs, parse_duration};
+use super::{Command, DocketArgs, WorkerArgs, parse_duration};
 
 #[derive(Parser)]
 struct Cli {
@@ -384,4 +384,57 @@ async fn refuses_a_port_in_use(#[case] option: &str, #[case] server: &str) {
             .starts_with(&format!("cannot serve {server} on port {port}: ")),
         "{error}"
     );
+}
+
+#[derive(Parser)]
+struct Operator {
+    #[command(flatten)]
+    docket: DocketArgs,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[test]
+fn docket_options_come_before_or_after_the_command() {
+    for arguments in [
+        [
+            "app",
+            "--docket",
+            "orders",
+            "--url",
+            "redis://r:1/0",
+            "clear",
+        ],
+        [
+            "app",
+            "clear",
+            "--docket",
+            "orders",
+            "--url",
+            "redis://r:1/0",
+        ],
+    ] {
+        let parsed = Operator::try_parse_from(arguments).unwrap();
+        assert_eq!(parsed.docket.docket, "orders");
+        assert_eq!(parsed.docket.url, "redis://r:1/0");
+        assert_eq!(parsed.command, Command::Clear);
+    }
+}
+
+#[test]
+fn docket_options_refuse_a_memory_url_and_hide_passwords() {
+    let error = Operator::try_parse_from(["app", "--url", "memory://x", "clear"])
+        .err()
+        .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("memory:// URL scheme is not supported")
+    );
+
+    let parsed =
+        Operator::try_parse_from(["app", "--url", "redis://u:hunter2@r:1/0", "clear"]).unwrap();
+    let debug = format!("{:?}", parsed.docket);
+    assert!(debug.contains("u:***@r:1/0"), "{debug}");
+    assert!(!debug.contains("hunter2"), "{debug}");
 }
