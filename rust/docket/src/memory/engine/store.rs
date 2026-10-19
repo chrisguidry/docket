@@ -194,6 +194,21 @@ impl ValueEntry {
     }
 }
 
+/// Redis never keeps an empty hash, set, sorted set or list: the key goes
+/// with its last element. A stream stays when it is emptied.
+pub(crate) fn remove_if_empty(data: &mut HashMap<Bytes, ValueEntry>, key: &Bytes) {
+    let empty = match data.get(key).map(|entry| &entry.data) {
+        Some(ValueData::Hash(map)) => map.is_empty(),
+        Some(ValueData::Set(set)) => set.is_empty(),
+        Some(ValueData::SortedSet(zset)) => zset.len() == 0,
+        Some(ValueData::List(list)) => list.is_empty(),
+        _ => false,
+    };
+    if empty {
+        data.remove(key);
+    }
+}
+
 /// Errors that can occur during store operations.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
@@ -284,6 +299,23 @@ impl PubSubRegistry {
             next_id: AtomicU64::new(0),
         }
     }
+}
+
+/// The value HINCRBY stores: an absent field counts from 0, a field that is
+/// not an integer is an error, and so is leaving the range of an i64.
+pub(crate) fn hincrby_value(current: Option<&Bytes>, increment: i64) -> Result<i64, StoreError> {
+    let current = match current {
+        None => 0,
+        // like Redis, take only the form an integer is printed in: no
+        // leading '+', zeros or spaces
+        Some(value) => std::str::from_utf8(value)
+            .ok()
+            .and_then(|text| text.parse::<i64>().ok().filter(|n| n.to_string() == text))
+            .ok_or_else(|| StoreError::Syntax("ERR hash value is not an integer".to_string()))?,
+    };
+    current
+        .checked_add(increment)
+        .ok_or_else(|| StoreError::Syntax("ERR increment or decrement would overflow".to_string()))
 }
 
 pub struct Store {
@@ -571,7 +603,7 @@ impl Store {
             }
         }
 
-        match data.get_mut(key) {
+        let result = match data.get_mut(key) {
             None => Ok(0),
             Some(entry) => match entry.data {
                 ValueData::Hash(ref mut map) => {
@@ -585,7 +617,9 @@ impl Store {
                 }
                 _ => Err(StoreError::WrongType),
             },
-        }
+        };
+        remove_if_empty(&mut data, key);
+        result
     }
 
     /// HVALS: Returns all values in a hash.
@@ -675,11 +709,7 @@ impl Store {
 
         match entry.data {
             ValueData::Hash(ref mut map) => {
-                let current = map
-                    .get(&field)
-                    .and_then(|v| String::from_utf8_lossy(v).parse::<i64>().ok())
-                    .unwrap_or(0);
-                let new_val = current + increment;
+                let new_val = hincrby_value(map.get(&field), increment)?;
                 map.insert(field, Bytes::from(new_val.to_string()));
                 Ok(new_val)
             }
@@ -780,7 +810,7 @@ impl Store {
             }
         }
 
-        match data.get_mut(key) {
+        let result = match data.get_mut(key) {
             None => Ok(0),
             Some(entry) => match entry.data {
                 ValueData::Set(ref mut set) => {
@@ -794,7 +824,9 @@ impl Store {
                 }
                 _ => Err(StoreError::WrongType),
             },
-        }
+        };
+        remove_if_empty(&mut data, key);
+        result
     }
 
     // ── Sorted Set Operations ─────────────────────────────────────────
@@ -823,10 +855,10 @@ impl Store {
         }
 
         let entry = data
-            .entry(key)
+            .entry(key.clone())
             .or_insert_with(ValueEntry::new_sorted_set);
 
-        match entry.data {
+        let result = match entry.data {
             ValueData::SortedSet(ref mut zset) => {
                 let mut added = 0i64;
                 let mut changed = 0i64;
@@ -863,7 +895,10 @@ impl Store {
                 if ch { Ok(changed) } else { Ok(added) }
             }
             _ => Err(StoreError::WrongType),
-        }
+        };
+        // XX on a key that did not exist adds nothing
+        remove_if_empty(&mut data, &key);
+        result
     }
 
     /// ZREM: Removes members from a sorted set. Returns count of members removed.
@@ -880,7 +915,7 @@ impl Store {
             }
         }
 
-        match data.get_mut(key) {
+        let result = match data.get_mut(key) {
             None => Ok(0),
             Some(entry) => match entry.data {
                 ValueData::SortedSet(ref mut zset) => {
@@ -894,7 +929,9 @@ impl Store {
                 }
                 _ => Err(StoreError::WrongType),
             },
-        }
+        };
+        remove_if_empty(&mut data, key);
+        result
     }
 
     /// ZRANGE: Returns members by index range (0-based, supports negative indices).
@@ -1082,7 +1119,7 @@ impl Store {
             }
         }
 
-        match data.get_mut(key) {
+        let result = match data.get_mut(key) {
             None => Ok(0),
             Some(entry) => match entry.data {
                 ValueData::SortedSet(ref mut zset) => {
@@ -1103,7 +1140,9 @@ impl Store {
                 }
                 _ => Err(StoreError::WrongType),
             },
-        }
+        };
+        remove_if_empty(&mut data, key);
+        result
     }
 
     /// ZCARD: Returns the cardinality (member count) of a sorted set.
@@ -1187,7 +1226,8 @@ impl Store {
 
     /// EXPIRE: Set a timeout on a key in seconds. Returns true if the key exists and timeout was set.
     /// Returns false if the key does not exist.
-    pub fn expire(&self, key: &Bytes, seconds: u64) -> bool {
+    /// A time of zero or less deletes the key, as in Redis.
+    pub fn expire(&self, key: &Bytes, seconds: i64) -> bool {
         let mut data = self.data.write();
 
         // Passive expiration
@@ -1198,10 +1238,14 @@ impl Store {
             }
         }
 
+        if seconds <= 0 {
+            return data.remove(key).is_some();
+        }
         match data.get_mut(key) {
             None => false,
             Some(entry) => {
-                entry.expires_at = Some(std::time::Instant::now() + Duration::from_secs(seconds));
+                entry.expires_at =
+                    Some(std::time::Instant::now() + Duration::from_secs(seconds as u64));
                 true
             }
         }
@@ -1471,6 +1515,10 @@ impl Store {
             None => Ok(Vec::new()),
             Some(entry) => match &entry.data {
                 ValueData::Stream(stream) => {
+                    // BTreeMap::range panics on an inverted range
+                    if min > max {
+                        return Ok(Vec::new());
+                    }
                     let entries: Vec<(StreamId, HashMap<Bytes, Bytes>)> = stream
                         .entries
                         .range(min..=max)
@@ -3967,6 +4015,68 @@ mod tests {
         assert!(vals.is_empty());
     }
 
+    // ── HINCRBY errors ───────────────────────────────────────────────
+
+    #[test]
+    fn test_hincrby_refuses_a_field_that_is_not_an_integer() {
+        let store = Store::new();
+        let (key, field) = (Bytes::from("key"), Bytes::from("field"));
+        // Redis only counts from the canonical form of an integer
+        for value in ["v0", "+5", "05", "-0", " 5", ""] {
+            store
+                .hset(key.clone(), vec![(field.clone(), Bytes::from(value))])
+                .unwrap();
+            let err = store.hincrby(key.clone(), field.clone(), 1).unwrap_err();
+            assert_eq!(err.to_string(), "ERR hash value is not an integer", "{value:?}");
+            assert_eq!(store.hget(&key, &field), Ok(Some(Bytes::from(value))));
+        }
+    }
+
+    #[test]
+    fn test_hincrby_refuses_to_overflow() {
+        let store = Store::new();
+        let (key, field) = (Bytes::from("key"), Bytes::from("field"));
+        assert_eq!(store.hincrby(key.clone(), field.clone(), i64::MAX), Ok(i64::MAX));
+
+        let err = store.hincrby(key.clone(), field.clone(), 1).unwrap_err();
+        assert_eq!(err.to_string(), "ERR increment or decrement would overflow");
+        assert_eq!(
+            store.hget(&key, &field),
+            Ok(Some(Bytes::from(i64::MAX.to_string())))
+        );
+    }
+
+    #[test]
+    fn test_lua_hincrby_reports_the_same_errors() {
+        let store = Store::new();
+        let script = "
+            redis.call('HSET', KEYS[1], 'word', 'v0', 'big', '9223372036854775807')
+            local word = redis.pcall('HINCRBY', KEYS[1], 'word', 1)
+            local big = redis.pcall('HINCRBY', KEYS[1], 'big', 1)
+            return {word.err, big.err, redis.call('HGET', KEYS[1], 'word'), redis.call('HGET', KEYS[1], 'big')}
+        ";
+        let reply = store.eval(script, vec![Bytes::from("key")], vec![]).unwrap();
+        let RedisValue::Array(parts) = reply else {
+            panic!("unexpected reply: {reply:?}")
+        };
+        let text: Vec<String> = parts
+            .iter()
+            .map(|part| match part {
+                RedisValue::BulkString(bytes) => String::from_utf8_lossy(bytes).to_string(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            text,
+            [
+                "ERR hash value is not an integer",
+                "ERR increment or decrement would overflow",
+                "v0",
+                "9223372036854775807"
+            ]
+        );
+    }
+
     // ── Set Tests ────────────────────────────────────────────────────
 
     #[test]
@@ -4658,6 +4768,89 @@ mod tests {
         assert!(matches!(result, Err(StoreError::WrongType)));
     }
 
+    // ── Keys left empty ──────────────────────────────────────────────
+
+    #[test]
+    fn test_removing_the_last_member_removes_the_key() {
+        let store = Store::new();
+        let (key, member) = (Bytes::from("key"), Bytes::from("member"));
+
+        store
+            .hset(key.clone(), vec![(member.clone(), Bytes::from("v"))])
+            .unwrap();
+        assert_eq!(store.hdel(&key, std::slice::from_ref(&member)), Ok(1));
+        assert_eq!(store.exists(std::slice::from_ref(&key)), 0);
+
+        store.sadd(key.clone(), vec![member.clone()]).unwrap();
+        assert_eq!(store.srem(&key, std::slice::from_ref(&member)), Ok(1));
+        assert_eq!(store.exists(std::slice::from_ref(&key)), 0);
+
+        store
+            .zadd(key.clone(), vec![(1.0, member.clone())], false, false, false, false, false)
+            .unwrap();
+        assert_eq!(store.zrem(&key, std::slice::from_ref(&member)), Ok(1));
+        assert_eq!(store.exists(std::slice::from_ref(&key)), 0);
+
+        store
+            .zadd(key.clone(), vec![(1.0, member.clone())], false, false, false, false, false)
+            .unwrap();
+        assert_eq!(store.zremrangebyscore(&key, 0.0, 2.0), Ok(1));
+        assert_eq!(store.exists(std::slice::from_ref(&key)), 0);
+        // the key is free for another type again
+        assert_eq!(store.get(&key), Ok(None));
+    }
+
+    #[test]
+    fn test_removing_some_members_keeps_the_key() {
+        let store = Store::new();
+        let key = Bytes::from("key");
+        store
+            .sadd(key.clone(), vec![Bytes::from("a"), Bytes::from("b")])
+            .unwrap();
+        assert_eq!(store.srem(&key, &[Bytes::from("a")]), Ok(1));
+        assert_eq!(store.exists(&[key]), 1);
+    }
+
+    #[test]
+    fn test_zadd_xx_on_a_missing_key_creates_nothing() {
+        let store = Store::new();
+        let key = Bytes::from("key");
+        assert_eq!(
+            store.zadd(key.clone(), vec![(1.0, Bytes::from("member"))], false, true, false, false, false),
+            Ok(0)
+        );
+        assert_eq!(store.exists(std::slice::from_ref(&key)), 0);
+        assert_eq!(store.get(&key), Ok(None));
+    }
+
+    #[test]
+    fn test_lua_removing_the_last_member_removes_the_key() {
+        let store = Store::new();
+        let key = Bytes::from("key");
+        let script = "
+            redis.call('HSET', KEYS[1], 'f', 'v')
+            redis.call('HDEL', KEYS[1], 'f')
+            local after_hdel = redis.call('EXISTS', KEYS[1])
+            redis.call('SADD', KEYS[1], 'm')
+            redis.call('SREM', KEYS[1], 'm')
+            local after_srem = redis.call('EXISTS', KEYS[1])
+            redis.call('ZADD', KEYS[1], 1, 'm')
+            redis.call('ZREM', KEYS[1], 'm')
+            local after_zrem = redis.call('EXISTS', KEYS[1])
+            redis.call('ZADD', KEYS[1], 1, 'm')
+            redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, 2)
+            return {after_hdel, after_srem, after_zrem, redis.call('EXISTS', KEYS[1])}
+        ";
+        let reply = store.eval(script, vec![key], vec![]).unwrap();
+        let RedisValue::Array(counts) = reply else {
+            panic!("unexpected reply: {reply:?}")
+        };
+        assert!(
+            counts.iter().all(|count| matches!(count, RedisValue::Integer(0))),
+            "{counts:?}"
+        );
+    }
+
     // ── GET on SortedSet returns WRONGTYPE ──────────────────────────
 
     #[test]
@@ -4747,6 +4940,51 @@ mod tests {
         let removed = store.sweep_expired();
         assert!(removed <= 20, "sweep should remove at most 20 keys, removed {}", removed);
         assert!(removed > 0, "sweep should remove some expired keys");
+    }
+
+    // ── EXPIRE with a time that has passed ───────────────────────────
+
+    #[test]
+    fn test_expire_with_a_time_of_zero_or_less_deletes_the_key() {
+        let store = Store::new();
+        let key = Bytes::from("key");
+        for seconds in [-1, 0] {
+            store.set(key.clone(), Bytes::from("value"), None, false, false);
+            assert!(store.expire(&key, seconds));
+            // gone from the keyspace, not just hidden until the next sweep
+            assert!(!store.data.read().contains_key(&key));
+            assert!(!store.expire(&key, seconds));
+        }
+    }
+
+    #[test]
+    fn test_lua_expire_with_a_time_of_zero_or_less_deletes_the_key() {
+        let store = Store::new();
+        let script = "
+            local replies = {}
+            for _, command in ipairs({'EXPIRE', 'PEXPIRE'}) do
+                for _, time in ipairs({-1, 0}) do
+                    redis.call('SET', KEYS[1], 'value')
+                    table.insert(replies, redis.call(command, KEYS[1], time))
+                    table.insert(replies, redis.call('EXISTS', KEYS[1]))
+                    table.insert(replies, redis.call(command, KEYS[1], time))
+                end
+            end
+            return replies
+        ";
+        let reply = store.eval(script, vec![Bytes::from("key")], vec![]).unwrap();
+        let RedisValue::Array(parts) = reply else {
+            panic!("unexpected reply: {reply:?}")
+        };
+        let integers: Vec<i64> = parts
+            .iter()
+            .map(|part| match part {
+                RedisValue::Integer(n) => *n,
+                other => panic!("unexpected reply: {other:?}"),
+            })
+            .collect();
+        assert_eq!(integers, [1, 0, 0].repeat(4));
+        assert!(!store.data.read().contains_key(&Bytes::from("key")));
     }
 
     // ── keys() tests ────────────────────────────────────────────────
@@ -4890,6 +5128,22 @@ mod tests {
         assert_eq!(consumers.len(), 1);
         assert_eq!(consumers[0].0, Bytes::from("consumer1"));
         assert_eq!(consumers[0].1, 2);
+    }
+
+    // ── XRANGE with an inverted range ────────────────────────────────
+
+    #[test]
+    fn test_xrange_with_min_above_max_is_empty() {
+        let store = Store::new();
+        let key = Bytes::from("stream");
+        store
+            .xadd(
+                key.clone(),
+                HashMap::from([(Bytes::from("f"), Bytes::from("v"))]),
+                Some((1, 1)),
+            )
+            .unwrap();
+        assert_eq!(store.xrange(&key, (2, 0), (1, 2), None), Ok(Vec::new()));
     }
 
     // ── Shutdown Tests ──────────────────────────────────────────────
@@ -5449,5 +5703,53 @@ mod tests {
         let keys = vec![Bytes::from_static(b"s"), Bytes::from_static(b"k")];
         let err = store.blpop_poll(&keys).unwrap_err();
         assert!(matches!(err, StoreError::WrongType));
+    }
+    // ── Lua arguments that are not strings or numbers ────────────────
+
+    #[test]
+    fn test_lua_call_refuses_an_argument_that_is_not_a_string_or_number() {
+        let store = Store::new();
+        let key = Bytes::from("key");
+        for value in ["nil", "false", "true", "{}"] {
+            let script = format!("return redis.call('HSET', KEYS[1], 'field', {value})");
+            let err = store.eval(&script, vec![key.clone()], vec![]).unwrap_err();
+            assert!(
+                err.contains("ERR Lua redis lib command arguments must be strings or integers"),
+                "{value}: {err}"
+            );
+            assert_eq!(store.exists(std::slice::from_ref(&key)), 0, "{value}");
+        }
+    }
+
+    #[test]
+    fn test_lua_pcall_returns_the_argument_error() {
+        let store = Store::new();
+        let key = Bytes::from("key");
+        let reply = store
+            .eval(
+                "return redis.pcall('HSET', KEYS[1], 'field', nil).err",
+                vec![key.clone()],
+                vec![],
+            )
+            .unwrap();
+        assert!(
+            matches!(reply, RedisValue::BulkString(ref text) if text.as_ref() == b"ERR Lua redis lib command arguments must be strings or integers"),
+            "{reply:?}"
+        );
+        assert_eq!(store.exists(&[key]), 0);
+    }
+
+    #[test]
+    fn test_lua_call_still_takes_strings_and_numbers() {
+        let store = Store::new();
+        let key = Bytes::from("key");
+        store
+            .eval("return redis.call('SET', KEYS[1], 1.5)", vec![key.clone()], vec![])
+            .unwrap();
+        assert_eq!(store.get(&key), Ok(Some(Bytes::from("1.5"))));
+        store
+            .eval("return redis.call('SET', KEYS[1], 3)", vec![key.clone()], vec![])
+            .unwrap();
+        assert_eq!(store.get(&key), Ok(Some(Bytes::from("3"))));
     }
 }

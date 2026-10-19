@@ -158,21 +158,12 @@ fn count_option(args: &mut Args) -> Result<usize> {
     }
 }
 
-/// The entries between two inclusive bounds, oldest first.
-fn range(store: &Store, key: &Bytes, min: StreamId, max: StreamId) -> Result<Vec<Entry>> {
-    // The stream's ordered map panics on a range that ends before it starts.
-    if min > max {
-        return Ok(Vec::new());
-    }
-    Ok(store.xrange(key, min, max, None)?)
-}
-
 pub(super) fn xrange(store: &Store, args: &mut Args) -> Result<Reply> {
     let key = args.next()?;
     let min = bound(&args.next()?, true)?;
     let max = bound(&args.next()?, false)?;
     let count = count_option(args)?;
-    let entries = range(store, &key, min, max)?;
+    let entries = store.xrange(&key, min, max, None)?;
     Ok(entries_reply(entries.into_iter().take(count).collect()))
 }
 
@@ -181,7 +172,7 @@ pub(super) fn xrevrange(store: &Store, args: &mut Args) -> Result<Reply> {
     let max = bound(&args.next()?, false)?;
     let min = bound(&args.next()?, true)?;
     let count = count_option(args)?;
-    let entries = range(store, &key, min, max)?;
+    let entries = store.xrange(&key, min, max, None)?;
     Ok(entries_reply(
         entries.into_iter().rev().take(count).collect(),
     ))

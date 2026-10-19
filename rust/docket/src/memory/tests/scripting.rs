@@ -22,6 +22,22 @@ fn eval(script: &str, keys: &[&str], args: &[&str]) -> redis::Cmd {
     "-WRONGTYPE Operation against a key holding the wrong kind of value"
 )]
 #[case::keys_and_args("return {KEYS[1], ARGV[1]}", "[\"k\", \"a\"]")]
+#[case::nil_argument(
+    "return redis.pcall('SET', KEYS[1], nil)",
+    "-ERR Lua redis lib command arguments must be strings or integers"
+)]
+#[case::nil_argument_runs_nothing(
+    "redis.pcall('SET', KEYS[1], nil); return redis.call('GET', KEYS[1])",
+    "\"v\""
+)]
+#[case::last_member_removes_the_key(
+    "redis.call('DEL', KEYS[1]); redis.call('SADD', KEYS[1], 'm'); redis.call('SREM', KEYS[1], 'm'); return redis.call('EXISTS', KEYS[1])",
+    "0"
+)]
+#[case::hincrby_field_not_an_integer(
+    "redis.call('DEL', KEYS[1]); redis.call('HSET', KEYS[1], 'f', 'x'); return redis.pcall('HINCRBY', KEYS[1], 'f', 1)",
+    "-ERR hash value is not an integer"
+)]
 #[tokio::test]
 async fn eval_replies(#[case] script: &str, #[case] expected: &str) {
     let (_server, mut connection) = connect().await;
