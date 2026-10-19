@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::broadcast;
 
-use crate::memory::engine::store::{PubSubMessage, ValueData, ValueEntry};
+use crate::memory::engine::store::{PubSubMessage, ValueData, ValueEntry, remove_if_empty};
 use std::collections::VecDeque;
 
 /// Represents a Redis command return value for Lua-Redis type conversion.
@@ -192,15 +192,7 @@ impl LuaEngine {
                     };
 
                     // Remaining args are command arguments
-                    let cmd_args: Vec<Bytes> = args_vec[1..]
-                        .iter()
-                        .map(|v| match v {
-                            LuaValue::String(s) => Bytes::from(s.as_bytes().to_vec()),
-                            LuaValue::Integer(n) => Bytes::from(n.to_string().into_bytes()),
-                            LuaValue::Number(n) => Bytes::from(n.to_string().into_bytes()),
-                            _ => Bytes::new(),
-                        })
-                        .collect();
+                    let cmd_args = command_args(&args_vec[1..]).map_err(LuaError::RuntimeError)?;
 
                     let mut data_ref = data_cell.borrow_mut();
                     let pubsub_tx_ref = pubsub_tx_clone.as_ref();
@@ -240,15 +232,14 @@ impl LuaEngine {
                     };
 
                     // Remaining args are command arguments
-                    let cmd_args: Vec<Bytes> = args_vec[1..]
-                        .iter()
-                        .map(|v| match v {
-                            LuaValue::String(s) => Bytes::from(s.as_bytes().to_vec()),
-                            LuaValue::Integer(n) => Bytes::from(n.to_string().into_bytes()),
-                            LuaValue::Number(n) => Bytes::from(n.to_string().into_bytes()),
-                            _ => Bytes::new(),
-                        })
-                        .collect();
+                    let cmd_args = match command_args(&args_vec[1..]) {
+                        Ok(cmd_args) => cmd_args,
+                        Err(msg) => {
+                            let table = lua_ctx.create_table()?;
+                            table.set("err", msg)?;
+                            return Ok(LuaValue::Table(table));
+                        }
+                    };
 
                     let mut data_ref = data_cell.borrow_mut();
                     let pubsub_tx_ref = pubsub_tx_clone.as_ref();
@@ -297,6 +288,20 @@ impl LuaEngine {
             had_list_mutation: had_list_mutation.get(),
         }
     }
+}
+
+/// The arguments of a `redis.call`, as bytes. Redis takes strings and
+/// numbers and refuses anything else, so a nil that reached a command by
+/// mistake fails the script instead of being stored as an empty string.
+fn command_args(args: &[LuaValue]) -> Result<Vec<Bytes>, String> {
+    args.iter()
+        .map(|arg| match arg {
+            LuaValue::String(s) => Ok(Bytes::from(s.as_bytes().to_vec())),
+            LuaValue::Integer(n) => Ok(Bytes::from(n.to_string().into_bytes())),
+            LuaValue::Number(n) => Ok(Bytes::from(n.to_string().into_bytes())),
+            _ => Err("ERR Lua redis lib command arguments must be strings or integers".to_string()),
+        })
+        .collect()
 }
 
 /// Dispatch a Redis command to the appropriate operation on the raw data HashMap.
@@ -584,7 +589,7 @@ fn dispatch_command_inner(
                 }
             }
 
-            match data.get_mut(key) {
+            let reply = match data.get_mut(key) {
                 None => Ok(RedisValue::Integer(0)),
                 Some(entry) => match entry.data {
                     ValueData::Hash(ref mut map) => {
@@ -601,7 +606,9 @@ fn dispatch_command_inner(
                             .to_string(),
                     )),
                 },
-            }
+            };
+            remove_if_empty(data, key);
+            reply
         }
 
         "HVALS" => {
@@ -731,13 +738,13 @@ fn dispatch_command_inner(
             let entry = data.entry(key).or_insert_with(ValueEntry::new_hash);
             match entry.data {
                 ValueData::Hash(ref mut map) => {
-                    let current = map
-                        .get(field)
-                        .and_then(|v| String::from_utf8_lossy(v).parse::<i64>().ok())
-                        .unwrap_or(0);
-                    let new_val = current + increment;
-                    map.insert(field.clone(), Bytes::from(new_val.to_string()));
-                    Ok(RedisValue::Integer(new_val))
+                    match crate::memory::engine::store::hincrby_value(map.get(field), increment) {
+                        Ok(new_val) => {
+                            map.insert(field.clone(), Bytes::from(new_val.to_string()));
+                            Ok(RedisValue::Integer(new_val))
+                        }
+                        Err(err) => Ok(RedisValue::Error(err.to_string())),
+                    }
                 }
                 _ => Ok(RedisValue::Error(
                     "WRONGTYPE Operation against a key holding the wrong kind of value".to_string(),
@@ -863,7 +870,7 @@ fn dispatch_command_inner(
                 }
             }
 
-            match data.get_mut(key) {
+            let reply = match data.get_mut(key) {
                 None => Ok(RedisValue::Integer(0)),
                 Some(entry) => match entry.data {
                     ValueData::Set(ref mut set) => {
@@ -880,7 +887,9 @@ fn dispatch_command_inner(
                             .to_string(),
                     )),
                 },
-            }
+            };
+            remove_if_empty(data, key);
+            reply
         }
 
         // ── Sorted set commands ──────────────────────────────────────
@@ -942,7 +951,7 @@ fn dispatch_command_inner(
                 }
             }
 
-            match data.get_mut(key) {
+            let reply = match data.get_mut(key) {
                 None => Ok(RedisValue::Integer(0)),
                 Some(entry) => match entry.data {
                     ValueData::SortedSet(ref mut zset) => {
@@ -959,7 +968,9 @@ fn dispatch_command_inner(
                             .to_string(),
                     )),
                 },
-            }
+            };
+            remove_if_empty(data, key);
+            reply
         }
 
         "ZRANGE" => {
@@ -1165,7 +1176,7 @@ fn dispatch_command_inner(
                 }
             }
 
-            match data.get_mut(key) {
+            let reply = match data.get_mut(key) {
                 None => Ok(RedisValue::Integer(0)),
                 Some(entry) => match entry.data {
                     ValueData::SortedSet(ref mut zset) => {
@@ -1200,7 +1211,9 @@ fn dispatch_command_inner(
                             .to_string(),
                     )),
                 },
-            }
+            };
+            remove_if_empty(data, key);
+            reply
         }
 
         "ZCARD" => {
@@ -1271,7 +1284,7 @@ fn dispatch_command_inner(
                 ));
             }
             let key = &args[0];
-            let seconds: u64 = String::from_utf8_lossy(&args[1])
+            let seconds: i64 = String::from_utf8_lossy(&args[1])
                 .parse()
                 .map_err(|_| "ERR value is not an integer or out of range".to_string())?;
 
@@ -1283,11 +1296,15 @@ fn dispatch_command_inner(
                 }
             }
 
+            // a time of zero or less deletes the key
+            if seconds <= 0 {
+                return Ok(RedisValue::Integer(data.remove(key).is_some() as i64));
+            }
             match data.get_mut(key) {
                 None => Ok(RedisValue::Integer(0)),
                 Some(entry) => {
                     entry.expires_at =
-                        Some(std::time::Instant::now() + Duration::from_secs(seconds));
+                        Some(std::time::Instant::now() + Duration::from_secs(seconds as u64));
                     Ok(RedisValue::Integer(1))
                 }
             }
@@ -1300,7 +1317,7 @@ fn dispatch_command_inner(
                 ));
             }
             let key = &args[0];
-            let ms: u64 = String::from_utf8_lossy(&args[1])
+            let ms: i64 = String::from_utf8_lossy(&args[1])
                 .parse()
                 .map_err(|_| "ERR value is not an integer or out of range".to_string())?;
 
@@ -1312,11 +1329,15 @@ fn dispatch_command_inner(
                 }
             }
 
+            // a time of zero or less deletes the key
+            if ms <= 0 {
+                return Ok(RedisValue::Integer(data.remove(key).is_some() as i64));
+            }
             match data.get_mut(key) {
                 None => Ok(RedisValue::Integer(0)),
                 Some(entry) => {
                     entry.expires_at =
-                        Some(std::time::Instant::now() + Duration::from_millis(ms));
+                        Some(std::time::Instant::now() + Duration::from_millis(ms as u64));
                     Ok(RedisValue::Integer(1))
                 }
             }

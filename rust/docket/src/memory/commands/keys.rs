@@ -82,19 +82,11 @@ pub(super) fn exists(store: &Store, args: &mut Args) -> Result<Reply> {
     Ok(Reply::Integer(store.exists(&args.rest()?)))
 }
 
-/// Redis deletes a key whose new timeout is zero or negative.
-fn expire_now(store: &Store, key: Bytes) -> Reply {
-    Reply::Integer(store.delete(&[key]))
-}
-
 pub(super) fn expire(store: &Store, args: &mut Args) -> Result<Reply> {
     let key = args.next()?;
     let seconds: i64 = args.next_int()?;
     args.end()?;
-    Ok(match u64::try_from(seconds) {
-        Ok(seconds) if seconds > 0 => Reply::Integer(store.expire(&key, seconds).into()),
-        _ => expire_now(store, key),
-    })
+    Ok(Reply::Integer(store.expire(&key, seconds).into()))
 }
 
 /// `Store` sets timeouts in whole seconds only, and its Lua dispatcher is the
@@ -105,9 +97,6 @@ pub(super) fn pexpire(store: &Store, args: &mut Args) -> Result<Reply> {
     let key = args.next()?;
     let milliseconds: i64 = args.next_int()?;
     args.end()?;
-    if milliseconds <= 0 {
-        return Ok(expire_now(store, key));
-    }
     let milliseconds = Bytes::from(milliseconds.to_string());
     Ok(scripting::reply(store.eval(
         PEXPIRE_SCRIPT,
