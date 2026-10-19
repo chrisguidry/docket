@@ -191,6 +191,84 @@ worker options of pydocket's `docket worker`, as a clap struct to flatten into
 your own command line: see `docket::cli::WorkerArgs`.  It includes
 `--metrics-port` and `--healthcheck-port`.
 
+It also gives your binary pydocket's commands for operating a docket:
+`snapshot`, `workers ls`, `workers for-task`, `strike`, `restore`, `clear`,
+and `watch`, as the clap subcommand `docket::cli::Command`.  pydocket's own
+CLI can't serve a docket that docket-rs workers use, because it reads task
+arguments and strike values as pickles, and docket-rs writes JSON.  Put the
+commands under a subcommand of your worker binary, and an operator can run
+them in a container that has no shell and no Python:
+
+```rust,no_run
+# #[cfg(feature = "cli")]
+# mod example {
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+struct Cli {
+    #[command(flatten)]
+    worker: docket::cli::WorkerArgs,
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Inspect and manage the docket.
+    #[command(subcommand)]
+    Docket(docket::cli::Command),
+}
+
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
+    let cli = Cli::parse();
+    let ran = match cli.worker.docket().await {
+        Ok(docket) => match &cli.command {
+            Some(Commands::Docket(command)) => command.run(&docket).await,
+            None => {
+                // Register your tasks here.
+                cli.worker.run(&docket).await
+            }
+        },
+        Err(error) => Err(error),
+    };
+    if let Err(error) = ran {
+        eprintln!("Error: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
+    std::process::ExitCode::SUCCESS
+}
+# }
+# fn main() {}
+```
+
+```bash
+kubectl exec deploy/my-worker -- my-worker docket snapshot
+kubectl exec deploy/my-worker -- my-worker docket strike charge customer == int:7
+kubectl exec deploy/my-worker -- my-worker docket restore charge customer == int:7
+```
+
+The commands connect with the worker's `--docket` and `--url` options, or
+`DOCKET_NAME` and `DOCKET_URL`, so they reach the same docket as the worker.
+Those options come before the subcommand: `my-worker --docket orders docket
+snapshot`.  The `cli` feature also builds a `docket-rs` binary with the same
+commands, for a machine that has Rust: `cargo install docket-rs --features
+cli`.
+
+The names, arguments, and output follow pydocket's, with these differences:
+
+- The tables have no colors and don't wrap to the terminal.
+- `snapshot` adds an `Arguments` column with each task's arguments as JSON,
+  and has no `--tasks` option.
+- A strike's value is JSON.  Text is a string, and `str:`, `int:`, `float:`,
+  `bool:`, and `json:` prefixes give the type, such as `int:7`, or
+  `json:[1,10]` for `between`.  pydocket takes any Python type there.
+- A pydocket worker can't read a strike that these commands write, just as
+  a docket-rs worker can't read one that pydocket's CLI writes.  Strike a
+  docket from the CLI of the workers that run it.
+- `watch` prints a line for each change in place of a live panel, and fails
+  when the docket doesn't know the key.
+
 ## Working on docket-rs
 
 Run the tests from `rust/`.  They use `memory://` unless `DOCKET_TEST_URL`

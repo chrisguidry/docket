@@ -66,6 +66,11 @@ sha1 = { workspace = true, optional = true }
 # backend; the tls-ring feature gives it ring.
 rustls = { workspace = true, features = ["std", "tls12"], optional = true }
 
+# docket::cli's operator commands as a binary of their own.
+[[bin]]
+name = "docket-rs"
+required-features = ["cli"]
+
 # An application's tasks and the tests it writes for them; `cargo test`
 # runs its tests.
 [[example]]
@@ -80,7 +85,9 @@ futures-util.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 sha1.workspace = true
 rstest.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+# signal is for Worker's doc example, which stops on Ctrl-C without the cli
+# feature.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "test-util"] }
 
 [package.metadata.docs.rs]
 # docs.rs builds the crate once, so it turns on every feature to document

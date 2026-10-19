@@ -13,7 +13,7 @@ use crate::execution::{Execution, Message, Status};
 use crate::keys::WORKER_GROUP;
 use crate::scripts;
 use crate::telemetry;
-use crate::wire::{iso, seconds};
+use crate::wire::{iso, parse_iso, seconds};
 
 /// How many stream entries a snapshot reads.
 const SNAPSHOT_LIMIT: usize = 1000;
@@ -54,6 +54,8 @@ pub struct TaskSummary {
     pub args: serde_json::Value,
     /// The worker running it.
     pub worker: Option<String>,
+    /// When the worker running it started it.
+    pub started: Option<DateTime<Utc>>,
 }
 
 impl TaskSummary {
@@ -65,6 +67,7 @@ impl TaskSummary {
             when: message.when,
             attempt: message.attempt,
             worker,
+            started: None,
         }
     }
 }
@@ -128,6 +131,17 @@ impl Docket {
             }
         }
         future.sort_by_key(|task| task.when);
+
+        if !running.is_empty() {
+            let mut started = redis::pipe();
+            for task in &running {
+                started.hget(keys.runs(&task.key), "started_at");
+            }
+            let started: Vec<Option<String>> = started.query_async(&mut connection).await?;
+            for (task, started) in running.iter_mut().zip(started) {
+                task.started = started.as_deref().and_then(parse_iso);
+            }
+        }
 
         Ok(Snapshot {
             taken,
