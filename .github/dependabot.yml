@@ -5,14 +5,6 @@
 
 version: 2
 updates:
-  - package-ecosystem: "uv"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    groups:
-      all-dependencies:
-        patterns:
-          - "*"
   - package-ecosystem: "cargo"
     directory: "/rust"
     schedule:

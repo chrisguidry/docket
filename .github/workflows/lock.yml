@@ -1,0 +1,71 @@
+name: Lock
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# pydocket is a library, so its floors in pyproject.toml stay as low as it
+# supports, and only uv.lock moves.  Dependabot's uv updater always raises
+# floors, so this job upgrades the lockfile and opens the PR itself.  It opens
+# the PR with a GitHub App token, because a PR opened with GITHUB_TOKEN does
+# not start CI.
+jobs:
+  upgrade:
+    name: Upgrade uv.lock
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Create an app token
+        id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.LOCK_APP_CLIENT_ID }}
+          private-key: ${{ secrets.LOCK_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app.outputs.token }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Upgrade the lockfile and open or update the PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          BRANCH: uv-lock-upgrade
+        run: |
+          uv lock --upgrade 2> upgrade.log
+          if git diff --quiet uv.lock; then
+            echo "uv.lock is already current"
+            exit 0
+          fi
+
+          user_id=$(gh api "/users/${APP_SLUG}[bot]" --jq .id)
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${user_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+
+          title="Upgrade the locked uv dependencies"
+          {
+            echo "This upgrades every package in uv.lock to its latest version that the floors in pyproject.toml allow. The floors do not change."
+            echo
+            echo '```'
+            grep -E '^(Updated|Added|Removed) ' upgrade.log
+            echo '```'
+          } > body.md
+
+          git switch -c "$BRANCH"
+          printf '%s\n\n' "$title" | cat - body.md > message.txt
+          git commit -q -F message.txt uv.lock
+          git push --force origin "$BRANCH"
+          if gh pr view "$BRANCH" --json state --jq .state | grep -q OPEN; then
+            gh pr edit "$BRANCH" --body-file body.md
+          else
+            gh pr create --head "$BRANCH" --title "$title" --body-file body.md
+          fi
