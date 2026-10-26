@@ -43,6 +43,14 @@ class ReauthenticatingPool(ConnectionPool):
     async def release(self, connection: AbstractConnection) -> None:
         try:
             await connection.re_auth()
+        except BaseException:
+            # A failed AUTH leaves its token queued, and redis-py's listener
+            # would send it again once the connection is available.  Without
+            # the token and the socket, the next use reconnects with the
+            # provider's current credentials instead.
+            connection.set_re_auth_token(None)  # pyright: ignore[reportArgumentType]
+            await connection.disconnect(nowait=True)
+            raise
         finally:
             await super().release(connection)
 
