@@ -89,6 +89,9 @@ class Timeout(Runtime["Timeout"]):
                         asyncio.shield(task), timeout=self.remaining().total_seconds()
                     )
                 except asyncio.TimeoutError:
+                    # This also catches a TimeoutError the task raised itself.
+                    if task.done():
+                        return task.result()
                     continue
         finally:
             if not task.done():
