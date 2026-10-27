@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import traceback
 from datetime import timedelta
 
 import pytest
@@ -46,9 +47,9 @@ async def test_an_error_from_the_task_body_fails_the_task(
 
 
 async def test_a_wait_for_timeout_inside_the_task_fails_the_task(
-    docket: Docket, worker: Worker
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
 ):
-    """A timed-out asyncio.wait_for inside the task fails the task.
+    """A timed-out asyncio.wait_for inside the task fails the task with that error.
 
     On Python 3.10, asyncio.TimeoutError is a separate class from the builtin
     TimeoutError, so this covers the case the builtin TimeoutError test does not.
@@ -61,12 +62,27 @@ async def test_a_wait_for_timeout_inside_the_task_fails_the_task(
 
     execution = await docket.add(waits_too_long_for_something)()
 
-    await worker.run_until_finished()
+    with caplog.at_level(logging.ERROR):
+        await worker.run_until_finished()
 
     await execution.sync()
     assert execution.state == ExecutionState.FAILED
-    with pytest.raises(asyncio.TimeoutError):
+    with pytest.raises(asyncio.TimeoutError) as raised:
         await execution.get_result()
+    assert "exceeded timeout" not in str(raised.value)
+
+    logged_errors = [
+        record.exc_info[1]
+        for record in caplog.records
+        if record.levelno == logging.ERROR and record.exc_info is not None
+    ]
+    assert len(logged_errors) == 1
+    assert isinstance(logged_errors[0], asyncio.TimeoutError)
+    raising_frames = [
+        frame.f_code.co_name
+        for frame, _ in traceback.walk_tb(logged_errors[0].__traceback__)
+    ]
+    assert "waits_too_long_for_something" in raising_frames
 
 
 async def test_a_timeout_error_from_the_task_body_is_retried(
