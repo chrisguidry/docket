@@ -79,7 +79,7 @@ class Timeout(Runtime["Timeout"]):
 
         timed_out = False
         try:
-            while not task.done():  # pragma: no branch
+            while True:
                 if self.expired():
                     timed_out = True
                     break
@@ -89,6 +89,10 @@ class Timeout(Runtime["Timeout"]):
                         asyncio.shield(task), timeout=self.remaining().total_seconds()
                     )
                 except asyncio.TimeoutError:
+                    # Either the task raised TimeoutError itself, or it finished
+                    # as the deadline fired; report its own outcome.
+                    if task.done():
+                        return task.result()
                     continue
         finally:
             if not task.done():
