@@ -20,6 +20,7 @@ from redis.asyncio.sentinel import Sentinel, SentinelConnectionPool
 from redis.credentials import CredentialProvider
 
 from ._redis import close_resource
+from ._redis_credentials import ReauthenticatingPool
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -227,7 +228,7 @@ def parse_sentinel_url(url: str) -> SentinelConfiguration:
     )
 
 
-class OwnedSentinelConnectionPool(SentinelConnectionPool):
+class OwnedSentinelConnectionPool(SentinelConnectionPool, ReauthenticatingPool):
     """A SentinelConnectionPool that owns its Sentinel manager.
 
     redis-py's Sentinel manager keeps one Redis client per Sentinel daemon and

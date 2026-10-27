@@ -6,14 +6,17 @@ they need no Redis.  The last two authenticate against a real, standalone Redis.
 
 # pyright: reportPrivateUsage=false
 
+import socket
 from typing import Any, Callable
 
 import pytest
+from redis.auth.token import SimpleToken
 from redis.credentials import CredentialProvider, StreamingCredentialProvider
-from redis.exceptions import AuthenticationError
+from redis.exceptions import AuthenticationError, ConnectionError
 
 from docket import Docket, Worker
 from docket._redis import RedisConnection
+from docket._redis_credentials import ReauthenticatingPool
 from tests._container import ACLCredentials
 from tests.conftest import skip_cluster, skip_memory
 
@@ -118,6 +121,25 @@ async def test_sentinel_pool_gets_the_provider():
     connection = RedisConnection("redis+sentinel://sentinel-a/mymaster", provider)
     pool = await connection._connection_pool_from_url()
     assert pool.connection_kwargs["credential_provider"] is provider
+    await pool.aclose()
+
+
+async def test_a_failed_reauthentication_leaves_nothing_to_resend():
+    """A token's AUTH that fails as the connection comes back must not be sent
+    again by redis-py's listener after the connection is available."""
+    with socket.socket() as closed:
+        closed.bind(("localhost", 0))
+        port = closed.getsockname()[1]
+    pool = ReauthenticatingPool(host="localhost", port=port)
+    connection = pool.get_available_connection()
+    connection.set_re_auth_token(SimpleToken("secret", -1, -1, {"oid": "user"}))
+
+    with pytest.raises(ConnectionError):
+        await pool.release(connection)
+
+    assert connection in pool._available_connections
+    assert connection._re_auth_token is None
+    assert not connection.is_connected
     await pool.aclose()
 
 
