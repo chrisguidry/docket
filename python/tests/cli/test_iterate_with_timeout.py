@@ -99,3 +99,23 @@ async def test_iterate_with_timeout_cleanup_on_exception():
             pass  # pragma: no cover - exception always raised before this
 
     assert close_called, "aclose() should be called even on exception"
+
+
+async def test_iterate_with_timeout_preserves_iterator_after_timeout():
+    """A timeout must not cancel the pending read from the iterator."""
+
+    async def delayed_iterator():
+        await asyncio.sleep(0.3)
+        yield {"value": "completed"}
+
+    results: list[dict[str, Any] | None] = []
+
+    async for item in iterate_with_timeout(
+        delayed_iterator(), timeout=0.1
+    ):
+        results.append(item)
+        if item is not None:
+            break
+
+    assert results[-1] == {"value": "completed"}
+    assert None in results[:-1]

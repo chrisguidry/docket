@@ -24,27 +24,49 @@ async def iterate_with_timeout(
     """Iterate over an async iterator with timeout, ensuring proper cleanup.
 
     Wraps an async iterator to add timeout support and guaranteed cleanup.
-    On timeout, yields None to allow the caller to handle polling fallback.
+    On timeout, yields None without cancelling the pending read.
 
     Args:
-        iterator: An async generator (must have __anext__ and aclose methods)
-        timeout: Timeout in seconds for each iteration
+        iterator: An async iterator with __anext__ and aclose methods.
+        timeout: Timeout in seconds for each iteration.
 
     Yields:
-        Items from the iterator, or None if timeout expires
+        Items from the iterator, or None if the timeout expires.
     """
     import asyncio
 
+    pending: asyncio.Task[dict[str, Any]] | None = None
+
     try:
         while True:
-            try:
-                yield await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
-            except asyncio.TimeoutError:
-                # Yield None to signal timeout, allowing caller to handle polling
+            if pending is None:
+                pending = asyncio.create_task(iterator.__anext__())
+
+            done, _ = await asyncio.wait({pending}, timeout=timeout)
+
+            if not done:
                 yield None
+                continue
+
+            task = pending
+            pending = None
+
+            try:
+                item = task.result()
             except StopAsyncIteration:
                 break
+
+            yield item
     finally:
+        if pending is not None:
+            if not pending.done():
+                pending.cancel()
+
+            try:
+                await pending
+            except (asyncio.CancelledError, StopAsyncIteration):
+                pass
+
         await iterator.aclose()
 
 
