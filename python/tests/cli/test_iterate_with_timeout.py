@@ -119,3 +119,40 @@ async def test_iterate_with_timeout_preserves_iterator_after_timeout():
 
     assert results[-1] == {"value": "completed"}
     assert None in results[:-1]
+
+
+async def test_iterate_with_timeout_closes_iterator_when_pending_read_fails():
+    """Close the iterator even if the pending read raises an exception."""
+
+    class FailingIterator:
+        def __init__(self):
+            self.fail_read = asyncio.Event()
+            self.read_finished = asyncio.Event()
+            self.close_called = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self.fail_read.wait()
+            try:
+                raise RuntimeError("read failed")
+            finally:
+                self.read_finished.set()
+
+        async def aclose(self):
+            self.close_called = True
+
+    iterator = FailingIterator()
+    wrapped = iterate_with_timeout(iterator, timeout=0.01)
+
+    assert await wrapped.__anext__() is None
+
+    iterator.fail_read.set()
+    await iterator.read_finished.wait()
+    await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="read failed"):
+        await wrapped.aclose()
+
+    assert iterator.close_called
