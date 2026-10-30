@@ -58,16 +58,17 @@ async def iterate_with_timeout(
 
             yield item
     finally:
-        if pending is not None:
-            if not pending.done():
-                pending.cancel()
+        try:
+            if pending is not None:
+                if not pending.done():
+                    pending.cancel()
 
-            try:
-                await pending
-            except (asyncio.CancelledError, StopAsyncIteration):
-                pass
-
-        await iterator.aclose()
+                try:
+                    await pending
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    pass
+        finally:
+            await iterator.aclose()
 
 
 class LogLevel(str, enum.Enum):
