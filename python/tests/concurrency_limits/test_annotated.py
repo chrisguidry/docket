@@ -30,6 +30,43 @@ async def test_annotated_concurrency_limit(docket: Docket, worker: Worker):
     assert results == ["start_1", "end_1", "start_1", "end_1"]
 
 
+async def test_annotated_concurrency_limit_reads_default_value(
+    docket: Docket, worker: Worker
+):
+    """Annotated ConcurrencyLimit reads the default value of an omitted argument."""
+    results: list[int] = []
+
+    async def task(customer_id: Annotated[int, ConcurrencyLimit(1)] = 1):
+        results.append(customer_id)
+
+    await docket.add(task)()
+
+    await worker.run_until_finished()
+
+    assert results == [1]
+
+
+async def test_concurrency_limit_default_reads_default_value(
+    docket: Docket, worker: Worker
+):
+    """A ConcurrencyLimit parameter default reads an omitted argument's default."""
+    results: list[int] = []
+
+    async def task(
+        customer_id: int = 1,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id", max_concurrent=1
+        ),
+    ):
+        results.append(customer_id)
+
+    await docket.add(task)()
+
+    await worker.run_until_finished()
+
+    assert results == [1]
+
+
 async def test_annotated_concurrency_different_values(docket: Docket, worker: Worker):
     """Different argument values get independent concurrency slots."""
     execution_intervals: dict[int, tuple[float, float]] = {}

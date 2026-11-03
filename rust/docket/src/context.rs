@@ -109,7 +109,8 @@ impl Context {
         self.inner.when
     }
 
-    /// The task's arguments as JSON, for behaviors that look at a field.
+    /// The task's arguments as JSON, for behaviors that look at a field.  A
+    /// field the message left out holds the task type's serde default.
     #[must_use]
     pub fn args(&self) -> &serde_json::Value {
         &self.inner.args

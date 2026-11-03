@@ -288,7 +288,7 @@ fn context(worker: &Shared, delivery: &Delivery, registered: &Registered) -> Con
         function: message.function.clone(),
         attempt: message.attempt,
         when: message.when,
-        args: serde_json::from_str(&message.args).unwrap_or(serde_json::Value::Null),
+        args: (registered.arguments)(&message.args),
         behaviors: registered
             .hooks
             .contexts

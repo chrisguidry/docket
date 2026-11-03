@@ -6,6 +6,7 @@
 mod support;
 
 mod admission;
+mod argument_defaults;
 mod automatic;
 mod batches;
 mod behavior_faults;
