@@ -104,21 +104,20 @@ async def test_iterate_with_timeout_cleanup_on_exception():
 async def test_iterate_with_timeout_preserves_iterator_after_timeout():
     """A timeout must not cancel the pending read from the iterator."""
 
+    release = asyncio.Event()
+
     async def delayed_iterator():
-        await asyncio.sleep(0.3)
+        await release.wait()
         yield {"value": "completed"}
 
-    results: list[dict[str, Any] | None] = []
+    wrapped = iterate_with_timeout(delayed_iterator(), timeout=0.05)
 
-    async for item in iterate_with_timeout(
-        delayed_iterator(), timeout=0.1
-    ):
-        results.append(item)
-        if item is not None:
-            break
+    assert await wrapped.__anext__() is None
 
-    assert results[-1] == {"value": "completed"}
-    assert None in results[:-1]
+    release.set()
+
+    assert await wrapped.__anext__() == {"value": "completed"}
+    await wrapped.aclose()
 
 
 async def test_iterate_with_timeout_closes_iterator_when_pending_read_fails():
@@ -130,7 +129,7 @@ async def test_iterate_with_timeout_closes_iterator_when_pending_read_fails():
             self.read_finished = asyncio.Event()
             self.close_called = False
 
-        def __aiter__(self):
+        def __aiter__(self):  # pragma: no cover
             return self
 
         async def __anext__(self):
