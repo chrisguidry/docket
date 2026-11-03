@@ -92,6 +92,27 @@ async def test_per_parameter_rate_limit_allows_different_positional_values(
     assert sorted(results) == [1, 2]
 
 
+async def test_per_parameter_rate_limit_reads_default_value(
+    docket: Docket, worker: Worker
+):
+    """Per-parameter rate limit reads the default value of an omitted argument."""
+    results: list[int] = []
+
+    async def rated_task(
+        customer_id: Annotated[
+            int, RateLimit(1, per=timedelta(seconds=5), drop=True)
+        ] = 1,
+    ):
+        results.append(customer_id)
+
+    await docket.add(rated_task)(1)
+    await docket.add(rated_task)()
+
+    await worker.run_until_finished()
+
+    assert results == [1]
+
+
 async def test_drop_true_drops_excess(docket: Docket, worker: Worker):
     """With drop=True, excess tasks are quietly dropped instead of rescheduled."""
     results: list[str] = []

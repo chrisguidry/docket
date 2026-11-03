@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncGenerator, TypeVar
@@ -175,6 +176,20 @@ def _provided_arguments(execution: Execution) -> dict[str, Any]:
     return dict(bound.arguments)
 
 
+def _parameter_defaults(function: Any) -> dict[str, Any]:
+    """Map each parameter that declares a default to that default value.
+
+    ``signature.bind()`` leaves out the arguments a caller omitted, so the
+    per-argument dependencies read these defaults to key on the value the task
+    actually runs with.
+    """
+    return {
+        name: parameter.default
+        for name, parameter in get_signature(function).parameters.items()
+        if parameter.default is not inspect.Parameter.empty
+    }
+
+
 @asynccontextmanager
 async def resolved_dependencies(
     worker: Worker, execution: Execution
@@ -234,9 +249,13 @@ async def resolved_dependencies(
                             arguments[parameter] = FailedDependency(parameter, error)
 
                     annotations = get_annotation_dependencies(execution.function)
+                    defaults = (
+                        _parameter_defaults(execution.function) if annotations else {}
+                    )
                     for parameter_name, dependencies in annotations.items():
                         argument_value = provided.get(
-                            parameter_name, arguments.get(parameter_name)
+                            parameter_name,
+                            arguments.get(parameter_name, defaults.get(parameter_name)),
                         )
                         for dependency in dependencies:
                             bound = dependency.bind_to_parameter(

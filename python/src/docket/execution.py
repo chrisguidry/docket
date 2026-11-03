@@ -430,6 +430,7 @@ class Execution:
     def get_argument(self, parameter: str) -> Any:
         signature = get_signature(self.function)
         bound_args = signature.bind(*self.args, **self.kwargs)
+        bound_args.apply_defaults()
         return bound_args.arguments[parameter]
 
     def call_repr(self) -> str:

@@ -85,6 +85,25 @@ async def test_per_parameter_debounce_allows_different_positional_values(
     assert sorted(results) == [1, 2]
 
 
+async def test_per_parameter_debounce_reads_default_value(
+    docket: Docket, worker: Worker
+):
+    """Per-parameter debounce reads the default value of an omitted argument."""
+    results: list[int] = []
+
+    async def debounced_task(
+        customer_id: Annotated[int, Debounce(timedelta(milliseconds=50))] = 1,
+    ):
+        results.append(customer_id)
+
+    await docket.add(debounced_task)(1)
+    await docket.add(debounced_task)()
+
+    await worker.run_until_finished()
+
+    assert results == [1]
+
+
 async def test_multiple_debounces_rejected(docket: Docket):
     """Only one Debounce is allowed per task."""
     with pytest.raises(ValueError, match="Only one Debounce"):

@@ -88,6 +88,25 @@ async def test_per_parameter_cooldown_allows_different_positional_values(
     assert sorted(results) == [1, 2]
 
 
+async def test_per_parameter_cooldown_reads_default_value(
+    docket: Docket, worker: Worker
+):
+    """Per-parameter cooldown reads the default value of an omitted argument."""
+    results: list[int] = []
+
+    async def cooled_task(
+        customer_id: Annotated[int, Cooldown(timedelta(seconds=5))] = 1,
+    ):
+        results.append(customer_id)
+
+    await docket.add(cooled_task)(1)
+    await docket.add(cooled_task)()
+
+    await worker.run_until_finished()
+
+    assert results == [1]
+
+
 async def test_multiple_cooldowns_on_different_parameters(
     docket: Docket, worker: Worker
 ):
