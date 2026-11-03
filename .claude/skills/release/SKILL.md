@@ -83,6 +83,21 @@ same language, or the notes miss PRs or list the wrong ones.
 
 ## Cut the release
 
+Tag a commit only after every push run on `main` for that commit has
+finished.  The chaos job in `conformance.yml` tests `python@release`, the
+newest `python/v*` tag in its checkout, and installs that version from
+PyPI.  A tag made before that job checks out names a version PyPI does not
+have yet, and the job fails.  A bump PR's merge starts these runs, so wait
+for them after you merge it:
+
+```bash
+gh run list --commit <full sha> --event push \
+  --json name,status,conclusion
+```
+
+If the job fails this way anyway, rerun it with `gh run rerun <run id>
+--failed` once PyPI has the version.  That rerun tests the new release.
+
 When both languages release from one commit, make two releases on that
 commit.  GitHub marks the newer one as "Latest", so make the other one
 first with `--latest=false`.
