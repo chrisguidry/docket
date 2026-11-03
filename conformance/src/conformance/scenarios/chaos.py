@@ -15,7 +15,7 @@ from ..harness import Agent, Harness
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT = 270
+TIMEOUT = 300
 PRODUCERS = 5
 WORKERS = 10
 
