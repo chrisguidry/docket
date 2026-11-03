@@ -11,6 +11,12 @@ pool and cluster that uses the provider.
 A subscribed RESP2 connection can't send AUTH, so it keeps the credentials it
 connected with.  Its reader owns its socket, and a reconnect from here would
 race the reader for it.
+
+A connection in use during a refresh gets its AUTH when it comes back to its
+pool.  redis-py sends that AUTH from a listener that runs after the connection
+is already available again, so another task can take the connection and read
+from the socket before the AUTH reply arrives (redis/redis-py#4433).  docket's
+pools are ReauthenticatingPools, which send it before giving the connection back.
 """
 
 import logging
@@ -20,12 +26,33 @@ from weakref import WeakKeyDictionary
 
 from redis.asyncio import ConnectionPool
 from redis.asyncio.cluster import RedisCluster
+from redis.asyncio.connection import AbstractConnection
 from redis.auth.token import TokenInterface
 from redis.credentials import CredentialProvider, StreamingCredentialProvider
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+class ReauthenticatingPool(ConnectionPool):
+    """A ConnectionPool that sends a connection's pending AUTH while the
+    connection is still in use, so redis-py's release listener finds nothing
+    left to send."""
+
+    async def release(self, connection: AbstractConnection) -> None:
+        try:
+            await connection.re_auth()
+        except BaseException:
+            # A failed AUTH leaves its token queued, and redis-py's listener
+            # would send it again once the connection is available.  Without
+            # the token and the socket, the next use reconnects with the
+            # provider's current credentials instead.
+            connection.set_re_auth_token(None)  # pyright: ignore[reportArgumentType]
+            await connection.disconnect(nowait=True)
+            raise
+        finally:
+            await super().release(connection)
 
 
 @contextmanager

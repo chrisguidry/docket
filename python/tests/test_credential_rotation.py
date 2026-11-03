@@ -119,6 +119,35 @@ async def test_a_rotation_reauthenticates_every_connection_sharing_the_provider(
         assert await authenticated_as(admin, users, subscribed=False) == {new.name}
 
 
+async def test_commands_running_through_a_rotation_keep_their_own_replies(
+    credential_less_url: str, users: tuple[User, User]
+):
+    """A connection in use during a rotation sends its AUTH when it comes back
+    to the pool.  redis-py made it available before reading the AUTH reply, so
+    another command could read from the same socket and fail with "readuntil()
+    called while another coroutine is already waiting" (redis/redis-py#4433)."""
+    old, new = users
+    provider = RotatingProvider(*old)
+    async with RedisConnection(credential_less_url, provider) as connection:
+        async with connection.client() as r:
+
+            async def command(n: int) -> None:
+                key = f"rotation-{uuid4()}"
+                try:
+                    for i in range(30):
+                        await r.set(key, f"{n}-{i}")
+                        assert await r.get(key) == f"{n}-{i}".encode()
+                finally:
+                    await r.delete(key)
+
+            async def rotate() -> None:
+                for user in (new, old, new, old, new):
+                    await asyncio.sleep(0.001)
+                    await provider.rotate(*user)
+
+            await asyncio.gather(rotate(), *(command(n) for n in range(16)))
+
+
 async def subscribers(admin: Redis, users: tuple[User, User]) -> list[str]:
     """The user of each subscribed connection, one entry per connection."""
     names = {user.name for user in users}

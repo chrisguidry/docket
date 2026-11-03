@@ -46,6 +46,8 @@ from redis.asyncio.connection import Connection, SSLConnection
 from redis.credentials import CredentialProvider
 from redis.exceptions import ConnectionError, RedisError
 
+from ._redis_credentials import ReauthenticatingPool
+
 logger: logging.Logger = logging.getLogger(__name__)
 
 
@@ -904,7 +906,7 @@ class RedisConnection:
         if not nodes:
             raise RuntimeError("No primary nodes available in cluster")
         node = nodes[0]
-        return ConnectionPool(
+        return ReauthenticatingPool(
             host=node.host,
             port=int(node.port),
             **(
@@ -956,7 +958,7 @@ class RedisConnection:
                 socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
                 socket_connect_timeout=CONNECT_TIMEOUT,
             )
-        return ConnectionPool.from_url(  # pyright: ignore[reportUnknownMemberType]
+        return ReauthenticatingPool.from_url(  # pyright: ignore[reportUnknownMemberType]
             self.url,
             decode_responses=decode_responses,
             **protocol_kwargs,
