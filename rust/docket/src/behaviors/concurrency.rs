@@ -46,7 +46,8 @@ impl ConcurrencyLimit {
     }
 
     /// At most `max` copies at once for each value of `field`.  A task
-    /// without the field fails.
+    /// without the field counts as its serde default, and fails when it has
+    /// none.
     pub fn per_field(field: impl Into<String>, max: u32) -> Self {
         Self {
             field: Some(field.into()),

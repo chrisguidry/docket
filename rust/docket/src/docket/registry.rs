@@ -26,6 +26,8 @@ pub(crate) struct Registered {
     /// The task's own name, which its next perpetual run carries even when
     /// this run came under another name.  A fallback has none.
     pub name: Option<&'static str>,
+    /// Reads a message's arguments for the behaviors that look at a field.
+    pub arguments: fn(&str) -> serde_json::Value,
 }
 
 impl Registered {
@@ -54,6 +56,7 @@ impl Registered {
             hooks: ErasedHooks::default(),
             fields: T::FIELDS,
             name: Some(T::NAME),
+            arguments: arguments::<T>,
         }
     }
 
@@ -77,8 +80,44 @@ impl Registered {
             hooks: ErasedHooks::default(),
             fields: &[],
             name: None,
+            arguments: written,
         }
     }
+}
+
+/// The arguments as the message wrote them.
+fn written(text: &str) -> serde_json::Value {
+    serde_json::from_str(text).unwrap_or(serde_json::Value::Null)
+}
+
+/// The arguments as the message wrote them, with each field it left out
+/// taken from the value the handler runs with, its serde default.  A
+/// per-field limit then counts the call under that value, as pydocket counts
+/// an omitted argument under its default.  The fields the message wrote stay
+/// as written, so every implementation keys them the same way.
+///
+/// This compiles once for every task, so it has no branch of its own.
+fn arguments<T: Task>(text: &str) -> serde_json::Value {
+    with_defaults(
+        written(text),
+        serde_json::from_str::<T>(text)
+            .ok()
+            .map(serde_json::to_value),
+    )
+}
+
+fn with_defaults(
+    mut written: serde_json::Value,
+    read: Option<serde_json::Result<serde_json::Value>>,
+) -> serde_json::Value {
+    if let (Some(written), Some(Ok(serde_json::Value::Object(read)))) =
+        (written.as_object_mut(), read)
+    {
+        for (field, value) in read {
+            written.entry(field).or_insert(value);
+        }
+    }
+    written
 }
 
 impl std::fmt::Debug for Registered {

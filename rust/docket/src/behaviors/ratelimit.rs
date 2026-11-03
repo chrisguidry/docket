@@ -38,7 +38,7 @@ impl RateLimit {
     }
 
     /// Limits each value of `field` on its own.  A task without the field
-    /// counts as `null`.
+    /// counts as its serde default, or `null` when it has none.
     pub fn per_field(field: impl Into<String>, limit: u32) -> Self {
         Self {
             field: Some(field.into()),

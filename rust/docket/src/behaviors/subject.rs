@@ -6,8 +6,9 @@ use crate::context::Context;
 
 /// The part of a limit's key that names what it counts: the task's name, or
 /// `{field}:{value}`.  A string value goes in as it is, and any other value
-/// as its JSON text.  A missing field counts as `null`, as pydocket counts
-/// an omitted argument under its default of `None`.
+/// as its JSON text.  A field the message left out counts as the task
+/// type's serde default for it, and as `null` when the type has none, as
+/// pydocket counts an omitted argument under its default, or `None`.
 pub(crate) fn subject(ctx: &Context, field: Option<&str>) -> String {
     let Some(field) = field else {
         return ctx.function().to_owned();
