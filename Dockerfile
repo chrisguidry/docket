@@ -1,4 +1,4 @@
-ARG PYTHON_VERSION=3.10
+ARG PYTHON_VERSION=3.11
 FROM python:${PYTHON_VERSION}-slim
 
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
