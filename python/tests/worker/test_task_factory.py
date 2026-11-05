@@ -12,9 +12,8 @@ from docket import Docket, Worker
 async def tasks_from_factory() -> AsyncGenerator[set[asyncio.Task[Any]], None]:
     """Install a task factory on the running loop that records each task it makes.
 
-    Python 3.10 calls the factory with only the loop and the coroutine.  Later
-    versions can also pass keyword arguments, such as the task's name and
-    context, so the factory hands them on to the Task.
+    The loop can pass keyword arguments, such as the task's name and context,
+    so the factory hands them on to the Task.
     """
     made: set[asyncio.Task[Any]] = set()
 

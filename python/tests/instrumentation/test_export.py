@@ -287,16 +287,8 @@ def test_metrics_server_raises_import_error_without_sdk(
     monkeypatch: pytest.MonkeyPatch, metrics_port: int
 ):
     """Should raise ImportError with helpful message when SDK is not installed."""
-    import builtins
-
-    original_import = builtins.__import__
-
-    def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "opentelemetry.sdk.metrics":
-            raise ImportError("No module named 'opentelemetry.sdk'")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", mock_import)
+    # A None entry in sys.modules makes the import raise ImportError.
+    monkeypatch.setitem(sys.modules, "opentelemetry.sdk.metrics", None)
 
     with pytest.raises(ImportError, match="pip install pydocket\\[metrics\\]"):
         with metrics_server(port=metrics_port):

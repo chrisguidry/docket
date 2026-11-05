@@ -1,8 +1,8 @@
 """Tests for worker lifecycle, shutdown, and cancellation behavior."""
 
 import asyncio
+from asyncio import timeout as async_timeout
 import random
-import sys
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Callable
@@ -13,11 +13,6 @@ from redis.exceptions import ConnectionError
 from docket import Docket, Worker, testing
 from docket.dependencies import Dependency
 from docket.worker import _ProcessingSession  # pyright: ignore[reportPrivateUsage]
-
-if sys.version_info >= (3, 11):  # pragma: no cover
-    from asyncio import timeout as async_timeout
-else:  # pragma: no cover
-    from async_timeout import timeout as async_timeout
 
 
 async def test_run_forever_cancels_promptly_with_future_tasks(

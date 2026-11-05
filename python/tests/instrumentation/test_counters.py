@@ -1,14 +1,11 @@
 """Tests for OpenTelemetry metric counters: task lifecycle and execution counters."""
 
 import asyncio
-import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-if sys.version_info < (3, 11):  # pragma: no cover
-    from exceptiongroup import ExceptionGroup
 from opentelemetry.metrics import Counter, UpDownCounter
 
 from docket import Docket, Worker

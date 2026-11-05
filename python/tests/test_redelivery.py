@@ -7,14 +7,11 @@ These tests verify that:
 
 import asyncio
 import inspect
-import sys
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-if sys.version_info < (3, 11):  # pragma: no cover
-    from exceptiongroup import ExceptionGroup
 from redis.asyncio import Redis
 from redis.asyncio.cluster import RedisCluster
 from redis.exceptions import ConnectionError

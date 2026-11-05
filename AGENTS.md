@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Docket** (`pydocket` on PyPI) is a distributed background task system for Python functions with Redis-backed persistence. It enables scheduling both immediate and future work with comprehensive dependency injection, retry mechanisms, and fault tolerance.
 
-**Key Requirements**: Python 3.10+, Redis 6.2+ or Valkey 8.0+
+**Key Requirements**: Python 3.11+, Redis 6.2+ or Valkey 8.0+
 
 The repository is a uv workspace.  The Python package lives in `python/`,
 and the tools that work across the repository (prek, loq, codespell, the
@@ -54,7 +54,7 @@ PYTHON_VERSION=3.12 docker compose run --rm pytest tests/path -v
 ```
 
 Environment variables:
-- `PYTHON_VERSION`: Python version (default: 3.10)
+- `PYTHON_VERSION`: Python version (default: 3.11)
 - `CPU_LIMIT`: CPU cores fraction (default: 0.5)
 - `MEM_LIMIT`: Memory limit (default: 512M)
 - `REDIS_VERSION`: `memory` or version like `6.2`, `8.10`, `valkey-9.1` (default: memory)

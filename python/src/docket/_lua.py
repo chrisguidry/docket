@@ -62,7 +62,6 @@ from __future__ import annotations
 
 import functools
 import inspect
-import sys
 from importlib.resources import files
 from typing import (
     TYPE_CHECKING,
@@ -87,10 +86,7 @@ from redis.commands.core import AsyncScript
 from ._redis import Pipeline, RedisClient
 
 if TYPE_CHECKING:
-    if sys.version_info >= (3, 11):
-        from importlib.resources.abc import Traversable
-    else:
-        from importlib.abc import Traversable
+    from importlib.resources.abc import Traversable
 
 
 # Marker classes used as ``Annotated`` metadata.  The class objects

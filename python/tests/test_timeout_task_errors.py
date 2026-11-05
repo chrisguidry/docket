@@ -49,11 +49,7 @@ async def test_an_error_from_the_task_body_fails_the_task(
 async def test_a_wait_for_timeout_inside_the_task_fails_the_task(
     docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
 ):
-    """A timed-out asyncio.wait_for inside the task fails the task with that error.
-
-    On Python 3.10, asyncio.TimeoutError is a separate class from the builtin
-    TimeoutError, so this covers the case the builtin TimeoutError test does not.
-    """
+    """A timed-out asyncio.wait_for inside the task fails the task with that error."""
 
     async def waits_too_long_for_something(
         timeout: Timeout = Timeout(timedelta(seconds=5)),

@@ -14,7 +14,6 @@ this module only detects those schemes and dispatches there.
 from __future__ import annotations
 
 import logging
-import sys
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta
 from types import TracebackType
@@ -35,9 +34,6 @@ from typing import (
     runtime_checkable,
 )
 from urllib.parse import ParseResult, urlparse, urlunparse
-
-if sys.version_info < (3, 11):
-    from exceptiongroup import BaseExceptionGroup  # pragma: no cover
 
 from redis.asyncio import ConnectionPool, Redis
 from redis.asyncio.client import PubSub

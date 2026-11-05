@@ -26,8 +26,7 @@ def when(value: object) -> object:
     if not isinstance(value, str):
         return value
     try:
-        # Python 3.10 does not read a trailing Z.
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        datetime.fromisoformat(value)
     except ValueError:
         return value
     return "<iso8601>"

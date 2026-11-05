@@ -202,9 +202,6 @@ def metrics_server(
         yield
         return
 
-    import sys
-    from typing import Any
-
     try:
         from opentelemetry.sdk.metrics import MeterProvider
     except ImportError as e:
@@ -215,11 +212,7 @@ def metrics_server(
 
     from ._prometheus_exporter import PrometheusMetricReader
 
-    # wsgiref.types was added in Python 3.11
-    if sys.version_info >= (3, 11):  # pragma: no cover
-        from wsgiref.types import WSGIApplication
-    else:  # pragma: no cover
-        WSGIApplication = Any  # type: ignore[misc,assignment]
+    from wsgiref.types import WSGIApplication
 
     from prometheus_client import REGISTRY
     from prometheus_client.exposition import (

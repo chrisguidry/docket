@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        PYTHON_VERSION: ${PYTHON_VERSION:-3.10}
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.11}
     volumes:
       - .:/app:ro
       - /var/run/docker.sock:/var/run/docker.sock

@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import sys
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
@@ -10,8 +9,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-if sys.version_info < (3, 11):  # pragma: no cover
-    from exceptiongroup import ExceptionGroup
 from docket._redis import RedisClient
 from redis.exceptions import ConnectionError
 
