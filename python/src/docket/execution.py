@@ -429,7 +429,9 @@ class Execution:
 
     def get_argument(self, parameter: str) -> Any:
         signature = get_signature(self.function)
-        bound_args = signature.bind(*self.args, **self.kwargs)
+        # Partial, because the caller leaves out the parameters that
+        # dependencies supply, including Annotated ones that have no default.
+        bound_args = signature.bind_partial(*self.args, **self.kwargs)
         bound_args.apply_defaults()
         return bound_args.arguments[parameter]
 
@@ -1072,7 +1074,10 @@ def compact_signature(signature: inspect.Signature) -> str:
     dependencies: int = 0
 
     for parameter in signature.parameters.values():
-        if isinstance(parameter.default, uncalled_for.Dependency):
+        if isinstance(parameter.default, uncalled_for.Dependency) or any(
+            isinstance(metadata, uncalled_for.Provider)
+            for metadata in getattr(parameter.annotation, "__metadata__", ())
+        ):
             dependencies += 1
             continue
 

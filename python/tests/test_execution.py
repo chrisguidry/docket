@@ -47,6 +47,13 @@ async def dependencies(
 ) -> None: ...  # pragma: no cover
 
 
+async def annotated_dependencies(
+    a: str,
+    c: Annotated[str, Depends(a_dependency)],
+    docket: Annotated[Docket, CurrentDocket()],
+) -> None: ...  # pragma: no cover
+
+
 async def only_dependencies(
     a: str = Depends(a_dependency),
     docket: Docket = CurrentDocket(),
@@ -63,6 +70,7 @@ async def only_dependencies(
         (optional_args, "a: str, b: str, c: str = 'c'"),
         (logged_args, "a: str, b: str = 'foo'"),
         (dependencies, "a: str, b: int = 42, ..."),
+        (annotated_dependencies, "a: str, ..."),
         (only_dependencies, "..."),
     ],
 )

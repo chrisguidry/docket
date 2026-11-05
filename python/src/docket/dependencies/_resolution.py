@@ -165,12 +165,14 @@ def detect_single_conflicts(
 def _provided_arguments(execution: Execution) -> dict[str, Any]:
     """Map the caller's positional and keyword arguments to parameter names.
 
+    The binding is partial because the caller leaves out the parameters that
+    dependencies supply, including ``Annotated`` ones that have no default.
     When the arguments do not bind to the signature, fall back to the keyword
     arguments alone; calling the task will fail later with the same TypeError.
     """
     signature = get_signature(execution.function)
     try:
-        bound = signature.bind(*execution.args, **execution.kwargs)
+        bound = signature.bind_partial(*execution.args, **execution.kwargs)
     except TypeError:
         return dict(execution.kwargs)
     return dict(bound.arguments)

@@ -395,7 +395,9 @@ class StrikeList:
         signature = get_signature(execution.function)
 
         try:
-            bound_args = signature.bind(*execution.args, **execution.kwargs)
+            # Partial, because the caller leaves out the parameters that
+            # dependencies supply, including Annotated ones with no default.
+            bound_args = signature.bind_partial(*execution.args, **execution.kwargs)
             bound_args.apply_defaults()
         except TypeError:
             # If we can't make sense of the arguments, just assume the task is fine
