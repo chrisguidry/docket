@@ -6,7 +6,6 @@ task ends cancelled, and the worker acknowledges its message.
 """
 
 import asyncio
-import sys
 from datetime import timedelta
 from typing import Any, Awaitable, Callable, cast
 
@@ -60,11 +59,7 @@ async def test_task_that_cancels_itself_ends_cancelled(
     assert pending["pending"] == 0
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11),
-    reason="asyncio.Task has no cancelling() before Python 3.11",
-)
-async def test_task_interrupted_by_loop_shutdown_is_redelivered(  # pragma: no cover
+async def test_task_interrupted_by_loop_shutdown_is_redelivered(
     docket: Docket,
 ):
     """A task interrupted by event loop shutdown runs again on another worker.

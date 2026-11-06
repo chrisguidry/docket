@@ -7,7 +7,7 @@ some refusals get their own class, so these tests cover a sample of each.
 """
 
 import asyncio
-import sys
+from asyncio import timeout as async_timeout
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from typing import Any, AsyncGenerator
@@ -22,15 +22,6 @@ from redis.exceptions import (
     ResponseError,
     TimeoutError,
 )
-
-if sys.version_info < (3, 11):  # pragma: no cover
-    from exceptiongroup import ExceptionGroup
-
-if sys.version_info >= (3, 11):  # pragma: no cover
-    from asyncio import timeout as async_timeout
-else:  # pragma: no cover
-    from async_timeout import timeout as async_timeout
-
 
 from docket import Docket, Perpetual, Worker
 from tests.conftest import wait_until

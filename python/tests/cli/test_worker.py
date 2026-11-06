@@ -375,8 +375,5 @@ async def test_sigterm_gracefully_drains_inflight_tasks(
 async def test_sigint_gracefully_drains_inflight_tasks(
     docket: Docket, key_leak_checker: KeyCountChecker
 ) -> None:
-    """Worker should finish in-flight tasks before exiting on SIGINT.
-
-    This ensures consistent graceful shutdown behavior across Python 3.10+.
-    """
+    """Worker should finish in-flight tasks before exiting on SIGINT."""
     await _test_signal_graceful_shutdown(docket, key_leak_checker, signal.SIGINT)

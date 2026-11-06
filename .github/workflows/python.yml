@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
         # A bug that depends on the Python version shows up on any backend,
         # and a bug that depends on the server shows up on any Python.  So
         # every Python runs the in-memory backend (burner-redis is Python
@@ -34,11 +34,11 @@ jobs:
             redis-version: "8.10"
         include:
           # The oldest supported server with the oldest and newest Python
-          - python-version: "3.10"
+          - python-version: "3.11"
             backend:
               name: "Redis 6"
               redis-version: "6.2"
-          - python-version: "3.14"
+          - python-version: "3.15"
             backend:
               name: "Redis 6"
               redis-version: "6.2"
@@ -46,36 +46,36 @@ jobs:
           # runs on the oldest and newest Python.  It emits ResourceWarning
           # about unclosed pub/sub sockets during teardown, which we ignore
           # until redis-py fixes it.
-          - python-version: "3.10"
+          - python-version: "3.11"
             backend:
               name: "Redis 8 Cluster"
               redis-version: "8.10-cluster"
             pytest-args: "-W ignore::ResourceWarning"
-          - python-version: "3.14"
+          - python-version: "3.15"
             backend:
               name: "Redis 8 Cluster"
               redis-version: "8.10-cluster"
             pytest-args: "-W ignore::ResourceWarning"
           # Valkey and ACL differ only on the server, so one Python covers them
-          - python-version: "3.14"
+          - python-version: "3.15"
             backend:
               name: "Valkey 8"
               redis-version: "valkey-8.0"
-          - python-version: "3.14"
+          - python-version: "3.15"
             backend:
               name: "Valkey 9"
               redis-version: "valkey-9.1"
-          - python-version: "3.14"
+          - python-version: "3.15"
             backend:
               name: "Redis 8 with ACL"
               redis-version: "8.10-acl"
-          - python-version: "3.14"
+          - python-version: "3.15"
             backend:
               name: "Valkey 9 with ACL"
               redis-version: "valkey-9.1-acl"
           # The ACL server again, with the credentials from a credential
           # provider instead of the URL
-          - python-version: "3.14"
+          - python-version: "3.15"
             backend:
               name: "Redis 8 with credential provider"
               redis-version: "8.10-provider"
@@ -122,7 +122,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v7
 
@@ -174,7 +174,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v7
 
@@ -213,7 +213,7 @@ jobs:
           report_type: test_results
 
   test-redis-py:
-    name: Python 3.14, Redis 8.10, redis-py ${{ matrix.redis-py.name }}
+    name: Python 3.15, Redis 8.10, redis-py ${{ matrix.redis-py.name }}
     runs-on: ubuntu-26.04
     timeout-minutes: 4
     defaults:
@@ -236,7 +236,7 @@ jobs:
       - name: Install uv and set Python version
         uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.14"
+          python-version: "3.15"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 

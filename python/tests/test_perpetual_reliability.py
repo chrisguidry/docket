@@ -26,15 +26,12 @@ The two structural recovery cases the tests below exercise:
 from __future__ import annotations
 
 import asyncio
-import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-if sys.version_info < (3, 11):  # pragma: no cover
-    from exceptiongroup import ExceptionGroup
 from redis.exceptions import ConnectionError
 
 from docket import Docket, Perpetual, Worker

@@ -1,15 +1,11 @@
 """A worker that crashes stops its infrastructure tasks and reaches its caller."""
 
 import asyncio
-import sys
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 from unittest.mock import patch
 
 import pytest
-
-if sys.version_info < (3, 11):  # pragma: no cover
-    from exceptiongroup import ExceptionGroup
 
 from docket import Docket, Worker
 from docket.execution import Execution

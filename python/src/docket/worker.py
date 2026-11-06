@@ -7,8 +7,8 @@ import logging
 import os
 import signal
 import socket
-import sys
 import time
+from asyncio import TaskGroup
 from contextlib import AsyncExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -24,13 +24,6 @@ from typing import (
 )
 
 import cloudpickle
-
-if sys.version_info < (3, 11):
-    from exceptiongroup import BaseExceptionGroup, ExceptionGroup  # pragma: no cover
-    from taskgroup import TaskGroup  # pragma: no cover
-else:
-    from asyncio import TaskGroup  # pragma: no cover
-
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, Tracer
 
@@ -1193,8 +1186,7 @@ class Worker:
                 duration = log_context["duration"] = time.time() - start
                 # A cancel during shutdown leaves the message pending for redelivery,
                 # unless docket.cancel() sent it.  asyncio.run() cancels the loop task
-                # and this task at once, before the drain starts.  Only Python 3.11 and
-                # later count cancel requests, so on 3.10 this task ends cancelled.
+                # and this task at once, before the drain starts.
                 if asyncio.current_task() not in self._cancelled_by_docket and (
                     session.stopping.is_set()
                     or cancelling(session.loop_task) > session.loop_task_cancelling
