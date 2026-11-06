@@ -449,11 +449,6 @@ class Execution:
                 raise TypeError(f"missing a required argument: {name!r}")
         return bound
 
-    def get_argument(self, parameter: str) -> Any:
-        bound_args = self.bind_arguments()
-        bound_args.apply_defaults()
-        return bound_args.arguments[parameter]
-
     def call_repr(self) -> str:
         arguments: list[str] = []
         function_name = self.function_name

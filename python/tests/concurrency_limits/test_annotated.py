@@ -8,7 +8,7 @@ from typing import Annotated
 
 import pytest
 
-from docket import ConcurrencyLimit, Docket, Worker
+from docket import ConcurrencyLimit, Depends, Docket, Provided, TaskArgument, Worker
 
 from tests.concurrency_limits.overlap import assert_some_overlap
 
@@ -152,3 +152,32 @@ async def test_annotated_concurrency_keys_cleaned_up(docket: Docket, worker: Wor
     async with docket.redis() as redis:
         key = f"{docket.prefix}:concurrency:customer_id:42"
         assert await redis.exists(key) == 0
+
+
+def tenant_of(customer_id: Annotated[int, TaskArgument()]) -> str:
+    return f"tenant-{customer_id}"
+
+
+Tenant = Annotated[str, Depends(tenant_of), ConcurrencyLimit(1)]
+
+
+async def test_annotated_concurrency_limit_keys_on_a_provided_value(
+    docket: Docket, worker: Worker
+):
+    """A limit on a dependency-supplied parameter keys on the resolved value."""
+    execution_intervals: dict[str, tuple[float, float]] = {}
+
+    async def task(customer_id: int, tenant: Tenant = Provided):
+        start = time.monotonic()
+        await asyncio.sleep(0.1)
+        execution_intervals[tenant] = (start, time.monotonic())
+
+    await docket.add(task)(customer_id=1)
+    await docket.add(task)(customer_id=2)
+
+    worker.concurrency = 10
+    await worker.run_until_finished()
+
+    assert set(execution_intervals) == {"tenant-1", "tenant-2"}
+    intervals = list(execution_intervals.values())
+    assert_some_overlap(intervals, "Different tenants should run concurrently")
