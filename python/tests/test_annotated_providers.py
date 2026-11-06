@@ -10,9 +10,9 @@ with or without the default.
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
-from docket import ConcurrencyLimit, Docket, Execution, Provided, Worker
+from docket import ConcurrencyLimit, Disposition, Docket, Execution, Provided, Worker
 from docket.dependencies import (
     CurrentDocket,
     CurrentExecution,
@@ -228,3 +228,17 @@ async def test_task_argument_sees_positional_arguments_without_provided(
     await worker.run_until_finished()
 
     assert seen == ["customer 3"]
+
+
+async def test_strike_does_not_hide_a_call_missing_an_ordinary_argument(
+    docket: Docket,
+):
+    async def task(customer_id: int, region: str, db: DB = Provided): ...
+
+    docket.register(task)
+    await docket.strike(task, "customer_id", "==", 7)
+
+    arguments: dict[str, Any] = {"customer_id": 7}
+    execution = await docket.add(task)(**arguments)
+
+    assert execution.disposition is not Disposition.STRUCK

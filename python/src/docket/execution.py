@@ -427,11 +427,30 @@ class Execution:
             "docket.attempt": self.attempt,
         }
 
-    def get_argument(self, parameter: str) -> Any:
+    def bind_arguments(self) -> inspect.BoundArguments:
+        """Bind the caller's arguments to the task's parameters.
+
+        The caller may leave out a parameter whose value a dependency supplies,
+        including an ``Annotated`` one with no default, because the worker
+        resolves it.  Any other missing parameter raises ``TypeError``, as
+        calling the task would.
+        """
         signature = get_signature(self.function)
-        # Partial, because the caller leaves out the parameters that
-        # dependencies supply, including Annotated ones that have no default.
-        bound_args = signature.bind_partial(*self.args, **self.kwargs)
+        bound = signature.bind_partial(*self.args, **self.kwargs)
+        supplied = uncalled_for.get_dependency_parameters(self.function)
+        for name, parameter in signature.parameters.items():
+            if (
+                name not in bound.arguments
+                and name not in supplied
+                and parameter.default is parameter.empty
+                and parameter.kind
+                not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+            ):
+                raise TypeError(f"missing a required argument: {name!r}")
+        return bound
+
+    def get_argument(self, parameter: str) -> Any:
+        bound_args = self.bind_arguments()
         bound_args.apply_defaults()
         return bound_args.arguments[parameter]
 
