@@ -7,13 +7,18 @@ from datetime import datetime, timedelta, timezone
 
 from docket import Docket, Worker
 from docket.annotations import Logged
-from docket.dependencies import CurrentDocket, CurrentExecution, CurrentWorker, Depends
+from docket.dependencies import (
+    CurrentDocket,
+    CurrentExecution,
+    CurrentWorker,
+    Depends,
+    Provider,
+)
 from docket.execution import (
     Execution,
     ExecutionState,
     TaskFunction,
     compact_signature,
-    get_signature,
 )
 
 
@@ -54,6 +59,16 @@ async def annotated_dependencies(
 ) -> None: ...  # pragma: no cover
 
 
+class CurrentTenant(Provider[str]):
+    async def __aenter__(self) -> str: ...  # pragma: no cover
+
+
+async def bare_provider_class(
+    a: str,
+    tenant: Annotated[str, CurrentTenant],
+) -> None: ...  # pragma: no cover
+
+
 async def only_dependencies(
     a: str = Depends(a_dependency),
     docket: Docket = CurrentDocket(),
@@ -71,13 +86,14 @@ async def only_dependencies(
         (logged_args, "a: str, b: str = 'foo'"),
         (dependencies, "a: str, b: int = 42, ..."),
         (annotated_dependencies, "a: str, ..."),
+        (bare_provider_class, "a: str, ..."),
         (only_dependencies, "..."),
     ],
 )
 async def test_compact_signature(
     docket: Docket, worker: Worker, function: TaskFunction, expected: str
 ):
-    assert compact_signature(get_signature(function)) == expected
+    assert compact_signature(function) == expected
 
 
 async def test_execution_function_is_immutable(docket: Docket):

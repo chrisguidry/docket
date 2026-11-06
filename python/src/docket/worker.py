@@ -1269,7 +1269,7 @@ class Worker:
     def _startup_log(self) -> None:
         logger.info("Starting worker %r with the following tasks:", self.name)
         for task_name, task in self.docket.tasks.items():
-            logger.info("* %s(%s)", task_name, compact_signature(get_signature(task)))
+            logger.info("* %s(%s)", task_name, compact_signature(task))
 
     @property
     def workers_set(self) -> str:

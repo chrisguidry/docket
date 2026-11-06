@@ -1088,15 +1088,14 @@ class Execution:
                     yield message_data
 
 
-def compact_signature(signature: inspect.Signature) -> str:
+def compact_signature(function: Callable[..., Any]) -> str:
+    """Describe a task's caller-supplied parameters, collapsing the rest to ``...``."""
     parameters: list[str] = []
     dependencies: int = 0
+    supplied = uncalled_for.get_dependency_parameters(function)
 
-    for parameter in signature.parameters.values():
-        if isinstance(parameter.default, uncalled_for.Dependency) or any(
-            isinstance(metadata, uncalled_for.Provider)
-            for metadata in getattr(parameter.annotation, "__metadata__", ())
-        ):
+    for parameter in get_signature(function).parameters.values():
+        if parameter.name in supplied:
             dependencies += 1
             continue
 
