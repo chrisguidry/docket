@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from uncalled_for import current_frame
+from uncalled_for import Provider, current_frame
 from uncalled_for.frames import _CallArgument  # pyright: ignore[reportPrivateUsage]
 
-from ._base import Dependency, current_docket, current_execution, current_worker
+from ._base import current_docket, current_execution, current_worker
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..docket import Docket
@@ -16,7 +16,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..worker import Worker
 
 
-class _CurrentWorker(Dependency["Worker"]):
+class _CurrentWorker(Provider["Worker"]):
     async def __aenter__(self) -> Worker:
         return current_worker.get()
 
@@ -34,7 +34,7 @@ def CurrentWorker() -> Worker:
     return cast("Worker", _CurrentWorker())
 
 
-class _CurrentDocket(Dependency["Docket"]):
+class _CurrentDocket(Provider["Docket"]):
     async def __aenter__(self) -> Docket:
         return current_docket.get()
 
@@ -52,7 +52,7 @@ def CurrentDocket() -> Docket:
     return cast("Docket", _CurrentDocket())
 
 
-class _CurrentExecution(Dependency["Execution"]):
+class _CurrentExecution(Provider["Execution"]):
     async def __aenter__(self) -> Execution:
         return current_execution.get()
 
@@ -70,7 +70,7 @@ def CurrentExecution() -> Execution:
     return cast("Execution", _CurrentExecution())
 
 
-class _TaskKey(Dependency[str]):
+class _TaskKey(Provider[str]):
     async def __aenter__(self) -> str:
         return current_execution.get().key
 
@@ -129,7 +129,7 @@ def TaskArgument(parameter: str | None = None, optional: bool = False) -> Any:
     return cast(Any, _TaskArgument(parameter, optional))
 
 
-class _TaskLogger(Dependency["logging.LoggerAdapter[logging.Logger]"]):
+class _TaskLogger(Provider["logging.LoggerAdapter[logging.Logger]"]):
     async def __aenter__(self) -> logging.LoggerAdapter[logging.Logger]:
         execution = current_execution.get()
         logger = logging.getLogger(f"docket.task.{execution.function_name}")

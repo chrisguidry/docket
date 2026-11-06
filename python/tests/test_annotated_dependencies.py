@@ -6,7 +6,8 @@ metadata instead of as default parameter values:
     async def process(customer_id: Annotated[int, ConcurrencyLimit(1)]): ...
 
 The parameter keeps its real value (the int); the dependency runs as a
-side-effect (acquiring the concurrency slot).
+side-effect (acquiring the concurrency slot).  Dependencies that supply a
+value, such as ``Depends``, are tested in test_annotated_providers.py.
 """
 
 from __future__ import annotations
@@ -21,24 +22,24 @@ _side_effects: list[str] = []
 
 async def my_side_effect() -> str:
     _side_effects.append("side_effect_ran")
-    return "unused"
+    return "configured"
 
 
-async def test_annotated_depends_side_effect(docket: Docket, worker: Worker):
-    """Annotated Depends runs as a side-effect (doesn't produce the param value)."""
+async def test_annotated_depends_supplies_value(docket: Docket, worker: Worker):
+    """Annotated Depends supplies the parameter's value, like a Depends default."""
     _side_effects.clear()
 
     async def task(
         customer_id: int,
         _setup: Annotated[str, Depends(my_side_effect)] = "",
     ):
-        _side_effects.append(f"task_{customer_id}")
+        _side_effects.append(f"task_{customer_id}_{_setup}")
 
     await docket.add(task)(customer_id=1)
     await worker.run_until_finished()
 
     assert "side_effect_ran" in _side_effects
-    assert "task_1" in _side_effects
+    assert "task_1_configured" in _side_effects
 
 
 async def test_mixed_default_and_annotation_deps(docket: Docket, worker: Worker):

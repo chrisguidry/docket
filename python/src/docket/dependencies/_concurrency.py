@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, overload
 
 from opentelemetry import propagate
 
+from uncalled_for import current_frame
+
 from .._cancellation import CANCEL_MSG_CLEANUP, cancel_task
 from .._lua import Arg, Args, Key, redis_script
 from .._redis import RedisClient
@@ -228,9 +230,11 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         # any independent prefix in cluster mode.
         scope = f"{docket.prefix}:{self.scope}" if self.scope else docket.prefix
         if self.argument_name is not None:
+            # The frame returns the value the task receives: the caller's
+            # argument, the value a dependency supplies, or the default.
             try:
-                argument_value = execution.get_argument(self.argument_name)
-            except KeyError as e:
+                argument_value = await current_frame().resolve(self.argument_name)
+            except LookupError as e:
                 raise ValueError(
                     f"ConcurrencyLimit argument '{self.argument_name}' not found in "
                     f"task arguments. Available: {list(execution.kwargs.keys())}"

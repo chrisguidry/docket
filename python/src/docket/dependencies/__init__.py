@@ -11,6 +11,8 @@ from ._base import (
     CompletionHandler,
     Dependency,
     FailureHandler,
+    Provided,
+    Provider,
     Runtime,
     TaskOutcome,
     current_docket,
@@ -61,6 +63,8 @@ from ._timeout import Timeout
 __all__ = [
     # Base
     "Dependency",
+    "Provided",
+    "Provider",
     "Runtime",
     "FailureHandler",
     "CompletionHandler",

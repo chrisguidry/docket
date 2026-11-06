@@ -438,6 +438,25 @@ async def task_b(pool: AsyncConnectionPool = Shared(create_db_pool)) -> None:
     ...
 ```
 
+### Declaring dependencies with `Annotated`
+
+`Depends`, `Shared`, `CallArgument`, `TaskArgument`, and the contextual dependencies also work as `Annotated` metadata, so you can name a dependency once and reuse it across tasks:
+
+```python
+from typing import Annotated
+from docket import CurrentDocket, Depends, Docket
+
+DB = Annotated[Connection, Depends(get_db_connection)]
+
+async def update_user(user_id: int, db: DB) -> None:
+    await db.execute("UPDATE users SET ...", user_id)
+
+async def notify(user_id: int, docket: Annotated[Docket, CurrentDocket()]) -> None:
+    ...
+```
+
+This resolves exactly like `db: Connection = Depends(get_db_connection)`. The difference is that `db` stays a required parameter, so a type checker flags a direct call to `update_user(1)` that the default form would let through. Declare a parameter's value one way only: a parameter with both a dependency in its metadata and a dependency default raises `TypeError`.
+
 ### Error Handling
 
 When dependencies fail, the entire task fails with detailed error information:
@@ -512,6 +531,19 @@ class Traced(Dependency):
 async def fetch_pages(
     urls: Annotated[list[str], Traced],
 ) -> None:
+    ...
+```
+
+A dependency in metadata wraps the call unless it subclasses `Provider`, in which case it supplies the parameter's value instead, as `Depends` does. Subclass `Provider` rather than `Dependency` for a custom dependency that should work both ways:
+
+```python
+from docket.dependencies import Provider
+
+class CurrentTenant(Provider[str]):
+    async def __aenter__(self) -> str:
+        return current_tenant.get()
+
+async def bill(invoice_id: int, tenant: Annotated[str, CurrentTenant()]) -> None:
     ...
 ```
 

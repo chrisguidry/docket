@@ -427,11 +427,27 @@ class Execution:
             "docket.attempt": self.attempt,
         }
 
-    def get_argument(self, parameter: str) -> Any:
+    def bind_arguments(self) -> inspect.BoundArguments:
+        """Bind the caller's arguments to the task's parameters.
+
+        The caller may leave out a parameter whose value a dependency supplies,
+        including an ``Annotated`` one with no default, because the worker
+        resolves it.  Any other missing parameter raises ``TypeError``, as
+        calling the task would.
+        """
         signature = get_signature(self.function)
-        bound_args = signature.bind(*self.args, **self.kwargs)
-        bound_args.apply_defaults()
-        return bound_args.arguments[parameter]
+        bound = signature.bind_partial(*self.args, **self.kwargs)
+        supplied = uncalled_for.get_dependency_parameters(self.function)
+        for name, parameter in signature.parameters.items():
+            if (
+                name not in bound.arguments
+                and name not in supplied
+                and parameter.default is parameter.empty
+                and parameter.kind
+                not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+            ):
+                raise TypeError(f"missing a required argument: {name!r}")
+        return bound
 
     def call_repr(self) -> str:
         arguments: list[str] = []
@@ -1067,12 +1083,14 @@ class Execution:
                     yield message_data
 
 
-def compact_signature(signature: inspect.Signature) -> str:
+def compact_signature(function: Callable[..., Any]) -> str:
+    """Describe a task's caller-supplied parameters, collapsing the rest to ``...``."""
     parameters: list[str] = []
     dependencies: int = 0
+    supplied = uncalled_for.get_dependency_parameters(function)
 
-    for parameter in signature.parameters.values():
-        if isinstance(parameter.default, uncalled_for.Dependency):
+    for parameter in get_signature(function).parameters.values():
+        if parameter.name in supplied:
             dependencies += 1
             continue
 

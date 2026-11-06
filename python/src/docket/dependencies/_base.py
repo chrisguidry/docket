@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
-from uncalled_for import Dependency as Dependency
+from uncalled_for import (
+    Dependency as Dependency,
+    Provided as Provided,
+    Provider as Provider,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..docket import Docket

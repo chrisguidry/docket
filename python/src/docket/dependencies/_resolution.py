@@ -168,9 +168,8 @@ def _provided_arguments(execution: Execution) -> dict[str, Any]:
     When the arguments do not bind to the signature, fall back to the keyword
     arguments alone; calling the task will fail later with the same TypeError.
     """
-    signature = get_signature(execution.function)
     try:
-        bound = signature.bind(*execution.args, **execution.kwargs)
+        bound = execution.bind_arguments()
     except TypeError:
         return dict(execution.kwargs)
     return dict(bound.arguments)

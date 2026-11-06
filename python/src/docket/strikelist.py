@@ -383,8 +383,6 @@ class StrikeList:
         return False
 
     def _matches_task_or_parameter_strike(self, execution: "Execution") -> bool:
-        from .execution import get_signature
-
         function_name = execution.function_name
 
         # Check if the entire task is stricken (without parameter conditions)
@@ -392,10 +390,8 @@ class StrikeList:
         if function_name in self.task_strikes and not task_strikes:
             return True
 
-        signature = get_signature(execution.function)
-
         try:
-            bound_args = signature.bind(*execution.args, **execution.kwargs)
+            bound_args = execution.bind_arguments()
             bound_args.apply_defaults()
         except TypeError:
             # If we can't make sense of the arguments, just assume the task is fine
