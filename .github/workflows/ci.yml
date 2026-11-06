@@ -1,0 +1,46 @@
+name: CI
+
+# Runs every workflow that checks a change, so that one job can say whether
+# all of them passed. Each of them also runs on its own when a release
+# publishes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python
+    uses: ./.github/workflows/python.yml
+    secrets: inherit
+
+  rust:
+    name: Rust
+    uses: ./.github/workflows/rust.yml
+    secrets: inherit
+
+  conformance:
+    name: Conformance
+    uses: ./.github/workflows/conformance.yml
+    secrets: inherit
+
+  prek:
+    name: Prek
+    uses: ./.github/workflows/prek.yml
+
+  # The one check main's ruleset requires. It succeeds only when every
+  # workflow it needs succeeded, so a job added to or renamed in any of them
+  # counts without a change to the ruleset.
+  all-checks-passed:
+    name: All checks passed
+    if: ${{ always() }}
+    needs: [python, rust, conformance, prek]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 1
+    steps:
+      - name: Fail unless every needed workflow succeeded
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        run: exit 1
