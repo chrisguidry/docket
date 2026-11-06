@@ -10,6 +10,8 @@ with or without the default.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 from docket import ConcurrencyLimit, Disposition, Docket, Execution, Provided, Worker
@@ -18,6 +20,7 @@ from docket.dependencies import (
     CurrentExecution,
     CurrentWorker,
     Depends,
+    Provider,
     TaskArgument,
     TaskKey,
     TaskLogger,
@@ -242,3 +245,34 @@ async def test_strike_does_not_hide_a_call_missing_an_ordinary_argument(
     execution = await docket.add(task)(**arguments)
 
     assert execution.disposition is not Disposition.STRUCK
+
+
+pool_events: list[str] = []
+
+
+class Pool(Provider[str]):
+    @classmethod
+    @asynccontextmanager
+    async def worker_lifecycle(
+        cls, docket: Docket, worker: Worker
+    ) -> AsyncGenerator[None]:
+        pool_events.append("open-pool")
+        yield
+        pool_events.append("close-pool")
+
+    async def __aenter__(self) -> str:
+        return "connection"
+
+
+async def test_worker_enters_the_lifecycle_of_a_provider_in_metadata(docket: Docket):
+    pool_events.clear()
+
+    async def task(connection: Annotated[str, Pool()] = Provided):
+        pool_events.append(f"task with {connection}")
+
+    await docket.add(task)()
+
+    async with Worker(docket) as worker:
+        await worker.run_until_finished()
+
+    assert pool_events == ["open-pool", "task with connection", "close-pool"]

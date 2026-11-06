@@ -52,6 +52,7 @@ from .dependencies import (
     current_worker,
     format_duration,
     get_annotation_dependencies,
+    get_dependency_parameters,
     get_single_dependency_of_type,
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
@@ -68,7 +69,7 @@ from .docket import (
     RedisMessageID,
     RedisReadGroupResponse,
 )
-from .execution import TaskFunction, compact_signature, get_signature
+from .execution import TaskFunction, compact_signature
 from .instrumentation import (
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
@@ -561,9 +562,7 @@ class Worker:
         seen: set[type[Dependency[Any]]] = set()
         ordered: list[type[Dependency[Any]]] = []
 
-        def consider(dep: Any) -> None:
-            if not isinstance(dep, Dependency):
-                return
+        def consider(dep: Dependency[Any]) -> None:
             cls = type(dep)
             if cls in seen or not hasattr(cls, "worker_lifecycle"):
                 return
@@ -572,11 +571,11 @@ class Worker:
 
         for task_func in self.docket.tasks.values():
             try:
-                sig = get_signature(task_func)
+                supplied = get_dependency_parameters(task_func)
             except (ValueError, TypeError):  # pragma: no cover
                 continue
-            for param in sig.parameters.values():
-                consider(param.default)
+            for dep in supplied.values():
+                consider(dep)
             for deps in get_annotation_dependencies(task_func).values():
                 for dep in deps:
                     consider(dep)
