@@ -1214,7 +1214,7 @@ class Worker:
                 duration = log_context["duration"] = time.time() - start
                 TASKS_FAILED.add(1, counter_labels)
 
-                # A requested retry is ERROR only when no handler reschedules it
+                # A requested retry is ERROR only when no handler takes it
                 requested_retry = _is_requested_retry(e)
                 if not requested_retry:
                     span.record_exception(e)

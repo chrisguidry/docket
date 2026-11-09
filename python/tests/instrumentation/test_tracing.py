@@ -327,8 +327,8 @@ async def test_requested_retry_without_a_retry_dependency_has_error_status(
 async def test_requested_retry_that_gives_way_to_a_replacement_has_ok_status(
     docket: Docket, worker: Worker
 ):
-    """A requested retry that a replace of the key superseded schedules
-    nothing, and its span is OK."""
+    """When the task replaces its own key and then asks for a retry, the
+    retry gives way to the replacement and the span is OK."""
     captured: list[tuple[str, Span]] = []
 
     async def the_polling_task(
