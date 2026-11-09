@@ -516,11 +516,13 @@ The health check endpoint (`/`) returns 200 OK when the worker is healthy and ab
 
 Docket automatically creates OpenTelemetry spans for task execution:
 
-- **Span name**: the task's function name
+- **Span name**: the name the task was registered under
 - **Attributes**: docket name, worker name, task key, attempt number
-- **Status**: ERROR with the exception when a task fails. A task rescheduled by
-  admission control (such as `ConcurrencyLimit`) or by its own `Retry.after()` or
-  `Retry.at()` call is OK, unless that retry finds no attempts left.
+- **Status**: ERROR with the exception when a task fails. OK when admission
+  control blocks the task (such as `ConcurrencyLimit` or `Debounce`, whether it
+  is rescheduled or dropped), or when the task asks for a retry with
+  `Retry.after()` or `Retry.at()` and the retry is scheduled. A requested retry
+  is ERROR when no attempts remain or the task has no `Retry`.
 - **Duration**: Complete task execution time
 
 Configure your OpenTelemetry exporter to send traces to your observability platform. See the [OpenTelemetry Python documentation](https://opentelemetry.io/docs/languages/python/) for configuration examples with various backends like Jaeger, Zipkin, or cloud providers.

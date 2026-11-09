@@ -147,6 +147,16 @@ async def default_fallback_task(
     )
 
 
+def _is_requested_retry(exception: BaseException) -> bool:
+    """Whether the exception is a retry from `Retry.after()` or `Retry.at()`, or
+    a group, such as one from an `asyncio.TaskGroup`, whose exceptions are all
+    such retries."""
+    if isinstance(exception, BaseExceptionGroup):
+        _, others = exception.split(ForcedRetry)
+        return others is None
+    return isinstance(exception, ForcedRetry)
+
+
 logger: logging.Logger = logging.getLogger(__name__)
 tracer: Tracer = trace.get_tracer(__name__)
 
@@ -1204,8 +1214,8 @@ class Worker:
                 duration = log_context["duration"] = time.time() - start
                 TASKS_FAILED.add(1, counter_labels)
 
-                # Retry.after()/.at() marks the span ERROR only when attempts run out
-                requested_retry = isinstance(e, ForcedRetry)
+                # A requested retry is ERROR only when no handler reschedules it
+                requested_retry = _is_requested_retry(e)
                 if not requested_retry:
                     span.record_exception(e)
                     span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -1222,8 +1232,8 @@ class Worker:
                 if failure_handler and await failure_handler.handle_failure(
                     execution, outcome
                 ):
-                    # Handler took responsibility (scheduled retry, logged, recorded metrics)
-                    # Don't mark as failed - task is being retried
+                    # Handler took responsibility: it scheduled a retry or gave way
+                    # to a newer run of the key, so the run is not marked failed
                     if requested_retry:
                         span.set_status(Status(StatusCode.OK))
                 else:
