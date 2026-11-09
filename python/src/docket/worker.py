@@ -43,6 +43,7 @@ from .dependencies import (
     Dependency,
     FailedDependency,
     FailureHandler,
+    ForcedRetry,
     Perpetual,
     Runtime,
     SharedContext,
@@ -1203,8 +1204,11 @@ class Worker:
                 duration = log_context["duration"] = time.time() - start
                 TASKS_FAILED.add(1, counter_labels)
 
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
+                # Retry.after()/.at() marks the span ERROR only when attempts run out
+                requested_retry = isinstance(e, ForcedRetry)
+                if not requested_retry:
+                    span.record_exception(e)
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
 
                 outcome = TaskOutcome(
                     duration=timedelta(seconds=duration),
@@ -1220,8 +1224,13 @@ class Worker:
                 ):
                     # Handler took responsibility (scheduled retry, logged, recorded metrics)
                     # Don't mark as failed - task is being retried
-                    pass
+                    if requested_retry:
+                        span.set_status(Status(StatusCode.OK))
                 else:
+                    if requested_retry:
+                        span.record_exception(e)
+                        span.set_status(Status(StatusCode.ERROR, str(e)))
+
                     # Not retried - check for completion handler (e.g., Perpetual)
                     completion_handler = get_single_dependency_of_type(
                         dependencies, CompletionHandler

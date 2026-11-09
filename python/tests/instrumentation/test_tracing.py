@@ -1,6 +1,7 @@
 """Tests for OpenTelemetry tracing, span creation, and message handling."""
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 from opentelemetry import trace
@@ -12,7 +13,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from opentelemetry.trace import StatusCode
 
 from docket import ConcurrencyLimit, Docket, Worker
-from docket.dependencies import Retry
+from docket.dependencies import ForcedRetry, Retry
 from docket.instrumentation import message_getter, message_setter
 
 tracer = trace.get_tracer(__name__)
@@ -206,6 +207,57 @@ async def test_infinitely_retrying_task_spans_have_error_status(
         assert span.status.status_code == StatusCode.ERROR
         assert span.status.description is not None
         assert f"Attempt {i + 1} failed" in span.status.description
+
+
+async def test_requested_retry_with_attempts_left_has_ok_status(
+    docket: Docket, worker: Worker
+):
+    """A retry the task asks for with Retry.after() is rescheduling, not a
+    failure, so its span is OK and records no exception."""
+    captured: list[Span] = []
+
+    async def the_polling_task(retry: Retry = Retry(attempts=3)):
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+        if len(captured) < 3:
+            retry.after(timedelta(0))
+
+    await docket.add(the_polling_task)()
+    await worker.run_until_finished()
+
+    assert len(captured) == 3
+    for span in captured[:2]:
+        assert span.status.status_code == StatusCode.OK
+        assert not span.events
+
+
+async def test_requested_retry_on_last_attempt_has_error_status(
+    docket: Docket, worker: Worker
+):
+    """When a requested retry has no attempts left, the task failed, so its
+    span is ERROR and records the exception."""
+    captured: list[Span] = []
+
+    async def the_polling_task(retry: Retry = Retry(attempts=2)):
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+        retry.after(timedelta(0))
+
+    await docket.add(the_polling_task)()
+    await worker.run_until_finished()
+
+    assert len(captured) == 2
+    first, last = captured
+    assert first.status.status_code == StatusCode.OK
+    assert not first.events
+    assert last.status.status_code == StatusCode.ERROR
+    assert [event.name for event in last.events] == ["exception"]
+    assert last.events[0].attributes
+    assert last.events[0].attributes["exception.type"] == (
+        f"{ForcedRetry.__module__}.{ForcedRetry.__qualname__}"
+    )
 
 
 async def test_admission_blocked_span_has_ok_status(
