@@ -1,6 +1,7 @@
 """Tests for OpenTelemetry tracing, span creation, and message handling."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from opentelemetry import trace
@@ -11,8 +12,8 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 )
 from opentelemetry.trace import StatusCode
 
-from docket import ConcurrencyLimit, Docket, Worker
-from docket.dependencies import Retry
+from docket import ConcurrencyLimit, CurrentDocket, Docket, Worker
+from docket.dependencies import ForcedRetry, Retry
 from docket.instrumentation import message_getter, message_setter
 
 tracer = trace.get_tracer(__name__)
@@ -206,6 +207,150 @@ async def test_infinitely_retrying_task_spans_have_error_status(
         assert span.status.status_code == StatusCode.ERROR
         assert span.status.description is not None
         assert f"Attempt {i + 1} failed" in span.status.description
+
+
+async def test_requested_retry_with_attempts_left_has_ok_status(
+    docket: Docket, worker: Worker
+):
+    """A retry the task asks for with Retry.after() is rescheduling, not a
+    failure, so its span is OK and records no exception."""
+    captured: list[Span] = []
+
+    async def the_polling_task(retry: Retry = Retry(attempts=3)):
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+        if len(captured) < 3:
+            retry.after(timedelta(0))
+
+    await docket.add(the_polling_task)()
+    await worker.run_until_finished()
+
+    assert len(captured) == 3
+    for span in captured[:2]:
+        assert span.status.status_code == StatusCode.OK
+        assert not span.events
+
+
+async def test_requested_retry_on_last_attempt_has_error_status(
+    docket: Docket, worker: Worker
+):
+    """When a requested retry has no attempts left, the task failed, so its
+    span is ERROR and records the exception."""
+    captured: list[Span] = []
+
+    async def the_polling_task(retry: Retry = Retry(attempts=2)):
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+        retry.after(timedelta(0))
+
+    await docket.add(the_polling_task)()
+    await worker.run_until_finished()
+
+    assert len(captured) == 2
+    first, last = captured
+    assert first.status.status_code == StatusCode.OK
+    assert not first.events
+    assert last.status.status_code == StatusCode.ERROR
+    assert [event.name for event in last.events] == ["exception"]
+    assert last.events[0].attributes
+    assert last.events[0].attributes["exception.type"] == (
+        f"{ForcedRetry.__module__}.{ForcedRetry.__qualname__}"
+    )
+
+
+@pytest.mark.parametrize(
+    "also_fail, status_code, event_names",
+    [
+        pytest.param(False, StatusCode.OK, [], id="retry-alone"),
+        pytest.param(True, StatusCode.ERROR, ["exception"], id="retry-and-failure"),
+    ],
+)
+async def test_requested_retry_inside_a_task_group(
+    docket: Docket,
+    worker: Worker,
+    also_fail: bool,
+    status_code: StatusCode,
+    event_names: list[str],
+):
+    """A retry requested in an asyncio.TaskGroup child arrives as an
+    ExceptionGroup.  Its span is OK when the retry is scheduled, and ERROR
+    when the group also holds any other exception."""
+    captured: list[Span] = []
+
+    async def ask_for_a_retry(retry: Retry) -> None:
+        retry.after(timedelta(0))
+
+    async def fail() -> None:
+        raise ValueError("a child failed")
+
+    async def the_grouped_task(retry: Retry = Retry(attempts=2)):
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+        if len(captured) == 1:
+            async with asyncio.TaskGroup() as group:
+                group.create_task(ask_for_a_retry(retry))
+                if also_fail:
+                    group.create_task(fail())
+
+    await docket.add(the_grouped_task)()
+    await worker.run_until_finished()
+
+    assert len(captured) == 2
+    assert captured[0].status.status_code == status_code
+    assert [event.name for event in captured[0].events] == event_names
+
+
+async def test_requested_retry_without_a_retry_dependency_has_error_status(
+    docket: Docket, worker: Worker
+):
+    """With no Retry to schedule it, a requested retry is a failure."""
+    captured: list[Span] = []
+
+    async def the_task_without_retry():
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+        raise ForcedRetry()
+
+    await docket.add(the_task_without_retry)()
+    await worker.run_until_finished()
+
+    assert len(captured) == 1
+    (span,) = captured
+    assert span.status.status_code == StatusCode.ERROR
+    assert [event.name for event in span.events] == ["exception"]
+
+
+async def test_requested_retry_that_gives_way_to_a_replacement_has_ok_status(
+    docket: Docket, worker: Worker
+):
+    """When the task replaces its own key and then asks for a retry, the
+    retry gives way to the replacement and the span is OK."""
+    captured: list[tuple[str, Span]] = []
+
+    async def the_polling_task(
+        round: str,
+        retry: Retry = Retry(attempts=2),
+        docket: Docket = CurrentDocket(),
+    ):
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append((round, span))
+        if round == "first":
+            soon = datetime.now(timezone.utc) + timedelta(milliseconds=200)
+            await docket.replace(the_polling_task, soon, "polling")("replacement")
+            retry.after(timedelta(0))
+
+    await docket.add(the_polling_task, key="polling")("first")
+    await worker.run_until_finished()
+
+    assert [round for round, _ in captured] == ["first", "replacement"]
+    first = captured[0][1]
+    assert first.status.status_code == StatusCode.OK
+    assert not first.events
 
 
 async def test_admission_blocked_span_has_ok_status(

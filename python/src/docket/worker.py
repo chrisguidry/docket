@@ -43,6 +43,7 @@ from .dependencies import (
     Dependency,
     FailedDependency,
     FailureHandler,
+    ForcedRetry,
     Perpetual,
     Runtime,
     SharedContext,
@@ -144,6 +145,16 @@ async def default_fallback_task(
         "Register via CLI (--tasks your.module:tasks) or API (docket.register(func)).",
         execution.function_name,
     )
+
+
+def _is_requested_retry(exception: BaseException) -> bool:
+    """Whether the exception is a retry from `Retry.after()` or `Retry.at()`, or
+    a group, such as one from an `asyncio.TaskGroup`, whose exceptions are all
+    such retries."""
+    if isinstance(exception, BaseExceptionGroup):
+        _, others = exception.split(ForcedRetry)
+        return others is None
+    return isinstance(exception, ForcedRetry)
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -1203,8 +1214,11 @@ class Worker:
                 duration = log_context["duration"] = time.time() - start
                 TASKS_FAILED.add(1, counter_labels)
 
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
+                # A requested retry is ERROR only when no handler takes it
+                requested_retry = _is_requested_retry(e)
+                if not requested_retry:
+                    span.record_exception(e)
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
 
                 outcome = TaskOutcome(
                     duration=timedelta(seconds=duration),
@@ -1218,10 +1232,15 @@ class Worker:
                 if failure_handler and await failure_handler.handle_failure(
                     execution, outcome
                 ):
-                    # Handler took responsibility (scheduled retry, logged, recorded metrics)
-                    # Don't mark as failed - task is being retried
-                    pass
+                    # Handler took responsibility: it scheduled a retry or gave way
+                    # to a newer run of the key, so the run is not marked failed
+                    if requested_retry:
+                        span.set_status(Status(StatusCode.OK))
                 else:
+                    if requested_retry:
+                        span.record_exception(e)
+                        span.set_status(Status(StatusCode.ERROR, str(e)))
+
                     # Not retried - check for completion handler (e.g., Perpetual)
                     completion_handler = get_single_dependency_of_type(
                         dependencies, CompletionHandler
