@@ -61,7 +61,10 @@ fn a_run_hash_gives_every_part_of_the_status() {
     ]))
     .unwrap();
     assert_eq!(status.state, State::Failed);
-    assert_eq!(status.when.unwrap().timestamp_millis(), 1_700_000_000_500);
+    assert_eq!(
+        status.when.unwrap().as_unix_micros() / 1000,
+        1_700_000_000_500
+    );
     assert_eq!(status.worker.as_deref(), Some("w1"));
     assert!(status.started_at.unwrap() < status.completed_at.unwrap());
     assert_eq!(status.error.as_deref(), Some("boom"));
@@ -83,7 +86,13 @@ fn a_state_event_reads_every_field() {
     )
     .unwrap();
     assert_eq!(event.state, State::Running);
-    assert_eq!(event.when.unwrap().timestamp(), 1_700_000_000);
+    assert_eq!(
+        event.when.unwrap().as_unix_micros() / 1_000_000,
+        1_700_000_000
+    );
     assert_eq!(event.worker.as_deref(), Some("w1"));
-    assert_eq!(event.started_at.unwrap().timestamp(), 1_700_000_001);
+    assert_eq!(
+        event.started_at.unwrap().as_unix_micros() / 1_000_000,
+        1_700_000_001
+    );
 }

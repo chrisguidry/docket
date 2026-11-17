@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use chrono::{DateTime, Utc};
 use futures::{Stream, StreamExt, stream};
 use serde::Deserialize;
 
 use super::{State, Status, progress};
+use crate::Timestamp;
 use crate::docket::Docket;
 use crate::error::{Error, Result};
 
@@ -31,16 +31,16 @@ pub struct StateEvent {
     pub state: State,
     /// When the task is due, for a scheduled or queued task.
     #[serde(default, deserialize_with = "time")]
-    pub when: Option<DateTime<Utc>>,
+    pub when: Option<Timestamp>,
     /// The worker running the task.
     #[serde(default)]
     pub worker: Option<String>,
     /// When the worker started it.
     #[serde(default, deserialize_with = "time")]
-    pub started_at: Option<DateTime<Utc>>,
+    pub started_at: Option<Timestamp>,
     /// When it ended.
     #[serde(default, deserialize_with = "time")]
-    pub completed_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<Timestamp>,
     /// Why it failed.
     #[serde(default)]
     pub error: Option<String>,
@@ -59,7 +59,7 @@ pub struct ProgressEvent {
     pub message: Option<String>,
     /// When it last reported.
     #[serde(default, deserialize_with = "time")]
-    pub updated_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<Timestamp>,
 }
 
 fn state<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<State, D::Error> {
@@ -67,9 +67,7 @@ fn state<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<State, D::
     State::parse(&text).ok_or_else(|| serde::de::Error::custom(format!("{text} is not a state")))
 }
 
-fn time<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<DateTime<Utc>>, D::Error> {
+fn time<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Timestamp>, D::Error> {
     Ok(Option::<String>::deserialize(deserializer)?.and_then(|text| crate::wire::parse_iso(&text)))
 }
 

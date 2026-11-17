@@ -4,8 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
-use docket::{Docket, Event, State};
+use docket::{Docket, Event, State, Timestamp};
 use futures::StreamExt;
 use redis::AsyncCommands;
 use redis::aio::MultiplexedConnection;
@@ -64,7 +63,7 @@ async fn clear_counts_stream_entries_that_are_not_tasks() {
 #[tokio::test]
 async fn execution_finds_a_task_added_earlier() {
     let docket = docket().await;
-    let when = Utc::now() + chrono::Duration::seconds(60);
+    let when = Timestamp::now() + Duration::from_secs(60);
     docket
         .add(Echo::new("later"))
         .key("k")
@@ -75,7 +74,10 @@ async fn execution_finds_a_task_added_earlier() {
     let execution = docket.execution("k").await.unwrap().unwrap();
 
     assert_eq!((execution.key(), execution.function()), ("k", "echo"));
-    assert_eq!(execution.when().timestamp_millis(), when.timestamp_millis());
+    assert_eq!(
+        execution.when().as_unix_micros() / 1000,
+        when.as_unix_micros() / 1000
+    );
     assert!(format!("{execution:?}").contains(r#"key: "k""#));
     assert!(format!("{docket:?}").contains(docket.name()));
 }
@@ -94,7 +96,7 @@ async fn execution_is_due_now_when_its_run_has_no_time() {
         .hset(format!("{}:runs:bare", docket.name()), "function", "noop")
         .await
         .unwrap();
-    let before = Utc::now();
+    let before = Timestamp::now();
 
     let execution = docket.execution("bare").await.unwrap().unwrap();
 
@@ -140,7 +142,7 @@ async fn clear_cancels_every_task_across_its_batches() {
     let docket = docket().await;
     let queued = (0..1500).map(|n| docket.call(Noop).key(format!("queued-{n}")));
     docket.add_many(queued).await.unwrap();
-    let later = Utc::now() + chrono::Duration::seconds(60);
+    let later = Timestamp::now() + Duration::from_secs(60);
     let scheduled = (0..1500).map(|n| docket.call(Noop).key(format!("scheduled-{n}")).at(later));
     docket.add_many(scheduled).await.unwrap();
 

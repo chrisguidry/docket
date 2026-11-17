@@ -4,11 +4,11 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::Utc;
 use opentelemetry::KeyValue;
 use redis::Value;
 
 use super::session::Delivery;
+use crate::Timestamp;
 use crate::behaviors::{AdmissionBlocked, AfterCompletion};
 use crate::docket::{Docket, Placement};
 use crate::error::Result;
@@ -187,7 +187,7 @@ impl Run<'_> {
     /// pending.
     async fn reschedule(
         &self,
-        when: chrono::DateTime<Utc>,
+        when: Timestamp,
         attempt: u32,
         generation: i64,
         expected_generation: i64,
@@ -210,7 +210,7 @@ impl Run<'_> {
     /// key while it ran.
     pub async fn retry(
         &self,
-        when: chrono::DateTime<Utc>,
+        when: Timestamp,
         generation: i64,
         duration: f64,
         error: &str,
@@ -263,8 +263,7 @@ impl Run<'_> {
             .retry_delay
             .filter(|delay| !delay.is_zero())
             .unwrap_or(ADMISSION_RETRY_DELAY);
-        let when =
-            self.docket.now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX);
+        let when = self.docket.now().saturating_add(delay);
         self.reschedule(when, self.message().attempt, generation, 0)
             .await
             .map(drop)

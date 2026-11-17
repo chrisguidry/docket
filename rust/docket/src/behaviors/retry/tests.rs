@@ -3,6 +3,7 @@ use std::time::Duration;
 use rstest::rstest;
 
 use super::{ExponentialRetry, ForcedRetry, decide};
+use crate::Timestamp;
 use crate::behaviors::{AfterFailure, BoxError};
 
 fn plain_error() -> BoxError {
@@ -25,13 +26,7 @@ fn exponential_delays_double_up_to_the_maximum(#[case] attempt: u32, #[case] exp
 #[test]
 fn stops_at_the_last_attempt() {
     assert_eq!(
-        decide(
-            Some(3),
-            3,
-            &plain_error(),
-            Duration::ZERO,
-            chrono::Utc::now()
-        ),
+        decide(Some(3), 3, &plain_error(), Duration::ZERO, Timestamp::now()),
         AfterFailure::Fail
     );
 }
@@ -39,13 +34,7 @@ fn stops_at_the_last_attempt() {
 #[test]
 fn retries_before_the_last_attempt() {
     assert!(matches!(
-        decide(
-            Some(3),
-            2,
-            &plain_error(),
-            Duration::ZERO,
-            chrono::Utc::now()
-        ),
+        decide(Some(3), 2, &plain_error(), Duration::ZERO, Timestamp::now()),
         AfterFailure::RetryAt(_)
     ));
 }
@@ -58,7 +47,7 @@ fn retries_forever_without_a_limit() {
             u32::MAX,
             &plain_error(),
             Duration::ZERO,
-            chrono::Utc::now()
+            Timestamp::now()
         ),
         AfterFailure::RetryAt(_)
     ));
@@ -67,17 +56,17 @@ fn retries_forever_without_a_limit() {
 #[test]
 fn a_forced_retry_chooses_the_delay() {
     let error: BoxError = Box::new(ForcedRetry::after(Duration::from_secs(3600)));
-    let AfterFailure::RetryAt(when) = decide(None, 1, &error, Duration::ZERO, chrono::Utc::now())
+    let AfterFailure::RetryAt(when) = decide(None, 1, &error, Duration::ZERO, Timestamp::now())
     else {
         panic!("a forced retry retries");
     };
-    assert!(when > chrono::Utc::now() + chrono::Duration::minutes(59));
+    assert!(when > Timestamp::now() + Duration::from_mins(59));
 }
 
 #[test]
 fn a_forced_retry_in_the_past_runs_now() {
-    let now = chrono::Utc::now();
-    let error: BoxError = Box::new(ForcedRetry::at(now - chrono::Duration::hours(1)));
+    let now = Timestamp::now();
+    let error: BoxError = Box::new(ForcedRetry::at(now - Duration::from_hours(1)));
     assert_eq!(
         decide(None, 1, &error, Duration::ZERO, now),
         AfterFailure::RetryAt(now)
@@ -90,7 +79,7 @@ fn a_forced_retry_in_the_past_runs_now() {
     "the task asked to run again in 90s"
 )]
 #[case::at(
-    ForcedRetry::at(chrono::DateTime::UNIX_EPOCH),
+    ForcedRetry::at(Timestamp::UNIX_EPOCH),
     "the task asked to run again at 1970-01-01T00:00:00+00:00"
 )]
 fn a_forced_retry_says_when_it_runs(#[case] forced: ForcedRetry, #[case] message: &str) {

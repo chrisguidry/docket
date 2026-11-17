@@ -124,7 +124,7 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
     };
 
     let labels = run.labels();
-    let punctuality = (docket.now() - message.when).as_seconds_f64();
+    let punctuality = docket.now().0.duration_since(message.when.0).as_secs_f64();
     metrics.tasks_started.add(1, &labels);
     if delivery.redelivered {
         metrics.tasks_redelivered.add(1, &labels);

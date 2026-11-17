@@ -1,11 +1,10 @@
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, SubsecRound, Utc};
-
 use crate::support::{Noop, docket, within, worker};
+use docket::Timestamp;
 
 /// The worker's name and the due time a handler saw.
-type Seen = (String, DateTime<Utc>);
+type Seen = (String, Timestamp);
 
 #[tokio::test]
 async fn a_handler_knows_its_worker_and_when_it_was_due() {
@@ -23,6 +22,9 @@ async fn a_handler_knows_its_worker_and_when_it_was_due() {
         .unwrap();
 
     // Messages carry times to the microsecond.
-    let expected = Some(("the-worker".to_owned(), execution.when().trunc_subsecs(6)));
+    let expected = Some((
+        "the-worker".to_owned(),
+        Timestamp::from_unix_micros(execution.when().as_unix_micros()).unwrap(),
+    ));
     assert_eq!(*seen.lock().unwrap(), expected);
 }

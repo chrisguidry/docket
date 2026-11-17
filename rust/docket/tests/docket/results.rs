@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::Utc;
-use docket::{Disposition, Docket, Event, State, Task};
+use docket::{Disposition, Docket, Event, State, Task, Timestamp};
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
 use rstest::rstest;
@@ -24,7 +23,7 @@ async fn add_many_schedules_every_call_in_one_round_trip() {
             docket.call(Echo::new("b")).key("b"),
             docket
                 .call(Echo::new("c"))
-                .at(Utc::now() + chrono::Duration::milliseconds(100)),
+                .at(Timestamp::now() + Duration::from_millis(100)),
             docket.call(Echo::new("struck")),
         ])
         .await
@@ -312,7 +311,7 @@ async fn a_replaced_run_that_finishes_last_keeps_its_successors_result() {
     within(10, started.notified()).await;
 
     let replacement = docket
-        .replace(Echo::new("new"), "swapped", Utc::now())
+        .replace(Echo::new("new"), "swapped", Timestamp::now())
         .await
         .unwrap();
     within(10, async {
@@ -359,7 +358,7 @@ async fn a_reused_key_does_not_show_the_previous_runs_ending() {
     );
 
     docket
-        .replace(Echo::new("fine"), "again", Utc::now())
+        .replace(Echo::new("fine"), "again", Timestamp::now())
         .await
         .unwrap();
     within(10, worker(&docket).run_until_finished())

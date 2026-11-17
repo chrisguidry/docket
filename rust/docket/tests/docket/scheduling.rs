@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::Utc;
-use docket::{Disposition, State, Task};
+use docket::{Disposition, State, Task, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::support::{Echo, docket, within, worker};
@@ -76,7 +75,7 @@ async fn replace_swaps_the_scheduled_task() {
         .await
         .unwrap();
     let replaced = docket
-        .replace(Echo::new("new"), "k", Utc::now())
+        .replace(Echo::new("new"), "k", Timestamp::now())
         .await
         .unwrap();
 
@@ -148,7 +147,7 @@ async fn arguments_that_are_not_json_are_refused() {
     let docket = docket().await;
     let added = docket.add(BytesKeyed::unencodable()).await;
     let replaced = docket
-        .replace(BytesKeyed::unencodable(), "k", Utc::now())
+        .replace(BytesKeyed::unencodable(), "k", Timestamp::now())
         .await;
     let batched = docket
         .add_many([docket.call(BytesKeyed::unencodable())])
@@ -163,7 +162,7 @@ async fn arguments_of_the_same_task_that_are_json_go_in() {
     let docket = docket().await;
     let added = docket.add(BytesKeyed::default()).await.unwrap();
     let replaced = docket
-        .replace(BytesKeyed::default(), "k", Utc::now())
+        .replace(BytesKeyed::default(), "k", Timestamp::now())
         .await
         .unwrap();
     assert_eq!(added.disposition(), &Disposition::Scheduled);

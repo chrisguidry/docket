@@ -4,8 +4,7 @@
 
 use std::time::Duration;
 
-use chrono::Utc;
-use docket::{Docket, Perpetual, Retry, Strike, Task, Worker};
+use docket::{Docket, Perpetual, Retry, Strike, Task, Timestamp, Worker};
 use serde::{Deserialize, Serialize};
 
 use crate::events::Events;
@@ -59,7 +58,9 @@ pub async fn produce(docket: &Docket) -> docket::Result<()> {
     docket.cancel(&key("doomed")).await?;
 
     docket.add(Later).key(key("later")).after(an_hour).await?;
-    docket.replace(Later, key("later"), Utc::now()).await?;
+    docket
+        .replace(Later, key("later"), Timestamp::now())
+        .await?;
 
     docket.strike(Strike::task::<Struck>()).await?;
     docket.add(Struck).key(key("struck")).await?;

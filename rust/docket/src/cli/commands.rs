@@ -3,11 +3,10 @@
 
 use std::io::Write;
 
-use chrono::{DateTime, Utc};
-
 use super::display::{Justify, Table, local_time, relative_time, repr_str, timedelta};
 use super::strike::StrikeArgs;
 use super::watch;
+use crate::Timestamp;
 use crate::docket::{Docket, Snapshot, WorkerSummary};
 use crate::error::{Error, Result};
 
@@ -100,7 +99,10 @@ impl Command {
                     &format!("Cleared {cleared} tasks from docket '{name}'\n"),
                 )
             }
-            Self::Watch(args) => watch::watch(docket, &args.key, out).await,
+            // Boxed because the watch future nests deeply enough that a
+            // binary awaiting `run` exceeds rustc's default recursion limit
+            // of 128 while computing its layout.
+            Self::Watch(args) => Box::pin(watch::watch(docket, &args.key, out)).await,
         }
     }
 }
@@ -154,8 +156,8 @@ struct TaskStats<'a> {
     function: &'a str,
     running: usize,
     queued: usize,
-    oldest_queued: Option<DateTime<Utc>>,
-    latest_queued: Option<DateTime<Utc>>,
+    oldest_queued: Option<Timestamp>,
+    latest_queued: Option<Timestamp>,
 }
 
 fn render_stats(snapshot: &Snapshot) -> String {
@@ -190,7 +192,7 @@ fn render_stats(snapshot: &Snapshot) -> String {
     // keep the order pydocket's dict has them in.
     stats.sort_by_key(|counts| std::cmp::Reverse(counts.running + counts.queued));
 
-    let relative = |when: Option<DateTime<Utc>>| {
+    let relative = |when: Option<Timestamp>| {
         when.map(|when| relative_time(snapshot.taken, when))
             .unwrap_or_default()
     };
@@ -215,7 +217,7 @@ fn render_stats(snapshot: &Snapshot) -> String {
 }
 
 /// pydocket's table of workers, most recently seen first.
-pub(super) fn render_workers(name: &str, now: DateTime<Utc>, workers: &[WorkerSummary]) -> String {
+pub(super) fn render_workers(name: &str, now: Timestamp, workers: &[WorkerSummary]) -> String {
     let mut workers: Vec<&WorkerSummary> = workers.iter().collect();
     workers.sort_by_key(|worker| std::cmp::Reverse(worker.last_seen));
     let mut table = Table::new(format!("Workers in Docket: {name}"))
@@ -230,7 +232,10 @@ pub(super) fn render_workers(name: &str, now: DateTime<Utc>, workers: &[WorkerSu
         };
         table.row(vec![
             worker.name.clone(),
-            format!("{} ago", timedelta(now - worker.last_seen)),
+            format!(
+                "{} ago",
+                timedelta(now.0.duration_since(worker.last_seen.0))
+            ),
             tasks,
         ]);
     }

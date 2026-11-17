@@ -3,8 +3,11 @@
 
 use std::fmt::Write as _;
 
-use chrono::{DateTime, Local, TimeDelta, Utc};
+use jiff::SignedDuration;
+use jiff::tz::TimeZone;
 use serde_json::Value;
+
+use crate::Timestamp;
 
 /// How a column lines up its cells.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -137,20 +140,21 @@ fn wrap(text: &str, limit: usize) -> Vec<String> {
 }
 
 /// A time as pydocket's `local_time` prints it, in the local time zone.
-pub(super) fn local_time(when: DateTime<Utc>) -> String {
-    when.with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M:%S %z")
+pub(super) fn local_time(when: Timestamp) -> String {
+    when.0
+        .to_zoned(TimeZone::system())
+        .strftime("%Y-%m-%d %H:%M:%S %z")
         .to_string()
 }
 
 /// `when` relative to `now`, as pydocket's `relative_time` prints it: a
 /// distance within half an hour, and a local time beyond that.
-pub(super) fn relative_time(now: DateTime<Utc>, when: DateTime<Utc>) -> String {
-    let delta = now - when;
-    let half_hour = TimeDelta::minutes(30);
+pub(super) fn relative_time(now: Timestamp, when: Timestamp) -> String {
+    let delta = now.0.duration_since(when.0);
+    let half_hour = SignedDuration::from_mins(30);
     if delta < -half_hour || delta >= half_hour {
         format!("at {}", local_time(when))
-    } else if delta < TimeDelta::zero() {
+    } else if delta < SignedDuration::ZERO {
         format!("in {}", timedelta(-delta))
     } else {
         format!("{} ago", timedelta(delta))
@@ -159,9 +163,9 @@ pub(super) fn relative_time(now: DateTime<Utc>, when: DateTime<Utc>) -> String {
 
 /// A duration as Python prints a `timedelta`, such as `0:00:05.250000` or
 /// `-1 day, 23:59:59`.
-pub(super) fn timedelta(delta: TimeDelta) -> String {
+pub(super) fn timedelta(delta: SignedDuration) -> String {
     const MICROS_PER_DAY: i64 = 86_400_000_000;
-    let micros = delta.num_microseconds().unwrap_or(i64::MAX);
+    let micros = i64::try_from(delta.as_micros()).unwrap_or(i64::MAX);
     let days = micros.div_euclid(MICROS_PER_DAY);
     let rest = micros.rem_euclid(MICROS_PER_DAY);
     let (seconds, fraction) = (rest / 1_000_000, rest % 1_000_000);

@@ -5,7 +5,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
-use chrono::{DateTime, TimeDelta, Utc};
+use std::time::Duration;
+
+use crate::Timestamp;
 
 /// A docket's clock.
 #[derive(Clone, Debug, Default)]
@@ -25,11 +27,12 @@ impl Clock {
         Self(Some(Arc::default()))
     }
 
-    pub fn now(&self) -> DateTime<Utc> {
-        let now = Utc::now();
+    pub fn now(&self) -> Timestamp {
+        let now = Timestamp::now();
         match &self.0 {
             Some(moved) => {
-                now + TimeDelta::microseconds(moved.ahead_micros.load(Ordering::Relaxed))
+                let ahead = u64::try_from(moved.ahead_micros.load(Ordering::Relaxed)).unwrap_or(0);
+                now.saturating_add(Duration::from_micros(ahead))
             }
             None => now,
         }
@@ -54,13 +57,14 @@ impl Clock {
 impl Moved {
     /// Moves the clock to `when`, unless it is there already.  Two workers
     /// that move it at once leave it at the later time.
-    pub fn advance_to(&self, when: DateTime<Utc>) {
-        let ahead = (when - Utc::now()).num_microseconds().unwrap_or(i64::MAX);
+    pub fn advance_to(&self, when: Timestamp) {
+        let ahead = when.saturating_duration_since(Timestamp::now()).as_micros();
+        let ahead = i64::try_from(ahead).unwrap_or(i64::MAX);
         self.ahead_micros.fetch_max(ahead, Ordering::Relaxed);
     }
 
     #[cfg(feature = "memory")]
-    pub fn advance(&self, by: std::time::Duration) {
+    pub fn advance(&self, by: Duration) {
         let by = i64::try_from(by.as_micros()).unwrap_or(i64::MAX);
         self.ahead_micros.fetch_add(by, Ordering::Relaxed);
     }

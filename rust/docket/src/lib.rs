@@ -22,6 +22,7 @@ mod strikes;
 mod task;
 mod telemetry;
 pub mod testing;
+mod time;
 mod wire;
 mod worker;
 
@@ -45,4 +46,5 @@ pub use execution::{
 pub use redis::{BasicAuth, StreamingCredentialsProvider};
 pub use strikes::{Operator, Strike, StrikeField};
 pub use task::{Logged, Task, TaskField};
+pub use time::{TimeZone, Timestamp};
 pub use worker::Worker;

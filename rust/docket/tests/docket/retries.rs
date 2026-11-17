@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::Utc;
+use docket::Timestamp;
 use docket::behaviors::ForcedRetry;
 use docket::{Docket, Event, ExponentialRetry, Retry, State, Task};
 use futures::StreamExt;
@@ -206,13 +206,13 @@ async fn a_retry_gives_way_to_a_replacement() {
     let docket = docket().await;
     let runs = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&runs);
-    let replacement_due = Utc::now() + chrono::Duration::milliseconds(500);
+    let replacement_due = Timestamp::now() + Duration::from_millis(500);
     docket
         .register(move |ctx: docket::Context, args: Flaky| {
             recorded
                 .lock()
                 .unwrap()
-                .push((args.round.clone(), ctx.attempt(), Utc::now()));
+                .push((args.round.clone(), ctx.attempt(), Timestamp::now()));
             async move {
                 if args.round == "first" {
                     if ctx.attempt() == 1 {
@@ -263,7 +263,7 @@ async fn a_retry_that_gives_way_publishes_no_ending() {
                 let replacement = Flaky {
                     round: "replacement".to_owned(),
                 };
-                let soon = Utc::now() + chrono::Duration::milliseconds(200);
+                let soon = Timestamp::now() + Duration::from_millis(200);
                 ctx.docket().replace(replacement, ctx.key(), soon).await?;
                 return Err("the first run fails".into());
             }
@@ -319,7 +319,7 @@ async fn a_retry_runs_again_after_a_replacement_that_already_finished() {
                             round: "replacement".to_owned(),
                         };
                         ctx.docket()
-                            .replace(replacement, ctx.key(), Utc::now())
+                            .replace(replacement, ctx.key(), Timestamp::now())
                             .await?;
                         while ctx.docket().execution(ctx.key()).await?.is_some() {
                             tokio::time::sleep(Duration::from_millis(10)).await;

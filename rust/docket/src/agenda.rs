@@ -3,9 +3,10 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use jiff::SignedDuration;
 use rand::RngExt;
 
+use crate::Timestamp;
 use crate::docket::{Call, Docket};
 use crate::error::{Error, Result};
 use crate::execution::Execution;
@@ -83,7 +84,7 @@ impl Agenda {
     pub async fn scatter_from(
         &self,
         docket: &Docket,
-        start: DateTime<Utc>,
+        start: Timestamp,
         over: Duration,
         jitter: Duration,
     ) -> Result<Vec<Execution>> {
@@ -101,15 +102,10 @@ impl Agenda {
     }
 }
 
-fn times(
-    count: usize,
-    start: DateTime<Utc>,
-    over: Duration,
-    jitter: Duration,
-) -> Vec<DateTime<Utc>> {
-    let over = chrono::Duration::from_std(over).unwrap_or(chrono::Duration::MAX);
+fn times(count: usize, start: Timestamp, over: Duration, jitter: Duration) -> Vec<Timestamp> {
+    let over = SignedDuration::try_from(over).unwrap_or(SignedDuration::MAX);
     let jitter = i64::try_from(jitter.as_micros()).unwrap_or(i64::MAX);
-    let offsets: Vec<chrono::Duration> = if count == 1 {
+    let offsets: Vec<SignedDuration> = if count == 1 {
         vec![over / 2]
     } else {
         let steps = i32::try_from(count.saturating_sub(1)).unwrap_or(i32::MAX);
@@ -120,8 +116,12 @@ fn times(
     offsets
         .into_iter()
         .map(|offset| {
-            let shift = chrono::Duration::microseconds(rand::rng().random_range(-jitter..=jitter));
-            (start + offset + shift).max(start)
+            let shift = SignedDuration::from_micros(rand::rng().random_range(-jitter..=jitter));
+            start
+                .0
+                .checked_add(offset + shift)
+                .map_or(Timestamp::MAX, Timestamp)
+                .max(start)
         })
         .collect()
 }

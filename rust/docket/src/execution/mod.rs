@@ -9,11 +9,11 @@ mod tests;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
-use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use redis::{AsyncCommands, Value};
 use serde::de::DeserializeOwned;
 
+use crate::Timestamp;
 use crate::docket::Docket;
 use crate::error::{Error, Result};
 use crate::wire::parse_iso;
@@ -124,13 +124,13 @@ pub struct Status {
     /// Where the task is in its life.
     pub state: State,
     /// When the task is or was due.
-    pub when: Option<DateTime<Utc>>,
+    pub when: Option<Timestamp>,
     /// The worker that ran or runs it.
     pub worker: Option<String>,
     /// When a worker started it.
-    pub started_at: Option<DateTime<Utc>>,
+    pub started_at: Option<Timestamp>,
     /// When it ended.
-    pub completed_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<Timestamp>,
     /// Why it failed.
     pub error: Option<String>,
 }
@@ -152,12 +152,12 @@ impl Status {
     }
 }
 
-fn seconds_to_time(seconds: f64) -> Option<DateTime<Utc>> {
+fn seconds_to_time(seconds: f64) -> Option<Timestamp> {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "microseconds since the epoch fit in i64"
     )]
-    DateTime::from_timestamp_micros((seconds * 1_000_000.0).round() as i64)
+    Timestamp::from_unix_micros((seconds * 1_000_000.0).round() as i64)
 }
 
 /// One scheduled run of a task.  `O` is the type of the task's output.
@@ -165,7 +165,7 @@ pub struct Execution<O = serde_json::Value> {
     docket: Docket,
     key: String,
     function: String,
-    when: DateTime<Utc>,
+    when: Timestamp,
     disposition: Disposition,
     output: PhantomData<fn() -> O>,
 }
@@ -183,12 +183,7 @@ impl<O> Execution<O> {
     }
 
     /// An execution read back from the docket, which was added earlier.
-    pub(crate) fn found(
-        docket: Docket,
-        key: String,
-        function: String,
-        when: DateTime<Utc>,
-    ) -> Self {
+    pub(crate) fn found(docket: Docket, key: String, function: String, when: Timestamp) -> Self {
         Self {
             docket,
             key,
@@ -213,7 +208,7 @@ impl<O> Execution<O> {
 
     /// When the task was asked to run.
     #[must_use]
-    pub fn when(&self) -> DateTime<Utc> {
+    pub fn when(&self) -> Timestamp {
         self.when
     }
 

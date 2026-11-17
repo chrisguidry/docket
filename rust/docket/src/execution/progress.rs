@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use chrono::{DateTime, Utc};
 use redis::AsyncCommands;
 use serde_json::{Map, Value};
 
+use crate::Timestamp;
 use crate::connection::Handle;
 use crate::docket::Docket;
 use crate::error::Result;
@@ -141,7 +141,7 @@ pub struct ProgressSnapshot {
     /// What it says it is doing.
     pub message: Option<String>,
     /// When it last reported.
-    pub updated_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<Timestamp>,
 }
 
 pub(crate) async fn read(

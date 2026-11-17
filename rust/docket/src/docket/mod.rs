@@ -11,10 +11,10 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use chrono::Utc;
 use opentelemetry::context::FutureExt as _;
 use redis::AsyncCommands;
 
+use crate::Timestamp;
 use crate::behaviors::BoxError;
 use crate::clock::Clock;
 use crate::connection::{Backend, Handle, RedisConnection, Shared};
@@ -252,7 +252,7 @@ impl Docket {
     }
 
     /// The time on the docket's clock, which a test can move on `memory://`.
-    pub(crate) fn now(&self) -> chrono::DateTime<Utc> {
+    pub(crate) fn now(&self) -> Timestamp {
         self.inner.clock.now()
     }
 

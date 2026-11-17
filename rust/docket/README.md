@@ -74,6 +74,33 @@ async fn main() -> docket::Result<()> {
 Your own behaviors plug into the same four hooks: admission, runtime,
 failure, and completion.  See `docket::behaviors`.
 
+## Times
+
+docket-rs's API gives times as `docket::Timestamp`, an instant to the
+nanosecond.  A `Cron` schedule is read in a `docket::TimeZone`.  `.at()`,
+`replace()`, and `ForcedRetry::at` take anything that converts into a
+`Timestamp`, such as a `SystemTime`.  These features add conversions for
+other crates' types:
+
+| Feature | Converts |
+|---|---|
+| `chrono` | `chrono::DateTime` to `Timestamp`, and `Timestamp` to `DateTime<Utc>` |
+| `chrono-tz` | `chrono_tz::Tz` to `TimeZone`, by its IANA name |
+| `jiff-02` | jiff 0.2's `Timestamp` and `TimeZone` to docket's, and back |
+
+```rust
+use std::time::Duration;
+
+use docket::{Cron, TimeZone, Timestamp};
+
+# fn main() -> docket::Result<()> {
+let in_an_hour = Timestamp::now() + Duration::from_secs(3600);
+let standup = Cron::new("0 9 * * 1-5")?.timezone(TimeZone::get("America/Los_Angeles")?);
+# let _ = (in_an_hour, standup);
+# Ok(())
+# }
+```
+
 ## Redis
 
 A docket URL is `redis://`, `rediss://`, `unix://`, `redis+cluster://`,

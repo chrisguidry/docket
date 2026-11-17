@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::future::IntoFuture;
 
-use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use opentelemetry::KeyValue;
 use opentelemetry::context::FutureExt as _;
@@ -11,6 +10,7 @@ use redis::{RedisResult, Value};
 
 use super::Docket;
 use super::schedule::Placement;
+use crate::Timestamp;
 use crate::error::{Error, Result};
 use crate::execution::{Disposition, Execution, Message};
 use crate::scripts;
@@ -242,7 +242,7 @@ pub struct Call {
     /// The arguments as JSON text, or why they did not convert.
     args: std::result::Result<String, String>,
     key: Option<String>,
-    when: Option<DateTime<Utc>>,
+    when: Option<Timestamp>,
 }
 
 impl Call {
@@ -262,8 +262,8 @@ impl Call {
     }
 
     /// Schedules the task for a time.
-    pub fn at(mut self, when: DateTime<Utc>) -> Self {
-        self.when = Some(when);
+    pub fn at(mut self, when: impl Into<Timestamp>) -> Self {
+        self.when = Some(when.into());
         self
     }
 }

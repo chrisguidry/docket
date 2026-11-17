@@ -2,14 +2,12 @@
 
 use std::marker::PhantomData;
 
-use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
-
 use super::perpetual::{Automatic, Manual, PerpetualControl};
 use super::{AfterCompletion, Behavior, Completion, Hooks, Outcome};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::task::Task;
+use crate::{TimeZone, Timestamp};
 
 /// Runs a task on a cron schedule, in a time zone.  A cron task is
 /// automatic, like an automatic [`Perpetual`](super::Perpetual): every worker
@@ -28,7 +26,7 @@ use crate::task::Task;
 #[derive(Clone, Debug)]
 pub struct Cron<Mode = Automatic> {
     schedule: croner::Cron,
-    timezone: Tz,
+    timezone: TimeZone,
     mode: PhantomData<Mode>,
 }
 
@@ -54,7 +52,7 @@ impl Cron {
         }
         Ok(Self {
             schedule,
-            timezone: Tz::UTC,
+            timezone: TimeZone::UTC,
             mode: PhantomData,
         })
     }
@@ -96,7 +94,13 @@ fn refused_by_pydocket(expression: &str, schedule: &croner::Cron) -> Option<&'st
         })
     }) {
         Some("its day of the month uses W, other than LW")
-    } else if schedule.find_next_occurrence(&Utc::now(), false).is_err() {
+    } else if schedule
+        .find_next_occurrence(
+            &jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC),
+            false,
+        )
+        .is_err()
+    {
         Some("it never matches")
     } else {
         None
@@ -107,17 +111,17 @@ impl<Mode> Cron<Mode> {
     /// Reads the schedule in `timezone`, so that it follows daylight saving
     /// time there.
     #[must_use]
-    pub fn timezone(mut self, timezone: Tz) -> Self {
-        self.timezone = timezone;
+    pub fn timezone(mut self, timezone: impl Into<TimeZone>) -> Self {
+        self.timezone = timezone.into();
         self
     }
 
     /// The first time after `after` that the schedule matches.
-    fn next_after(&self, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    fn next_after(&self, after: Timestamp) -> Option<Timestamp> {
         self.schedule
-            .find_next_occurrence(&after.with_timezone(&self.timezone), false)
+            .find_next_occurrence(&after.0.to_zoned(self.timezone.0.clone()), false)
             .ok()
-            .map(|next| next.with_timezone(&Utc))
+            .map(|next| Timestamp(next.timestamp()))
     }
 
     fn attach_cron<T: Task>(&self, hooks: &mut Hooks<'_, T>) {
@@ -125,7 +129,7 @@ impl<Mode> Cron<Mode> {
         hooks.completion(Schedule {
             cron: Cron {
                 schedule: self.schedule.clone(),
-                timezone: self.timezone,
+                timezone: self.timezone.clone(),
                 mode: PhantomData::<Manual>,
             },
         });

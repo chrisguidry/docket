@@ -2,8 +2,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
-
+use crate::Timestamp;
 use crate::docket::Docket;
 use crate::execution::Progress;
 
@@ -19,7 +18,7 @@ struct Inner {
     key: String,
     function: String,
     attempt: u32,
-    when: DateTime<Utc>,
+    when: Timestamp,
     args: serde_json::Value,
     progress: Progress,
     behaviors: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
@@ -42,7 +41,7 @@ pub(crate) struct Run {
     pub key: String,
     pub function: String,
     pub attempt: u32,
-    pub when: DateTime<Utc>,
+    pub when: Timestamp,
     pub args: serde_json::Value,
     pub behaviors: Vec<Box<dyn Any + Send + Sync>>,
     pub delivery: Delivery,
@@ -105,7 +104,7 @@ impl Context {
 
     /// When the task was due.
     #[must_use]
-    pub fn when(&self) -> DateTime<Utc> {
+    pub fn when(&self) -> Timestamp {
         self.inner.when
     }
 

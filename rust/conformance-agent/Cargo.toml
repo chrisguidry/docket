@@ -8,7 +8,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
-chrono = { workspace = true, features = ["clock", "std"] }
 clap = { workspace = true, features = ["derive"] }
 docket-rs = { workspace = true, features = ["prometheus"] }
 opentelemetry = { workspace = true, features = ["trace", "metrics"] }
