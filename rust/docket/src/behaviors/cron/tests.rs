@@ -1,4 +1,5 @@
-use chrono::{DateTime, TimeZone, Utc};
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use rstest::rstest;
 
 use super::Cron;
@@ -8,27 +9,23 @@ use super::Cron;
 #[case::midnight("@midnight", "2026-10-06T00:00:00Z")]
 #[case::hourly("@hourly", "2026-10-05T08:00:00Z")]
 fn finds_the_next_match(#[case] expression: &str, #[case] expected: &str) {
-    let now = Utc.with_ymd_and_hms(2026, 10, 5, 7, 30, 0).unwrap();
+    let now = "2026-10-05T07:30:00Z".parse::<Timestamp>().unwrap();
     assert_eq!(
-        Cron::new(expression)
-            .unwrap()
-            .next_after(now)
-            .unwrap()
-            .to_rfc3339(),
-        expected.replace('Z', "+00:00")
+        Cron::new(expression).unwrap().next_after(now).unwrap(),
+        expected.parse::<Timestamp>().unwrap()
     );
 }
 
 #[test]
 fn reads_the_schedule_in_its_time_zone() {
-    let now = Utc.with_ymd_and_hms(2026, 10, 5, 7, 30, 0).unwrap();
+    let now = "2026-10-05T07:30:00Z".parse::<Timestamp>().unwrap();
     let cron = Cron::new("0 9 * * *")
         .unwrap()
-        .timezone(chrono_tz::America::Los_Angeles);
+        .timezone(TimeZone::get("America/Los_Angeles").unwrap());
     // 9:00 in Los Angeles is 16:00 UTC during daylight saving time.
     assert_eq!(
-        cron.next_after(now).unwrap().to_rfc3339(),
-        "2026-10-05T16:00:00+00:00"
+        cron.next_after(now).unwrap().to_string(),
+        "2026-10-05T16:00:00Z"
     );
 }
 
@@ -43,11 +40,11 @@ fn rejects_an_expression_that_is_not_cron() {
 
 #[test]
 fn a_manual_cron_keeps_its_schedule() {
-    let now = Utc.with_ymd_and_hms(2026, 10, 5, 7, 30, 0).unwrap();
+    let now = "2026-10-05T07:30:00Z".parse::<Timestamp>().unwrap();
     let cron = Cron::new("@hourly").unwrap().manual();
     assert_eq!(
-        cron.next_after(now).unwrap().to_rfc3339(),
-        "2026-10-05T08:00:00+00:00"
+        cron.next_after(now).unwrap().to_string(),
+        "2026-10-05T08:00:00Z"
     );
 }
 
@@ -59,20 +56,14 @@ fn reads_every_expression_the_way_pydocket_does() {
         "../../../../../conformance/cron-expressions.json"
     ))
     .unwrap();
-    let after = DateTime::parse_from_rfc3339(table["after"].as_str().unwrap())
-        .unwrap()
-        .with_timezone(&Utc);
+    let after: Timestamp = table["after"].as_str().unwrap().parse().unwrap();
     let mut differences = Vec::new();
     for row in table["expressions"].as_array().unwrap() {
         let expression = row["expression"].as_str().unwrap();
         // An expression pydocket refuses has no next match: Cron::new fails.
-        let expected = row["next"].as_str().map(|next| {
-            Some(
-                DateTime::parse_from_rfc3339(next)
-                    .unwrap()
-                    .with_timezone(&Utc),
-            )
-        });
+        let expected = row["next"]
+            .as_str()
+            .map(|next| Some(next.parse::<Timestamp>().unwrap()));
         let next = Cron::new(expression)
             .ok()
             .map(|cron| cron.next_after(after));

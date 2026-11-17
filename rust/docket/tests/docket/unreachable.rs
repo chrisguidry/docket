@@ -23,7 +23,7 @@ type Call = fn(Docket) -> BoxFuture<'static, docket::Result<()>>;
 #[rstest]
 #[case::add(|docket: Docket| async move { docket.add(Noop).await.map(drop) }.boxed())]
 #[case::replace(|docket: Docket| async move {
-    docket.replace(Noop, "k", chrono::Utc::now()).await.map(drop)
+    docket.replace(Noop, "k", jiff::Timestamp::now()).await.map(drop)
 }.boxed())]
 #[case::add_many(|docket: Docket| async move {
     docket.add_many([docket.call(Noop)]).await.map(drop)

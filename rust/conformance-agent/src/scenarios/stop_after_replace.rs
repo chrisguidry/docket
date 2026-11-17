@@ -4,8 +4,8 @@
 
 use std::time::Duration;
 
-use chrono::Utc;
 use docket::{Docket, Perpetual, Task, Worker};
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, Events};
@@ -35,7 +35,7 @@ pub fn worker(docket: &Docket, events: &Events, worker: Worker) -> Worker {
                     let replacement = Stopping {
                         round: "replacement".to_owned(),
                     };
-                    let later = Utc::now() + chrono::Duration::seconds(1);
+                    let later = Timestamp::now() + SignedDuration::from_secs(1);
                     ctx.docket().replace(replacement, ctx.key(), later).await?;
                     events
                         .record(Event {

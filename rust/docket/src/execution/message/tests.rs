@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use chrono::{TimeZone, Utc};
+use jiff::Timestamp;
 use rstest::rstest;
 
 use super::Message;
@@ -8,7 +8,7 @@ use super::Message;
 fn message() -> Message {
     Message {
         key: "order-9".into(),
-        when: Utc.timestamp_micros(1_791_228_363_529_728).unwrap(),
+        when: Timestamp::from_microsecond(1_791_228_363_529_728).unwrap(),
         function: "charge".into(),
         args: r#"{"customer":7}"#.into(),
         attempt: 2,

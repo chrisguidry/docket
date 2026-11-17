@@ -1,4 +1,4 @@
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use rstest::rstest;
 use serde_json::json;
 
@@ -67,19 +67,23 @@ fn a_title_wider_than_its_table_wraps() {
     assert_eq!(lines, [" one ", " two ", "three", "fourf", "ivesi"]);
 }
 
-fn at(seconds: i64, micros: u32) -> DateTime<Utc> {
-    DateTime::from_timestamp(1_800_000_000 + seconds, micros * 1000).unwrap()
+fn at(seconds: i64, micros: u32) -> Timestamp {
+    Timestamp::new(
+        1_800_000_000 + seconds,
+        i32::try_from(micros * 1000).unwrap(),
+    )
+    .unwrap()
 }
 
 #[rstest]
-#[case::zero(TimeDelta::zero(), "0:00:00")]
-#[case::fraction(TimeDelta::microseconds(5_250_000), "0:00:05.250000")]
-#[case::hours(TimeDelta::seconds(3723), "1:02:03")]
-#[case::one_day(TimeDelta::days(1), "1 day, 0:00:00")]
-#[case::days(TimeDelta::days(2) + TimeDelta::microseconds(5), "2 days, 0:00:00.000005")]
-#[case::negative(TimeDelta::seconds(-1), "-1 day, 23:59:59")]
-#[case::negative_days(TimeDelta::days(-3), "-3 days, 0:00:00")]
-fn durations_print_as_python_timedeltas(#[case] delta: TimeDelta, #[case] expected: &str) {
+#[case::zero(SignedDuration::ZERO, "0:00:00")]
+#[case::fraction(SignedDuration::from_micros(5_250_000), "0:00:05.250000")]
+#[case::hours(SignedDuration::from_secs(3723), "1:02:03")]
+#[case::one_day(SignedDuration::from_hours(24), "1 day, 0:00:00")]
+#[case::days(SignedDuration::from_hours(48) + SignedDuration::from_micros(5), "2 days, 0:00:00.000005")]
+#[case::negative(SignedDuration::from_secs(-1), "-1 day, 23:59:59")]
+#[case::negative_days(SignedDuration::from_hours(-72), "-3 days, 0:00:00")]
+fn durations_print_as_python_timedeltas(#[case] delta: SignedDuration, #[case] expected: &str) {
     assert_eq!(timedelta(delta), expected);
 }
 

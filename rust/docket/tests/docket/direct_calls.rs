@@ -4,9 +4,9 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use docket::testing::ContextBuilder;
 use docket::{Context, Task};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::support::docket;
@@ -44,7 +44,7 @@ async fn a_handler_can_cancel_the_perpetual_it_is_given() {
 async fn a_test_reads_back_the_next_run_a_handler_chose() {
     let docket = docket().await;
     let args = Sync { cursor: 1 };
-    let before = Utc::now();
+    let before = Timestamp::now();
     let ctx = ContextBuilder::new(&docket, &args).perpetual().build();
 
     sync(ctx.clone(), args).await.unwrap();
@@ -72,7 +72,7 @@ async fn a_test_reads_back_the_arguments_a_handler_perpetuated() {
 #[tokio::test]
 async fn a_context_carries_what_the_builder_sets() {
     let docket = docket().await;
-    let when: DateTime<Utc> = "2026-01-02T03:04:05Z".parse().unwrap();
+    let when: Timestamp = "2026-01-02T03:04:05Z".parse().unwrap();
     let ctx = ContextBuilder::new(&docket, &Sync { cursor: 3 })
         .key("sync-1")
         .attempt(2)
@@ -95,7 +95,7 @@ async fn a_context_carries_what_the_builder_sets() {
 #[tokio::test]
 async fn a_context_has_a_first_attempt_due_now_under_a_key_of_its_own() {
     let docket = docket().await;
-    let before = Utc::now();
+    let before = Timestamp::now();
     let first = ContextBuilder::new(&docket, &Sync { cursor: 0 }).build();
     let second = ContextBuilder::new(&docket, &Sync { cursor: 0 }).build();
 

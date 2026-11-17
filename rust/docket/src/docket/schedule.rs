@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::future::IntoFuture;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
+use jiff::{SignedDuration, Timestamp};
 use opentelemetry::KeyValue;
 use opentelemetry::context::FutureExt as _;
 
@@ -100,7 +100,7 @@ impl Docket {
         &self,
         args: T,
         key: impl Into<String>,
-        when: DateTime<Utc>,
+        when: Timestamp,
     ) -> Result<Execution<T::Output>> {
         let message = Self::message(T::NAME, &args, Some(key.into()), when)?;
         self.submit(message, true).await
@@ -110,7 +110,7 @@ impl Docket {
         function: &str,
         args: &T,
         key: Option<String>,
-        when: DateTime<Utc>,
+        when: Timestamp,
     ) -> Result<Message> {
         Ok(Message {
             key: key.unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
@@ -214,7 +214,7 @@ pub struct Add<'a, T> {
     docket: &'a Docket,
     args: T,
     key: Option<String>,
-    when: Option<DateTime<Utc>>,
+    when: Option<Timestamp>,
 }
 
 impl<T: Task> Add<'_, T> {
@@ -227,7 +227,7 @@ impl<T: Task> Add<'_, T> {
     }
 
     /// Schedules the task for a time.
-    pub fn at(mut self, when: DateTime<Utc>) -> Self {
+    pub fn at(mut self, when: Timestamp) -> Self {
         self.when = Some(when);
         self
     }
@@ -236,9 +236,9 @@ impl<T: Task> Add<'_, T> {
     ///
     /// # Panics
     ///
-    /// When `delay` is longer than the time left before the year 262143.
+    /// When `delay` is longer than the time left before the year 9999.
     pub fn after(self, delay: Duration) -> Self {
-        let delay = chrono::Duration::from_std(delay).expect("a delay fits in a chrono duration");
+        let delay = SignedDuration::try_from(delay).expect("a delay fits in a SignedDuration");
         let now = self.docket.now();
         self.at(now + delay)
     }

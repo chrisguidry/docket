@@ -4,10 +4,11 @@ use std::marker::PhantomData;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use tokio::time::Instant;
 
 use super::{AfterCompletion, Behavior, Completion, Hooks, Outcome};
+use crate::clock::later;
 use crate::context::Context;
 use crate::task::Task;
 
@@ -83,7 +84,7 @@ impl Completion for Next {
         // each one takes, and a run longer than `every` is followed at once.
         let elapsed = control.started.elapsed();
         let wait = self.every.saturating_sub(elapsed);
-        control.decide(ctx.docket().now() + chrono::Duration::from_std(wait).unwrap_or_default())
+        control.decide(later(ctx.docket().now(), wait))
     }
 }
 
@@ -93,19 +94,19 @@ pub struct PerpetualControl {
     started: Instant,
     /// The same moment on the docket's clock, which a cron schedule counts
     /// from.
-    pub(crate) started_at: DateTime<Utc>,
+    pub(crate) started_at: Timestamp,
     next: Mutex<Upcoming>,
 }
 
 #[derive(Debug, Default)]
 struct Upcoming {
     cancelled: bool,
-    when: Option<DateTime<Utc>>,
+    when: Option<Timestamp>,
     args: Option<serde_json::Value>,
 }
 
 impl PerpetualControl {
-    pub(crate) fn new(now: DateTime<Utc>) -> Self {
+    pub(crate) fn new(now: Timestamp) -> Self {
         Self {
             started: Instant::now(),
             started_at: now,
@@ -122,13 +123,12 @@ impl PerpetualControl {
     pub fn after(&self, delay: Duration) {
         // The docket's clock, which a test can move, counted on from the
         // start of the run.
-        let now = self.started_at
-            + chrono::Duration::from_std(self.started.elapsed()).unwrap_or_default();
-        self.at(now + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX));
+        let now = later(self.started_at, self.started.elapsed());
+        self.at(later(now, delay));
     }
 
     /// Runs the task next at `when`.
-    pub fn at(&self, when: DateTime<Utc>) {
+    pub fn at(&self, when: Timestamp) {
         self.lock().when = Some(when);
     }
 
@@ -151,7 +151,7 @@ impl PerpetualControl {
     /// When the run moved the next run to with [`at`](Self::at) or
     /// [`after`](Self::after), or `None` for its usual time.
     #[must_use]
-    pub fn next_when(&self) -> Option<DateTime<Utc>> {
+    pub fn next_when(&self) -> Option<Timestamp> {
         self.lock().when
     }
 
@@ -174,7 +174,7 @@ impl PerpetualControl {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub(crate) fn decide(&self, usual: DateTime<Utc>) -> AfterCompletion {
+    pub(crate) fn decide(&self, usual: Timestamp) -> AfterCompletion {
         let next = self.lock();
         if next.cancelled {
             return AfterCompletion::Cancel;

@@ -8,8 +8,8 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
+use jiff::Timestamp;
 
 use crate::context::Context;
 use crate::task::Task;
@@ -187,7 +187,7 @@ pub enum AfterFailure {
     /// The task ends as failed.
     Fail,
     /// The task runs again at this time, as its next attempt.
-    RetryAt(DateTime<Utc>),
+    RetryAt(Timestamp),
 }
 
 /// What a [`Completion`] hook decides.
@@ -199,7 +199,7 @@ pub enum AfterCompletion {
     /// replaces its arguments when it is set.
     Reschedule {
         /// When the next run is due.
-        when: DateTime<Utc>,
+        when: Timestamp,
         /// The next run's arguments as JSON, or the same arguments.
         args: Option<serde_json::Value>,
     },
@@ -261,7 +261,7 @@ impl<T: Task> Hooks<'_, T> {
     /// time on the docket's clock when the run starts.
     pub(crate) fn context_at<V: Send + Sync + 'static>(
         &mut self,
-        make: impl Fn(DateTime<Utc>) -> V + Send + Sync + 'static,
+        make: impl Fn(Timestamp) -> V + Send + Sync + 'static,
     ) {
         self.erased.contexts.push(Arc::new(move |now| {
             Box::new(make(now)) as Box<dyn Any + Send + Sync>
@@ -276,10 +276,7 @@ impl<T: Task + Default> Hooks<'_, T> {
     /// # Panics
     ///
     /// When the task's default arguments do not convert to JSON.
-    pub fn automatic(
-        &mut self,
-        first_run: impl Fn() -> Option<DateTime<Utc>> + Send + Sync + 'static,
-    ) {
+    pub fn automatic(&mut self, first_run: impl Fn() -> Option<Timestamp> + Send + Sync + 'static) {
         self.automatic_at(move |_now| first_run());
     }
 
@@ -287,7 +284,7 @@ impl<T: Task + Default> Hooks<'_, T> {
     /// time on the docket's clock.
     pub(crate) fn automatic_at(
         &mut self,
-        first_run: impl Fn(DateTime<Utc>) -> Option<DateTime<Utc>> + Send + Sync + 'static,
+        first_run: impl Fn(Timestamp) -> Option<Timestamp> + Send + Sync + 'static,
     ) {
         let args = serde_json::to_string(&T::default())
             .expect("an automatic task's default arguments convert to JSON");
@@ -304,7 +301,7 @@ type FailureFn =
     Arc<dyn Fn(Context, Arc<BoxError>) -> BoxFuture<'static, AfterFailure> + Send + Sync>;
 type CompletionFn =
     Arc<dyn Fn(Context, Arc<Outcome>) -> BoxFuture<'static, AfterCompletion> + Send + Sync>;
-type ContextFn = Arc<dyn Fn(DateTime<Utc>) -> Box<dyn Any + Send + Sync> + Send + Sync>;
+type ContextFn = Arc<dyn Fn(Timestamp) -> Box<dyn Any + Send + Sync> + Send + Sync>;
 
 /// A task's hooks with the behaviors' types erased.
 #[derive(Clone, Default)]
@@ -324,7 +321,7 @@ pub(crate) struct Automatic {
     /// The default arguments as JSON text.
     pub args: String,
     /// The first run's time, from the time on the docket's clock.
-    pub first_run: Arc<dyn Fn(DateTime<Utc>) -> Option<DateTime<Utc>> + Send + Sync>,
+    pub first_run: Arc<dyn Fn(Timestamp) -> Option<Timestamp> + Send + Sync>,
 }
 
 pub(crate) trait ErasedRuntime: Send + Sync {

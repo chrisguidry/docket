@@ -6,8 +6,8 @@
 
 use std::time::Duration;
 
-use chrono::Utc;
 use docket::{Docket, Operator, Retry, Strike, Task, Worker};
+use jiff::{SignedDuration, Timestamp};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
@@ -63,7 +63,7 @@ pub async fn produce(docket: &Docket, events: &Events) -> docket::Result<()> {
                 strikes += 1;
             }
             let jitter = rand::rng().random_range(-5000..=5000);
-            let when = Utc::now() + chrono::Duration::milliseconds(jitter);
+            let when = Timestamp::now() + SignedDuration::from_millis(jitter);
             let execution = docket.add(Hello).at(when).await?;
             events
                 .record(Event {

@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use crate::behaviors::PerpetualControl;
 use crate::context::{Context, Delivery, Run};
@@ -67,7 +67,7 @@ pub struct ContextBuilder {
     args: serde_json::Value,
     key: String,
     attempt: u32,
-    when: DateTime<Utc>,
+    when: Timestamp,
     worker: String,
     behaviors: Vec<Box<dyn Any + Send + Sync>>,
     pub(crate) redelivery_timeout: Duration,
@@ -115,7 +115,7 @@ impl ContextBuilder {
 
     /// When the task was due.
     #[must_use]
-    pub fn when(mut self, when: DateTime<Utc>) -> Self {
+    pub fn when(mut self, when: Timestamp) -> Self {
         self.when = when;
         self
     }

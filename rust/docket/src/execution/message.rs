@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use crate::error::{Error, Result};
 use crate::telemetry;
@@ -12,7 +12,7 @@ use crate::wire::{iso, parse_iso};
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Message {
     pub key: String,
-    pub when: DateTime<Utc>,
+    pub when: Timestamp,
     pub function: String,
     /// The task's arguments as JSON text.
     pub args: String,

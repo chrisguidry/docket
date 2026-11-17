@@ -527,7 +527,7 @@ async fn watch_deploy(ctx: Context, args: WatchDeploy) -> anyhow::Result<()> {
 }
 
 docket.register(watch_deploy).with(Perpetual::every(Duration::from_secs(30)));
-docket.register(standup_reminder).with(Cron::new("0 9 * * 1-5")?.timezone(chrono_tz::America::Los_Angeles));
+docket.register(standup_reminder).with(Cron::new("0 9 * * 1-5")?.timezone(TimeZone::get("America/Los_Angeles")?));
 ```
 
 **Go**

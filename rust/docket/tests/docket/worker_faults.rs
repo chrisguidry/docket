@@ -6,13 +6,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use chrono::Utc;
 use docket::behaviors::{
     AfterCompletion, AfterFailure, Behavior, BoxError, Completion, Failure, Hooks, Outcome,
 };
 use docket::{Context, Docket, Registration, State, Strike, Task, Worker};
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use jiff::Timestamp;
 use tokio::sync::{Notify, Semaphore};
 
 use crate::logs::Logs;
@@ -148,7 +148,7 @@ struct RetryNow;
 
 impl Failure for RetryNow {
     async fn on_failure(&self, _: &Context, _: &BoxError) -> AfterFailure {
-        AfterFailure::RetryAt(Utc::now())
+        AfterFailure::RetryAt(Timestamp::now())
     }
 }
 
@@ -187,7 +187,7 @@ type Attach = fn(Registration<Echo>);
 #[case::rescheduling(
     schedule_script,
     |registration: Registration<Echo>| {
-        registration.with(Then(AfterCompletion::Reschedule { when: Utc::now(), args: None }));
+        registration.with(Then(AfterCompletion::Reschedule { when: Timestamp::now(), args: None }));
     },
     Ok
 )]

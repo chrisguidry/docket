@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use opentelemetry::context::FutureExt as _;
 use redis::streams::{StreamPendingCountReply, StreamRangeReply};
 use redis::{AsyncCommands, RedisResult};
@@ -27,7 +27,7 @@ const CLEAR_BATCH: i64 = 1000;
 #[non_exhaustive]
 pub struct Snapshot {
     /// When the snapshot was taken.
-    pub taken: DateTime<Utc>,
+    pub taken: Timestamp,
     /// Every task in the docket, running or not.
     pub total_tasks: usize,
     /// Tasks that no worker has started.
@@ -47,7 +47,7 @@ pub struct TaskSummary {
     /// The task's name.
     pub function: String,
     /// When it is or was due.
-    pub when: DateTime<Utc>,
+    pub when: Timestamp,
     /// Its attempt number.
     pub attempt: u32,
     /// Its arguments.
@@ -55,7 +55,7 @@ pub struct TaskSummary {
     /// The worker running it.
     pub worker: Option<String>,
     /// When the worker running it started it.
-    pub started: Option<DateTime<Utc>>,
+    pub started: Option<Timestamp>,
 }
 
 impl TaskSummary {
@@ -79,7 +79,7 @@ pub struct WorkerSummary {
     /// The worker's name.
     pub name: String,
     /// When it last reported.
-    pub last_seen: DateTime<Utc>,
+    pub last_seen: Timestamp,
     /// The tasks it can run.
     pub tasks: Vec<String>,
 }
@@ -196,8 +196,8 @@ impl Docket {
                 clippy::cast_possible_truncation,
                 reason = "microseconds since the epoch fit in i64"
             )]
-            let last_seen = DateTime::from_timestamp_micros((last_seen * 1_000_000.0) as i64)
-                .unwrap_or(DateTime::UNIX_EPOCH);
+            let last_seen = Timestamp::from_microsecond((last_seen * 1_000_000.0) as i64)
+                .unwrap_or(Timestamp::UNIX_EPOCH);
             workers.push(WorkerSummary {
                 name,
                 last_seen,

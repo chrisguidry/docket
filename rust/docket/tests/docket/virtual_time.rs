@@ -4,17 +4,18 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, TimeZone, Utc};
 use docket::behaviors::ForcedRetry;
 use docket::testing::{advance_time, assert_task_count, skip_idle_time};
 use docket::{Context, Cron, Docket, Perpetual, Retry};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 
 use crate::support::{Noop, within, worker};
 
 const HOUR: Duration = Duration::from_hours(1);
 
 /// When each run of a task was due.
-type Due = Arc<Mutex<Vec<DateTime<Utc>>>>;
+type Due = Arc<Mutex<Vec<Timestamp>>>;
 
 async fn memory(url: &str) -> Docket {
     Docket::connect("virtual-time", url).await.unwrap()
@@ -43,9 +44,9 @@ fn record(docket: &Docket, fail: bool) -> (Due, docket::Registration<Noop>) {
 
 /// Each gap is at least `every`, and short of it by less than the moment a
 /// worker takes to pick a due task up.
-fn assert_apart(due: &[DateTime<Utc>], every: Duration) {
+fn assert_apart(due: &[Timestamp], every: Duration) {
     for pair in due.windows(2) {
-        let gap = (pair[1] - pair[0]).to_std().unwrap();
+        let gap = Duration::try_from(pair[1].duration_since(pair[0])).unwrap();
         assert!(
             gap >= every && gap < every + Duration::from_secs(10),
             "{due:?}"
@@ -78,7 +79,7 @@ async fn a_forced_retry_at_a_time_runs_then_on_a_moved_clock() {
     let docket = memory(&unique_url()).await;
     advance_time(&docket, Duration::from_hours(24));
     skip_idle_time(&docket);
-    let retry_at = Utc::now() + chrono::Duration::hours(25);
+    let retry_at = Timestamp::now() + SignedDuration::from_hours(25);
     let due: Due = Arc::default();
     let recorded = Arc::clone(&due);
     docket
@@ -103,7 +104,7 @@ async fn a_forced_retry_at_a_time_runs_then_on_a_moved_clock() {
     let due = due.lock().unwrap();
     assert_eq!(due.len(), 2);
     assert!(
-        (due[1] - retry_at).abs() < chrono::Duration::seconds(10),
+        due[1].duration_since(retry_at).abs() < SignedDuration::from_secs(10),
         "{due:?}"
     );
 }
@@ -173,11 +174,15 @@ async fn an_automatic_cron_task_starts_at_its_next_match_on_the_dockets_clock() 
     within(10, worker(&docket).run_until(seeded)).await.unwrap();
 
     let snapshot = docket.snapshot().await.unwrap();
-    let next_year = snapshot.taken.year() + 1;
-    assert!(snapshot.taken.year() > Utc::now().year());
+    let taken_year = snapshot.taken.to_zoned(TimeZone::UTC).year();
+    let next_year = taken_year + 1;
+    assert!(taken_year > Timestamp::now().to_zoned(TimeZone::UTC).year());
     assert_eq!(
         snapshot.future[0].when,
-        Utc.with_ymd_and_hms(next_year, 1, 1, 0, 0, 0).unwrap()
+        jiff::civil::date(next_year, 1, 1)
+            .to_zoned(TimeZone::UTC)
+            .unwrap()
+            .timestamp()
     );
 }
 

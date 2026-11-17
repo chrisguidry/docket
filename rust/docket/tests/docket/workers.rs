@@ -425,7 +425,7 @@ async fn a_delivery_replaced_while_its_worker_was_dead_does_not_run() {
     run.abort();
 
     let replaced = docket
-        .replace(Echo::new("new"), "k", chrono::Utc::now())
+        .replace(Echo::new("new"), "k", jiff::Timestamp::now())
         .await
         .unwrap();
     within(

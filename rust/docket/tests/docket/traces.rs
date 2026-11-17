@@ -146,7 +146,7 @@ async fn a_perpetual_task_replaces_itself_inside_its_run() {
         })
         .with(Perpetual::every(Duration::from_secs(3600)));
     docket
-        .replace(Noop, "forever", chrono::Utc::now())
+        .replace(Noop, "forever", jiff::Timestamp::now())
         .await
         .unwrap();
     within(10, worker(&docket).run_until_finished())

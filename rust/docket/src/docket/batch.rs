@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::future::IntoFuture;
 
-use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
+use jiff::Timestamp;
 use opentelemetry::KeyValue;
 use opentelemetry::context::FutureExt as _;
 use redis::{RedisResult, Value};
@@ -242,7 +242,7 @@ pub struct Call {
     /// The arguments as JSON text, or why they did not convert.
     args: std::result::Result<String, String>,
     key: Option<String>,
-    when: Option<DateTime<Utc>>,
+    when: Option<Timestamp>,
 }
 
 impl Call {
@@ -262,7 +262,7 @@ impl Call {
     }
 
     /// Schedules the task for a time.
-    pub fn at(mut self, when: DateTime<Utc>) -> Self {
+    pub fn at(mut self, when: Timestamp) -> Self {
         self.when = Some(when);
         self
     }

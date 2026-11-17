@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use redis::AsyncCommands;
 use serde_json::{Map, Value};
 
@@ -141,7 +141,7 @@ pub struct ProgressSnapshot {
     /// What it says it is doing.
     pub message: Option<String>,
     /// When it last reported.
-    pub updated_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<Timestamp>,
 }
 
 pub(crate) async fn read(

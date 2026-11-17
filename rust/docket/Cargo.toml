@@ -36,14 +36,13 @@ prometheus = [
 ]
 
 [dependencies]
-chrono = { workspace = true, features = ["clock", "std"] }
-chrono-tz.workspace = true
 clap = { workspace = true, features = ["derive", "env"], optional = true }
 croner.workspace = true
 docket-rs-macros.workspace = true
 redis = { workspace = true, features = ["aio", "tokio-comp", "script", "streams", "cluster-async", "sentinel", "token-based-authentication"] }
 futures.workspace = true
 gethostname.workspace = true
+jiff.workspace = true
 opentelemetry = { workspace = true, features = ["trace", "metrics"] }
 opentelemetry_sdk = { workspace = true, features = ["metrics"], optional = true }
 percent-encoding.workspace = true

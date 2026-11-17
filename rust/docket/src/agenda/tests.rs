@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::{TimeZone, Utc};
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use super::{Agenda, times};
@@ -20,8 +20,8 @@ struct Unencodable {
     pairs: HashMap<(u8, u8), u8>,
 }
 
-fn start() -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 5, 12, 0, 0).unwrap()
+fn start() -> Timestamp {
+    "2026-10-05T12:00:00Z".parse::<Timestamp>().unwrap()
 }
 
 #[test]
@@ -29,7 +29,7 @@ fn spreads_tasks_from_the_start_to_the_end() {
     let spread = times(3, start(), Duration::from_secs(60), Duration::ZERO);
     let offsets: Vec<i64> = spread
         .iter()
-        .map(|when| (*when - start()).num_seconds())
+        .map(|when| when.duration_since(start()).as_secs())
         .collect();
     assert_eq!(offsets, [0, 30, 60]);
 }
@@ -37,7 +37,7 @@ fn spreads_tasks_from_the_start_to_the_end() {
 #[test]
 fn puts_a_single_task_halfway() {
     let spread = times(1, start(), Duration::from_secs(60), Duration::ZERO);
-    assert_eq!(spread, [start() + chrono::Duration::seconds(30)]);
+    assert_eq!(spread, [start() + SignedDuration::from_secs(30)]);
 }
 
 #[test]

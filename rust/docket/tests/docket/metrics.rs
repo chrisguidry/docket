@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use chrono::Utc;
 use docket::{Docket, Perpetual, Retry, Strike};
+use jiff::{SignedDuration, Timestamp};
 use redis::AsyncCommands;
 
 use crate::snapshots::raw;
@@ -37,7 +37,10 @@ async fn an_add_counts_as_added_and_scheduled() {
 #[tokio::test]
 async fn a_replace_counts_as_replaced_cancelled_and_scheduled() {
     let docket = docket().await;
-    docket.replace(Noop, "again", Utc::now()).await.unwrap();
+    docket
+        .replace(Noop, "again", Timestamp::now())
+        .await
+        .unwrap();
 
     assert_eq!(value(&docket, "docket_tasks_replaced", &[NOOP]), Some(1.0));
     assert_eq!(value(&docket, "docket_tasks_cancelled", &[NOOP]), Some(1.0));
@@ -185,7 +188,7 @@ async fn a_perpetual_task_replaced_mid_run_counts_as_superseded() {
     let docket = docket().await;
     docket
         .register(|ctx: docket::Context, _: Noop| async move {
-            let later = Utc::now() + chrono::Duration::hours(1);
+            let later = Timestamp::now() + SignedDuration::from_hours(1);
             ctx.docket().replace(Noop, ctx.key(), later).await?;
             Ok::<_, docket::Error>(())
         })
