@@ -194,9 +194,9 @@ async fn one_scheduler_pass_moves_every_due_task() {
 }
 
 #[tokio::test]
-async fn a_run_without_parked_data_is_cancelled() {
+async fn a_run_without_parked_data_fails() {
     // A scheduled run whose parked data is gone can never start, so the
-    // scheduler cancels it: a caller waiting on its result stops waiting,
+    // scheduler fails it: a caller waiting on its result gets the reason,
     // and the key accepts a new task.
     let docket = docket().await;
     let Some(mut raw) = raw().await else { return };
@@ -214,10 +214,9 @@ async fn a_run_without_parked_data_is_cancelled() {
         .await
         .unwrap();
 
-    assert!(matches!(
-        within(10, lost.result()).await,
-        Err(docket::Error::TaskCancelled { .. })
-    ));
+    let failure = within(10, lost.result()).await.unwrap_err();
+    assert!(failure.to_string().contains("parked data"));
+    assert!(matches!(failure, docket::Error::TaskFailed { .. }));
     let again = docket.add(Echo::new("again")).key("lost").await.unwrap();
     assert_eq!(again.disposition(), &Disposition::Scheduled);
 }

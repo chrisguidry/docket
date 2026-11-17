@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from docket import Docket, ExecutionCancelled, ExecutionState, Worker
+from docket import Docket, ExecutionState, Worker
 from docket.worker import _stream_due_tasks  # pyright: ignore[reportPrivateUsage]
 
 
@@ -90,11 +90,11 @@ async def lose_parked_data(docket: Docket, key: str) -> None:
         await redis.delete(docket.parked_task_key(key))
 
 
-async def test_a_run_without_parked_data_is_cancelled(
+async def test_a_run_without_parked_data_fails(
     docket: Docket, worker: Worker, the_task: AsyncMock
 ):
     """A scheduled run whose parked data is gone can never start, so the
-    scheduler cancels it: a caller waiting on its result stops waiting, and
+    scheduler fails it: a caller waiting on its result gets the reason, and
     the key accepts a new task."""
     docket.register(the_task)
     soon = datetime.now(timezone.utc) + timedelta(milliseconds=20)
@@ -106,7 +106,7 @@ async def test_a_run_without_parked_data_is_cancelled(
     await asyncio.sleep(0)
     await worker.run_until_finished()
 
-    with pytest.raises(ExecutionCancelled):
+    with pytest.raises(Exception, match="parked data .* was missing"):
         await asyncio.wait_for(waiting, timeout=5)
     the_task.assert_not_awaited()
 
@@ -118,7 +118,7 @@ async def test_a_run_without_parked_data_is_cancelled(
 async def test_a_run_without_parked_data_leaves_no_record_without_a_ttl(
     zero_ttl_docket: Docket, the_task: AsyncMock
 ):
-    """With no execution TTL, the cancelled run's record is deleted."""
+    """With no execution TTL, the failed run's record is deleted."""
     docket = zero_ttl_docket
     docket.register(the_task)
     soon = datetime.now(timezone.utc) + timedelta(milliseconds=20)

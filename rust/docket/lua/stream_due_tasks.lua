@@ -68,18 +68,20 @@ if total_work > 0 then
             -- The parked data is gone (evicted, or deleted by hand), so
             -- this run can never start.  Left as scheduled, it would keep
             -- its key reserved, and a caller waiting on its result would
-            -- wait forever, so it is cancelled the way cancel_task.lua
-            -- cancels one.  Only a scheduled run waits on parked data: a
-            -- run in any other state has a stale queue entry, and stays as
-            -- it is.
+            -- wait forever, so it fails with an error that says why.  Only
+            -- a scheduled run waits on parked data: a run in any other
+            -- state has a stale queue entry, and stays as it is.
             local run_key = docket_prefix .. ":runs:" .. key
             if redis.call('HGET', run_key, 'state') == 'scheduled' then
+                local error = 'The parked data of this scheduled task was missing when it came due'
                 redis.call('HDEL', run_key, 'known', 'stream_id')
-                redis.call('HSET', run_key, 'state', 'cancelled', 'completed_at', completed_at)
+                redis.call('HSET', run_key,
+                    'state', 'failed', 'completed_at', completed_at, 'error', error)
                 redis.call('DEL', docket_prefix .. ":progress:" .. key)
                 redis.call('PUBLISH', docket_prefix .. ":state:" .. key,
                     '{"type":"state","key":"' .. json_escape(key) ..
-                    '","state":"cancelled","completed_at":"' .. completed_at .. '"}')
+                    '","state":"failed","completed_at":"' .. completed_at ..
+                    '","error":"' .. error .. '"}')
                 if ttl_seconds > 0 then
                     redis.call('EXPIRE', run_key, ttl_seconds)
                 else
