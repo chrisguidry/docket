@@ -3,8 +3,9 @@
 //! Only the first attempt replaces the key, so a retry that took the key
 //! back would run the first run again instead of the replacement.
 
-use docket::{Docket, Retry, Task, Worker};
-use jiff::{SignedDuration, Timestamp};
+use std::time::Duration;
+
+use docket::{Docket, Retry, Task, Timestamp, Worker};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, Events};
@@ -37,7 +38,7 @@ pub fn worker(docket: &Docket, events: &Events, worker: Worker) -> Worker {
                     let replacement = Flaky {
                         round: "replacement".to_owned(),
                     };
-                    let later = Timestamp::now() + SignedDuration::from_secs(1);
+                    let later = Timestamp::now() + Duration::from_secs(1);
                     ctx.docket().replace(replacement, ctx.key(), later).await?;
                     events
                         .record(Event {

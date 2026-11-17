@@ -2,11 +2,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use docket::{Cron, Docket, Execution, State};
-use jiff::tz::TimeZone;
-use jiff::{SignedDuration, Timestamp};
+use docket::{Cron, Docket, Execution, State, TimeZone, Timestamp};
 
-use crate::support::{Noop, docket, within, worker};
+use crate::support::{Noop, docket, new_year, utc, within, worker};
 
 /// Completes once the docket has a task scheduled under `key`.
 async fn scheduled(docket: &Docket, key: &str) {
@@ -31,14 +29,8 @@ async fn an_automatic_cron_task_starts_at_its_next_match() {
         .unwrap();
 
     let snapshot = docket.snapshot().await.unwrap();
-    let next_year = Timestamp::now().to_zoned(TimeZone::UTC).year() + 1;
-    assert_eq!(
-        snapshot.future[0].when,
-        jiff::civil::date(next_year, 1, 1)
-            .to_zoned(TimeZone::UTC)
-            .unwrap()
-            .timestamp()
-    );
+    let next_year = utc(Timestamp::now()).year() + 1;
+    assert_eq!(snapshot.future[0].when, new_year(next_year));
 }
 
 /// Completes once `execution` has run `runs` times and waits again.
@@ -80,8 +72,8 @@ async fn a_manual_cron_task_runs_again_at_its_next_match() {
     // Kolkata is 5:30 ahead of UTC, so its hours start at half past in UTC.
     let snapshot = docket.snapshot().await.unwrap();
     let next = snapshot.future[0].when;
-    let utc = next.to_zoned(TimeZone::UTC);
-    assert_eq!((utc.minute(), utc.second()), (30, 0));
+    let next_utc = utc(next);
+    assert_eq!((next_utc.minute(), next_utc.second()), (30, 0));
     assert!(next > Timestamp::now());
 }
 
@@ -114,7 +106,7 @@ async fn a_run_that_overlaps_its_next_slot_is_followed_by_that_slot() {
 
     let whens = whens.lock().unwrap().clone();
     assert_eq!(
-        whens[1].duration_since(whens[0]),
-        SignedDuration::from_secs(1)
+        whens[1].saturating_duration_since(whens[0]),
+        Duration::from_secs(1)
     );
 }

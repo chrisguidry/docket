@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 
-use jiff::Timestamp;
 use opentelemetry::context::FutureExt as _;
 use redis::streams::{StreamPendingCountReply, StreamRangeReply};
 use redis::{AsyncCommands, RedisResult};
 
 use super::Docket;
+use crate::Timestamp;
 use crate::error::Result;
 use crate::execution::{Execution, Message, Status};
 use crate::keys::WORKER_GROUP;
@@ -196,7 +196,7 @@ impl Docket {
                 clippy::cast_possible_truncation,
                 reason = "microseconds since the epoch fit in i64"
             )]
-            let last_seen = Timestamp::from_microsecond((last_seen * 1_000_000.0) as i64)
+            let last_seen = Timestamp::from_unix_micros((last_seen * 1_000_000.0) as i64)
                 .unwrap_or(Timestamp::UNIX_EPOCH);
             workers.push(WorkerSummary {
                 name,

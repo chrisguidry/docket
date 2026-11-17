@@ -12,6 +12,8 @@ license = "MIT"
 repository = "https://github.com/chrisguidry/docket"
 
 [workspace.dependencies]
+chrono = { version = "0.4.45", default-features = false }
+chrono-tz = { version = "0.10.4", default-features = false }
 clap = "4.6.7"
 croner = { version = "4.0.3", default-features = false, features = ["jiff"] }
 docket-rs = { path = "docket" }

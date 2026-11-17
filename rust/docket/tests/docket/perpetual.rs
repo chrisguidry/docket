@@ -115,7 +115,7 @@ async fn a_perpetual_task_can_move_its_next_run() {
     let snapshot = docket.snapshot().await.unwrap();
     let next = &snapshot.future[0];
     assert_eq!(next.key, "hourly");
-    assert!(next.when > jiff::Timestamp::now() + jiff::SignedDuration::from_mins(59));
+    assert!(next.when > docket::Timestamp::now() + Duration::from_mins(59));
 }
 
 #[tokio::test]
@@ -189,7 +189,7 @@ async fn a_perpetual_task_that_stops_itself_keeps_a_replacement() {
             recorded.lock().unwrap().push(args.round.clone());
             async move {
                 if args.round == "first" {
-                    let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_millis(200);
+                    let soon = docket::Timestamp::now() + Duration::from_millis(200);
                     let replacement = Stopping::new("replacement");
                     ctx.docket().replace(replacement, ctx.key(), soon).await?;
                 }
@@ -239,7 +239,7 @@ async fn a_perpetual_task_that_gives_way_publishes_no_ending(
                     ctx.perpetual().unwrap().cancel();
                     return Ok(());
                 }
-                let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_millis(200);
+                let soon = docket::Timestamp::now() + Duration::from_millis(200);
                 let replacement = Stopping::new("replacement");
                 ctx.docket().replace(replacement, ctx.key(), soon).await?;
                 if stops {

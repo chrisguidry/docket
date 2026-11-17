@@ -3,9 +3,10 @@
 
 use std::time::Duration;
 
-use jiff::{SignedDuration, Timestamp};
+use jiff::SignedDuration;
 use rand::RngExt;
 
+use crate::Timestamp;
 use crate::docket::{Call, Docket};
 use crate::error::{Error, Result};
 use crate::execution::Execution;
@@ -116,7 +117,11 @@ fn times(count: usize, start: Timestamp, over: Duration, jitter: Duration) -> Ve
         .into_iter()
         .map(|offset| {
             let shift = SignedDuration::from_micros(rand::rng().random_range(-jitter..=jitter));
-            (start + offset + shift).max(start)
+            start
+                .0
+                .checked_add(offset + shift)
+                .map_or(Timestamp::MAX, Timestamp)
+                .max(start)
         })
         .collect()
 }

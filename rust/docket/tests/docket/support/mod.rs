@@ -3,11 +3,23 @@ pub mod telemetry;
 
 use std::time::Duration;
 
-use docket::{Docket, DocketBuilder, Task, Worker};
+use docket::{Docket, DocketBuilder, Task, Timestamp, Worker};
 use serde::{Deserialize, Serialize};
 
 /// Where the tests' Redis is.  Each `memory://` URL is its own server, so
 /// tests on the in-process engine never share data.
+/// `when` in UTC, to read its calendar fields.
+pub fn utc(when: Timestamp) -> jiff::Zoned {
+    jiff::Timestamp::try_from(std::time::SystemTime::from(when))
+        .unwrap()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+}
+
+/// Midnight, UTC, at the start of `year`.
+pub fn new_year(year: i16) -> Timestamp {
+    format!("{year:04}-01-01T00:00:00Z").parse().unwrap()
+}
+
 pub fn url() -> String {
     std::env::var("DOCKET_TEST_URL")
         .ok()

@@ -1,8 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use jiff::Timestamp;
-
 use crate::support::{Noop, docket, within, worker};
+use docket::Timestamp;
 
 /// The worker's name and the due time a handler saw.
 type Seen = (String, Timestamp);
@@ -25,7 +24,7 @@ async fn a_handler_knows_its_worker_and_when_it_was_due() {
     // Messages carry times to the microsecond.
     let expected = Some((
         "the-worker".to_owned(),
-        Timestamp::from_microsecond(execution.when().as_microsecond()).unwrap(),
+        Timestamp::from_unix_micros(execution.when().as_unix_micros()).unwrap(),
     ));
     assert_eq!(*seen.lock().unwrap(), expected);
 }

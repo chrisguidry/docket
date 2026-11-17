@@ -4,13 +4,12 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use jiff::Timestamp;
 use opentelemetry::KeyValue;
 use redis::Value;
 
 use super::session::Delivery;
+use crate::Timestamp;
 use crate::behaviors::{AdmissionBlocked, AfterCompletion};
-use crate::clock::later;
 use crate::docket::{Docket, Placement};
 use crate::error::Result;
 use crate::execution::{Disposition, Message, State};
@@ -264,7 +263,7 @@ impl Run<'_> {
             .retry_delay
             .filter(|delay| !delay.is_zero())
             .unwrap_or(ADMISSION_RETRY_DELAY);
-        let when = later(self.docket.now(), delay);
+        let when = self.docket.now().saturating_add(delay);
         self.reschedule(when, self.message().attempt, generation, 0)
             .await
             .map(drop)

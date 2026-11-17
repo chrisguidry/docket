@@ -4,8 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use docket::{Docket, Perpetual, Retry, Strike};
-use jiff::{SignedDuration, Timestamp};
+use docket::{Docket, Perpetual, Retry, Strike, Timestamp};
 use redis::AsyncCommands;
 
 use crate::snapshots::raw;
@@ -188,7 +187,7 @@ async fn a_perpetual_task_replaced_mid_run_counts_as_superseded() {
     let docket = docket().await;
     docket
         .register(|ctx: docket::Context, _: Noop| async move {
-            let later = Timestamp::now() + SignedDuration::from_hours(1);
+            let later = Timestamp::now() + Duration::from_hours(1);
             ctx.docket().replace(Noop, ctx.key(), later).await?;
             Ok::<_, docket::Error>(())
         })

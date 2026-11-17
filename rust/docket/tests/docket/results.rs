@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use docket::{Disposition, Docket, Event, State, Task};
+use docket::{Disposition, Docket, Event, State, Task, Timestamp};
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
-use jiff::{SignedDuration, Timestamp};
 use rstest::rstest;
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +23,7 @@ async fn add_many_schedules_every_call_in_one_round_trip() {
             docket.call(Echo::new("b")).key("b"),
             docket
                 .call(Echo::new("c"))
-                .at(Timestamp::now() + SignedDuration::from_millis(100)),
+                .at(Timestamp::now() + Duration::from_millis(100)),
             docket.call(Echo::new("struck")),
         ])
         .await

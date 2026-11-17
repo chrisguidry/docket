@@ -16,6 +16,14 @@ name = "docket"
 
 [features]
 default = ["tls"]
+# From conversions between docket::Timestamp and chrono's DateTime.
+chrono = ["dep:chrono"]
+# TryFrom chrono-tz's Tz to docket::TimeZone.
+chrono-tz = ["dep:chrono-tz"]
+# From conversions between docket's Timestamp and TimeZone and jiff 0.2's.
+# The version is in the name so that a feature for a later jiff can sit
+# beside it.
+jiff-02 = []
 # docket::cli: a worker's command-line options for an application's own CLI.
 cli = ["dep:clap", "tokio/signal", "prometheus"]
 # memory:// runs the in-process engine in src/memory, for users' test suites.
@@ -36,6 +44,8 @@ prometheus = [
 ]
 
 [dependencies]
+chrono = { workspace = true, optional = true }
+chrono-tz = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive", "env"], optional = true }
 croner.workspace = true
 docket-rs-macros.workspace = true

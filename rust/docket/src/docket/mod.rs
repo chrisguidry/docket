@@ -11,10 +11,10 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use jiff::Timestamp;
 use opentelemetry::context::FutureExt as _;
 use redis::AsyncCommands;
 
+use crate::Timestamp;
 use crate::behaviors::BoxError;
 use crate::clock::Clock;
 use crate::connection::{Backend, Handle, RedisConnection, Shared};

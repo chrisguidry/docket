@@ -10,10 +10,10 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use futures::StreamExt;
-use jiff::Timestamp;
 use redis::{AsyncCommands, Value};
 use serde::de::DeserializeOwned;
 
+use crate::Timestamp;
 use crate::docket::Docket;
 use crate::error::{Error, Result};
 use crate::wire::parse_iso;
@@ -157,7 +157,7 @@ fn seconds_to_time(seconds: f64) -> Option<Timestamp> {
         clippy::cast_possible_truncation,
         reason = "microseconds since the epoch fit in i64"
     )]
-    Timestamp::from_microsecond((seconds * 1_000_000.0).round() as i64).ok()
+    Timestamp::from_unix_micros((seconds * 1_000_000.0).round() as i64)
 }
 
 /// One scheduled run of a task.  `O` is the type of the task's output.

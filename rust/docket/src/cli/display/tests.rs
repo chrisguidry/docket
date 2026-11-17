@@ -1,8 +1,9 @@
-use jiff::{SignedDuration, Timestamp};
+use jiff::SignedDuration;
 use rstest::rstest;
 use serde_json::json;
 
 use super::{Justify, Table, local_time, relative_time, repr, repr_str, timedelta};
+use crate::Timestamp;
 
 /// rich's own output for the same tables, with `Console(color_system=None)`.
 #[test]
@@ -68,11 +69,7 @@ fn a_title_wider_than_its_table_wraps() {
 }
 
 fn at(seconds: i64, micros: u32) -> Timestamp {
-    Timestamp::new(
-        1_800_000_000 + seconds,
-        i32::try_from(micros * 1000).unwrap(),
-    )
-    .unwrap()
+    Timestamp::from_unix_micros((1_800_000_000 + seconds) * 1_000_000 + i64::from(micros)).unwrap()
 }
 
 #[rstest]

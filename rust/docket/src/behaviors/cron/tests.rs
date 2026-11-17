@@ -1,8 +1,7 @@
-use jiff::Timestamp;
-use jiff::tz::TimeZone;
 use rstest::rstest;
 
 use super::Cron;
+use crate::{TimeZone, Timestamp};
 
 #[rstest]
 #[case::weekday_morning("0 9 * * 1-5", "2026-10-05T09:00:00Z")]

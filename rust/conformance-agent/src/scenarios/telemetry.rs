@@ -4,8 +4,7 @@
 
 use std::time::Duration;
 
-use docket::{Docket, Perpetual, Retry, Strike, Task, Worker};
-use jiff::Timestamp;
+use docket::{Docket, Perpetual, Retry, Strike, Task, Timestamp, Worker};
 use serde::{Deserialize, Serialize};
 
 use crate::events::Events;

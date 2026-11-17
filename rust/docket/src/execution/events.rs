@@ -5,10 +5,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::{Stream, StreamExt, stream};
-use jiff::Timestamp;
 use serde::Deserialize;
 
 use super::{State, Status, progress};
+use crate::Timestamp;
 use crate::docket::Docket;
 use crate::error::{Error, Result};
 

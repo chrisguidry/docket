@@ -3,9 +3,11 @@
 
 use std::fmt::Write as _;
 
+use jiff::SignedDuration;
 use jiff::tz::TimeZone;
-use jiff::{SignedDuration, Timestamp};
 use serde_json::Value;
+
+use crate::Timestamp;
 
 /// How a column lines up its cells.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -139,7 +141,8 @@ fn wrap(text: &str, limit: usize) -> Vec<String> {
 
 /// A time as pydocket's `local_time` prints it, in the local time zone.
 pub(super) fn local_time(when: Timestamp) -> String {
-    when.to_zoned(TimeZone::system())
+    when.0
+        .to_zoned(TimeZone::system())
         .strftime("%Y-%m-%d %H:%M:%S %z")
         .to_string()
 }
@@ -147,7 +150,7 @@ pub(super) fn local_time(when: Timestamp) -> String {
 /// `when` relative to `now`, as pydocket's `relative_time` prints it: a
 /// distance within half an hour, and a local time beyond that.
 pub(super) fn relative_time(now: Timestamp, when: Timestamp) -> String {
-    let delta = now.duration_since(when);
+    let delta = now.0.duration_since(when.0);
     let half_hour = SignedDuration::from_mins(30);
     if delta < -half_hour || delta >= half_hour {
         format!("at {}", local_time(when))

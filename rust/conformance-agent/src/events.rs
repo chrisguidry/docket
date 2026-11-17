@@ -35,8 +35,13 @@ impl Events {
     }
 
     pub async fn record(&self, event: Event<'_>) -> docket::Result<()> {
-        let now = jiff::Timestamp::now();
-        let time = format!("{}.{:06}", now.as_second(), now.subsec_microsecond());
+        let now = docket::Timestamp::now();
+        let micros = now.as_unix_micros();
+        let time = format!(
+            "{}.{:06}",
+            micros.div_euclid(1_000_000),
+            micros.rem_euclid(1_000_000)
+        );
         let mut connection = self.connection.clone();
         let _: String = connection
             .xadd(

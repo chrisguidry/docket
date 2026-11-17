@@ -1,10 +1,9 @@
 use std::time::Duration;
 
-use jiff::{SignedDuration, Timestamp};
-
 use rstest::rstest;
 
 use super::{ExponentialRetry, ForcedRetry, decide};
+use crate::Timestamp;
 use crate::behaviors::{AfterFailure, BoxError};
 
 fn plain_error() -> BoxError {
@@ -61,13 +60,13 @@ fn a_forced_retry_chooses_the_delay() {
     else {
         panic!("a forced retry retries");
     };
-    assert!(when > Timestamp::now() + SignedDuration::from_mins(59));
+    assert!(when > Timestamp::now() + Duration::from_mins(59));
 }
 
 #[test]
 fn a_forced_retry_in_the_past_runs_now() {
     let now = Timestamp::now();
-    let error: BoxError = Box::new(ForcedRetry::at(now - SignedDuration::from_hours(1)));
+    let error: BoxError = Box::new(ForcedRetry::at(now - Duration::from_hours(1)));
     assert_eq!(
         decide(None, 1, &error, Duration::ZERO, now),
         AfterFailure::RetryAt(now)

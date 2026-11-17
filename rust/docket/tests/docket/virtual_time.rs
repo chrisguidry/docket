@@ -4,13 +4,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use docket::Timestamp;
 use docket::behaviors::ForcedRetry;
 use docket::testing::{advance_time, assert_task_count, skip_idle_time};
 use docket::{Context, Cron, Docket, Perpetual, Retry};
-use jiff::tz::TimeZone;
-use jiff::{SignedDuration, Timestamp};
 
-use crate::support::{Noop, within, worker};
+use crate::support::{Noop, new_year, utc, within, worker};
 
 const HOUR: Duration = Duration::from_hours(1);
 
@@ -42,11 +41,17 @@ fn record(docket: &Docket, fail: bool) -> (Due, docket::Registration<Noop>) {
     (due, registration)
 }
 
+/// How far apart two timestamps are, whichever is first.
+fn apart(a: Timestamp, b: Timestamp) -> Duration {
+    a.saturating_duration_since(b)
+        .max(b.saturating_duration_since(a))
+}
+
 /// Each gap is at least `every`, and short of it by less than the moment a
 /// worker takes to pick a due task up.
 fn assert_apart(due: &[Timestamp], every: Duration) {
     for pair in due.windows(2) {
-        let gap = Duration::try_from(pair[1].duration_since(pair[0])).unwrap();
+        let gap = pair[1].saturating_duration_since(pair[0]);
         assert!(
             gap >= every && gap < every + Duration::from_secs(10),
             "{due:?}"
@@ -79,7 +84,7 @@ async fn a_forced_retry_at_a_time_runs_then_on_a_moved_clock() {
     let docket = memory(&unique_url()).await;
     advance_time(&docket, Duration::from_hours(24));
     skip_idle_time(&docket);
-    let retry_at = Timestamp::now() + SignedDuration::from_hours(25);
+    let retry_at = Timestamp::now() + Duration::from_hours(25);
     let due: Due = Arc::default();
     let recorded = Arc::clone(&due);
     docket
@@ -103,10 +108,7 @@ async fn a_forced_retry_at_a_time_runs_then_on_a_moved_clock() {
 
     let due = due.lock().unwrap();
     assert_eq!(due.len(), 2);
-    assert!(
-        due[1].duration_since(retry_at).abs() < SignedDuration::from_secs(10),
-        "{due:?}"
-    );
+    assert!(apart(due[1], retry_at) < Duration::from_secs(10), "{due:?}");
 }
 
 #[tokio::test]
@@ -174,16 +176,10 @@ async fn an_automatic_cron_task_starts_at_its_next_match_on_the_dockets_clock() 
     within(10, worker(&docket).run_until(seeded)).await.unwrap();
 
     let snapshot = docket.snapshot().await.unwrap();
-    let taken_year = snapshot.taken.to_zoned(TimeZone::UTC).year();
+    let taken_year = utc(snapshot.taken).year();
     let next_year = taken_year + 1;
-    assert!(taken_year > Timestamp::now().to_zoned(TimeZone::UTC).year());
-    assert_eq!(
-        snapshot.future[0].when,
-        jiff::civil::date(next_year, 1, 1)
-            .to_zoned(TimeZone::UTC)
-            .unwrap()
-            .timestamp()
-    );
+    assert!(taken_year > utc(Timestamp::now()).year());
+    assert_eq!(snapshot.future[0].when, new_year(next_year));
 }
 
 #[tokio::test]

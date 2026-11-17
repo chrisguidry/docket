@@ -3,8 +3,9 @@
 //! Each producer adds `shared` 2 s out, which does nothing when the key is
 //! already scheduled, then replaces it 4 s out.  The last replace wins.
 
-use docket::{Docket, Task, Worker};
-use jiff::{SignedDuration, Timestamp};
+use std::time::Duration;
+
+use docket::{Docket, Task, Timestamp, Worker};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, Events};
@@ -18,10 +19,10 @@ pub async fn produce(docket: &Docket, events: &Events) -> docket::Result<()> {
     docket
         .add(Shared)
         .key("shared")
-        .at(now + SignedDuration::from_secs(2))
+        .at(now + Duration::from_secs(2))
         .await?;
     docket
-        .replace(Shared, "shared", now + SignedDuration::from_secs(4))
+        .replace(Shared, "shared", now + Duration::from_secs(4))
         .await?;
     events
         .record(Event {

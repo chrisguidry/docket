@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use jiff::Timestamp;
 
+use crate::Timestamp;
 use crate::context::Context;
 use crate::task::Task;
 

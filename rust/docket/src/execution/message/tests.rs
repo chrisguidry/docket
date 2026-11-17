@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 
-use jiff::Timestamp;
 use rstest::rstest;
 
 use super::Message;
+use crate::Timestamp;
 
 fn message() -> Message {
     Message {
         key: "order-9".into(),
-        when: Timestamp::from_microsecond(1_791_228_363_529_728).unwrap(),
+        when: Timestamp::from_unix_micros(1_791_228_363_529_728).unwrap(),
         function: "charge".into(),
         args: r#"{"customer":7}"#.into(),
         attempt: 2,

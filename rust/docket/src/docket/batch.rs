@@ -4,13 +4,13 @@ use std::collections::HashMap;
 use std::future::IntoFuture;
 
 use futures::future::BoxFuture;
-use jiff::Timestamp;
 use opentelemetry::KeyValue;
 use opentelemetry::context::FutureExt as _;
 use redis::{RedisResult, Value};
 
 use super::Docket;
 use super::schedule::Placement;
+use crate::Timestamp;
 use crate::error::{Error, Result};
 use crate::execution::{Disposition, Execution, Message};
 use crate::scripts;
@@ -262,8 +262,8 @@ impl Call {
     }
 
     /// Schedules the task for a time.
-    pub fn at(mut self, when: Timestamp) -> Self {
-        self.when = Some(when);
+    pub fn at(mut self, when: impl Into<Timestamp>) -> Self {
+        self.when = Some(when.into());
         self
     }
 }

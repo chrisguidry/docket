@@ -10,7 +10,6 @@ publish = false
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
 docket-rs = { workspace = true, features = ["prometheus"] }
-jiff.workspace = true
 opentelemetry = { workspace = true, features = ["trace", "metrics"] }
 opentelemetry-otlp = { workspace = true, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics"] }
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics"] }

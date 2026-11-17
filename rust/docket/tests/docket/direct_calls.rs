@@ -4,9 +4,9 @@
 
 use std::time::Duration;
 
+use docket::Timestamp;
 use docket::testing::ContextBuilder;
 use docket::{Context, Task};
-use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::support::docket;

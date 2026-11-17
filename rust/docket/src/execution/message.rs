@@ -3,8 +3,7 @@
 
 use std::collections::HashMap;
 
-use jiff::Timestamp;
-
+use crate::Timestamp;
 use crate::error::{Error, Result};
 use crate::telemetry;
 use crate::wire::{iso, parse_iso};

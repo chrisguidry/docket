@@ -16,8 +16,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::time::Duration;
 
-use jiff::Timestamp;
-
+use crate::Timestamp;
 use crate::behaviors::PerpetualControl;
 use crate::context::{Context, Delivery, Run};
 use crate::docket::{Docket, TaskSummary};
@@ -115,8 +114,8 @@ impl ContextBuilder {
 
     /// When the task was due.
     #[must_use]
-    pub fn when(mut self, when: Timestamp) -> Self {
-        self.when = when;
+    pub fn when(mut self, when: impl Into<Timestamp>) -> Self {
+        self.when = when.into();
         self
     }
 

@@ -3,11 +3,10 @@
 
 use std::io::Write;
 
-use jiff::Timestamp;
-
 use super::display::{Justify, Table, local_time, relative_time, repr_str, timedelta};
 use super::strike::StrikeArgs;
 use super::watch;
+use crate::Timestamp;
 use crate::docket::{Docket, Snapshot, WorkerSummary};
 use crate::error::{Error, Result};
 
@@ -233,7 +232,10 @@ pub(super) fn render_workers(name: &str, now: Timestamp, workers: &[WorkerSummar
         };
         table.row(vec![
             worker.name.clone(),
-            format!("{} ago", timedelta(now.duration_since(worker.last_seen))),
+            format!(
+                "{} ago",
+                timedelta(now.0.duration_since(worker.last_seen.0))
+            ),
             tasks,
         ]);
     }

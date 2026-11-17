@@ -2,11 +2,8 @@
 
 use std::time::Duration;
 
-use jiff::Timestamp;
-use jiff::tz::Offset;
-
 use super::{AfterFailure, Behavior, BoxError, Failure, Hooks};
-use crate::clock::later;
+use crate::Timestamp;
 use crate::context::Context;
 use crate::task::Task;
 
@@ -147,7 +144,7 @@ fn decide(
     if attempts.is_some_and(|attempts| attempt >= attempts) {
         return AfterFailure::Fail;
     }
-    let after = |delay: Duration| later(now, delay);
+    let after = |delay: Duration| now.saturating_add(delay);
     AfterFailure::RetryAt(match error.downcast_ref::<ForcedRetry>() {
         Some(ForcedRetry(When::After(delay))) => after(*delay),
         Some(ForcedRetry(When::At(when))) => (*when).max(now),
@@ -182,7 +179,11 @@ impl std::fmt::Display for When {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::After(delay) => write!(f, "in {delay:?}"),
-            Self::At(when) => write!(f, "at {}", when.display_with_offset(Offset::UTC)),
+            Self::At(when) => write!(
+                f,
+                "at {}",
+                when.0.display_with_offset(jiff::tz::Offset::UTC)
+            ),
         }
     }
 }
@@ -197,8 +198,8 @@ impl ForcedRetry {
     /// Retries at `when` on the docket's clock, or now when `when` has
     /// passed.
     #[must_use]
-    pub fn at(when: Timestamp) -> Self {
-        Self(When::At(when))
+    pub fn at(when: impl Into<Timestamp>) -> Self {
+        Self(When::At(when.into()))
     }
 }
 

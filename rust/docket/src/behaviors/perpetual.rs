@@ -4,11 +4,10 @@ use std::marker::PhantomData;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use jiff::Timestamp;
 use tokio::time::Instant;
 
 use super::{AfterCompletion, Behavior, Completion, Hooks, Outcome};
-use crate::clock::later;
+use crate::Timestamp;
 use crate::context::Context;
 use crate::task::Task;
 
@@ -84,7 +83,7 @@ impl Completion for Next {
         // each one takes, and a run longer than `every` is followed at once.
         let elapsed = control.started.elapsed();
         let wait = self.every.saturating_sub(elapsed);
-        control.decide(later(ctx.docket().now(), wait))
+        control.decide(ctx.docket().now().saturating_add(wait))
     }
 }
 
@@ -123,13 +122,13 @@ impl PerpetualControl {
     pub fn after(&self, delay: Duration) {
         // The docket's clock, which a test can move, counted on from the
         // start of the run.
-        let now = later(self.started_at, self.started.elapsed());
-        self.at(later(now, delay));
+        let now = self.started_at.saturating_add(self.started.elapsed());
+        self.at(now.saturating_add(delay));
     }
 
     /// Runs the task next at `when`.
-    pub fn at(&self, when: Timestamp) {
-        self.lock().when = Some(when);
+    pub fn at(&self, when: impl Into<Timestamp>) {
+        self.lock().when = Some(when.into());
     }
 
     /// Runs the task next with these arguments.

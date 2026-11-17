@@ -6,13 +6,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use docket::Timestamp;
 use docket::behaviors::{
     AfterCompletion, AfterFailure, Behavior, BoxError, Completion, Failure, Hooks, Outcome,
 };
 use docket::{Context, Docket, Registration, State, Strike, Task, Worker};
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use jiff::Timestamp;
 use tokio::sync::{Notify, Semaphore};
 
 use crate::logs::Logs;

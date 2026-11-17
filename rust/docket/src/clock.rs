@@ -5,16 +5,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
-use jiff::{SignedDuration, Timestamp};
+use std::time::Duration;
 
-/// `when` plus `delay`, or [`Timestamp::MAX`] when the sum is past the end
-/// of jiff's range, in the year 9999.
-pub(crate) fn later(when: Timestamp, delay: std::time::Duration) -> Timestamp {
-    SignedDuration::try_from(delay)
-        .ok()
-        .and_then(|delay| when.checked_add(delay).ok())
-        .unwrap_or(Timestamp::MAX)
-}
+use crate::Timestamp;
 
 /// A docket's clock.
 #[derive(Clone, Debug, Default)]
@@ -37,11 +30,10 @@ impl Clock {
     pub fn now(&self) -> Timestamp {
         let now = Timestamp::now();
         match &self.0 {
-            Some(moved) => now
-                .saturating_add(SignedDuration::from_micros(
-                    moved.ahead_micros.load(Ordering::Relaxed),
-                ))
-                .expect("a SignedDuration has no calendar units"),
+            Some(moved) => {
+                let ahead = u64::try_from(moved.ahead_micros.load(Ordering::Relaxed)).unwrap_or(0);
+                now.saturating_add(Duration::from_micros(ahead))
+            }
             None => now,
         }
     }
@@ -66,13 +58,13 @@ impl Moved {
     /// Moves the clock to `when`, unless it is there already.  Two workers
     /// that move it at once leave it at the later time.
     pub fn advance_to(&self, when: Timestamp) {
-        let ahead = when.duration_since(Timestamp::now()).as_micros();
+        let ahead = when.saturating_duration_since(Timestamp::now()).as_micros();
         let ahead = i64::try_from(ahead).unwrap_or(i64::MAX);
         self.ahead_micros.fetch_max(ahead, Ordering::Relaxed);
     }
 
     #[cfg(feature = "memory")]
-    pub fn advance(&self, by: std::time::Duration) {
+    pub fn advance(&self, by: Duration) {
         let by = i64::try_from(by.as_micros()).unwrap_or(i64::MAX);
         self.ahead_micros.fetch_add(by, Ordering::Relaxed);
     }
@@ -80,31 +72,5 @@ impl Moved {
     #[cfg(feature = "memory")]
     pub fn skip_idle_time(&self) {
         self.skip_idle.store(true, Ordering::Relaxed);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use jiff::Timestamp;
-
-    use super::later;
-
-    #[test]
-    fn adds_a_delay() {
-        let when = Timestamp::from_second(1_800_000_000).unwrap();
-        assert_eq!(
-            later(when, Duration::from_secs(90)),
-            Timestamp::from_second(1_800_000_090).unwrap()
-        );
-    }
-
-    #[test]
-    fn stops_at_the_end_of_the_range() {
-        let when = Timestamp::from_second(1_800_000_000).unwrap();
-        let ten_thousand_years = Duration::from_hours(10_000 * 365 * 24);
-        assert_eq!(later(when, ten_thousand_years), Timestamp::MAX);
-        assert_eq!(later(when, Duration::MAX), Timestamp::MAX);
     }
 }
