@@ -3,6 +3,8 @@ local stream_key = KEYS[2]
 local now_timestamp = tonumber(ARGV[1])
 local docket_prefix = ARGV[2]
 local batch = tonumber(ARGV[3])
+local completed_at = ARGV[4]
+local ttl_seconds = tonumber(ARGV[5])
 
 -- Each call moves at most `batch` due tasks, and the caller calls again
 -- until one scans less than that.  A script that moved a large backlog at
@@ -62,6 +64,28 @@ if total_work > 0 then
             redis.call('PUBLISH', channel, payload)
 
             due_work = due_work + 1
+        else
+            -- The parked data is gone (evicted, or deleted by hand), so
+            -- this run can never start.  Left as scheduled, it would keep
+            -- its key reserved, and a caller waiting on its result would
+            -- wait forever, so it is cancelled the way cancel_task.lua
+            -- cancels one.  Only a scheduled run waits on parked data: a
+            -- run in any other state has a stale queue entry, and stays as
+            -- it is.
+            local run_key = docket_prefix .. ":runs:" .. key
+            if redis.call('HGET', run_key, 'state') == 'scheduled' then
+                redis.call('HDEL', run_key, 'known', 'stream_id')
+                redis.call('HSET', run_key, 'state', 'cancelled', 'completed_at', completed_at)
+                redis.call('DEL', docket_prefix .. ":progress:" .. key)
+                redis.call('PUBLISH', docket_prefix .. ":state:" .. key,
+                    '{"type":"state","key":"' .. json_escape(key) ..
+                    '","state":"cancelled","completed_at":"' .. completed_at .. '"}')
+                if ttl_seconds > 0 then
+                    redis.call('EXPIRE', run_key, ttl_seconds)
+                else
+                    redis.call('DEL', run_key)
+                end
+            end
         end
     end
 

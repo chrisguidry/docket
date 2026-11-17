@@ -419,6 +419,8 @@ async fn stream_due_tasks(docket: &Docket) -> Result<()> {
             now_timestamp: crate::wire::seconds(docket.now()),
             docket_prefix: keys.prefix().to_owned(),
             batch: DUE_TASKS_BATCH,
+            completed_at: crate::wire::iso(docket.now()),
+            ttl_seconds: docket.ttl_seconds(),
         }
         .call();
         let (_total, _due, scanned): (i64, i64, i64) = call.run(&mut docket.handle()).await?;

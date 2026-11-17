@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use docket::{Disposition, State, Task, Timestamp};
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 
+use crate::snapshots::raw;
 use crate::support::{Echo, Noop, docket, within, worker};
 
 #[tokio::test]
@@ -189,4 +191,33 @@ async fn one_scheduler_pass_moves_every_due_task() {
         last.status().await.unwrap().unwrap().state,
         State::Completed
     );
+}
+
+#[tokio::test]
+async fn a_run_without_parked_data_is_cancelled() {
+    // A scheduled run whose parked data is gone can never start, so the
+    // scheduler cancels it: a caller waiting on its result stops waiting,
+    // and the key accepts a new task.
+    let docket = docket().await;
+    let Some(mut raw) = raw().await else { return };
+    docket.register(|_ctx, args: Echo| async move { Ok::<_, std::io::Error>(args.text) });
+    let lost = docket
+        .add(Echo::new("lost"))
+        .key("lost")
+        .after(Duration::from_millis(100))
+        .await
+        .unwrap();
+    let _: i64 = raw.del(format!("{}:lost", docket.name())).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        within(10, lost.result()).await,
+        Err(docket::Error::TaskCancelled { .. })
+    ));
+    let again = docket.add(Echo::new("again")).key("lost").await.unwrap();
+    assert_eq!(again.disposition(), &Disposition::Scheduled);
 }

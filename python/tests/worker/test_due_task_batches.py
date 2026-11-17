@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from docket import Docket, Worker
+from docket import Docket, ExecutionCancelled, ExecutionState, Worker
 from docket.worker import _stream_due_tasks  # pyright: ignore[reportPrivateUsage]
 
 
@@ -19,6 +19,8 @@ async def stream_due(docket: Docket, batch: int) -> tuple[int, int, int]:
             now_timestamp=datetime.now(timezone.utc).timestamp(),
             docket_prefix=docket.prefix,
             batch=batch,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            ttl_seconds=int(docket.execution_ttl.total_seconds()),
         )
         return int(total), int(due), int(scanned)
 
@@ -79,6 +81,70 @@ async def test_entries_without_parked_data_are_removed(
     assert await stream_length(docket) == 1
     assert await queued_keys(docket) == []
 
+    await worker.run_until_finished()
+    assert the_task.await_count == 1
+
+
+async def lose_parked_data(docket: Docket, key: str) -> None:
+    async with docket.redis() as redis:
+        await redis.delete(docket.parked_task_key(key))
+
+
+async def test_a_run_without_parked_data_is_cancelled(
+    docket: Docket, worker: Worker, the_task: AsyncMock
+):
+    """A scheduled run whose parked data is gone can never start, so the
+    scheduler cancels it: a caller waiting on its result stops waiting, and
+    the key accepts a new task."""
+    docket.register(the_task)
+    soon = datetime.now(timezone.utc) + timedelta(milliseconds=20)
+    execution = await docket.add(the_task, when=soon, key="lost")()
+    await lose_parked_data(docket, "lost")
+    await asyncio.sleep(0.05)
+
+    waiting = asyncio.create_task(execution.get_result())
+    await asyncio.sleep(0)
+    await worker.run_until_finished()
+
+    with pytest.raises(ExecutionCancelled):
+        await asyncio.wait_for(waiting, timeout=5)
+    the_task.assert_not_awaited()
+
+    await docket.add(the_task, key="lost")()
+    await worker.run_until_finished()
+    assert the_task.await_count == 1
+
+
+async def test_a_run_without_parked_data_leaves_no_record_without_a_ttl(
+    zero_ttl_docket: Docket, the_task: AsyncMock
+):
+    """With no execution TTL, the cancelled run's record is deleted."""
+    docket = zero_ttl_docket
+    docket.register(the_task)
+    soon = datetime.now(timezone.utc) + timedelta(milliseconds=20)
+    await docket.add(the_task, when=soon, key="lost")()
+    await lose_parked_data(docket, "lost")
+    await asyncio.sleep(0.05)
+
+    assert await stream_due(docket, batch=2) == (1, 0, 1)
+
+    assert await docket.get_execution("lost") is None
+
+
+async def test_a_stale_queue_entry_leaves_a_queued_run_alone(
+    docket: Docket, worker: Worker, the_task: AsyncMock
+):
+    """Only a scheduled run waits on parked data.  A queue entry for a key
+    whose run is already on the stream is removed without touching that run."""
+    docket.register(the_task)
+    execution = await docket.add(the_task, key="queued")()
+    async with docket.redis() as redis:
+        await redis.zadd(docket.queue_key, {"queued": 1})
+
+    assert await stream_due(docket, batch=2) == (1, 0, 1)
+
+    await execution.sync()
+    assert execution.state == ExecutionState.QUEUED
     await worker.run_until_finished()
     assert the_task.await_count == 1
 

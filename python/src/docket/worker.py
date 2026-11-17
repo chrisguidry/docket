@@ -170,6 +170,8 @@ async def _stream_due_tasks(
     now_timestamp: Arg[float],
     docket_prefix: Arg[str],
     batch: Arg[int],
+    completed_at: Arg[str],
+    ttl_seconds: Arg[int],
 ) -> tuple[int, int, int]: ...
 
 
@@ -909,6 +911,8 @@ class Worker:
                             now_timestamp=datetime.now(timezone.utc).timestamp(),
                             docket_prefix=self.docket.prefix,
                             batch=DUE_TASKS_BATCH,
+                            completed_at=datetime.now(timezone.utc).isoformat(),
+                            ttl_seconds=int(self.docket.execution_ttl.total_seconds()),
                         )
 
                     if due_work > 0:
