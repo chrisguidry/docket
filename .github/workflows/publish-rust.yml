@@ -13,7 +13,8 @@ jobs:
     # docket-rs releases are tagged rust/v0.1.0.
     if: startsWith(github.event.release.tag_name, 'rust/v')
     uses: ./.github/workflows/rust.yml
-    secrets: inherit
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     permissions:
       contents: read
 
@@ -36,12 +37,12 @@ jobs:
     defaults:
       run:
         working-directory: rust
-    # This job holds a publish token, so its actions are pinned to commits:
-    # a tag that moves cannot change what runs here.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
 
       # Cargo takes the version from Cargo.toml, not from the tag, so the
       # two must agree before anything is published.

@@ -15,17 +15,18 @@ jobs:
   python:
     name: Python
     uses: ./.github/workflows/python.yml
-    secrets: inherit
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   rust:
     name: Rust
     uses: ./.github/workflows/rust.yml
-    secrets: inherit
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   conformance:
     name: Conformance
     uses: ./.github/workflows/conformance.yml
-    secrets: inherit
 
   prek:
     name: Prek
