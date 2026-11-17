@@ -73,7 +73,7 @@ Howdy, John at 2025-03-05 13:58:24.550773!
 docket integrates two modes of task execution:
 
 1. **Immediate tasks** are pushed onto a Redis stream and are available to be picked up by any worker.
-2. **Scheduled tasks** are pushed onto a Redis sorted set with a schedule time. A loop within each worker moves scheduled tasks onto the stream when their schedule time has arrived. This move is performed as a Lua script to ensure atomicity.
+2. **Scheduled tasks** are pushed onto a Redis sorted set with a schedule time. A loop within each worker moves scheduled tasks onto the stream when their schedule time has arrived. A Lua script moves them atomically, at most 1000 tasks per call, and the loop calls it again until no due task is left, so a large backlog does not block Redis for the whole move.
 
 Docket requires [Redis](https://redis.io/) 6.2 or later, or
 [Valkey](https://valkey.io/) 8.0 or later. Docket is tested with Redis 6.2 and

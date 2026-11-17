@@ -354,7 +354,13 @@ scripts! {
     /// Moves due tasks from the queue to the stream.
     StreamDueTasks = "stream_due_tasks" {
         keys: [queue_key, stream_key],
-        args: [now_timestamp: Number, docket_prefix: Text],
+        args: [
+            now_timestamp: Number,
+            docket_prefix: Text,
+            batch: Integer,
+            completed_at: Text,
+            ttl_seconds: Integer,
+        ],
     }
 
     /// Records a task's terminal state and acknowledges its message.

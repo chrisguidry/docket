@@ -169,7 +169,15 @@ async def _stream_due_tasks(
     stream_key: Key[str],
     now_timestamp: Arg[float],
     docket_prefix: Arg[str],
-) -> tuple[int, int]: ...
+    batch: Arg[int],
+    completed_at: Arg[str],
+    ttl_seconds: Arg[int],
+) -> tuple[int, int, int]: ...
+
+
+# How many queue entries one stream_due_tasks.lua call scans, so that no one
+# call blocks Redis for long.
+DUE_TASKS_BATCH = 1000
 
 
 class Worker:
@@ -891,24 +899,31 @@ class Worker:
         while not session.stopping.is_set():  # pragma: no branch
             try:
                 logger.debug("Scheduling due tasks", extra=log_context)
-                with self._maybe_suppress_instrumentation():
-                    total_work, due_work = await _stream_due_tasks(
-                        cast(RedisClient, redis),
-                        queue_key=self.docket.queue_key,
-                        stream_key=self.docket.stream_key,
-                        now_timestamp=datetime.now(timezone.utc).timestamp(),
-                        docket_prefix=self.docket.prefix,
-                    )
+                # A call that scans less than one batch found every due
+                # task, so the loop waits for the next tick.
+                scanned = DUE_TASKS_BATCH
+                while scanned >= DUE_TASKS_BATCH and not session.stopping.is_set():
+                    with self._maybe_suppress_instrumentation():
+                        total_work, due_work, scanned = await _stream_due_tasks(
+                            cast(RedisClient, redis),
+                            queue_key=self.docket.queue_key,
+                            stream_key=self.docket.stream_key,
+                            now_timestamp=datetime.now(timezone.utc).timestamp(),
+                            docket_prefix=self.docket.prefix,
+                            batch=DUE_TASKS_BATCH,
+                            completed_at=datetime.now(timezone.utc).isoformat(),
+                            ttl_seconds=int(self.docket.execution_ttl.total_seconds()),
+                        )
 
-                if due_work > 0:
-                    logger.debug(
-                        "Moved %d/%d due tasks from %s to %s",
-                        due_work,
-                        total_work,
-                        self.docket.queue_key,
-                        self.docket.stream_key,
-                        extra=log_context,
-                    )
+                    if due_work > 0:
+                        logger.debug(
+                            "Moved %d/%d due tasks from %s to %s",
+                            due_work,
+                            total_work,
+                            self.docket.queue_key,
+                            self.docket.stream_key,
+                            extra=log_context,
+                        )
             except Exception:  # pragma: no cover
                 logger.exception(
                     "Error in scheduler loop",
