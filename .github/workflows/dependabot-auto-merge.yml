@@ -1,0 +1,31 @@
+name: Dependabot auto-merge
+
+# Turns on auto-merge for each of Dependabot's pull requests that is a
+# patch or minor update. main requires the "All checks passed" job, so
+# GitHub merges the pull request once CI passes, and one that fails stays
+# open. A major update waits for a person, a security update included.
+
+on: pull_request
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    name: Turn on auto-merge
+    if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Read what the pull request updates
+        id: metadata
+        uses: dependabot/fetch-metadata@v3
+
+      - name: Turn on auto-merge
+        if: ${{ steps.metadata.outputs.update-type != 'version-update:semver-major' }}
+        run: gh pr merge --auto --squash "$PULL_REQUEST"
+        env:
+          PULL_REQUEST: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ github.token }}
