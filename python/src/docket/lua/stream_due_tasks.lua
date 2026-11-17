@@ -2,6 +2,12 @@ local queue_key = KEYS[1]
 local stream_key = KEYS[2]
 local now_timestamp = tonumber(ARGV[1])
 local docket_prefix = ARGV[2]
+local batch = tonumber(ARGV[3])
+
+-- Each call moves at most `batch` due tasks, and the caller calls again
+-- until one scans less than that.  A script that moved a large backlog at
+-- once would block every other client for as long as it ran.  `batch` must
+-- stay below Lua's limit on unpack(), about 8000 values.
 
 -- Inline JSON-string escaper for the common cases (`\`, `"`, and the
 -- three named whitespace controls).  Task keys are user-supplied: if a
@@ -19,9 +25,11 @@ end
 
 local total_work = redis.call('ZCARD', queue_key)
 local due_work = 0
+local scanned = 0
 
 if total_work > 0 then
-    local tasks = redis.call('ZRANGEBYSCORE', queue_key, 0, now_timestamp)
+    local tasks = redis.call('ZRANGEBYSCORE', queue_key, 0, now_timestamp, 'LIMIT', 0, batch)
+    scanned = #tasks
 
     for i, key in ipairs(tasks) do
         local hash_key = docket_prefix .. ":" .. key
@@ -56,10 +64,13 @@ if total_work > 0 then
             due_work = due_work + 1
         end
     end
+
+    -- Remove exactly the scanned entries.  A score range would also remove
+    -- due entries past this batch, whose parked data was never streamed.
+    -- Entries without parked data go too, so they cannot fill every batch.
+    if scanned > 0 then
+        redis.call('ZREM', queue_key, unpack(tasks))
+    end
 end
 
-if due_work > 0 then
-    redis.call('ZREMRANGEBYSCORE', queue_key, 0, now_timestamp)
-end
-
-return {total_work, due_work}
+return {total_work, due_work, scanned}

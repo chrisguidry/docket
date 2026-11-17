@@ -394,9 +394,23 @@ async fn drain(tasks: &mut JoinSet<Result<()>>) -> Result<()> {
     first_error
 }
 
+/// How many queue entries one `stream_due_tasks.lua` call scans, so that no
+/// one call blocks Redis for long.
+const DUE_TASKS_BATCH: i64 = 1000;
+
 /// Moves due future tasks onto the stream.
 async fn scheduler(worker: Arc<Shared>) {
-    let docket = &worker.docket;
+    loop {
+        if let Err(error) = stream_due_tasks(&worker.docket).await {
+            tracing::error!(%error, "Error in scheduler loop");
+        }
+        tokio::time::sleep(worker.settings.scheduling_resolution).await;
+    }
+}
+
+/// Moves every due task onto the stream, one batch per script call.  A call
+/// that scans less than one batch found every due task.
+async fn stream_due_tasks(docket: &Docket) -> Result<()> {
     let keys = docket.keys();
     loop {
         let call = crate::scripts::StreamDueTasks {
@@ -404,11 +418,12 @@ async fn scheduler(worker: Arc<Shared>) {
             stream_key: keys.stream(),
             now_timestamp: crate::wire::seconds(docket.now()),
             docket_prefix: keys.prefix().to_owned(),
+            batch: DUE_TASKS_BATCH,
         }
         .call();
-        if let Err(error) = call.run::<redis::Value, _>(&mut docket.handle()).await {
-            tracing::error!(%error, "Error in scheduler loop");
+        let (_total, _due, scanned): (i64, i64, i64) = call.run(&mut docket.handle()).await?;
+        if scanned < DUE_TASKS_BATCH {
+            return Ok(());
         }
-        tokio::time::sleep(worker.settings.scheduling_resolution).await;
     }
 }
