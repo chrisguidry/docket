@@ -77,8 +77,8 @@ language passes when its agent writes the same events.
 
 ## The telemetry contract
 
-The `telemetry` scenario runs its workload twice for each implementation,
-each time on a new docket.  The workload is in the docstring of
+The `telemetry` scenario runs its workload once for each phase, on a docket
+that each implementation gets for itself.  The workload is in the docstring of
 `python/conformance-agent/scenarios/telemetry.py`.  Each agent gets
 `CONFORMANCE_PHASE`, and its producer starts every key with that value and a
 colon, such as `otlp:succeed`.
@@ -106,6 +106,13 @@ In the `prometheus` phase, the driver sets `DOCKET_WORKER_METRICS_PORT` for
 the worker, and no OTLP variables.  The worker serves its metrics in the
 Prometheus text format at `http://127.0.0.1:PORT/metrics`, with a
 `target_info` family.
+
+The `parented` phase sets the same variables as the `otlp` phase, and
+`DOCKET_WORKER_PARENT_TASK_SPANS=true` for the worker.  The agent's worker
+then runs with its `parent_task_spans` option on, and each run's span is a
+child of the span it links to.  The driver runs this phase only for an
+implementation from the working tree, because the newest pydocket release
+predates the option.
 
 The driver writes each implementation's normalized telemetry to
 `telemetry-NAME.json`, beside the agents' logs.

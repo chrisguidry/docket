@@ -208,9 +208,18 @@ def command(name: str, **attributes: object) -> dict[str, object]:
 
 
 def run(
-    task: str, attempt: int = 1, *, error: str | None = None, link: str | None = None
+    task: str,
+    attempt: int = 1,
+    *,
+    error: str | None = None,
+    link: str | None = None,
+    parented: bool = False,
 ) -> dict[str, object]:
-    """A worker's consumer span for one run, which starts a new trace."""
+    """A worker's consumer span for one run.
+
+    It starts a new trace, unless the worker has ``parent_task_spans`` on,
+    which makes it a child of the span it links to.
+    """
     return {
         "process": "worker",
         "name": task,
@@ -227,49 +236,82 @@ def run(
             "docket.worker": WORKER,
         },
         "events": [f"exception: {error}"] if error else [],
-        "parent": None,
+        "parent": link if parented else None,
         "links": [link] if link else [],
     }
 
 
-SPANS = [
-    scheduling("docket.add", "succeed"),
-    scheduling("docket.add", "fail"),
-    scheduling("docket.add", "flaky"),
-    scheduling("docket.add", "perpetual"),
-    scheduling("docket.add", "doomed"),
-    command("docket.cancel", **{"docket.key": "doomed"}),
-    scheduling("docket.add", "later"),
-    scheduling("docket.replace", "later"),
-    command("docket.strike", **{"docket.task": "struck"}),
-    scheduling("docket.add", "struck", disposition="struck"),
-    command("docket.restore", **{"docket.task": "struck"}),
-    run("succeed", link="producer docket.add key=succeed attempt=1"),
-    run("fail", error="boom", link="producer docket.add key=fail attempt=1"),
-    run("flaky", error="boom", link="producer docket.add key=flaky attempt=1"),
-    run("flaky", attempt=2, link="worker flaky key=flaky attempt=1"),
-    run("perpetual", link="producer docket.add key=perpetual attempt=1"),
-    scheduling(
-        "docket.replace",
-        "perpetual",
-        process="worker",
-        parent="worker perpetual key=perpetual attempt=1",
-    ),
-    # The next two runs have no links: protocol/stream_due_tasks.lua moves a
-    # due task from the queue to the stream without its trace context.
-    run("perpetual"),
-    scheduling(
-        "docket.replace",
-        "perpetual",
-        process="worker",
-        parent="worker perpetual key=perpetual attempt=1",
-    ),
-    run("perpetual"),
-    run("later", link="producer docket.replace key=later attempt=1"),
-]
+def spans(*, parented: bool) -> list[dict[str, object]]:
+    """The workload's spans, from a worker with ``parent_task_spans`` on or off."""
+    return [
+        scheduling("docket.add", "succeed"),
+        scheduling("docket.add", "fail"),
+        scheduling("docket.add", "flaky"),
+        scheduling("docket.add", "perpetual"),
+        scheduling("docket.add", "doomed"),
+        command("docket.cancel", **{"docket.key": "doomed"}),
+        scheduling("docket.add", "later"),
+        scheduling("docket.replace", "later"),
+        command("docket.strike", **{"docket.task": "struck"}),
+        scheduling("docket.add", "struck", disposition="struck"),
+        command("docket.restore", **{"docket.task": "struck"}),
+        run(
+            "succeed",
+            link="producer docket.add key=succeed attempt=1",
+            parented=parented,
+        ),
+        run(
+            "fail",
+            error="boom",
+            link="producer docket.add key=fail attempt=1",
+            parented=parented,
+        ),
+        run(
+            "flaky",
+            error="boom",
+            link="producer docket.add key=flaky attempt=1",
+            parented=parented,
+        ),
+        run(
+            "flaky",
+            attempt=2,
+            link="worker flaky key=flaky attempt=1",
+            parented=parented,
+        ),
+        run(
+            "perpetual",
+            link="producer docket.add key=perpetual attempt=1",
+            parented=parented,
+        ),
+        scheduling(
+            "docket.replace",
+            "perpetual",
+            process="worker",
+            parent="worker perpetual key=perpetual attempt=1",
+        ),
+        # The next two runs have no links: protocol/stream_due_tasks.lua moves a
+        # due task from the queue to the stream without its trace context.
+        run("perpetual"),
+        scheduling(
+            "docket.replace",
+            "perpetual",
+            process="worker",
+            parent="worker perpetual key=perpetual attempt=1",
+        ),
+        run("perpetual"),
+        run(
+            "later",
+            link="producer docket.replace key=later attempt=1",
+            parented=parented,
+        ),
+    ]
+
 
 TELEMETRY: dict[str, object] = {
     "metrics": {"producer": PRODUCER_METRICS, "worker": WORKER_METRICS},
-    "spans": SPANS,
+    "spans": spans(parented=False),
     "prometheus": prometheus(WORKER_METRICS),
 }
+
+# What the parented phase adds, for an implementation that has the option.
+PARENTED: dict[str, object] = {"parented_spans": spans(parented=True)}
