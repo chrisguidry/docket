@@ -118,6 +118,38 @@ async def test_task_spans_are_linked_to_the_originating_span(
     assert link.context.trace_id == originating_span.context.trace_id
 
 
+async def test_task_spans_can_be_parented_to_the_originating_span(docket: Docket):
+    """With parent_task_spans, the task span joins the trace that scheduled it."""
+    captured: list[Span] = []
+
+    async def the_task():
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+
+    with tracer.start_as_current_span("originating_span") as originating_span:
+        await docket.add(the_task)()
+
+    assert isinstance(originating_span, Span)
+    assert originating_span.context
+
+    async with Worker(docket, parent_task_spans=True) as worker:
+        with tracer.start_as_current_span("worker_loop") as worker_span:
+            await worker.run_until_finished()
+
+    (task_span,) = captured
+    assert task_span.context
+    assert task_span.parent
+
+    assert task_span.context.trace_id == originating_span.context.trace_id
+    assert task_span.context.trace_id != worker_span.get_span_context().trace_id
+    assert task_span.parent.trace_id == originating_span.context.trace_id
+    assert task_span.parent.is_remote
+
+    (link,) = task_span.links
+    assert link.context.span_id == task_span.parent.span_id
+
+
 async def test_failed_task_span_has_error_status(docket: Docket, worker: Worker):
     """When a task fails, its span should have ERROR status."""
     captured: list[Span] = []

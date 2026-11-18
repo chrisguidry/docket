@@ -198,6 +198,11 @@ class Worker:
     into one reply, and makes each sweep read about ten times the batch in
     pending-list entries.  A burst larger than one batch still drains in full,
     because the poll loop reads again while slots stay free.
+
+    By default each task's span starts a new trace and links back to the span
+    that scheduled it.  With ``parent_task_spans=True`` the task's span is a
+    child of the scheduling span instead, so the task appears inside the trace
+    that scheduled it.  The link is kept either way.
     """
 
     docket: Docket
@@ -210,6 +215,7 @@ class Worker:
     scheduling_resolution: timedelta
     schedule_automatic_tasks: bool
     enable_internal_instrumentation: bool
+    parent_task_spans: bool
     fallback_task: TaskFunction
     dependencies: dict[str, Dependency[Any]]
     _single_conflicts: dict[TaskFunction, dict[str, FailedDependency]]
@@ -230,6 +236,7 @@ class Worker:
         # Last in the list so that every positional call written against an
         # earlier version keeps its meaning.
         message_batch: int = MESSAGE_BATCH,
+        parent_task_spans: bool = False,
     ) -> None:
         if message_batch < 1:
             raise ValueError(f"message_batch must be at least 1, got {message_batch}")
@@ -244,6 +251,7 @@ class Worker:
         self.scheduling_resolution = scheduling_resolution
         self.schedule_automatic_tasks = schedule_automatic_tasks
         self.enable_internal_instrumentation = enable_internal_instrumentation
+        self.parent_task_spans = parent_task_spans
         self.fallback_task = fallback_task or default_fallback_task
         self.dependencies = validate_worker_dependencies(dependencies)
         self._single_conflicts = {}
@@ -375,6 +383,7 @@ class Worker:
         # Append new options so that existing positional calls keep their meaning.
         message_batch: int = MESSAGE_BATCH,
         dependencies: (Mapping[str, Any] | Sequence[Any] | str | None) = None,
+        parent_task_spans: bool = False,
     ) -> None:
         """Run a worker as the main entry point (CLI).
 
@@ -428,6 +437,7 @@ class Worker:
                         enable_internal_instrumentation=enable_internal_instrumentation,
                         fallback_task=resolved_fallback_task,
                         dependencies=dependencies,
+                        parent_task_spans=parent_task_spans,
                     ) as worker
                 ):
                     # Install signal handlers for graceful shutdown.
@@ -1093,6 +1103,7 @@ class Worker:
 
         with tracer.start_as_current_span(
             execution.function_name,
+            context=execution.trace_context if self.parent_task_spans else None,
             kind=trace.SpanKind.CONSUMER,
             attributes={
                 **self.labels(),
