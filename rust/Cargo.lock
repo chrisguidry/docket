@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "docket-conformance-agent"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "clap",
  "docket-rs",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "docket-rs"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bytes",
  "chrono",
@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "docket-rs-macros"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "proc-macro2",
  "quote",
