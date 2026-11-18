@@ -37,10 +37,8 @@ async def run(harness: Harness) -> None:
 
     await harness.start("worker")
     await harness.events.wait_for(
-        lambda: (
-            sum(1 for e in harness.events.matching("ran") if e.worker != killed)
-            >= RUNS_AFTER_KILL
-        ),
+        lambda: sum(1 for e in harness.events.matching("ran") if e.worker != killed)
+        >= RUNS_AFTER_KILL,
         timeout=20,
         waiting_for=f"{RUNS_AFTER_KILL} runs on the new worker",
     )

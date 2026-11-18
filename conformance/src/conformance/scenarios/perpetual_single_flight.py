@@ -27,10 +27,8 @@ LATE_ACROSS_KILL = 6.0
 async def run(harness: Harness) -> None:
     workers = [await harness.start("worker") for _ in range(WORKERS)]
     await harness.events.wait_for(
-        lambda: (
-            len(harness.events.matching("finished")) >= RUNS
-            and harness.events.seen[-1].event == "started"
-        ),
+        lambda: len(harness.events.matching("finished")) >= RUNS
+        and harness.events.seen[-1].event == "started",
         timeout=20,
         waiting_for=f"a run in progress after {RUNS} runs",
     )
@@ -43,10 +41,10 @@ async def run(harness: Harness) -> None:
     for _ in range(WORKERS):
         await harness.start("worker")
     await harness.events.wait_for(
-        lambda: (
-            sum(1 for e in harness.events.matching("finished") if e.time > killed_at)
-            >= RUNS
-        ),
+        lambda: sum(
+            1 for e in harness.events.matching("finished") if e.time > killed_at
+        )
+        >= RUNS,
         timeout=30,
         waiting_for=f"{RUNS} runs on the new workers",
     )
