@@ -255,6 +255,11 @@ pub struct WorkerArgs {
     )]
     pub schedule_automatic_tasks: bool,
 
+    /// Make each task's span a child of the span that scheduled it, instead
+    /// of starting a new trace that links back to it.
+    #[arg(long, env = "DOCKET_WORKER_PARENT_TASK_SPANS")]
+    pub parent_task_spans: bool,
+
     /// Stop once nothing is left to run, instead of on SIGTERM or SIGINT.
     #[arg(long)]
     pub until_finished: bool,
@@ -281,6 +286,7 @@ impl std::fmt::Debug for WorkerArgs {
             .field("minimum_check_interval", &self.minimum_check_interval)
             .field("scheduling_resolution", &self.scheduling_resolution)
             .field("schedule_automatic_tasks", &self.schedule_automatic_tasks)
+            .field("parent_task_spans", &self.parent_task_spans)
             .field("until_finished", &self.until_finished)
             .field("healthcheck_port", &self.healthcheck_port)
             .field("metrics_port", &self.metrics_port)
@@ -326,7 +332,8 @@ impl WorkerArgs {
             .reconnection_delay(self.reconnection_delay)
             .minimum_check_interval(self.minimum_check_interval)
             .scheduling_resolution(self.scheduling_resolution)
-            .schedule_automatic_tasks(self.schedule_automatic_tasks);
+            .schedule_automatic_tasks(self.schedule_automatic_tasks)
+            .parent_task_spans(self.parent_task_spans);
         match &self.name {
             Some(name) => worker.name(name),
             None => worker,

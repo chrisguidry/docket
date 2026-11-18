@@ -60,8 +60,13 @@ pub fn find(name: &str) -> Scenario {
 }
 
 /// A worker with the agent's defaults, the same as pydocket's `Worker.run`.
+/// The agent builds its worker here, not from the command line's options, so
+/// it reads the variable that the driver sets to turn `parent_task_spans` on.
 fn base(docket: &Docket) -> Worker {
-    Worker::new(docket.clone()).minimum_check_interval(Duration::from_millis(100))
+    let parented = std::env::var("DOCKET_WORKER_PARENT_TASK_SPANS").as_deref() == Ok("true");
+    Worker::new(docket.clone())
+        .minimum_check_interval(Duration::from_millis(100))
+        .parent_task_spans(parented)
 }
 
 impl Scenario {

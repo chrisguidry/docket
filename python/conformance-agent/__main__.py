@@ -33,16 +33,21 @@ async def produce(scenario: str, url: str, docket_name: str) -> None:
 
 async def work(scenario: str, url: str, docket_name: str) -> None:
     module = scenario_module(scenario)
-    # `docket worker` reads this variable, and Worker.run does not.
+    # `docket worker` reads these variables, and Worker.run does not.
     metrics_port = os.environ.get("DOCKET_WORKER_METRICS_PORT")
     # Worker.run is what `docket worker` runs, so the worker stops on SIGTERM
     # and SIGINT the way a deployed one does.
+    options = dict(module.WORKER)
+    # A pydocket release from before this option does not take the argument,
+    # so the agent passes it only when the driver turns it on.
+    if os.environ.get("DOCKET_WORKER_PARENT_TASK_SPANS") == "true":
+        options["parent_task_spans"] = True
     await Worker.run(
         docket_name=docket_name,
         url=url,
         tasks=[f"{module.__name__}:tasks"],
         metrics_port=int(metrics_port) if metrics_port else None,
-        **module.WORKER,
+        **options,
     )
 
 

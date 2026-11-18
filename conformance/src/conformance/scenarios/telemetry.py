@@ -1,11 +1,16 @@
 """Every implementation emits the same metrics, traces, and Prometheus series.
 
-Each implementation runs the telemetry workload twice, on its own docket:
+Each implementation runs the telemetry workload three times, on its own
+docket:
 
 1. In the ``otlp`` phase, its worker and producer export traces and metrics
    over OTLP/HTTP to a receiver in the driver.
 2. In the ``prometheus`` phase, its worker serves Prometheus metrics, and the
    driver scrapes them.
+3. The ``parented`` phase is the ``otlp`` phase again, with the worker's
+   ``parent_task_spans`` option on.  The driver checks its spans.  Only an
+   implementation from the working tree runs this phase, because the newest
+   pydocket release predates the option.
 
 The phases need separate workers, because pydocket's metrics server installs
 the global meter provider, and OpenTelemetry for Python lets a process do
@@ -61,11 +66,15 @@ async def run(harness: Harness) -> None:
             **await otlp_phase(harness, implementation),
             **await prometheus_phase(harness, implementation),
         }
+        wanted = expected.TELEMETRY
+        if implementation.working_tree:
+            telemetry |= await parented_phase(harness, implementation)
+            wanted = {**expected.TELEMETRY, **expected.PARENTED}
         saved = harness.workdir / f"telemetry-{implementation.name}.json"
         saved.write_text(json.dumps(telemetry, indent=2, sort_keys=True))
         logger.info("Wrote %s's telemetry to %s", implementation.name, saved)
 
-        found = differences(expected.TELEMETRY, telemetry)
+        found = differences(wanted, telemetry)
         assert not found, (
             f"{implementation.name}'s telemetry differs from the expected tables:\n"
             + "\n".join(found)
@@ -74,14 +83,24 @@ async def run(harness: Harness) -> None:
 
     (first, reference), *others = observed.items()
     for name, telemetry in others:
-        found = differences(reference, telemetry)
+        # A release runs fewer phases than a working tree does, so two
+        # implementations compare on the phases that both ran.
+        shared = reference.keys() & telemetry.keys()
+        found = differences(
+            {phase: reference[phase] for phase in shared},
+            {phase: telemetry[phase] for phase in shared},
+        )
         assert not found, f"{name}'s telemetry differs from {first}'s:\n" + "\n".join(
             found
         )
 
 
-async def otlp_phase(harness: Harness, implementation: Implementation) -> Telemetry:
-    phase = "otlp"
+async def otlp_phase(
+    harness: Harness,
+    implementation: Implementation,
+    phase: str = "otlp",
+    worker_options: dict[str, str] | None = None,
+) -> Telemetry:
     with receiving() as receiver:
         environment = {
             **OTLP_ENVIRONMENT,
@@ -92,7 +111,11 @@ async def otlp_phase(harness: Harness, implementation: Implementation) -> Teleme
         worker = await harness.start(
             "worker",
             implementation=implementation,
-            env={**environment, "OTEL_SERVICE_NAME": "conformance-worker"},
+            env={
+                **environment,
+                **(worker_options or {}),
+                "OTEL_SERVICE_NAME": "conformance-worker",
+            },
         )
         await harness.produce(
             implementation=implementation,
@@ -111,6 +134,16 @@ async def otlp_phase(harness: Harness, implementation: Implementation) -> Teleme
             "metrics": otlp_metrics(receiver.metrics, names),
             "spans": otlp_spans(receiver.traces, names),
         }
+
+
+async def parented_phase(harness: Harness, implementation: Implementation) -> Telemetry:
+    exported = await otlp_phase(
+        harness,
+        implementation,
+        phase="parented",
+        worker_options={"DOCKET_WORKER_PARENT_TASK_SPANS": "true"},
+    )
+    return {"parented_spans": exported["spans"]}
 
 
 async def prometheus_phase(

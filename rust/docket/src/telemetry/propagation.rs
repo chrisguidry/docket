@@ -36,9 +36,14 @@ pub(crate) fn carrier(fields: &HashMap<String, Vec<u8>>) -> HashMap<String, Stri
     })
 }
 
-/// A link to the span in `carrier`, or none when it holds no valid one.
-pub(crate) fn links(carrier: &HashMap<String, String>) -> Vec<Link> {
-    let context = global::get_text_map_propagator(|propagator| propagator.extract(carrier));
+/// The context that `carrier` holds, which is empty when the message
+/// carries no trace context.
+pub(crate) fn extract(carrier: &HashMap<String, String>) -> Context {
+    global::get_text_map_propagator(|propagator| propagator.extract(carrier))
+}
+
+/// A link to the span in `context`, or none when it holds no valid one.
+pub(crate) fn links(context: &Context) -> Vec<Link> {
     let span_context = context.span().span_context().clone();
     if span_context.is_valid() {
         vec![Link::with_context(span_context)]

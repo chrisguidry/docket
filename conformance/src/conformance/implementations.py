@@ -24,6 +24,8 @@ REPOSITORY = Path(__file__).resolve().parents[3]
 class Implementation:
     name: str
     agent: list[str]
+    # Whether the agent runs docket from the working tree, not from a release.
+    working_tree: bool
 
 
 async def prepare(name: str, workdir: Path) -> Implementation:
@@ -66,7 +68,9 @@ async def prepare_python(version: str, workdir: Path) -> Implementation:
     )
 
     agent = str(REPOSITORY / "python" / "conformance-agent")
-    return Implementation(f"python@{version}", [python, agent])
+    return Implementation(
+        f"python@{version}", [python, agent], working_tree=version == "main"
+    )
 
 
 async def prepare_rust(version: str) -> Implementation:
@@ -84,7 +88,7 @@ async def prepare_rust(version: str) -> Implementation:
         "docket-conformance-agent",
     )
     agent = REPOSITORY / "rust" / "target" / "release" / "docket-conformance-agent"
-    return Implementation("rust@main", [str(agent)])
+    return Implementation("rust@main", [str(agent)], working_tree=True)
 
 
 async def newest_pydocket_tag() -> str:

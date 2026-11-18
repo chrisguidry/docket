@@ -2,6 +2,7 @@
 //! and the links from each run to the span that scheduled it.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use docket::{Cooldown, Perpetual, Retry, Strike};
@@ -134,6 +135,92 @@ async fn a_retry_links_to_the_run_that_failed() {
     };
     assert_eq!(attribute(second, "docket.attempt").as_deref(), Some("2"));
     assert_eq!(links(second), [ids(first)]);
+}
+
+#[tokio::test]
+async fn a_parented_run_joins_the_trace_of_its_add() {
+    let docket = docket().await;
+    docket.register(|_ctx, args: Echo| async move { Ok::<_, std::io::Error>(args.text) });
+    docket.add(Echo::new("hi")).await.unwrap();
+
+    within(
+        10,
+        worker(&docket).parent_task_spans(true).run_until_finished(),
+    )
+    .await
+    .unwrap();
+
+    let [add] = &spans_named(&docket, "docket.add")[..] else {
+        panic!("one add span")
+    };
+    let [run] = &spans_named(&docket, "echo")[..] else {
+        panic!("one run span")
+    };
+    assert_eq!(run.span_context.trace_id(), add.span_context.trace_id());
+    assert_eq!(run.parent_span_id, add.span_context.span_id());
+    assert!(run.parent_span_is_remote);
+    assert_eq!(links(run), [ids(add)]);
+}
+
+#[tokio::test]
+async fn a_parented_retry_nests_under_the_run_that_failed() {
+    let docket = docket().await;
+    docket.register(failing(3)).with(Retry::attempts(3));
+    docket.add(Noop).await.unwrap();
+
+    within(
+        10,
+        worker(&docket).parent_task_spans(true).run_until_finished(),
+    )
+    .await
+    .unwrap();
+
+    let [add] = &spans_named(&docket, "docket.add")[..] else {
+        panic!("one add span")
+    };
+    let [first, second, third] = &spans_named(&docket, "noop")[..] else {
+        panic!("three run spans")
+    };
+    assert_eq!(first.parent_span_id, add.span_context.span_id());
+    assert_eq!(second.parent_span_id, first.span_context.span_id());
+    assert_eq!(third.parent_span_id, second.span_context.span_id());
+    assert_eq!(third.span_context.trace_id(), add.span_context.trace_id());
+}
+
+#[tokio::test]
+async fn a_parented_perpetual_task_parents_only_its_first_run() {
+    let docket = docket().await;
+    let runs = Arc::new(AtomicU32::new(0));
+    let counted = Arc::clone(&runs);
+    docket
+        .register(move |ctx: docket::Context, _: Noop| {
+            if counted.fetch_add(1, Ordering::SeqCst) == 2 {
+                ctx.perpetual().unwrap().cancel();
+            }
+            async { Ok::<_, std::io::Error>(()) }
+        })
+        .with(Perpetual::every(Duration::from_millis(10)));
+    docket.add(Noop).key("forever").await.unwrap();
+
+    within(
+        10,
+        worker(&docket).parent_task_spans(true).run_until_finished(),
+    )
+    .await
+    .unwrap();
+
+    let [add] = &spans_named(&docket, "docket.add")[..] else {
+        panic!("one add span")
+    };
+    let [first, second, third] = &spans_named(&docket, "noop")[..] else {
+        panic!("three run spans")
+    };
+    assert_eq!(first.span_context.trace_id(), add.span_context.trace_id());
+    // The later runs came due from the queue, which keeps no trace context.
+    for later in [second, third] {
+        assert_eq!(later.parent_span_id, SpanId::INVALID);
+        assert_ne!(later.span_context.trace_id(), add.span_context.trace_id());
+    }
 }
 
 #[tokio::test]

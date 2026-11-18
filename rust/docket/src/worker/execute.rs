@@ -136,7 +136,10 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
 
     let mut attributes = telemetry::worker_labels(docket.name(), &worker.settings.name);
     attributes.extend(telemetry::run_attributes(message));
-    let span = docket.telemetry().consumer_span(message, attributes);
+    let span =
+        docket
+            .telemetry()
+            .consumer_span(message, attributes, worker.settings.parent_task_spans);
     let ctx = context(worker, delivery, &registered);
     let (result, duration) = attempt(&run, &registered, &ctx, active, generation)
         .with_context(span.clone())

@@ -102,6 +102,8 @@ accidents:
   context too.
 - A consumer span starts a new trace.  It links to the span in its message's
   trace context, when there is one.
+- A worker with `parent_task_spans` on starts the consumer span as a child
+  of that span instead, and keeps the link.  The option is off by default.
 - A run that admission blocks ends its span with status ok.  A run that
   `Docket::cancel` stops ends its span with status ok.
 
@@ -150,6 +152,8 @@ driver:
 
 - Traces and metrics go over OTLP/HTTP to a receiver in the driver.
 - A second worker serves Prometheus metrics, which the driver scrapes.
+- A third worker has `parent_task_spans` on, and exports its traces over
+  OTLP/HTTP as the first does.
 
 The workload adds a task that succeeds, one that fails, one that fails once
 and then succeeds on a retry, a perpetual task that stops itself after three
