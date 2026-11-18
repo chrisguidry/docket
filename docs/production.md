@@ -525,6 +525,15 @@ Docket automatically creates OpenTelemetry spans for task execution:
   the key replaces it, or when the task is cancelled with `docket.cancel()`. A
   requested retry is ERROR when no attempts remain or the task has no `Retry`.
 - **Duration**: Complete task execution time
+- **Trace**: each task's span starts a new trace with a span link back to the
+  span that scheduled it. Pass `parent_task_spans=True` to `Worker` (or
+  `--parent-task-spans` to `docket worker`) to make the task's span a child of
+  the scheduling span instead, so the task appears inside the caller's trace.
+  The link is kept either way. With parenting on, a retry becomes a child of
+  the attempt that failed, and a perpetual task's later runs each start their
+  own trace. A parent-based sampler also applies the scheduling trace's
+  sampling decision to the task, so a task scheduled from an unsampled trace
+  is not recorded.
 
 Configure your OpenTelemetry exporter to send traces to your observability platform. See the [OpenTelemetry Python documentation](https://opentelemetry.io/docs/languages/python/) for configuration examples with various backends like Jaeger, Zipkin, or cloud providers.
 

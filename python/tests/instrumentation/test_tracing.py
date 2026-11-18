@@ -12,7 +12,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 )
 from opentelemetry.trace import StatusCode
 
-from docket import ConcurrencyLimit, CurrentDocket, Docket, Worker
+from docket import ConcurrencyLimit, CurrentDocket, Docket, Perpetual, Worker
 from docket.dependencies import ForcedRetry, Retry
 from docket.instrumentation import message_getter, message_setter
 
@@ -116,6 +116,91 @@ async def test_task_spans_are_linked_to_the_originating_span(
     # The link should be to the same trace as the originating span
     # (may be to originating_span or to a child like docket.add)
     assert link.context.trace_id == originating_span.context.trace_id
+
+
+async def test_task_spans_can_be_parented_to_the_originating_span(docket: Docket):
+    """With parent_task_spans, the task span joins the trace that scheduled it."""
+    captured: list[Span] = []
+
+    async def the_task():
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+
+    with tracer.start_as_current_span("originating_span") as originating_span:
+        await docket.add(the_task)()
+
+    assert isinstance(originating_span, Span)
+    assert originating_span.context
+
+    async with Worker(docket, parent_task_spans=True) as worker:
+        with tracer.start_as_current_span("worker_loop") as worker_span:
+            await worker.run_until_finished()
+
+    (task_span,) = captured
+    assert task_span.context
+    assert task_span.parent
+
+    assert task_span.context.trace_id == originating_span.context.trace_id
+    assert task_span.context.trace_id != worker_span.get_span_context().trace_id
+    assert task_span.parent.trace_id == originating_span.context.trace_id
+    assert task_span.parent.is_remote
+
+    (link,) = task_span.links
+    assert link.context.span_id == task_span.parent.span_id
+
+
+async def test_parented_retries_nest_under_the_attempt_that_failed(docket: Docket):
+    """Each retry is rescheduled from inside the failed attempt, so with
+    parent_task_spans every attempt stays in the scheduling trace as a child of
+    the attempt before it."""
+    captured: list[Span] = []
+
+    async def the_failing_task(retry: Retry = Retry(attempts=3)):
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+        raise ValueError("fail")
+
+    with tracer.start_as_current_span("originating_span") as originating_span:
+        await docket.add(the_failing_task)()
+
+    async with Worker(docket, parent_task_spans=True) as worker:
+        await worker.run_until_finished()
+
+    first, second, third = captured
+    trace_id = originating_span.get_span_context().trace_id
+    assert {span.get_span_context().trace_id for span in captured} == {trace_id}
+    assert second.parent and second.parent.span_id == first.get_span_context().span_id
+    assert third.parent and third.parent.span_id == second.get_span_context().span_id
+
+
+async def test_parented_perpetual_task_parents_only_its_first_run(docket: Docket):
+    """A perpetual task's later runs are not scheduled from a traced span, so
+    each starts its own trace instead of growing the scheduling trace forever."""
+    captured: list[Span] = []
+
+    async def the_perpetual_task(
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
+    ):
+        span = trace.get_current_span()
+        assert isinstance(span, Span)
+        captured.append(span)
+        if len(captured) == 3:
+            perpetual.cancel()
+
+    with tracer.start_as_current_span("originating_span") as originating_span:
+        await docket.add(the_perpetual_task)()
+
+    async with Worker(docket, parent_task_spans=True) as worker:
+        await worker.run_until_finished()
+
+    first, *later = captured
+    trace_id = originating_span.get_span_context().trace_id
+    assert first.get_span_context().trace_id == trace_id
+    for span in later:
+        assert span.parent is None
+        assert span.get_span_context().trace_id != trace_id
 
 
 async def test_failed_task_span_has_error_status(docket: Docket, worker: Worker):

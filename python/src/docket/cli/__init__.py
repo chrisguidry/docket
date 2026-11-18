@@ -190,6 +190,17 @@ def worker(
             envvar="DOCKET_WORKER_ENABLE_INTERNAL_INSTRUMENTATION",
         ),
     ] = False,
+    parent_task_spans: Annotated[
+        bool,
+        typer.Option(
+            "--parent-task-spans/--no-parent-task-spans",
+            help=(
+                "Make each task's span a child of the span that scheduled it, "
+                "instead of starting a new trace that links back to it"
+            ),
+            envvar="DOCKET_WORKER_PARENT_TASK_SPANS",
+        ),
+    ] = False,
     until_finished: Annotated[
         bool,
         typer.Option(
@@ -251,6 +262,7 @@ def worker(
             scheduling_resolution=scheduling_resolution,
             schedule_automatic_tasks=schedule_automatic_tasks,
             enable_internal_instrumentation=enable_internal_instrumentation,
+            parent_task_spans=parent_task_spans,
             until_finished=until_finished,
             healthcheck_port=healthcheck_port,
             metrics_port=metrics_port,
