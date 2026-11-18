@@ -55,6 +55,7 @@ fn defaults_match_pydocket() {
     assert_eq!(args.minimum_check_interval, Duration::from_millis(100));
     assert_eq!(args.scheduling_resolution, Duration::from_millis(250));
     assert!(args.schedule_automatic_tasks);
+    assert!(!args.parent_task_spans);
     assert!(!args.until_finished);
     assert_eq!((args.healthcheck_port, args.metrics_port), (None, None));
 }
@@ -82,6 +83,7 @@ fn reads_every_option() {
         "75ms",
         "--schedule-automatic-tasks",
         "false",
+        "--parent-task-spans",
         "--until-finished",
         "--healthcheck-port",
         "8080",
@@ -96,6 +98,7 @@ fn reads_every_option() {
     assert_eq!((args.concurrency, args.message_batch), (3, 7));
     assert_eq!(args.redelivery_timeout, Duration::from_secs(60));
     assert!(!args.schedule_automatic_tasks);
+    assert!(args.parent_task_spans);
     assert!(args.until_finished);
     assert_eq!(
         (args.healthcheck_port, args.metrics_port),

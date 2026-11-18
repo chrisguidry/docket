@@ -206,8 +206,11 @@ names, so one dashboard reads both.
   until you install a meter provider or a tracer provider.  A docket binds to
   the global providers when it connects, so install them first.
 - Each message carries the trace context of the span that added it, and each
-  run's span links back to that span.  Install a text map propagator, such as
-  `TraceContextPropagator`, for the links.
+  run's span starts a new trace that links back to that span.  Install a text
+  map propagator, such as `TraceContextPropagator`, for the links.  With
+  `Worker::parent_task_spans(true)`, or `--parent-task-spans` on the command
+  line, the run's span is a child of that span instead, so the run appears
+  inside the trace that scheduled it.  The link is kept either way.
 - The `prometheus` feature serves the metrics in the Prometheus text format,
   the way pydocket's `--metrics-port` does: see `docket::prometheus`.
 

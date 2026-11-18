@@ -51,17 +51,25 @@ impl Telemetry {
         Context::current_with_span(span)
     }
 
-    /// Starts a run's span.  It begins a trace of its own, linked to the
-    /// span that put the task in the docket, the way a message consumer's
-    /// span links to its producer's.
-    pub fn consumer_span(&self, message: &Message, attributes: Vec<KeyValue>) -> Context {
+    /// Starts a run's span, linked to the span that put the task in the
+    /// docket, the way a message consumer's span links to its producer's.
+    /// The span begins a trace of its own, unless `parented` makes it a
+    /// child of the span it links to.
+    pub fn consumer_span(
+        &self,
+        message: &Message,
+        attributes: Vec<KeyValue>,
+        parented: bool,
+    ) -> Context {
+        let scheduler = propagation::extract(&message.trace);
         let builder = self
             .consumer
             .span_builder(Cow::Owned(message.function.clone()))
             .with_kind(SpanKind::Consumer)
             .with_attributes(attributes)
-            .with_links(propagation::links(&message.trace));
-        let span: BoxedSpan = self.consumer.build_with_context(builder, &Context::new());
+            .with_links(propagation::links(&scheduler));
+        let parent = if parented { scheduler } else { Context::new() };
+        let span: BoxedSpan = self.consumer.build_with_context(builder, &parent);
         Context::new().with_span(span)
     }
 }

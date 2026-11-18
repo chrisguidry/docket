@@ -46,6 +46,7 @@ pub(crate) struct Settings {
     pub schedule_automatic_tasks: bool,
     pub automatic_tasks_interval: Duration,
     pub message_batch: usize,
+    pub parent_task_spans: bool,
     /// Runs tasks that have no handler.
     pub fallback: Option<Registered>,
 }
@@ -75,6 +76,7 @@ impl Worker {
                 schedule_automatic_tasks: true,
                 automatic_tasks_interval: Duration::from_mins(1),
                 message_batch: 1000,
+                parent_task_spans: false,
                 fallback: None,
             },
         }
@@ -148,6 +150,16 @@ impl Worker {
     #[must_use]
     pub fn message_batch(mut self, batch: usize) -> Self {
         self.settings.message_batch = batch;
+        self
+    }
+
+    /// Whether each run's span is a child of the span that scheduled the
+    /// task, so the run appears inside the trace that scheduled it.  The
+    /// default is no: each run's span starts a new trace.  The run's span
+    /// links back to the scheduling span either way.
+    #[must_use]
+    pub fn parent_task_spans(mut self, parent: bool) -> Self {
+        self.settings.parent_task_spans = parent;
         self
     }
 
