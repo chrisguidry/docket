@@ -193,10 +193,11 @@ async def test_depth_falls_when_a_dead_holders_slot_is_scavenged(docket: Docket)
     slots_key = f"{docket.prefix}:concurrency:customer_id:1"
     waiters_stream = f"{slots_key}:waiters"
 
-    # No running task holds this slot, so nothing renews it, and the test
-    # decides when it goes stale.
+    # No running task holds this slot, so nothing renews it.  Its time is in
+    # the future, so it cannot go stale on a slow machine before the test
+    # makes it stale.
     async with docket.redis() as redis:
-        fresh = datetime.now(timezone.utc).timestamp()
+        fresh = datetime.now(timezone.utc).timestamp() + 3600
         await redis.zadd(slots_key, {"dead-holder": fresh})
 
     async with Worker(docket, redelivery_timeout=timedelta(milliseconds=200)) as worker:
