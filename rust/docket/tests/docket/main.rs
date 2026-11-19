@@ -25,6 +25,7 @@ mod faults;
 mod logs;
 mod metrics;
 mod own_keys;
+mod parked_depth;
 mod perpetual;
 mod results;
 mod retries;

@@ -232,6 +232,14 @@ def SCHEDULE_DEPTH(monkeypatch: pytest.MonkeyPatch) -> Mock:
 
 
 @pytest.fixture
+def PARKED_DEPTH(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Mock for the PARKED_DEPTH gauge."""
+    mock_obj = Mock(spec=Gauge.set)
+    monkeypatch.setattr("docket.instrumentation.PARKED_DEPTH.set", mock_obj)
+    return mock_obj
+
+
+@pytest.fixture
 def docket_labels(docket: Docket) -> dict[str, str]:
     """Create labels dictionary for the Docket client-side metrics."""
     return {"docket.name": docket.name}
@@ -243,6 +251,7 @@ async def test_worker_publishes_depth_gauges(
     the_task: AsyncMock,
     QUEUE_DEPTH: Mock,
     SCHEDULE_DEPTH: Mock,
+    PARKED_DEPTH: Mock,
 ):
     """Should publish depth gauges from an active worker heartbeat."""
     future = datetime.now(timezone.utc) + timedelta(seconds=60)
@@ -262,6 +271,7 @@ async def test_worker_publishes_depth_gauges(
 
     QUEUE_DEPTH.assert_called_with(0, docket_labels)
     SCHEDULE_DEPTH.assert_called_with(3, docket_labels)
+    PARKED_DEPTH.assert_called_with(0, docket_labels)
 
 
 @pytest.fixture

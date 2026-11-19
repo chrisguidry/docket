@@ -94,6 +94,7 @@ impl Admission for ConcurrencyLimit {
             waiters_stream: waiters.clone(),
             stream_key: keys.stream(),
             runs_key: keys.runs(&key),
+            waiter_index: keys.waiter_index(),
             max_concurrent: i64::from(self.max),
             task_key: key.clone(),
             current_time: now,
@@ -174,6 +175,7 @@ fn hold(
             waiters_stream: waiters,
             stream_key: keys.stream(),
             queue_key: keys.queue(),
+            waiter_index: keys.waiter_index(),
             task_key: key,
             max_concurrent: i64::from(max),
             stale_threshold: seconds(docket.now()) - timeout.as_secs_f64(),
@@ -276,6 +278,7 @@ pub(crate) async fn safeguard_wake(ctx: Context, args: SafeguardWake) -> crate::
         waiters_stream: args.waiters_stream,
         stream_key: keys.stream(),
         queue_key: keys.queue(),
+        waiter_index: keys.waiter_index(),
         max_concurrent: i64::from(args.max_concurrent),
         stale_threshold: seconds(docket.now()) - ctx.delivery().redelivery_timeout.as_secs_f64(),
         runs_prefix: keys.runs_prefix(),
@@ -286,6 +289,38 @@ pub(crate) async fn safeguard_wake(ctx: Context, args: SafeguardWake) -> crate::
     super::run_script::<redis::Value>(docket, &call)
         .await
         .map(drop)
+}
+
+/// Counts the tasks that wait on the docket's concurrency waiter streams.
+/// The count comes from the length of each stream in the docket's index of
+/// waiter streams, so it includes a cancelled task until its entry leaves
+/// its stream.
+pub(crate) async fn parked_depth(docket: &Docket, connection: &mut Handle) -> crate::Result<u64> {
+    let index = docket.keys().waiter_index();
+    let streams: Vec<String> = connection.smembers(&index).await?;
+    if streams.is_empty() {
+        return Ok(0);
+    }
+
+    let mut pipeline = redis::pipe();
+    for stream in &streams {
+        pipeline.xlen(stream);
+    }
+    let lengths: Vec<u64> = pipeline.query_async(connection).await?;
+
+    // A worker on a release without the index deletes a drained stream and
+    // leaves its name here.  A park between the XLEN and this SREM loses its
+    // name too, until the next script that touches the stream adds it back.
+    let drained: Vec<&String> = streams
+        .iter()
+        .zip(&lengths)
+        .filter_map(|(stream, length)| (*length == 0).then_some(stream))
+        .collect();
+    if !drained.is_empty() {
+        let () = connection.srem(&index, drained).await?;
+    }
+
+    Ok(lengths.iter().sum())
 }
 
 #[cfg(all(test, feature = "memory"))]

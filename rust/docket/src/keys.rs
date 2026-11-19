@@ -105,6 +105,12 @@ impl Keys {
         self.key("leases:redelivery-sweep")
     }
 
+    /// The set of concurrency waiter streams that hold a parked task.  It
+    /// is under `indexes:` for the reason the sweep lease is under `leases:`.
+    pub fn waiter_index(&self) -> String {
+        self.key("indexes:concurrency-waiters")
+    }
+
     /// The lock that lets one worker at a time seed automatic perpetual tasks.
     pub fn perpetual_lock(&self) -> String {
         self.key("perpetual:lock")
@@ -156,6 +162,7 @@ mod tests {
             (keys.worker_tasks("w"), "{orders}:worker-tasks:w"),
             (keys.task_workers("t"), "{orders}:task-workers:t"),
             (keys.sweep_lease(), "{orders}:leases:redelivery-sweep"),
+            (keys.waiter_index(), "{orders}:indexes:concurrency-waiters"),
             (keys.perpetual_lock(), "{orders}:perpetual:lock"),
             (keys.strikes(), "{orders}:strikes"),
             (keys.result("k"), "{orders}:results:k"),

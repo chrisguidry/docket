@@ -5,6 +5,8 @@ The workload's runs, by task: ``succeed`` 1, ``fail`` 1, ``flaky`` 2,
 ``perpetual`` 3, and ``later`` 1.
 """
 
+from typing import cast
+
 from .metrics import PRESENT
 from .names import DOCKET, WORKER, labels
 from .prometheus_rendering import prometheus
@@ -157,6 +159,11 @@ WORKER_METRICS = {
     "docket_schedule_depth": metric(
         "gauge",
         "How many tasks are scheduled to be executed in the future",
+        {labels({"docket.name": DOCKET}): PRESENT},
+    ),
+    "docket_parked_depth": metric(
+        "gauge",
+        "How many tasks are waiting for a concurrency slot",
         {labels({"docket.name": DOCKET}): PRESENT},
     ),
 }
@@ -312,6 +319,29 @@ TELEMETRY: dict[str, object] = {
     "spans": spans(parented=False),
     "prometheus": prometheus(WORKER_METRICS),
 }
+
+# Metrics that the newest pydocket release predates.  Only an implementation
+# from the working tree is held to them.
+UNRELEASED_METRICS = {"docket_parked_depth"}
+
+
+def released(telemetry: dict[str, object]) -> dict[str, object]:
+    """The telemetry without the metrics that a release does not emit yet."""
+
+    def without(metrics: object) -> dict[str, object]:
+        return {
+            name: metric
+            for name, metric in cast(dict[str, object], metrics).items()
+            if name not in UNRELEASED_METRICS
+        }
+
+    metrics = cast(dict[str, object], telemetry["metrics"])
+    return {
+        **telemetry,
+        "metrics": {**metrics, "worker": without(metrics["worker"])},
+        "prometheus": without(telemetry["prometheus"]),
+    }
+
 
 # What the parented phase adds, for an implementation that has the option.
 PARENTED: dict[str, object] = {"parented_spans": spans(parented=True)}

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use redis::RedisResult;
 
 use super::session::Shared;
+use crate::behaviors::parked_depth;
 use crate::wire::seconds;
 
 pub(super) async fn beat(worker: Arc<Shared>) {
@@ -62,10 +63,12 @@ async fn once(worker: &Shared) -> crate::Result<()> {
         .zcount(keys.queue(), now, "+inf")
         .query_async(&mut connection)
         .await?;
+    let parked = parked_depth(docket, &mut connection).await?;
     let metrics = &docket.telemetry().metrics;
     let labels = docket.labels();
     metrics.queue_depth.record(stream + due, &labels);
     metrics.schedule_depth.record(future, &labels);
+    metrics.parked_depth.record(parked, &labels);
     Ok(())
 }
 

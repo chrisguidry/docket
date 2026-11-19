@@ -2,6 +2,7 @@ local slots_key = KEYS[1]
 local waiters_stream = KEYS[2]
 local stream_key = KEYS[3]
 local runs_key = KEYS[4]
+local waiter_index = KEYS[5]
 local max_concurrent = tonumber(ARGV[1])
 local task_key = ARGV[2]
 local current_time = tonumber(ARGV[3])
@@ -77,6 +78,10 @@ for i = message_start, #ARGV, 2 do
 end
 
 local waiter_entry_id = redis.call('XADD', waiters_stream, '*', unpack(message))
+
+-- The index names every waiter stream that holds a task, so a worker's
+-- heartbeat can count the parked tasks without scanning the keyspace.
+redis.call('SADD', waiter_index, waiters_stream)
 
 -- Record the waiter's location so the dependency's cancel subscriber can
 -- find and XDEL the waiter entry when the task transitions to 'cancelled'.

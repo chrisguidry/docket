@@ -214,7 +214,7 @@ macro_rules! scripts {
 scripts! {
     /// Takes a concurrency slot, or parks the task as a waiter.
     AcquireOrPark = "acquire_or_park" {
-        keys: [slots_key, waiters_stream, stream_key, runs_key],
+        keys: [slots_key, waiters_stream, stream_key, runs_key, waiter_index],
         args: [
             max_concurrent: Integer,
             task_key: Text,
@@ -232,7 +232,7 @@ scripts! {
 
     /// Removes a cancelled task's waiter entry and progress.
     CancelCleanup = "cancel_cleanup" {
-        keys: [waiters_stream, progress_key, runs_key],
+        keys: [waiters_stream, progress_key, runs_key, waiter_index],
         args: [waiter_entry_id: Text],
     }
 
@@ -304,7 +304,7 @@ scripts! {
 
     /// Gives up a concurrency slot and wakes the next waiter.
     ReleaseAndWake = "release_and_wake" {
-        keys: [slots_key, waiters_stream, stream_key, queue_key],
+        keys: [slots_key, waiters_stream, stream_key, queue_key, waiter_index],
         args: [
             task_key: Text,
             max_concurrent: Integer,
@@ -317,7 +317,7 @@ scripts! {
 
     /// Frees stale concurrency slots and wakes waiters for them.
     ScavengeAndWake = "scavenge_and_wake" {
-        keys: [slots_key, waiters_stream, stream_key, queue_key],
+        keys: [slots_key, waiters_stream, stream_key, queue_key, waiter_index],
         args: [
             max_concurrent: Integer,
             stale_threshold: Number,

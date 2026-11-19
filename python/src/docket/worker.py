@@ -58,6 +58,7 @@ from .dependencies import (
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
 )
+from .dependencies._concurrency import parked_depth
 from .dependencies._perpetual import perpetual_is_live
 from .dependencies._resolution import (
     detect_single_conflicts,
@@ -72,6 +73,7 @@ from .docket import (
 )
 from .execution import TaskFunction, compact_signature, pickle_exception
 from .instrumentation import (
+    PARKED_DEPTH,
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
     SCHEDULE_DEPTH,
@@ -1394,12 +1396,15 @@ class Worker:
 
                             results: list[int] = await pipeline.execute()
 
+                        parked = await parked_depth(self.docket, r)
+
                     stream_depth = results[0]
                     overdue_depth = results[1]
                     schedule_depth = results[2]
 
                     QUEUE_DEPTH.set(stream_depth + overdue_depth, self.docket.labels())
                     SCHEDULE_DEPTH.set(schedule_depth, self.docket.labels())
+                    PARKED_DEPTH.set(parked, self.docket.labels())
 
             except asyncio.CancelledError:  # pragma: no cover
                 return
