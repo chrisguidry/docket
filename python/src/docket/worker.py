@@ -1396,14 +1396,17 @@ class Worker:
 
                             results: list[int] = await pipeline.execute()
 
-                        parked = await parked_depth(self.docket, r)
-
                     stream_depth = results[0]
                     overdue_depth = results[1]
                     schedule_depth = results[2]
 
                     QUEUE_DEPTH.set(stream_depth + overdue_depth, self.docket.labels())
                     SCHEDULE_DEPTH.set(schedule_depth, self.docket.labels())
+
+                    # After the other depths, so that a failure here leaves
+                    # them reported.
+                    with self._maybe_suppress_instrumentation():
+                        parked = await parked_depth(self.docket, r)
                     PARKED_DEPTH.set(parked, self.docket.labels())
 
             except asyncio.CancelledError:  # pragma: no cover

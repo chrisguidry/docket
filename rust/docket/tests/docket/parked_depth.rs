@@ -13,7 +13,7 @@ use redis::AsyncCommands;
 use crate::logs::Logs;
 use crate::snapshots::raw;
 use crate::support::telemetry::value;
-use crate::support::{Echo, Noop, docket_through, docket_with, proxy, within, worker};
+use crate::support::{Echo, Noop, docket_with, within, worker};
 
 const PARKED: &str = "docket_parked_depth";
 
@@ -138,40 +138,13 @@ async fn the_parked_depth_falls_when_a_dead_holders_slot_is_scavenged() {
     );
 }
 
-/// A worker on a release without the index deletes a drained waiter stream
-/// and leaves its name in the index, for a heartbeat to remove.
 #[tokio::test]
-async fn a_heartbeat_fails_when_redis_refuses_to_forget_a_drained_stream() {
-    let Some(proxy) = proxy().await else { return };
-    let Some(mut raw) = raw().await else { return };
-    let (logs, _guard) = Logs::capture();
-    let docket = docket_through(&proxy).await;
-    let index = format!("{}:indexes:concurrency-waiters", docket.name());
-    let _: i64 = raw.sadd(&index, "gone").await.unwrap();
-    proxy.fail("SREM", 1);
-
-    let logged = logs.clone();
-    within(
-        20,
-        worker(&docket).run_until(async move {
-            logged.wait_for("Error sending worker heartbeat").await;
-        }),
-    )
-    .await
-    .unwrap();
-
-    let _: i64 = raw.del(&index).await.unwrap();
-}
-
-#[tokio::test]
-async fn a_heartbeat_fails_when_redis_refuses_a_streams_length() {
+async fn a_heartbeat_fails_when_it_cannot_read_the_parked_total() {
     let Some(mut raw) = raw().await else { return };
     let (logs, _guard) = Logs::capture();
     let docket = docket().await;
-    let index = format!("{}:indexes:concurrency-waiters", docket.name());
-    let text = format!("{}:not-a-stream", docket.name());
-    let () = raw.set(&text, "text").await.unwrap();
-    let _: i64 = raw.sadd(&index, &text).await.unwrap();
+    let total = format!("{}:indexes:concurrency-waiters:total", docket.name());
+    let () = raw.set(&total, "not a number").await.unwrap();
 
     let logged = logs.clone();
     within(
@@ -183,5 +156,6 @@ async fn a_heartbeat_fails_when_redis_refuses_a_streams_length() {
     .await
     .unwrap();
 
-    let _: i64 = raw.del(&[&index, &text]).await.unwrap();
+    let _: i64 = raw.del(&total).await.unwrap();
+    assert_eq!(value(&docket, "docket_queue_depth", &[]), Some(0.0));
 }

@@ -24,9 +24,29 @@ async def depth(docket: Docket) -> int:
         return await parked_depth(docket, redis)
 
 
-async def indexed(docket: Docket) -> set[bytes]:
+async def indexed(docket: Docket) -> dict[bytes, bytes]:
+    """The count that the docket's index holds for each waiter stream."""
     async with docket.redis() as redis:
-        return await redis.smembers(docket.waiter_index_key)
+        return await redis.hgetall(docket.waiter_index_key)
+
+
+async def scavenge(docket: Docket, slots_key: str) -> int:
+    """Run the safeguard's script, as a worker on this release does."""
+    async with docket.redis() as redis:
+        return await _scavenge_and_wake(
+            redis,
+            slots_key=slots_key,
+            waiters_stream=f"{slots_key}:waiters",
+            stream_key=docket.stream_key,
+            queue_key=docket.queue_key,
+            waiter_index=docket.waiter_index_key,
+            parked_total=docket.parked_total_key,
+            max_concurrent=1,
+            stale_threshold=datetime.now(timezone.utc).timestamp() - 60,
+            runs_prefix=f"{docket.prefix}:runs:",
+            state_prefix=f"{docket.prefix}:state:",
+            parked_prefix=f"{docket.prefix}:",
+        )
 
 
 async def test_depth_follows_the_backlog_until_it_drains(
@@ -65,7 +85,7 @@ async def test_depth_follows_the_backlog_until_it_drains(
         await asyncio.wait_for(entered[task_id + 1].wait(), timeout=5)
         assert await depth(docket) == remaining
 
-    assert await indexed(docket) == set()
+    assert await indexed(docket) == {}
 
     release[3].set()
     await asyncio.wait_for(worker_task, timeout=5)
@@ -104,12 +124,15 @@ async def test_depth_sums_every_waiter_stream(docket: Docket, worker: Worker):
     await wait_for_xlen(docket, streams[2], 1)
 
     assert await depth(docket) == 3
-    assert await indexed(docket) == {stream.encode() for stream in streams.values()}
+    assert await indexed(docket) == {
+        streams[1].encode(): b"2",
+        streams[2].encode(): b"1",
+    }
 
     release.set()
     await asyncio.wait_for(worker_task, timeout=5)
     assert await depth(docket) == 0
-    assert await indexed(docket) == set()
+    assert await indexed(docket) == {}
 
 
 async def test_depth_falls_when_a_parked_task_is_cancelled(
@@ -143,12 +166,12 @@ async def test_depth_falls_when_a_parked_task_is_cancelled(
     await docket.cancel(cancelled.key)
     await wait_for_xlen(docket, waiters_stream, 1)
     assert await depth(docket) == 1
-    assert await indexed(docket) == {waiters_stream.encode()}
+    assert await indexed(docket) == {waiters_stream.encode(): b"1"}
 
     await docket.cancel(kept.key)
     await wait_for_xlen(docket, waiters_stream, 0)
     assert await depth(docket) == 0
-    assert await indexed(docket) == set()
+    assert await indexed(docket) == {}
 
     release.set()
     await asyncio.wait_for(worker_task, timeout=5)
@@ -188,30 +211,32 @@ async def test_depth_falls_when_a_dead_holders_slot_is_scavenged(docket: Docket)
 
         await asyncio.wait_for(ran.wait(), timeout=5)
         assert await depth(docket) == 0
-        assert await indexed(docket) == set()
+        assert await indexed(docket) == {}
 
         runner.cancel()
         await asyncio.gather(runner, return_exceptions=True)
 
 
-async def test_depth_forgets_a_stream_that_another_release_deleted(docket: Docket):
-    """A worker on a release without the index deletes a drained waiter
-    stream and leaves its name in the index.  The count drops the name."""
+async def test_script_corrects_the_count_that_another_release_left(docket: Docket):
+    """A worker on a release that keeps no count wakes the tasks on a stream
+    and deletes it, and the count for the stream stays as it was.  The next
+    script on the stream corrects the count and the total."""
+    slots_key = f"{docket.prefix}:concurrency:mixed"
+
     async with docket.redis() as redis:
-        await redis.sadd(
-            docket.waiter_index_key, f"{docket.prefix}:concurrency:gone:waiters"
-        )
+        await redis.hset(docket.waiter_index_key, f"{slots_key}:waiters", "3")
+        await redis.set(docket.parked_total_key, "3")
+    assert await depth(docket) == 3
+
+    assert await scavenge(docket, slots_key) == 0
 
     assert await depth(docket) == 0
-    assert await indexed(docket) == set()
+    assert await indexed(docket) == {}
 
 
-async def test_wake_script_indexes_a_stream_that_another_release_parked_on(
-    docket: Docket,
-):
-    """A worker on a release without the index parks a task without adding
-    its stream to the index.  The next wake script that finds the stream
-    with a task on it adds the stream, so the task is counted."""
+async def test_script_counts_the_task_that_another_release_parked(docket: Docket):
+    """A worker on a release that keeps no count parks a task without
+    counting it.  The next script on the stream counts it."""
     slots_key = f"{docket.prefix}:concurrency:mixed"
     waiters_stream = f"{slots_key}:waiters"
 
@@ -219,25 +244,18 @@ async def test_wake_script_indexes_a_stream_that_another_release_parked_on(
         now = datetime.now(timezone.utc).timestamp()
         await redis.zadd(slots_key, {"holder": now})
         await redis.xadd(waiters_stream, {b"key": b"parked-by-another-release"})
-        assert await parked_depth(docket, redis) == 0
+    assert await depth(docket) == 0
 
-        woken = await _scavenge_and_wake(
-            redis,
-            slots_key=slots_key,
-            waiters_stream=waiters_stream,
-            stream_key=docket.stream_key,
-            queue_key=docket.queue_key,
-            waiter_index=docket.waiter_index_key,
-            max_concurrent=1,
-            stale_threshold=now - 60,
-            runs_prefix=f"{docket.prefix}:runs:",
-            state_prefix=f"{docket.prefix}:state:",
-            parked_prefix=f"{docket.prefix}:",
+    assert await scavenge(docket, slots_key) == 0
+
+    assert await depth(docket) == 1
+    async with docket.redis() as redis:
+        await redis.delete(
+            slots_key,
+            waiters_stream,
+            docket.waiter_index_key,
+            docket.parked_total_key,
         )
-        assert woken == 0
-        assert await parked_depth(docket, redis) == 1
-
-        await redis.delete(slots_key, waiters_stream, docket.waiter_index_key)
 
 
 @pytest.fixture
