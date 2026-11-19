@@ -26,6 +26,13 @@ updates:
     groups:
       uv:
         patterns: ["*"]
+    # Without this, Dependabot updates only the packages that
+    # pyproject.toml names, and the rest of uv.lock goes stale.
+    allow:
+      - dependency-type: all
+    # This project is a library, so only uv.lock moves, and the
+    # requirements in pyproject.toml stay as low as it supports.
+    versioning-strategy: lockfile-only
   - package-ecosystem: cargo
     directories: ["/rust"]
     schedule:
