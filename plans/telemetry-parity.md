@@ -62,6 +62,7 @@ The meter is named `docket`.  Every counter has the unit `1`.
 | `docket_strikes_in_effect` | up-down counter | `1` | docket, strike labels | +1 for each strike the monitor reads, -1 for each restore |
 | `docket_queue_depth` | gauge | `1` | docket | each heartbeat: stream length plus due queued tasks |
 | `docket_schedule_depth` | gauge | `1` | docket | each heartbeat: queued tasks not yet due |
+| `docket_parked_depth` | gauge | `1` | docket | each heartbeat: tasks on the waiter streams of concurrency limits |
 
 The attribute keys are `docket.name`, `docket.worker`, `docket.task`, and
 `docket.where`.  A strike's labels are `docket.task` for a whole task, and

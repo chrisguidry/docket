@@ -2,6 +2,7 @@ local slots_key = KEYS[1]
 local waiters_stream = KEYS[2]
 local stream_key = KEYS[3]
 local queue_key = KEYS[4]
+local waiter_index = KEYS[5]
 local task_key = ARGV[1]
 local max_concurrent = tonumber(ARGV[2])
 local stale_threshold = tonumber(ARGV[3])
@@ -106,6 +107,11 @@ end
 if redis.call('ZCARD', slots_key) == 0 then
     redis.call('DEL', slots_key)
 end
+-- Leave the index agreeing with the stream.  The SADD also indexes a
+-- stream that a worker on a release without the index parked a task on.
 if redis.call('XLEN', waiters_stream) == 0 then
     redis.call('DEL', waiters_stream)
+    redis.call('SREM', waiter_index, waiters_stream)
+else
+    redis.call('SADD', waiter_index, waiters_stream)
 end

@@ -75,6 +75,7 @@ async fn forget_waiter(docket: &crate::Docket, key: &str) -> Result<()> {
         waiters_stream: stream.clone(),
         progress_key: keys.progress(key),
         runs_key: keys.runs(key),
+        waiter_index: keys.waiter_index(),
         waiter_entry_id: entry.clone(),
     }
     .call();

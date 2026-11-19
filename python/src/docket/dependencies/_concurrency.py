@@ -51,6 +51,7 @@ async def _acquire_or_park(
     waiters_stream: Key[str],
     stream_key: Key[str],
     runs_key: Key[str],
+    waiter_index: Key[str],
     max_concurrent: Arg[int],
     task_key: Arg[str],
     current_time: Arg[float],
@@ -73,6 +74,7 @@ async def _release_and_wake(
     waiters_stream: Key[str],
     stream_key: Key[str],
     queue_key: Key[str],
+    waiter_index: Key[str],
     task_key: Arg[str],
     max_concurrent: Arg[int],
     stale_threshold: Arg[float],
@@ -90,6 +92,7 @@ async def _scavenge_and_wake(
     waiters_stream: Key[str],
     stream_key: Key[str],
     queue_key: Key[str],
+    waiter_index: Key[str],
     max_concurrent: Arg[int],
     stale_threshold: Arg[float],
     runs_prefix: Arg[str],
@@ -105,8 +108,35 @@ async def _cancel_cleanup(
     waiters_stream: Key[str],
     progress_key: Key[str],
     runs_key: Key[str],
+    waiter_index: Key[str],
     waiter_entry_id: Arg[str],
 ) -> None: ...
+
+
+async def parked_depth(docket: Docket, redis: RedisClient) -> int:
+    """Count the tasks that wait on the docket's concurrency waiter streams.
+
+    The count comes from the length of each stream in the docket's index of
+    waiter streams, so it includes a cancelled task until its entry leaves
+    its stream.
+    """
+    streams = list(await redis.smembers(docket.waiter_index_key))
+    if not streams:
+        return 0
+
+    async with redis.pipeline() as pipeline:
+        for stream in streams:
+            pipeline.xlen(stream)
+        lengths: list[int] = await pipeline.execute()
+
+    # A worker on a release without the index deletes a drained stream and
+    # leaves its name here.  A park between the XLEN and this SREM loses its
+    # name too, until the next script that touches the stream adds it back.
+    drained = [stream for stream, length in zip(streams, lengths) if not length]
+    if drained:
+        await redis.srem(docket.waiter_index_key, *drained)
+
+    return sum(lengths)
 
 
 class ConcurrencyBlocked(AdmissionBlocked):
@@ -282,6 +312,7 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                 waiters_stream=waiters_stream,
                 stream_key=docket.stream_key,
                 runs_key=execution._redis_key,
+                waiter_index=docket.waiter_index_key,
                 max_concurrent=self.max_concurrent,
                 task_key=execution.key,
                 current_time=current_time,
@@ -443,6 +474,7 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                 waiters_stream=waiter_stream,
                 progress_key=f"{docket.prefix}:progress:{task_key}",
                 runs_key=runs_key,
+                waiter_index=docket.waiter_index_key,
                 waiter_entry_id=waiter_entry_id,
             )
         # Drop the safeguard task this waiter scheduled at park time.
@@ -467,6 +499,7 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                 waiters_stream=waiters_stream,
                 stream_key=docket.stream_key,
                 queue_key=docket.queue_key,
+                waiter_index=docket.waiter_index_key,
                 task_key=self._task_key,
                 max_concurrent=self.max_concurrent,
                 stale_threshold=stale_threshold,
@@ -556,6 +589,7 @@ async def _safeguard_wake(waiter_stream: str, max_concurrent: int) -> None:
             waiters_stream=waiter_stream,
             stream_key=docket.stream_key,
             queue_key=docket.queue_key,
+            waiter_index=docket.waiter_index_key,
             max_concurrent=max_concurrent,
             stale_threshold=stale_threshold,
             runs_prefix=f"{docket.prefix}:runs:",

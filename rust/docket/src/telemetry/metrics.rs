@@ -25,6 +25,15 @@ pub(crate) struct Metrics {
     pub strikes_in_effect: UpDownCounter<i64>,
     pub queue_depth: Gauge<u64>,
     pub schedule_depth: Gauge<u64>,
+    pub parked_depth: Gauge<u64>,
+}
+
+fn gauge(meter: &Meter, name: &'static str, description: &'static str) -> Gauge<u64> {
+    meter
+        .u64_gauge(name)
+        .with_description(description)
+        .with_unit("1")
+        .build()
 }
 
 impl Metrics {
@@ -46,13 +55,6 @@ impl Metrics {
         let up_down = |name: &'static str, description: &'static str| {
             meter
                 .i64_up_down_counter(name)
-                .with_description(description)
-                .with_unit("1")
-                .build()
-        };
-        let gauge = |name: &'static str, description: &'static str| {
-            meter
-                .u64_gauge(name)
                 .with_description(description)
                 .with_unit("1")
                 .build()
@@ -120,12 +122,19 @@ impl Metrics {
                 "How many strikes are currently in effect",
             ),
             queue_depth: gauge(
+                meter,
                 "docket_queue_depth",
                 "How many tasks are due to be executed now",
             ),
             schedule_depth: gauge(
+                meter,
                 "docket_schedule_depth",
                 "How many tasks are scheduled to be executed in the future",
+            ),
+            parked_depth: gauge(
+                meter,
+                "docket_parked_depth",
+                "How many tasks are waiting for a concurrency slot",
             ),
         }
     }
