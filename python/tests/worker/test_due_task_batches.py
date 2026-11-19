@@ -10,13 +10,22 @@ from docket import Docket, ExecutionState, Worker
 from docket.worker import _stream_due_tasks  # pyright: ignore[reportPrivateUsage]
 
 
-async def stream_due(docket: Docket, batch: int) -> tuple[int, int, int]:
+async def stream_due(
+    docket: Docket, batch: int, now: datetime | None = None
+) -> tuple[int, int, int]:
+    """Runs the scheduler's script once, as if the time were `now`.
+
+    A test that needs tasks in the queue schedules them a minute ahead and
+    passes that time here.  A task scheduled a few milliseconds ahead goes
+    straight to the stream when its `add` runs after that moment, which a
+    slow machine makes happen."""
+    now = now or datetime.now(timezone.utc)
     async with docket.redis() as redis:
         total, due, scanned = await _stream_due_tasks(
             redis,
             queue_key=docket.queue_key,
             stream_key=docket.stream_key,
-            now_timestamp=datetime.now(timezone.utc).timestamp(),
+            now_timestamp=now.timestamp(),
             docket_prefix=docket.prefix,
             batch=batch,
             completed_at=datetime.now(timezone.utc).isoformat(),
@@ -41,19 +50,18 @@ async def test_one_call_moves_at_most_one_batch(
 ):
     """A call moves one batch and leaves the other due tasks in the queue."""
     docket.register(the_task)
-    soon = datetime.now(timezone.utc) + timedelta(milliseconds=20)
+    soon = datetime.now(timezone.utc) + timedelta(minutes=1)
     for n in range(5):
         await docket.add(the_task, when=soon, key=f"due-{n}")()
     later = datetime.now(timezone.utc) + timedelta(hours=1)
     await docket.add(the_task, when=later, key="later")()
-    await asyncio.sleep(0.05)
 
-    assert await stream_due(docket, batch=2) == (6, 2, 2)
+    assert await stream_due(docket, batch=2, now=soon) == (6, 2, 2)
     assert await stream_length(docket) == 2
     assert sorted(await queued_keys(docket)) == ["due-2", "due-3", "due-4", "later"]
 
-    assert await stream_due(docket, batch=2) == (4, 2, 2)
-    assert await stream_due(docket, batch=2) == (2, 1, 1)
+    assert await stream_due(docket, batch=2, now=soon) == (4, 2, 2)
+    assert await stream_due(docket, batch=2, now=soon) == (2, 1, 1)
     assert await stream_length(docket) == 5
     assert await queued_keys(docket) == ["later"]
 
@@ -70,14 +78,13 @@ async def test_entries_without_parked_data_are_removed(
     docket.register(the_task)
     async with docket.redis() as redis:
         await redis.zadd(docket.queue_key, {"orphan-1": 1, "orphan-2": 2})
-    soon = datetime.now(timezone.utc) + timedelta(milliseconds=20)
+    soon = datetime.now(timezone.utc) + timedelta(minutes=1)
     await docket.add(the_task, when=soon, key="real")()
-    await asyncio.sleep(0.05)
 
-    assert await stream_due(docket, batch=2) == (3, 0, 2)
+    assert await stream_due(docket, batch=2, now=soon) == (3, 0, 2)
     assert await queued_keys(docket) == ["real"]
 
-    assert await stream_due(docket, batch=2) == (1, 1, 1)
+    assert await stream_due(docket, batch=2, now=soon) == (1, 1, 1)
     assert await stream_length(docket) == 1
     assert await queued_keys(docket) == []
 
@@ -90,6 +97,13 @@ async def lose_parked_data(docket: Docket, key: str) -> None:
         await redis.delete(docket.parked_task_key(key))
 
 
+async def make_due(docket: Docket, *keys: str) -> None:
+    """Moves queued tasks to a time in the past, so a worker's scheduler
+    finds them due without the test waiting for a clock."""
+    async with docket.redis() as redis:
+        await redis.zadd(docket.queue_key, {key: 1 for key in keys}, xx=True)
+
+
 async def test_a_run_without_parked_data_fails(
     docket: Docket, worker: Worker, the_task: AsyncMock
 ):
@@ -97,10 +111,10 @@ async def test_a_run_without_parked_data_fails(
     scheduler fails it: a caller waiting on its result gets the reason, and
     the key accepts a new task."""
     docket.register(the_task)
-    soon = datetime.now(timezone.utc) + timedelta(milliseconds=20)
+    soon = datetime.now(timezone.utc) + timedelta(minutes=1)
     execution = await docket.add(the_task, when=soon, key="lost")()
     await lose_parked_data(docket, "lost")
-    await asyncio.sleep(0.05)
+    await make_due(docket, "lost")
 
     waiting = asyncio.create_task(execution.get_result())
     await asyncio.sleep(0)
@@ -121,12 +135,11 @@ async def test_a_run_without_parked_data_leaves_no_record_without_a_ttl(
     """With no execution TTL, the failed run's record is deleted."""
     docket = zero_ttl_docket
     docket.register(the_task)
-    soon = datetime.now(timezone.utc) + timedelta(milliseconds=20)
+    soon = datetime.now(timezone.utc) + timedelta(minutes=1)
     await docket.add(the_task, when=soon, key="lost")()
     await lose_parked_data(docket, "lost")
-    await asyncio.sleep(0.05)
 
-    assert await stream_due(docket, batch=2) == (1, 0, 1)
+    assert await stream_due(docket, batch=2, now=soon) == (1, 0, 1)
 
     assert await docket.get_execution("lost") is None
 
@@ -156,10 +169,10 @@ async def test_one_scheduler_pass_moves_every_due_task(
     so a backlog larger than one batch does not wait for later ticks."""
     monkeypatch.setattr("docket.worker.DUE_TASKS_BATCH", 2)
     docket.register(the_task)
-    soon = datetime.now(timezone.utc) + timedelta(milliseconds=20)
+    soon = datetime.now(timezone.utc) + timedelta(minutes=1)
     for n in range(5):
         await docket.add(the_task, when=soon, key=f"due-{n}")()
-    await asyncio.sleep(0.05)
+    await make_due(docket, *(f"due-{n}" for n in range(5)))
 
     # With an hour between ticks, only the first pass can move these tasks.
     async with Worker(docket, scheduling_resolution=timedelta(hours=1)) as worker:
