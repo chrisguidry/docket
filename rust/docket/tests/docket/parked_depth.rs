@@ -162,3 +162,26 @@ async fn a_heartbeat_fails_when_redis_refuses_to_forget_a_drained_stream() {
 
     let _: i64 = raw.del(&index).await.unwrap();
 }
+
+#[tokio::test]
+async fn a_heartbeat_fails_when_redis_refuses_a_streams_length() {
+    let Some(mut raw) = raw().await else { return };
+    let (logs, _guard) = Logs::capture();
+    let docket = docket().await;
+    let index = format!("{}:indexes:concurrency-waiters", docket.name());
+    let text = format!("{}:not-a-stream", docket.name());
+    let () = raw.set(&text, "text").await.unwrap();
+    let _: i64 = raw.sadd(&index, &text).await.unwrap();
+
+    let logged = logs.clone();
+    within(
+        20,
+        worker(&docket).run_until(async move {
+            logged.wait_for("Error sending worker heartbeat").await;
+        }),
+    )
+    .await
+    .unwrap();
+
+    let _: i64 = raw.del(&[&index, &text]).await.unwrap();
+}

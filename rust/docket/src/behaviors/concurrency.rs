@@ -311,11 +311,12 @@ pub(crate) async fn parked_depth(docket: &Docket, connection: &mut Handle) -> cr
     // A worker on a release without the index deletes a drained stream and
     // leaves its name here.  A park between the XLEN and this SREM loses its
     // name too, until the next script that touches the stream adds it back.
-    let drained: Vec<&String> = streams
-        .iter()
-        .zip(&lengths)
-        .filter_map(|(stream, length)| (*length == 0).then_some(stream))
-        .collect();
+    let mut drained = Vec::new();
+    for (stream, length) in streams.iter().zip(&lengths) {
+        if *length == 0 {
+            drained.push(stream);
+        }
+    }
     if !drained.is_empty() {
         let () = connection.srem(&index, drained).await?;
     }
