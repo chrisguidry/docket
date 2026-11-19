@@ -136,9 +136,9 @@ Rich dependency injection supporting:
 
 - **Streams**: `{docket}:stream` (ready tasks), `{docket}:strikes` (commands)
 - **Sorted Sets**: `{docket}:queue` (scheduled tasks), `{docket}:workers` (heartbeats)
-- **Hashes**: `{docket}:{key}` (parked task data)
-- **Sets**: `{docket}:worker-tasks:{worker}` (worker capabilities), `{docket}:indexes:concurrency-waiters` (waiter streams that hold a parked task)
-- **Strings**: `{docket}:leases:redelivery-sweep` (fleet-wide sweep lease, expiring)
+- **Hashes**: `{docket}:{key}` (parked task data), `{docket}:indexes:concurrency-waiters` (tasks parked on each concurrency waiter stream)
+- **Sets**: `{docket}:worker-tasks:{worker}` (worker capabilities)
+- **Strings**: `{docket}:leases:redelivery-sweep` (fleet-wide sweep lease, expiring), `{docket}:indexes:concurrency-waiters:total` (tasks parked on all waiter streams)
 
 ### Task Lifecycle
 

@@ -895,6 +895,10 @@ class Docket(DocketSnapshotMixin):
         # Under `indexes:` for the reason the sweep lease is under `leases:`.
         return self.key("indexes:concurrency-waiters")
 
+    @property
+    def parked_total_key(self) -> str:
+        return self.key("indexes:concurrency-waiters:total")
+
     def known_task_key(self, task_key: str) -> str:
         return self.key(f"known:{task_key}")
 

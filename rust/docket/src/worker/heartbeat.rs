@@ -63,11 +63,12 @@ async fn once(worker: &Shared) -> crate::Result<()> {
         .zcount(keys.queue(), now, "+inf")
         .query_async(&mut connection)
         .await?;
-    let parked = parked_depth(docket, &mut connection).await?;
     let metrics = &docket.telemetry().metrics;
     let labels = docket.labels();
     metrics.queue_depth.record(stream + due, &labels);
     metrics.schedule_depth.record(future, &labels);
+    // After the other depths, so that a failure here leaves them reported.
+    let parked = parked_depth(docket, &mut connection).await?;
     metrics.parked_depth.record(parked, &labels);
     Ok(())
 }

@@ -105,10 +105,16 @@ impl Keys {
         self.key("leases:redelivery-sweep")
     }
 
-    /// The set of concurrency waiter streams that hold a parked task.  It
-    /// is under `indexes:` for the reason the sweep lease is under `leases:`.
+    /// The hash of how many tasks are parked on each concurrency waiter
+    /// stream.  It is under `indexes:` for the reason the sweep lease is
+    /// under `leases:`.
     pub fn waiter_index(&self) -> String {
         self.key("indexes:concurrency-waiters")
+    }
+
+    /// How many tasks are parked on all of the docket's waiter streams.
+    pub fn parked_total(&self) -> String {
+        self.key("indexes:concurrency-waiters:total")
     }
 
     /// The lock that lets one worker at a time seed automatic perpetual tasks.
@@ -163,6 +169,10 @@ mod tests {
             (keys.task_workers("t"), "{orders}:task-workers:t"),
             (keys.sweep_lease(), "{orders}:leases:redelivery-sweep"),
             (keys.waiter_index(), "{orders}:indexes:concurrency-waiters"),
+            (
+                keys.parked_total(),
+                "{orders}:indexes:concurrency-waiters:total",
+            ),
             (keys.perpetual_lock(), "{orders}:perpetual:lock"),
             (keys.strikes(), "{orders}:strikes"),
             (keys.result("k"), "{orders}:results:k"),

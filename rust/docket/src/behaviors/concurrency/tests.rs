@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use redis::AsyncCommands;
@@ -36,13 +37,38 @@ async fn depth(docket: &Docket) -> u64 {
     parked_depth(docket, &mut connection).await.unwrap()
 }
 
-/// The waiter streams that the docket's index names.
-async fn indexed(docket: &Docket) -> Vec<String> {
+/// The count that the docket's index holds for each waiter stream.
+async fn indexed(docket: &Docket) -> HashMap<String, u64> {
     let mut connection = docket.connection().await.unwrap();
     connection
-        .smembers(docket.keys().waiter_index())
+        .hgetall(docket.keys().waiter_index())
         .await
         .unwrap()
+}
+
+/// Runs the safeguard's script on the `mixed` limit, as a worker on this
+/// release does, and returns how many waiters it woke.
+async fn scavenge(docket: &Docket) -> i64 {
+    let keys = docket.keys();
+    let slots = keys.concurrency(None, "mixed");
+    let mut connection = docket.connection().await.unwrap();
+    crate::scripts::ScavengeAndWake {
+        waiters_stream: format!("{slots}:waiters"),
+        slots_key: slots,
+        stream_key: keys.stream(),
+        queue_key: keys.queue(),
+        waiter_index: keys.waiter_index(),
+        parked_total: keys.parked_total(),
+        max_concurrent: 1,
+        stale_threshold: crate::wire::seconds(docket.now()) - 60.0,
+        runs_prefix: keys.runs_prefix(),
+        state_prefix: keys.state_prefix(),
+        parked_prefix: keys.parked_prefix(),
+    }
+    .call()
+    .run(&mut connection)
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -56,7 +82,7 @@ async fn the_parked_depth_counts_the_tasks_behind_a_limit() {
     blocked(admit(ONE_AT_A_TIME, context(&docket, "c")).await);
     assert_eq!(depth(&docket).await, 2);
     let waiters = format!("{}:waiters", docket.keys().concurrency(None, "noop"));
-    assert_eq!(indexed(&docket).await, [waiters]);
+    assert_eq!(indexed(&docket).await, HashMap::from([(waiters, 2)]));
 
     // The release wakes one waiter for the one slot it frees.
     let release = holder.ok().unwrap().release.unwrap();
@@ -68,25 +94,7 @@ async fn the_parked_depth_counts_the_tasks_behind_a_limit() {
     let release = woken.ok().unwrap().release.unwrap();
     release(Released::Ran).await;
     assert_eq!(depth(&docket).await, 0);
-    assert_eq!(indexed(&docket).await, Vec::<String>::new());
-}
-
-/// A worker on a release without the index deletes a drained waiter stream
-/// and leaves its name in the index.
-#[tokio::test]
-async fn the_parked_depth_forgets_a_stream_that_another_release_deleted() {
-    let docket = memory().await;
-    let mut connection = docket.connection().await.unwrap();
-    let () = connection
-        .sadd(
-            docket.keys().waiter_index(),
-            "memory:concurrency:gone:waiters",
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(depth(&docket).await, 0);
-    assert_eq!(indexed(&docket).await, Vec::<String>::new());
+    assert_eq!(indexed(&docket).await, HashMap::new());
 }
 
 #[tokio::test]
@@ -97,55 +105,49 @@ async fn the_parked_depth_fails_without_redis() {
     assert!(parked_depth(&docket, &mut connection).await.is_err());
 }
 
+/// A worker on a release that keeps no count wakes the tasks on a stream
+/// and deletes it, and the count for the stream stays as it was.  The next
+/// script on the stream corrects the count and the total.
 #[tokio::test]
-async fn the_parked_depth_fails_when_redis_refuses_a_streams_length() {
-    let docket = memory().await;
-    let mut connection = docket.connection().await.unwrap();
-    let () = connection.set("not-a-stream", "text").await.unwrap();
-    let () = connection
-        .sadd(docket.keys().waiter_index(), "not-a-stream")
-        .await
-        .unwrap();
-
-    assert!(parked_depth(&docket, &mut connection).await.is_err());
-}
-
-/// A worker on a release without the index parks a task without adding its
-/// stream to the index.  A wake script that finds a task on the stream adds
-/// the stream, so the task is counted.
-#[tokio::test]
-async fn a_wake_script_indexes_a_stream_that_another_release_parked_on() {
+async fn a_script_corrects_the_count_that_another_release_left() {
     let docket = memory().await;
     let keys = docket.keys();
-    let slots = keys.concurrency(None, "mixed");
-    let waiters = format!("{slots}:waiters");
+    let waiters = format!("{}:waiters", keys.concurrency(None, "mixed"));
+    let mut connection = docket.connection().await.unwrap();
+    let () = connection
+        .hset(keys.waiter_index(), &waiters, 3)
+        .await
+        .unwrap();
+    let () = connection.set(keys.parked_total(), 3).await.unwrap();
+    assert_eq!(depth(&docket).await, 3);
+
+    assert_eq!(scavenge(&docket).await, 0);
+
+    assert_eq!(depth(&docket).await, 0);
+    assert_eq!(indexed(&docket).await, HashMap::new());
+}
+
+/// A worker on a release that keeps no count parks a task without counting
+/// it.  The next script on the stream counts it.
+#[tokio::test]
+async fn a_script_counts_the_task_that_another_release_parked() {
+    let docket = memory().await;
+    let slots = docket.keys().concurrency(None, "mixed");
     let mut connection = docket.connection().await.unwrap();
     let now = crate::wire::seconds(docket.now());
     let () = connection.zadd(&slots, "holder", now).await.unwrap();
     let _: String = connection
-        .xadd(&waiters, "*", &[("key", "parked-by-another-release")])
+        .xadd(
+            format!("{slots}:waiters"),
+            "*",
+            &[("key", "parked-by-another-release")],
+        )
         .await
         .unwrap();
     assert_eq!(depth(&docket).await, 0);
 
-    let woken: i64 = crate::scripts::ScavengeAndWake {
-        slots_key: slots,
-        waiters_stream: waiters,
-        stream_key: keys.stream(),
-        queue_key: keys.queue(),
-        waiter_index: keys.waiter_index(),
-        max_concurrent: 1,
-        stale_threshold: now - 60.0,
-        runs_prefix: keys.runs_prefix(),
-        state_prefix: keys.state_prefix(),
-        parked_prefix: keys.parked_prefix(),
-    }
-    .call()
-    .run(&mut connection)
-    .await
-    .unwrap();
+    assert_eq!(scavenge(&docket).await, 0);
 
-    assert_eq!(woken, 0);
     assert_eq!(depth(&docket).await, 1);
 }
 
