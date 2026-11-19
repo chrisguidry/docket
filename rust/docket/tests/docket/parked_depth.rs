@@ -144,7 +144,7 @@ async fn a_heartbeat_fails_when_it_cannot_read_the_parked_total() {
     let (logs, _guard) = Logs::capture();
     let docket = docket().await;
     let total = format!("{}:indexes:concurrency-waiters:total", docket.name());
-    let () = raw.set(&total, "not a number").await.unwrap();
+    let _: i64 = raw.hset(&total, "not", "a number").await.unwrap();
 
     let logged = logs.clone();
     within(

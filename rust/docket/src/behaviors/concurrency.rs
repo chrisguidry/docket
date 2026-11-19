@@ -294,12 +294,30 @@ pub(crate) async fn safeguard_wake(ctx: Context, args: SafeguardWake) -> crate::
         .map(drop)
 }
 
+/// How many waiter streams one heartbeat compares with their counts.
+pub(crate) const PARKED_DEPTH_BATCH: i64 = 16;
+
 /// Reads how many tasks wait on the docket's concurrency waiter streams.
 /// The concurrency scripts keep this total as tasks park and leave, so it
-/// includes a cancelled task until its entry leaves its stream.
-pub(crate) async fn parked_depth(docket: &Docket, connection: &mut Handle) -> crate::Result<u64> {
-    let total: Option<u64> = connection.get(docket.keys().parked_total()).await?;
-    Ok(total.unwrap_or(0))
+/// includes a cancelled task until its entry leaves its stream.  Each read
+/// also compares `PARKED_DEPTH_BATCH` of the indexed streams with their
+/// counts, starting at `cursor`, and corrects the total.  A caller that adds
+/// `PARKED_DEPTH_BATCH` to `cursor` on each read reaches every stream in
+/// turn.
+pub(crate) async fn parked_depth(
+    docket: &Docket,
+    connection: &mut Handle,
+    cursor: i64,
+) -> crate::Result<u64> {
+    let keys = docket.keys();
+    let call = scripts::ParkedDepth {
+        waiter_index: keys.waiter_index(),
+        parked_total: keys.parked_total(),
+        cursor,
+        batch: PARKED_DEPTH_BATCH,
+    }
+    .call();
+    Ok(call.run(connection).await?)
 }
 
 #[cfg(all(test, feature = "memory"))]

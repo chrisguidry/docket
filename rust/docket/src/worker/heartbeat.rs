@@ -5,21 +5,23 @@ use std::sync::Arc;
 use redis::RedisResult;
 
 use super::session::Shared;
-use crate::behaviors::parked_depth;
+use crate::behaviors::{PARKED_DEPTH_BATCH, parked_depth};
 use crate::wire::seconds;
 
 pub(super) async fn beat(worker: Arc<Shared>) {
     let interval = worker.docket.settings().heartbeat_interval;
+    let mut parked_cursor = 0;
     loop {
-        if let Err(error) = once(&worker).await {
+        if let Err(error) = once(&worker, parked_cursor).await {
             worker.disrupted();
             tracing::error!(%error, "Error sending worker heartbeat");
         }
+        parked_cursor += PARKED_DEPTH_BATCH;
         tokio::time::sleep(interval).await;
     }
 }
 
-async fn once(worker: &Shared) -> crate::Result<()> {
+async fn once(worker: &Shared, parked_cursor: i64) -> crate::Result<()> {
     let docket = &worker.docket;
     let keys = docket.keys();
     let name = &worker.settings.name;
@@ -68,7 +70,7 @@ async fn once(worker: &Shared) -> crate::Result<()> {
     metrics.queue_depth.record(stream + due, &labels);
     metrics.schedule_depth.record(future, &labels);
     // After the other depths, so that a failure here leaves them reported.
-    let parked = parked_depth(docket, &mut connection).await?;
+    let parked = parked_depth(docket, &mut connection, parked_cursor).await?;
     metrics.parked_depth.record(parked, &labels);
     Ok(())
 }
@@ -113,9 +115,9 @@ mod tests {
         let docket = Docket::connect(name, &url).await.unwrap();
         let settings = Worker::new(docket.clone()).settings;
         let worker = Shared::new(docket.clone(), settings, docket.limit_runs(&HashMap::new()));
-        once(&worker).await.unwrap();
+        once(&worker, 0).await.unwrap();
 
         slots::move_slot(&url, &docket.keys().workers()).await;
-        once(&worker).await.unwrap();
+        once(&worker, 0).await.unwrap();
     }
 }

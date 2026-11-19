@@ -117,13 +117,38 @@ async def _cancel_cleanup(
 ) -> None: ...
 
 
-async def parked_depth(docket: Docket, redis: RedisClient) -> int:
+@redis_script
+async def _parked_depth(
+    redis: RedisClient,
+    *,
+    waiter_index: Key[str],
+    parked_total: Key[str],
+    cursor: Arg[int],
+    batch: Arg[int],
+) -> int: ...
+
+
+# How many waiter streams one heartbeat compares with their counts.
+PARKED_DEPTH_BATCH = 16
+
+
+async def parked_depth(docket: Docket, redis: RedisClient, cursor: int) -> int:
     """Read how many tasks wait on the docket's concurrency waiter streams.
 
     The concurrency scripts keep this total as tasks park and leave, so it
-    includes a cancelled task until its entry leaves its stream.
+    includes a cancelled task until its entry leaves its stream.  Each read
+    also compares ``PARKED_DEPTH_BATCH`` of the indexed streams with their
+    counts, starting at ``cursor``, and corrects the total.  A caller that
+    adds ``PARKED_DEPTH_BATCH`` to ``cursor`` on each read reaches every
+    stream in turn.
     """
-    return max(0, int(await redis.get(docket.parked_total_key) or 0))
+    return await _parked_depth(
+        redis,
+        waiter_index=docket.waiter_index_key,
+        parked_total=docket.parked_total_key,
+        cursor=cursor,
+        batch=PARKED_DEPTH_BATCH,
+    )
 
 
 class ConcurrencyBlocked(AdmissionBlocked):

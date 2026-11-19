@@ -11,6 +11,7 @@ from opentelemetry.metrics import _Gauge as Gauge
 
 from docket import ConcurrencyLimit, Docket, Worker
 from docket.dependencies._concurrency import (
+    PARKED_DEPTH_BATCH,
     _scavenge_and_wake,  # pyright: ignore[reportPrivateUsage]
     parked_depth,
 )
@@ -19,15 +20,15 @@ from tests.concurrency_limits.waiters import wait_for_xlen
 from tests.conftest import wait_until
 
 
-async def depth(docket: Docket) -> int:
+async def depth(docket: Docket, cursor: int = 0) -> int:
     async with docket.redis() as redis:
-        return await parked_depth(docket, redis)
+        return await parked_depth(docket, redis, cursor)
 
 
-async def indexed(docket: Docket) -> dict[bytes, bytes]:
+async def indexed(docket: Docket) -> dict[bytes, float]:
     """The count that the docket's index holds for each waiter stream."""
     async with docket.redis() as redis:
-        return await redis.hgetall(docket.waiter_index_key)
+        return dict(await redis.zrange(docket.waiter_index_key, 0, -1, withscores=True))
 
 
 async def scavenge(docket: Docket, slots_key: str) -> int:
@@ -125,8 +126,8 @@ async def test_depth_sums_every_waiter_stream(docket: Docket, worker: Worker):
 
     assert await depth(docket) == 3
     assert await indexed(docket) == {
-        streams[1].encode(): b"2",
-        streams[2].encode(): b"1",
+        streams[1].encode(): 2,
+        streams[2].encode(): 1,
     }
 
     release.set()
@@ -166,7 +167,7 @@ async def test_depth_falls_when_a_parked_task_is_cancelled(
     await docket.cancel(cancelled.key)
     await wait_for_xlen(docket, waiters_stream, 1)
     assert await depth(docket) == 1
-    assert await indexed(docket) == {waiters_stream.encode(): b"1"}
+    assert await indexed(docket) == {waiters_stream.encode(): 1}
 
     await docket.cancel(kept.key)
     await wait_for_xlen(docket, waiters_stream, 0)
@@ -225,14 +226,37 @@ async def test_script_corrects_the_count_that_another_release_left(docket: Docke
     slots_key = f"{docket.prefix}:concurrency:mixed"
 
     async with docket.redis() as redis:
-        await redis.hset(docket.waiter_index_key, f"{slots_key}:waiters", "3")
+        await redis.zadd(docket.waiter_index_key, {f"{slots_key}:waiters": 3})
         await redis.set(docket.parked_total_key, "3")
-    assert await depth(docket) == 3
 
     assert await scavenge(docket, slots_key) == 0
 
-    assert await depth(docket) == 0
     assert await indexed(docket) == {}
+    assert await depth(docket) == 0
+
+
+async def test_reads_correct_the_counts_that_another_release_left(docket: Docket):
+    """When no script runs on a stream again, the heartbeat's reads correct
+    its count.  Each read checks one batch of streams, and reads with an
+    advancing cursor reach all of them."""
+    gone = PARKED_DEPTH_BATCH + 4
+    kept = f"{docket.prefix}:concurrency:kept:waiters"
+
+    async with docket.redis() as redis:
+        await redis.xadd(kept, {b"key": b"parked"})
+        await redis.zadd(docket.waiter_index_key, {kept: 1})
+        for number in range(gone):
+            stream = f"{docket.prefix}:concurrency:gone-{number}:waiters"
+            await redis.zadd(docket.waiter_index_key, {stream: 2})
+        await redis.set(docket.parked_total_key, str(1 + 2 * gone))
+
+    first = await depth(docket, cursor=0)
+    assert 1 < first < 1 + 2 * gone
+    assert await depth(docket, cursor=PARKED_DEPTH_BATCH) == 1
+    assert await indexed(docket) == {kept.encode(): 1}
+
+    async with docket.redis() as redis:
+        await redis.delete(kept, docket.waiter_index_key, docket.parked_total_key)
 
 
 async def test_script_counts_the_task_that_another_release_parked(docket: Docket):
