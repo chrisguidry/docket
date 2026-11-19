@@ -1,23 +1,39 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+# Terraform writes this file from github.com/chrisguidry/.github, and
+# writes it again over any change made here. To change it, edit this
+# repository's entry in repositories.yaml there.
 
 version: 2
 updates:
-  - package-ecosystem: "cargo"
-    directory: "/rust"
+  - package-ecosystem: github-actions
+    directories: ["/"]
     schedule:
-      interval: "weekly"
+      interval: weekly
+    # A release has a week to be found bad and yanked before it lands here.
+    cooldown:
+      default-days: 7
+    # One pull request a week carries every update of this ecosystem.
     groups:
-      all-crates:
-        patterns:
-          - "*"
-  - package-ecosystem: "github-actions"
-    directory: "/"
+      github-actions:
+        patterns: ["*"]
+  - package-ecosystem: uv
+    directories: ["/"]
     schedule:
-      interval: "weekly"
+      interval: weekly
+    # A release has a week to be found bad and yanked before it lands here.
+    cooldown:
+      default-days: 7
+    # One pull request a week carries every update of this ecosystem.
     groups:
-      all-actions:
-        patterns:
-          - "*"
+      uv:
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    directories: ["/rust"]
+    schedule:
+      interval: weekly
+    # A release has a week to be found bad and yanked before it lands here.
+    cooldown:
+      default-days: 7
+    # One pull request a week carries every update of this ecosystem.
+    groups:
+      cargo:
+        patterns: ["*"]
