@@ -283,6 +283,12 @@ scripts! {
         args: [execution_key: Text, settle_ms: Integer, now_ms: Integer, ttl_ms: Integer],
     }
 
+    /// Reads how many tasks are parked, and corrects a batch of the counts.
+    ParkedDepth = "parked_depth" {
+        keys: [waiter_index, parked_total],
+        args: [cursor: Integer, batch: Integer],
+    }
+
     /// Writes a task's progress fields.
     ProgressWrite = "progress_write" {
         keys: [progress_key],

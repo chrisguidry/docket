@@ -105,9 +105,9 @@ impl Keys {
         self.key("leases:redelivery-sweep")
     }
 
-    /// The hash of how many tasks are parked on each concurrency waiter
-    /// stream.  It is under `indexes:` for the reason the sweep lease is
-    /// under `leases:`.
+    /// The sorted set of concurrency waiter streams, scored by how many
+    /// tasks are parked on each.  It is under `indexes:` for the reason the
+    /// sweep lease is under `leases:`.
     pub fn waiter_index(&self) -> String {
         self.key("indexes:concurrency-waiters")
     }

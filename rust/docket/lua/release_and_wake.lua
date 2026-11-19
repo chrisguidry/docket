@@ -16,12 +16,12 @@ local parked_prefix = ARGV[6]
 -- wrong for a stream is right again after any script runs on that stream.
 local function record_parked()
     local now = redis.call('XLEN', waiters_stream)
-    local before = tonumber(redis.call('HGET', waiter_index, waiters_stream) or 0)
+    local before = tonumber(redis.call('ZSCORE', waiter_index, waiters_stream) or 0)
     if now == 0 then
         redis.call('DEL', waiters_stream)
-        redis.call('HDEL', waiter_index, waiters_stream)
+        redis.call('ZREM', waiter_index, waiters_stream)
     else
-        redis.call('HSET', waiter_index, waiters_stream, tostring(now))
+        redis.call('ZADD', waiter_index, tostring(now), waiters_stream)
     end
     if now ~= before then
         local total = tonumber(redis.call('GET', parked_total) or 0) + now - before

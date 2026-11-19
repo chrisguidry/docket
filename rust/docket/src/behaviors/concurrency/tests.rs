@@ -4,7 +4,7 @@ use std::time::Duration;
 use redis::AsyncCommands;
 use rstest::rstest;
 
-use super::{cancel_unless_parked, hold, parked_depth};
+use super::{PARKED_DEPTH_BATCH, cancel_unless_parked, hold, parked_depth};
 use crate::behaviors::tests::{Attach, Logs, Noop, admit, blocked, context, memory, unreachable};
 use crate::behaviors::{Behavior, ConcurrencyLimit, Released};
 use crate::docket::Docket;
@@ -33,15 +33,20 @@ async fn a_release_wakes_the_task_parked_behind_it() {
 
 /// The count of parked tasks, as a heartbeat reads it.
 async fn depth(docket: &Docket) -> u64 {
+    depth_from(docket, 0).await
+}
+
+/// The count of parked tasks, from a read that starts its batch at `cursor`.
+async fn depth_from(docket: &Docket, cursor: i64) -> u64 {
     let mut connection = docket.connection().await.unwrap();
-    parked_depth(docket, &mut connection).await.unwrap()
+    parked_depth(docket, &mut connection, cursor).await.unwrap()
 }
 
 /// The count that the docket's index holds for each waiter stream.
 async fn indexed(docket: &Docket) -> HashMap<String, u64> {
     let mut connection = docket.connection().await.unwrap();
     connection
-        .hgetall(docket.keys().waiter_index())
+        .zrange_withscores(docket.keys().waiter_index(), 0, -1)
         .await
         .unwrap()
 }
@@ -102,7 +107,7 @@ async fn the_parked_depth_fails_without_redis() {
     let docket = unreachable().await;
     let mut connection = docket.handle();
 
-    assert!(parked_depth(&docket, &mut connection).await.is_err());
+    assert!(parked_depth(&docket, &mut connection, 0).await.is_err());
 }
 
 /// A worker on a release that keeps no count wakes the tasks on a stream
@@ -115,16 +120,54 @@ async fn a_script_corrects_the_count_that_another_release_left() {
     let waiters = format!("{}:waiters", keys.concurrency(None, "mixed"));
     let mut connection = docket.connection().await.unwrap();
     let () = connection
-        .hset(keys.waiter_index(), &waiters, 3)
+        .zadd(keys.waiter_index(), &waiters, 3)
         .await
         .unwrap();
     let () = connection.set(keys.parked_total(), 3).await.unwrap();
-    assert_eq!(depth(&docket).await, 3);
 
     assert_eq!(scavenge(&docket).await, 0);
 
-    assert_eq!(depth(&docket).await, 0);
     assert_eq!(indexed(&docket).await, HashMap::new());
+    assert_eq!(depth(&docket).await, 0);
+}
+
+/// When no script runs on a stream again, the heartbeat's reads correct its
+/// count.  Each read checks one batch of streams, and reads with an
+/// advancing cursor reach all of them.
+#[tokio::test]
+async fn reads_correct_the_counts_that_another_release_left() {
+    let docket = memory().await;
+    let keys = docket.keys();
+    let gone = PARKED_DEPTH_BATCH + 4;
+    let kept = format!("{}:waiters", keys.concurrency(None, "kept"));
+    let mut connection = docket.connection().await.unwrap();
+    let _: String = connection
+        .xadd(&kept, "*", &[("key", "parked")])
+        .await
+        .unwrap();
+    let () = connection
+        .zadd(keys.waiter_index(), &kept, 1)
+        .await
+        .unwrap();
+    for number in 0..gone {
+        let stream = format!(
+            "{}:waiters",
+            keys.concurrency(None, &format!("gone-{number}"))
+        );
+        let () = connection
+            .zadd(keys.waiter_index(), stream, 2)
+            .await
+            .unwrap();
+    }
+    let () = connection
+        .set(keys.parked_total(), 1 + 2 * gone)
+        .await
+        .unwrap();
+
+    let first = depth_from(&docket, 0).await;
+    assert!(1 < first && first < 41, "one batch is corrected: {first}");
+    assert_eq!(depth_from(&docket, PARKED_DEPTH_BATCH).await, 1);
+    assert_eq!(indexed(&docket).await, HashMap::from([(kept, 1)]));
 }
 
 /// A worker on a release that keeps no count parks a task without counting

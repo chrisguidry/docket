@@ -13,7 +13,9 @@ mod retry;
 mod subject;
 mod timeout;
 
-pub(crate) use concurrency::{SAFEGUARD_PREFIX, SafeguardWake, parked_depth, safeguard_wake};
+pub(crate) use concurrency::{
+    PARKED_DEPTH_BATCH, SAFEGUARD_PREFIX, SafeguardWake, parked_depth, safeguard_wake,
+};
 pub use hooks::{
     Admission, AdmissionBlocked, Admitted, AfterCompletion, AfterFailure, Behavior, BoxError,
     Completion, Failure, Hooks, NotAdmitted, Outcome, Released, Runtime, TaskFuture,
