@@ -496,6 +496,7 @@ Available metrics include:
 
 - `docket_queue_depth` - Tasks ready for immediate execution
 - `docket_schedule_depth` - Tasks scheduled for future execution
+- `docket_parked_depth` - Tasks waiting for a slot under a `ConcurrencyLimit`. Neither of the other two depths counts them, so watch this one for a backlog behind a limit
 - `docket_tasks_running` - Currently executing tasks
 - `docket_redis_disruptions` - Times Redis dropped, timed out, or refused a command that the worker then retried
 - `docket_strikes_in_effect` - Active strike rules

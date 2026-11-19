@@ -17,7 +17,11 @@ from .names import Names, labels
 # Gauges whose values come from the heartbeat, at a moment the driver does
 # not control.  docket_tasks_running and docket_strikes_in_effect are gauges
 # here too, but up-down counters in OpenTelemetry, with values that settle.
-TIMING_GAUGES = {"docket_queue_depth", "docket_schedule_depth"}
+TIMING_GAUGES = {
+    "docket_queue_depth",
+    "docket_schedule_depth",
+    "docket_parked_depth",
+}
 
 # A counter's creation time, a histogram's sum, and its buckets depend on the
 # clock.  The bucket boundaries still show in the samples' labels.

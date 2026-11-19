@@ -58,6 +58,7 @@ from .dependencies import (
     get_single_dependency_parameter_of_type,
     resolved_dependencies,
 )
+from .dependencies._concurrency import PARKED_DEPTH_BATCH, parked_depth
 from .dependencies._perpetual import perpetual_is_live
 from .dependencies._resolution import (
     detect_single_conflicts,
@@ -72,6 +73,7 @@ from .docket import (
 )
 from .execution import TaskFunction, compact_signature
 from .instrumentation import (
+    PARKED_DEPTH,
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
     SCHEDULE_DEPTH,
@@ -1353,6 +1355,7 @@ class Worker:
         if session is None:
             return  # pragma: no cover
 
+        parked_cursor = 0
         while not session.stopping.is_set():  # pragma: no branch
             try:
                 now = datetime.now(timezone.utc).timestamp()
@@ -1397,6 +1400,13 @@ class Worker:
 
                     QUEUE_DEPTH.set(stream_depth + overdue_depth, self.docket.labels())
                     SCHEDULE_DEPTH.set(schedule_depth, self.docket.labels())
+
+                    # After the other depths, so that a failure here leaves
+                    # them reported.
+                    with self._maybe_suppress_instrumentation():
+                        parked = await parked_depth(self.docket, r, parked_cursor)
+                    parked_cursor += PARKED_DEPTH_BATCH
+                    PARKED_DEPTH.set(parked, self.docket.labels())
 
             except asyncio.CancelledError:  # pragma: no cover
                 return

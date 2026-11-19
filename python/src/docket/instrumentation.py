@@ -129,6 +129,11 @@ SCHEDULE_DEPTH = meter.create_gauge(
     description="How many tasks are scheduled to be executed in the future",
     unit="1",
 )
+PARKED_DEPTH = meter.create_gauge(
+    "docket_parked_depth",
+    description="How many tasks are waiting for a concurrency slot",
+    unit="1",
+)
 
 CACHE_SIZE = meter.create_gauge(
     "docket_cache_size",

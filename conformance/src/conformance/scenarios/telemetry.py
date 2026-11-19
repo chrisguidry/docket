@@ -12,6 +12,9 @@ docket:
    implementation from the working tree runs this phase, because the newest
    pydocket release predates the option.
 
+A metric that the newest pydocket release predates is expected only of an
+implementation from the working tree.
+
 The phases need separate workers, because pydocket's metrics server installs
 the global meter provider, and OpenTelemetry for Python lets a process do
 that only once.
@@ -66,7 +69,7 @@ async def run(harness: Harness) -> None:
             **await otlp_phase(harness, implementation),
             **await prometheus_phase(harness, implementation),
         }
-        wanted = expected.TELEMETRY
+        wanted = expected.released(expected.TELEMETRY)
         if implementation.working_tree:
             telemetry |= await parented_phase(harness, implementation)
             wanted = {**expected.TELEMETRY, **expected.PARENTED}
@@ -79,6 +82,9 @@ async def run(harness: Harness) -> None:
             f"{implementation.name}'s telemetry differs from the expected tables:\n"
             + "\n".join(found)
         )
+        # A release is compared with the others on what it emits.
+        if not all(each.working_tree for each in harness.implementations):
+            telemetry = expected.released(telemetry)
         observed[implementation.name] = telemetry
 
     (first, reference), *others = observed.items()
