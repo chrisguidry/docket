@@ -223,6 +223,12 @@ except Exception as e:
     print(f"Unexpected error: {e}")
 ```
 
+The worker pickles the exception to store it.  When an exception cannot be
+pickled, such as one that holds a lock or a socket, `get_result()` raises an
+`UnpicklableException` in its place.  Its `exception_type`, `message`, and
+`traceback` attributes hold the original exception's type name, message, and
+formatted traceback as text.
+
 ### Result Patterns for Workflows
 
 Chain tasks together using results:

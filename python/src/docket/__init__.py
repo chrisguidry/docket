@@ -40,6 +40,7 @@ from .execution import (
     ExecutionCancelled,
     ExecutionState,
     TaskCall,
+    UnpicklableException,
 )
 from .strikelist import StrikeList
 from .worker import Worker
@@ -78,5 +79,6 @@ __all__ = [
     "TaskLogger",
     "testing",
     "Timeout",
+    "UnpicklableException",
     "Worker",
 ]
