@@ -7,10 +7,11 @@ drop.
 
 from __future__ import annotations
 
+import copy
 import time
 from datetime import timedelta
 from types import TracebackType
-from typing import Any
+from typing import Any, Self
 
 from .._lua import Arg, Key, redis_script
 from .._redis import RedisClient
@@ -62,8 +63,8 @@ class Debounce(Dependency["Debounce"]):
         self._argument_name: str | None = None
         self._argument_value: Any = None
 
-    def bind_to_parameter(self, name: str, value: Any) -> Debounce:
-        bound = Debounce(self.settle, scope=self.scope)
+    def bind_to_parameter(self, name: str, value: Any) -> Self:
+        bound = copy.copy(self)
         bound._argument_name = name
         bound._argument_value = value
         return bound

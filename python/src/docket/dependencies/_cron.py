@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone, tzinfo
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from cronsim import CronSim
 
-from ._base import current_execution
 from ._perpetual import Perpetual
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -88,11 +87,12 @@ class Cron(Perpetual):
         self.tz = tz
         self._iterator = CronSim(self.expression, datetime.now(self.tz))
 
-    async def __aenter__(self) -> Cron:
-        execution = current_execution.get()
-        cron = Cron(expression=self.expression, automatic=self.automatic, tz=self.tz)
-        cron.args = execution.args
-        cron.kwargs = execution.kwargs
+    async def __aenter__(self) -> Self:
+        cron = await super().__aenter__()
+        # The copy shares the declared instance's iterator, which counts from
+        # when the task was declared and advances on every read.  Each run
+        # needs the next match after its own start.
+        cron._iterator = CronSim(self.expression, datetime.now(self.tz))
         return cron
 
     def next_time(self) -> datetime:

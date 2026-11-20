@@ -6,9 +6,10 @@ Sets a Redis key on entry with TTL.
 
 from __future__ import annotations
 
+import copy
 from datetime import timedelta
 from types import TracebackType
-from typing import Any
+from typing import Any, Self
 
 from ._base import AdmissionBlocked, Dependency, current_docket, current_execution
 
@@ -38,8 +39,8 @@ class Cooldown(Dependency["Cooldown"]):
         self._argument_name: str | None = None
         self._argument_value: Any = None
 
-    def bind_to_parameter(self, name: str, value: Any) -> Cooldown:
-        bound = Cooldown(self.window, scope=self.scope)
+    def bind_to_parameter(self, name: str, value: Any) -> Self:
+        bound = copy.copy(self)
         bound._argument_name = name
         bound._argument_value = value
         return bound
