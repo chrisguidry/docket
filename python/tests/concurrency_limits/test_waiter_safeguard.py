@@ -37,9 +37,12 @@ async def test_waiter_woken_before_its_safeguard_exists_cancels_the_safeguard(
         finished.append(name)
 
     async def is_woken(task_key: str) -> bool:
+        # A parked waiter's state is "scheduled", and the wake sets "queued".
+        # The worker can claim and finish the woken task before this probe
+        # runs, so any state past "scheduled" means the wake happened.
         async with docket.redis() as redis:
             state = await redis.hget(docket.runs_key(task_key), "state")
-        return state == b"queued"
+        return state is not None and state != b"scheduled"
 
     add = docket.add
 

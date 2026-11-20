@@ -839,8 +839,11 @@ class Worker:
                                 await process_completed_tasks()
                                 available_slots = self.concurrency - len(active_tasks)
                                 if available_slots <= 0:
-                                    await asyncio.sleep(
-                                        self.minimum_check_interval.total_seconds()
+                                    # Wake as soon as a task frees a slot.
+                                    await asyncio.wait(
+                                        active_tasks,
+                                        timeout=self.minimum_check_interval.total_seconds(),
+                                        return_when=asyncio.FIRST_COMPLETED,
                                     )
                                     continue
                                 sources = [get_new_deliveries]
