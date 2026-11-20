@@ -303,3 +303,24 @@ async def test_memory_publish_reaches_a_subscriber():
         async with connection.pubsub() as pubsub:
             await pubsub.subscribe("greetings")
             assert await connection.publish("greetings", "hello") == 1
+
+
+async def test_memory_publish_many_reaches_a_subscriber():
+    """publish_many() on a memory:// connection delivers each message.
+
+    The explicit memory:// URL makes this run on every backend leg.
+    """
+    async with RedisConnection("memory://publish-many") as connection:
+        async with connection.pubsub() as pubsub:
+            await pubsub.subscribe("greetings")
+            await pubsub.get_message(timeout=1)
+
+            await connection.publish_many(
+                [("greetings", "hello"), ("greetings", "again")]
+            )
+
+            received = [await pubsub.get_message(timeout=1) for _ in range(2)]
+            assert [message["data"] for message in received if message] == [
+                b"hello",
+                b"again",
+            ]
