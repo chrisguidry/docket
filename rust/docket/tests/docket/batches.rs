@@ -298,6 +298,20 @@ async fn a_cancel_batch_chunk_size_of_zero_is_refused_even_for_an_empty_batch() 
 }
 
 #[tokio::test]
+async fn an_empty_cancel_batch_cancels_nothing() {
+    let docket = docket().await;
+
+    docket.cancel_many(Vec::<String>::new()).await.unwrap();
+
+    assert_eq!(points(&docket, "docket_tasks_cancelled"), []);
+    let spans = spans_named(&docket, "docket.cancel_many");
+    assert_eq!(
+        attribute(&spans[0], "docket.batch.count").as_deref(),
+        Some("0")
+    );
+}
+
+#[tokio::test]
 async fn cancel_many_counts_each_key_and_records_one_span() {
     let docket = docket().await;
 
