@@ -235,3 +235,57 @@ async def test_cancel_many_emits_one_batch_span(docket: Docket):
     assert call.args == ("docket.cancel_many",)
     assert call.kwargs["attributes"]["docket.name"] == docket.name
     assert call.kwargs["attributes"]["docket.batch.count"] == 4
+
+
+async def test_cancel_many_signals_the_rest_of_a_chunk_when_one_key_fails(
+    docket: Docket, worker: Worker
+):
+    """When one key's cancel fails, the running tasks whose cancels went
+    through in the same chunk still get their signals, as they would from
+    cancel(), and the error is raised after."""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def slow_task() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    docket.register(slow_task)
+    execution = await docket.add(slow_task, key="running")()
+
+    worker_task = asyncio.create_task(worker.run_until_finished())
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+
+    # A string where the runs hash belongs makes the cancel script's HGET fail.
+    async with docket.redis() as redis:
+        await redis.set(docket.runs_key("wrong-type"), "not a hash")
+
+    with pytest.raises(Exception, match="WRONGTYPE"):
+        await docket.cancel_many(["wrong-type", "running"])
+
+    await asyncio.wait_for(cancelled.wait(), timeout=5.0)
+    await asyncio.wait_for(worker_task, timeout=5.0)
+
+    await execution.sync()
+    assert execution.state is ExecutionState.CANCELLED
+
+
+async def test_cancel_many_raises_when_every_key_in_a_chunk_fails(
+    docket: Docket, monkeypatch: pytest.MonkeyPatch
+):
+    """A chunk whose every cancel fails publishes nothing and counts nothing."""
+    tasks_cancelled = Mock(spec=Counter.add)
+    monkeypatch.setattr("docket.instrumentation.TASKS_CANCELLED.add", tasks_cancelled)
+    async with docket.redis() as redis:
+        await redis.set(docket.runs_key("wrong-type"), "not a hash")
+
+    with patch.object(docket._redis, "publish_many", AsyncMock()) as publish_many:  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(Exception, match="WRONGTYPE"):
+            await docket.cancel_many(["wrong-type"])
+
+    publish_many.assert_not_awaited()
+    tasks_cancelled.assert_not_called()

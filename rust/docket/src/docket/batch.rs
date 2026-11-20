@@ -52,9 +52,10 @@ impl Docket {
     /// Redis in pipelines of 1,000 unless the [`CancelBatch`] says otherwise.
     /// Await it to cancel them.
     ///
-    /// The batch is not atomic.  If Redis fails on a pipeline, the await
-    /// returns the error, the tasks in the pipelines before it are
-    /// cancelled, and the pipelines after it are not sent.
+    /// The batch is not atomic.  If Redis fails a command in a pipeline, it
+    /// still runs the rest of that pipeline, and the await returns the
+    /// error.  The tasks in the pipelines before it are cancelled, and the
+    /// pipelines after it are not sent.
     pub fn cancel_many<K: Into<String>>(
         &self,
         keys: impl IntoIterator<Item = K>,

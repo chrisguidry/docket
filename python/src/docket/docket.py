@@ -813,8 +813,9 @@ class Docket(DocketSnapshotMixin):
         Each key is cancelled individually and atomically, and each chunk's
         running tasks get their cancellation signals in one more round-trip.
         There is no atomicity across the batch: when Redis fails a command,
-        this raises after that chunk, the chunks before it stay cancelled,
-        and the chunks after it are not sent.
+        the rest of that chunk is still cancelled and signalled, then this
+        raises the first error, the chunks before it stay cancelled, and the
+        chunks after it are not sent.
 
         Args:
             keys: The keys of the tasks to cancel.
@@ -854,12 +855,26 @@ class Docket(DocketSnapshotMixin):
                                 pipeline.expire(self.runs_key(key), ttl_seconds)
                             else:
                                 pipeline.delete(self.runs_key(key))
-                        await pipeline.execute()
+                        replies = await pipeline.execute(raise_on_error=False)
 
-                    await self._redis.publish_many(
-                        [(self.cancel_channel(key), key) for key in chunk]
-                    )
-                    TASKS_CANCELLED.add(len(chunk), self.labels())
+                    # Redis runs every command of the chunk even when one
+                    # fails, so the keys whose cancel went through get their
+                    # signals before the first error is raised.
+                    errors = [
+                        reply for reply in replies if isinstance(reply, Exception)
+                    ]
+                    cancelled = [
+                        key
+                        for key, script_reply in zip(chunk, replies[::2], strict=True)
+                        if not isinstance(script_reply, Exception)
+                    ]
+                    if cancelled:
+                        await self._redis.publish_many(
+                            [(self.cancel_channel(key), key) for key in cancelled]
+                        )
+                        TASKS_CANCELLED.add(len(cancelled), self.labels())
+                    if errors:
+                        raise errors[0]
 
     async def get_execution(self, key: str) -> Execution | None:
         """Get a task Execution from the Docket by its key.
