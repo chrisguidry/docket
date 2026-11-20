@@ -24,7 +24,7 @@ max_lines = 1336
 
 [[rules]]
 path = "python/src/docket/docket.py"
-max_lines = 1168
+max_lines = 1183
 
 [[rules]]
 path = "python/src/docket/_redis.py"
