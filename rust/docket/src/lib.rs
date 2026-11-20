@@ -34,7 +34,8 @@ pub use behaviors::{
 pub use connection::RedisConnection;
 pub use context::Context;
 pub use docket::{
-    Add, Batch, Call, Docket, DocketBuilder, Registration, Snapshot, TaskSummary, WorkerSummary,
+    Add, Batch, Call, CancelBatch, Docket, DocketBuilder, Registration, Snapshot, TaskSummary,
+    WorkerSummary,
 };
 pub use error::{Error, Result};
 pub use execution::{

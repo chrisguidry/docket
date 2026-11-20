@@ -1,4 +1,4 @@
-//! Adding and replacing many tasks at once, in pipelined chunks.
+//! Adding, replacing, and cancelling many tasks at once, in pipelined chunks.
 
 use std::collections::HashMap;
 use std::future::IntoFuture;
@@ -46,6 +46,87 @@ impl Docket {
     /// partway through returns what [`Docket::add_many`] does.
     pub fn replace_many(&self, calls: impl IntoIterator<Item = Call>) -> Batch<'_> {
         Batch::new(self, calls, true)
+    }
+
+    /// Cancels many tasks, each as [`Docket::cancel`] does, sending them to
+    /// Redis in pipelines of 1,000 unless the [`CancelBatch`] says otherwise.
+    /// Await it to cancel them.
+    ///
+    /// The batch is not atomic.  If Redis fails on a pipeline, the await
+    /// returns the error, the tasks in the pipelines before it are
+    /// cancelled, and the pipelines after it are not sent.
+    pub fn cancel_many<K: Into<String>>(
+        &self,
+        keys: impl IntoIterator<Item = K>,
+    ) -> CancelBatch<'_> {
+        CancelBatch {
+            docket: self,
+            keys: keys.into_iter().map(Into::into).collect(),
+            chunk_size: Some(CHUNK_SIZE),
+        }
+    }
+
+    async fn cancel_batch(&self, keys: Vec<String>, chunk_size: Option<usize>) -> Result<()> {
+        // Checked before anything else, so a bad size is refused even for an
+        // empty batch, as in pydocket.
+        if chunk_size == Some(0) {
+            return Err(Error::Invalid(
+                "a batch's chunk size must be at least 1".into(),
+            ));
+        }
+        let mut attributes = self.labels();
+        attributes.push(KeyValue::new(
+            "docket.batch.count",
+            i64::try_from(keys.len()).unwrap_or(i64::MAX),
+        ));
+        let span = self
+            .telemetry()
+            .producer_span("docket.cancel_many", attributes);
+        let cancelled = self
+            .send_cancels(&keys, chunk_size)
+            .with_context(span.clone())
+            .await;
+        telemetry::end(&span, cancelled.as_ref().map(|()| Vec::new()));
+        cancelled
+    }
+
+    /// Sends each key's cancel script, the expiry of its runs hash, and its
+    /// cancel signal, in pipelines of at most `chunk_size` keys, or all in
+    /// one.  A cluster pipeline goes to the node of its first key, which
+    /// holds every key of the docket, and PUBLISH reaches subscribers on any
+    /// node.
+    async fn send_cancels(&self, keys: &[String], chunk_size: Option<usize>) -> Result<()> {
+        let Some(first) = keys.first() else {
+            return Ok(());
+        };
+        let mut connection = self.handle();
+        let cluster = self.backend().is_cluster();
+        if !cluster {
+            self.cancel_call(first, 0).load(&mut connection).await?;
+        }
+        for chunk in keys.chunks(chunk_size.unwrap_or(keys.len())) {
+            let mut pipeline = redis::pipe();
+            for key in chunk {
+                let call = self.cancel_call(key, 0);
+                if cluster {
+                    call.queue_eval(&mut pipeline);
+                } else {
+                    call.queue(&mut pipeline);
+                }
+                let runs = self.inner.keys.runs(key);
+                match self.ttl_seconds() {
+                    0 => pipeline.del(runs),
+                    ttl => pipeline.expire(runs, ttl),
+                };
+                pipeline.publish(self.inner.keys.cancel(key), key);
+            }
+            pipeline.exec_async(&mut connection).await?;
+            self.telemetry().metrics.tasks_cancelled.add(
+                u64::try_from(chunk.len()).unwrap_or(u64::MAX),
+                &self.labels(),
+            );
+        }
+        Ok(())
     }
 
     async fn place_many(
@@ -231,6 +312,38 @@ impl<'a> IntoFuture for Batch<'a> {
                 .place_many(self.calls, self.replace, self.chunk_size)
                 .await
         })
+    }
+}
+
+/// Many tasks waiting to be cancelled.  Await it to cancel them.
+#[must_use = "a batch does nothing until it is awaited"]
+pub struct CancelBatch<'a> {
+    docket: &'a Docket,
+    keys: Vec<String>,
+    chunk_size: Option<usize>,
+}
+
+impl CancelBatch<'_> {
+    /// Sends at most `size` cancels in each pipeline.  Awaiting the batch
+    /// fails when `size` is 0.
+    pub fn chunk_size(mut self, size: usize) -> Self {
+        self.chunk_size = Some(size);
+        self
+    }
+
+    /// Sends the whole batch in one pipeline.
+    pub fn one_pipeline(mut self) -> Self {
+        self.chunk_size = None;
+        self
+    }
+}
+
+impl<'a> IntoFuture for CancelBatch<'a> {
+    type Output = Result<()>;
+    type IntoFuture = BoxFuture<'a, Self::Output>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move { self.docket.cancel_batch(self.keys, self.chunk_size).await })
     }
 }
 
