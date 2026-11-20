@@ -12,8 +12,10 @@ from docket import (
     Cron,
     Debounce,
     Docket,
+    ExponentialRetry,
     Perpetual,
     RateLimit,
+    Retry,
     Timeout,
     Worker,
 )
@@ -173,3 +175,84 @@ def test_annotated_dependency_binds_as_its_subclass(declared: Dependency[Any]):
     bound: Any = declared.bind_to_parameter("customer_id", 1)
 
     assert (type(bound), bound.label) == (type(declared), "billing")
+
+
+class NeverRetry(Retry):
+    async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
+        return False
+
+
+class NeverExponentialRetry(ExponentialRetry):
+    async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
+        return False
+
+
+@pytest.mark.parametrize(
+    "retry",
+    [NeverRetry(attempts=3), NeverExponentialRetry(attempts=3)],
+)
+async def test_retry_subclass_decides_whether_to_retry(
+    docket: Docket, worker: Worker, retry: Retry
+):
+    """A subclass's handle_failure decides whether a failed task is retried."""
+
+    calls = 0
+
+    async def the_task(retry: Retry = retry) -> None:
+        nonlocal calls
+        calls += 1
+        raise Exception("Failed")
+
+    await docket.add(the_task)()
+
+    await worker.run_until_finished()
+
+    assert calls == 1
+
+
+class LabeledRetry(Retry):
+    def __init__(self, label: str, attempts: int | None = 1) -> None:
+        super().__init__(attempts=attempts)
+        self.label = label
+
+
+class LabeledExponentialRetry(ExponentialRetry):
+    def __init__(self, label: str, attempts: int | None = 1) -> None:
+        super().__init__(attempts=attempts, minimum_delay=timedelta(0))
+        self.label = label
+
+
+@pytest.mark.parametrize(
+    "retry",
+    [
+        LabeledRetry("billing", attempts=2),
+        LabeledExponentialRetry("billing", attempts=2),
+    ],
+)
+async def test_task_receives_retry_subclass_with_its_own_arguments(
+    docket: Docket, worker: Worker, retry: LabeledRetry | LabeledExponentialRetry
+):
+    """A task receives its retry subclass, including state from a constructor
+    that takes different arguments than the base class."""
+
+    received: list[tuple[type[Retry], str, int]] = []
+
+    async def the_task(
+        retry: LabeledRetry | LabeledExponentialRetry = retry,
+    ) -> None:
+        received.append((type(retry), retry.label, retry.attempt))
+        raise Exception("Failed")
+
+    await docket.add(the_task)()
+
+    await worker.run_until_finished()
+
+    assert received == [(type(retry), "billing", 1), (type(retry), "billing", 2)]
+
+
+def test_forever_returns_the_subclass():
+    """forever() on a subclass is typed as, and returns, that subclass."""
+    retry: NeverRetry = NeverRetry.forever()
+    exponential: NeverExponentialRetry = NeverExponentialRetry.forever()
+
+    assert (type(retry), type(exponential)) == (NeverRetry, NeverExponentialRetry)
