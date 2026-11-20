@@ -2,13 +2,15 @@
 
 # pyright: reportPrivateUsage=false, reportAttributeAccessIssue=false, reportUnknownMemberType=false
 
+import logging
+import threading
 from typing import TYPE_CHECKING, Any, Callable
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from docket import Docket, Worker
-from docket.execution import ExecutionState
+from docket.execution import ExecutionState, UnpicklableException
 
 if TYPE_CHECKING:
     from tests._key_leak_checker import KeyCountChecker
@@ -438,3 +440,43 @@ async def test_cluster_store_delete_many(docket: Docket):  # pragma: no cover
     # Empty list
     count = await store.delete_many([])
     assert count == 0
+
+
+class LockHoldingError(Exception):
+    """An exception that holds a lock, so it cannot be pickled."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.lock = threading.RLock()
+
+
+async def test_unpicklable_exception_is_stored_as_text(
+    docket: Docket, worker: Worker, caplog: pytest.LogCaptureFixture
+):
+    """A task whose exception cannot be pickled fails without stopping the worker."""
+
+    async def raises_unpicklable() -> None:
+        raise LockHoldingError("the cluster is down")
+
+    async def returns_value() -> int:
+        return 123
+
+    failing = await docket.add(raises_unpicklable)()
+    succeeding = await docket.add(returns_value)()
+    with caplog.at_level(logging.WARNING, logger="docket"):
+        await worker.run_until_finished()
+
+    await failing.sync()
+    assert failing.state == ExecutionState.FAILED
+    assert failing.error == "LockHoldingError: the cluster is down"
+
+    with pytest.raises(UnpicklableException) as exc_info:
+        await failing.get_result()
+    assert exc_info.value.exception_type == "LockHoldingError"
+    assert exc_info.value.message == "the cluster is down"
+    assert "raises_unpicklable" in exc_info.value.traceback
+    assert str(exc_info.value) == "LockHoldingError: the cluster is down"
+
+    assert "could not be pickled" in caplog.text
+
+    assert await succeeding.get_result() == 123

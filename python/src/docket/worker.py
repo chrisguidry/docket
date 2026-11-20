@@ -70,7 +70,7 @@ from .docket import (
     RedisMessageID,
     RedisReadGroupResponse,
 )
-from .execution import TaskFunction, compact_signature
+from .execution import TaskFunction, compact_signature, pickle_exception
 from .instrumentation import (
     QUEUE_DEPTH,
     REDIS_DISRUPTIONS,
@@ -1291,7 +1291,7 @@ class Worker:
                         # Store exception in result_storage (only when not retrying)
                         result_key = None
                         if self.docket.execution_ttl:
-                            pickled_exception = cloudpickle.dumps(e)  # type: ignore[arg-type]
+                            pickled_exception = pickle_exception(e)
                             # Base64-encode for JSON serialization
                             encoded_exception = base64.b64encode(
                                 pickled_exception

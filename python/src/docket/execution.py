@@ -4,6 +4,7 @@ import enum
 import inspect
 import json
 import logging
+import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -50,6 +51,45 @@ class ExecutionCancelled(Exception):
     """Raised when get_result() is called on a cancelled execution."""
 
     pass
+
+
+class UnpicklableException(Exception):
+    """Raised by get_result() in place of a task's exception that could not be
+    pickled, such as one that holds a lock or a socket.
+
+    It keeps the original exception's type name, message, and formatted
+    traceback as text.
+    """
+
+    def __init__(self, exception_type: str, message: str, traceback: str) -> None:
+        super().__init__(exception_type, message, traceback)
+        self.exception_type = exception_type
+        self.message = message
+        self.traceback = traceback
+
+    def __str__(self) -> str:
+        return f"{self.exception_type}: {self.message}"
+
+
+def pickle_exception(exception: BaseException) -> bytes:
+    """Pickle a task's exception for result storage, or an UnpicklableException
+    that describes it when the exception itself cannot be pickled."""
+    try:
+        return cloudpickle.dumps(exception)  # type: ignore[arg-type]
+    except Exception as pickling_error:
+        logger.warning(
+            "The exception %s could not be pickled (%s: %s); storing its text instead",
+            type(exception).__name__,
+            type(pickling_error).__name__,
+            pickling_error,
+        )
+        return cloudpickle.dumps(
+            UnpicklableException(
+                type(exception).__name__,
+                str(exception),
+                "".join(traceback.format_exception(exception)),
+            )
+        )
 
 
 TaskFunction = Callable[..., Awaitable[Any]]
@@ -835,6 +875,7 @@ class Execution:
             ValueError: If both timeout and deadline are provided
             ExecutionCancelled: If the execution was cancelled before completing
             Exception: If the task failed, raises the stored exception
+                (an UnpicklableException when the original could not be pickled)
             TimeoutError: If timeout/deadline is reached before execution completes
         """
         # Validate that only one time limit is provided
