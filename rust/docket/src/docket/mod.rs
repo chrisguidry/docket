@@ -27,7 +27,7 @@ use crate::task::Task;
 use crate::telemetry::{self, Telemetry};
 use crate::wire::iso;
 
-pub use batch::{Batch, Call};
+pub use batch::{Batch, Call, CancelBatch};
 pub use builder::DocketBuilder;
 pub use registry::Registration;
 pub(crate) use registry::{Registered, Registry};
@@ -169,6 +169,22 @@ impl Docket {
     /// leaves the key alone when a newer generation holds it.  0 skips that
     /// check.  Returns whether the cancel happened.
     pub(crate) async fn cancel_quietly(&self, key: &str, expected_generation: i64) -> Result<bool> {
+        let call = self.cancel_call(key, expected_generation);
+        let mut connection = self.handle();
+        let reply: String = call.run(&mut connection).await?;
+        // The newer generation owns the runs hash and the running task, so
+        // neither its lifetime nor a cancel signal may touch them.
+        if reply == "SUPERSEDED" {
+            return Ok(false);
+        }
+        self.expire_runs(&mut connection, key).await?;
+        let _: i64 = connection.publish(self.inner.keys.cancel(key), key).await?;
+        Ok(true)
+    }
+
+    /// The cancel script for `key`, which leaves a record of the task in the
+    /// cancelled state.
+    pub(crate) fn cancel_call(&self, key: &str, expected_generation: i64) -> scripts::Call {
         let keys = &self.inner.keys;
         let completed_at = iso(self.now());
         let payload = serde_json::json!({
@@ -177,7 +193,7 @@ impl Docket {
             "state": "cancelled",
             "completed_at": completed_at,
         });
-        let call = scripts::CancelTask {
+        scripts::CancelTask {
             stream_key: keys.stream(),
             known_key: keys.known(key),
             parked_key: keys.parked(key),
@@ -191,17 +207,7 @@ impl Docket {
             state_payload: payload.to_string(),
             expected_generation,
         }
-        .call();
-        let mut connection = self.handle();
-        let reply: String = call.run(&mut connection).await?;
-        // The newer generation owns the runs hash and the running task, so
-        // neither its lifetime nor a cancel signal may touch them.
-        if reply == "SUPERSEDED" {
-            return Ok(false);
-        }
-        self.expire_runs(&mut connection, key).await?;
-        let _: i64 = connection.publish(keys.cancel(key), key).await?;
-        Ok(true)
+        .call()
     }
 
     /// Strikes a task, or the calls that match a condition.

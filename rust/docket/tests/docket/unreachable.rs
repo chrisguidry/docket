@@ -29,6 +29,7 @@ type Call = fn(Docket) -> BoxFuture<'static, docket::Result<()>>;
     docket.add_many([docket.call(Noop)]).await.map(drop)
 }.boxed())]
 #[case::cancel(|docket: Docket| async move { docket.cancel("k").await }.boxed())]
+#[case::cancel_many(|docket: Docket| async move { docket.cancel_many(["k"]).await }.boxed())]
 #[case::strike(|docket: Docket| async move { docket.strike(Strike::task::<Noop>()).await }.boxed())]
 #[case::snapshot(|docket: Docket| async move { docket.snapshot().await.map(drop) }.boxed())]
 #[case::execution(|docket: Docket| async move { docket.execution("k").await.map(drop) }.boxed())]

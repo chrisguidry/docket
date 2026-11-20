@@ -37,7 +37,12 @@ from uncalled_for.introspection import (
 
 from ._execution_progress import ExecutionProgress, ProgressEvent, StateEvent
 from ._execution_scripts import _claim, _schedule, _terminal
-from ._redis import RedisClient, confirm_subscriptions, is_cluster_client
+from ._redis import (
+    RedisClient,
+    confirm_subscriptions,
+    is_cluster_client,
+    non_transactional_pipeline,
+)
 from .annotations import Logged
 from .instrumentation import CACHE_SIZE, message_getter, message_setter
 
@@ -164,17 +169,7 @@ async def schedule_many(
             for execution in chunk
         ]
 
-        # Non-transactional: wrapping a chunk in MULTI/EXEC would make it one
-        # uninterruptible block on the server, head-of-line-blocking worker
-        # claims and heartbeats, and per-execution semantics don't need it.
-        try:
-            pipeline = redis.pipeline(transaction=False)
-        except TypeError:  # pragma: no cover - burner's pipeline() takes no arguments
-            # The in-process memory backend executes commands sequentially
-            # with no MULTI/EXEC concept, so its default pipeline already
-            # behaves this way.
-            pipeline = redis.pipeline()
-        async with pipeline:
+        async with non_transactional_pipeline(redis) as pipeline:
             for _, script_args, _ in per_execution:
                 enqueue_schedule(pipeline, **script_args)
             replies = await pipeline.execute(raise_on_error=False)

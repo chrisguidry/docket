@@ -1,13 +1,15 @@
-//! Adding and replacing many tasks at once, and the names a task answers to.
+//! Adding, replacing, and cancelling many tasks at once, and the names a
+//! task answers to.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use docket::{Disposition, Docket, Perpetual, Retry, State, Task};
+use docket::{Disposition, Docket, Perpetual, Retry, State, Task, Timestamp};
 use serde::{Deserialize, Serialize};
 
-use crate::support::{Echo, Noop, docket, docket_through, proxy, within, worker};
+use crate::support::telemetry::{attribute, points, spans_named};
+use crate::support::{Echo, Noop, docket, docket_through, docket_with, proxy, within, worker};
 
 // The proxy counts a pipeline by the reads that carry it, so each batch here
 // stays small enough to arrive in one read of its 16 KB buffer.
@@ -165,4 +167,169 @@ async fn a_perpetual_task_under_another_name_runs_next_under_its_own() {
         .unwrap();
 
     assert_eq!(*names.lock().unwrap(), ["echo-v1", "echo"]);
+}
+
+/// An hour from now, so a task added for then waits in the queue.
+fn later() -> Timestamp {
+    Timestamp::now() + Duration::from_secs(3600)
+}
+
+#[tokio::test]
+async fn cancel_many_cancels_each_task_and_leaves_the_others() {
+    let docket = docket().await;
+    let mut cancelled = Vec::new();
+    for n in 0..3 {
+        cancelled.push(
+            docket
+                .add(Noop)
+                .key(format!("gone-{n}"))
+                .at(later())
+                .await
+                .unwrap(),
+        );
+    }
+    let kept = docket.add(Noop).key("kept").at(later()).await.unwrap();
+
+    docket
+        .cancel_many(cancelled.iter().map(|execution| execution.key().to_owned()))
+        .await
+        .unwrap();
+
+    for execution in &cancelled {
+        assert_eq!(
+            execution.status().await.unwrap().unwrap().state,
+            State::Cancelled
+        );
+    }
+    assert_eq!(
+        kept.status().await.unwrap().unwrap().state,
+        State::Scheduled
+    );
+    let snapshot = docket.snapshot().await.unwrap();
+    let future: Vec<&str> = snapshot
+        .future
+        .iter()
+        .map(|task| task.key.as_str())
+        .collect();
+    assert_eq!(future, ["kept"]);
+}
+
+#[tokio::test]
+async fn cancel_many_stops_a_running_task() {
+    let docket = docket().await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let signal = Arc::clone(&started);
+    docket.register(move |_ctx, _: Noop| {
+        signal.notify_one();
+        std::future::pending::<Result<(), std::io::Error>>()
+    });
+    let execution = docket.add(Noop).key("running").await.unwrap();
+    let run = tokio::spawn(worker(&docket).run_until_finished());
+    within(10, started.notified()).await;
+
+    docket.cancel_many(["running"]).await.unwrap();
+
+    within(10, run).await.unwrap().unwrap();
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn cancel_many_on_a_docket_that_keeps_nothing_deletes_the_record() {
+    let docket = docket_with(|builder| builder.execution_ttl(Duration::ZERO)).await;
+    let execution = docket.add(Noop).key("unkept").at(later()).await.unwrap();
+
+    docket.cancel_many(["unkept"]).await.unwrap();
+
+    assert!(execution.status().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn cancel_many_sends_a_batch_in_chunks_of_the_given_size() {
+    let Some(proxy) = proxy().await else { return };
+    let docket = docket_through(&proxy).await;
+    let keys = (0..10).map(|n| format!("chunked-{n}"));
+
+    docket.cancel_many(keys).chunk_size(4).await.unwrap();
+
+    assert_eq!(proxy.batches("EVALSHA"), 3);
+}
+
+#[tokio::test]
+async fn cancel_many_one_pipeline_sends_the_whole_batch_at_once() {
+    let Some(proxy) = proxy().await else { return };
+    let docket = docket_through(&proxy).await;
+    let keys = (0..10).map(|n| format!("once-{n}"));
+
+    docket.cancel_many(keys).one_pipeline().await.unwrap();
+
+    assert_eq!(proxy.batches("EVALSHA"), 1);
+}
+
+#[tokio::test]
+async fn a_cancel_batch_that_fails_returns_the_error_and_sends_no_more() {
+    let Some(proxy) = proxy().await else { return };
+    let docket = docket_through(&proxy).await;
+    let unsent = docket.add(Noop).key("unsent").at(later()).await.unwrap();
+    proxy.fail("PUBLISH", 1);
+
+    let error = docket
+        .cancel_many(["failed", "unsent"])
+        .chunk_size(1)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("injected failure"), "{error}");
+    assert_eq!(
+        unsent.status().await.unwrap().unwrap().state,
+        State::Scheduled
+    );
+}
+
+#[tokio::test]
+async fn a_cancel_batch_chunk_size_of_zero_is_refused_even_for_an_empty_batch() {
+    let docket = docket().await;
+
+    let refused = docket.cancel_many(Vec::<String>::new()).chunk_size(0).await;
+
+    assert!(matches!(refused, Err(docket::Error::Invalid(_))));
+}
+
+#[tokio::test]
+async fn an_empty_cancel_batch_cancels_nothing() {
+    let docket = docket().await;
+
+    docket.cancel_many(Vec::<String>::new()).await.unwrap();
+
+    assert_eq!(points(&docket, "docket_tasks_cancelled"), []);
+    let spans = spans_named(&docket, "docket.cancel_many");
+    assert_eq!(
+        attribute(&spans[0], "docket.batch.count").as_deref(),
+        Some("0")
+    );
+}
+
+#[tokio::test]
+async fn cancel_many_counts_each_key_and_records_one_span() {
+    let docket = docket().await;
+
+    docket
+        .cancel_many(["a", "b", "c"])
+        .chunk_size(2)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        points(&docket, "docket_tasks_cancelled"),
+        [(Vec::new(), 3.0)]
+    );
+    let spans = spans_named(&docket, "docket.cancel_many");
+    assert_eq!(spans.len(), 1);
+    assert_eq!(
+        attribute(&spans[0], "docket.batch.count").as_deref(),
+        Some("3")
+    );
+    assert_eq!(spans_named(&docket, "docket.cancel").len(), 0);
 }

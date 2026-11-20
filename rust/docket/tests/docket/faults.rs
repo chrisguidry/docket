@@ -128,6 +128,10 @@ type Faulty = fn(Docket, Arc<Proxy>) -> BoxFuture<'static, docket::Result<()>>;
     proxy.fail("SCRIPT", 1);
     docket.add_many([docket.call(Noop)]).await.map(drop)
 }.boxed())]
+#[case::cancel_many_load(|docket: Docket, proxy: Arc<Proxy>| async move {
+    proxy.fail("SCRIPT", 1);
+    docket.cancel_many(["k"]).await
+}.boxed())]
 #[case::snapshot_group(|docket: Docket, proxy: Arc<Proxy>| async move {
     proxy.fail("XGROUP", 1);
     docket.snapshot().await.map(drop)
