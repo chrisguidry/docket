@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, AsyncIterator, overload
+from typing import TYPE_CHECKING, Any, AsyncIterator, Self, overload
 
 from opentelemetry import propagate
 
@@ -199,16 +200,14 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         self._renewal_task: asyncio.Task[None] | None = None
         self._redelivery_timeout: timedelta | None = None
 
-    def bind_to_parameter(self, name: str, value: Any) -> ConcurrencyLimit:
+    def bind_to_parameter(self, name: str, value: Any) -> Self:
         """Bind to an ``Annotated`` parameter, inferring argument_name if not set."""
-        argument_name = self.argument_name if self.argument_name is not None else name
-        return ConcurrencyLimit(
-            argument_name,
-            max_concurrent=self.max_concurrent,
-            scope=self.scope,
-        )
+        bound = copy.copy(self)
+        if bound.argument_name is None:
+            bound.argument_name = name
+        return bound
 
-    async def __aenter__(self) -> ConcurrencyLimit:
+    async def __aenter__(self) -> Self:
         from ._functional import _Depends
 
         execution = current_execution.get()
@@ -245,10 +244,11 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         else:
             concurrency_key = f"{scope}:concurrency:{execution.function_name}"
 
-        # Create a NEW instance for this specific task execution.  The
-        # original (the default parameter value) is shared across all calls,
-        # so its attributes must not be mutated.
-        limit = ConcurrencyLimit(self.argument_name, self.max_concurrent, self.scope)
+        # Copy the instance for this specific task execution.  The original
+        # (the default parameter value) is shared across all calls, so its
+        # attributes must not be mutated.  Copying keeps a subclass and its
+        # state without calling its constructor.
+        limit = copy.copy(self)
         limit._concurrency_key = concurrency_key
         limit._initialized = True
         limit._task_key = execution.key

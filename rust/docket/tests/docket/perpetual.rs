@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use docket::{Event, Perpetual, State, Task};
+use docket::{Event, Perpetual, Retry, State, Task};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -163,6 +163,28 @@ async fn a_perpetual_task_runs_again_after_it_fails() {
         .unwrap();
 
     assert_eq!(*runs.lock().unwrap(), 2);
+}
+
+#[tokio::test]
+async fn each_run_of_a_perpetual_task_gets_its_own_retries() {
+    let docket = docket().await;
+    let attempts = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&attempts);
+    docket
+        .register(move |ctx: docket::Context, _: Noop| {
+            recorded.lock().unwrap().push(ctx.attempt());
+            async { Err::<(), _>(std::io::Error::other("nope")) }
+        })
+        .with(Retry::attempts(2))
+        .with(Perpetual::every(Duration::from_millis(10)));
+    docket.add(Noop).key("stubborn").await.unwrap();
+
+    let limits = HashMap::from([("stubborn".to_owned(), 4)]);
+    within(10, worker(&docket).run_at_most(limits))
+        .await
+        .unwrap();
+
+    assert_eq!(*attempts.lock().unwrap(), [1, 2, 1, 2]);
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Task)]

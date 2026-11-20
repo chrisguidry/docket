@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 from ._base import (
     CompletionHandler,
@@ -85,9 +86,13 @@ class Perpetual(CompletionHandler["Perpetual"]):
         self.cancelled = False
         self._next_when = None
 
-    async def __aenter__(self) -> Perpetual:
+    async def __aenter__(self) -> Self:
+        # Each attempt gets a copy of the declared instance, so what the task
+        # asks of it (cancel, perpetuate, after, at) applies to that attempt
+        # alone.  Copying keeps a subclass and its state without calling its
+        # constructor, whose arguments may differ from this class's.
         execution = current_execution.get()
-        perpetual = Perpetual(every=self.every, automatic=self.automatic)
+        perpetual = copy.copy(self)
         perpetual.args = execution.args
         perpetual.kwargs = execution.kwargs
         return perpetual

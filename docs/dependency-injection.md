@@ -581,6 +581,12 @@ async def audited_task(
 ```
 
 
+### Subclassing the built-in behaviors
+
+You can also subclass a built-in behavior to change one part of it: override `handle_failure` on `Retry`, `on_complete` on `Perpetual` or `Cron`, or `run` on `Timeout`. The task receives an instance of your subclass, and the worker calls your overrides. See [Custom Retry Policies](task-behaviors.md#custom-retry-policies) for an example.
+
+Each execution works with a shallow copy of the instance you declared, so your subclass's constructor may take any arguments, and attributes it sets are available on the copy. `ConcurrencyLimit`, `Cooldown`, `RateLimit`, and `Debounce` are copied the same way when they are bound to a parameter through `Annotated`.
+
 ## Worker-level dependencies
 
 Sometimes you want a dependency to run around **every** task a worker

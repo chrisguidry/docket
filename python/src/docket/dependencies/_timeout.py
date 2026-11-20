@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Self
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..execution import Execution
@@ -37,8 +38,11 @@ class Timeout(Runtime["Timeout"]):
         """
         self.base = base
 
-    async def __aenter__(self) -> Timeout:
-        return Timeout(base=self.base)
+    async def __aenter__(self) -> Self:
+        # Each execution gets a copy of the declared instance, with its own
+        # deadline.  Copying keeps a subclass and its state without calling
+        # its constructor, whose arguments may differ from this class's.
+        return copy.copy(self)
 
     def start(self) -> None:
         self._deadline = time.monotonic() + self.base.total_seconds()

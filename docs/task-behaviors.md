@@ -256,6 +256,61 @@ async def call_flaky_api(
 
 You can also pass `attempts=None` directly, which is equivalent.
 
+### Retries with Perpetual and Cron
+
+A task can declare a retry alongside `Perpetual` or `Cron`. The retry applies within one run: a run that fails is retried until it succeeds or its attempts are used up, and only then is the next run scheduled. Each run starts again at attempt 1, so a task that always fails makes `attempts` attempts in every run.
+
+```python
+async def hourly_sync(
+    perpetual: Perpetual = Perpetual(every=timedelta(hours=1)),
+    retry: Retry = Retry(attempts=3, delay=timedelta(seconds=30)),
+) -> None:
+    # Up to 3 attempts per run, 30 seconds apart; the next run is scheduled
+    # an hour after the last attempt started
+    await sync_external_data()
+```
+
+Exhausted retries never stop the cycle. A task that should stop rescheduling itself once its retries run out calls `perpetual.cancel()` on its last attempt:
+
+```python
+async def sync_until_it_fails(
+    perpetual: Perpetual = Perpetual(every=timedelta(hours=1)),
+    retry: Retry = Retry(attempts=3, delay=timedelta(seconds=30)),
+) -> None:
+    try:
+        await sync_external_data()
+    except Exception:
+        if retry.attempt == retry.attempts:
+            perpetual.cancel()
+        raise
+```
+
+Each attempt receives its own `Perpetual`, so `cancel()`, `perpetuate()`, `after()`, and `at()` take effect only on the attempt that ends the run; a call on an attempt that is retried is discarded. For an automatic task `cancel()` only pauses it until a worker next adds it, so use `docket.strike()` to stop one durably.
+
+### Custom Retry Policies
+
+To decide for yourself which failures are retried, subclass `Retry` or `ExponentialRetry` and override `handle_failure`. Return `False` to let the task fail, or call the base method to retry as usual:
+
+```python
+from docket import Retry
+from docket.dependencies import TaskOutcome
+from docket.execution import Execution
+
+class RetryUnlessInvalid(Retry):
+    async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
+        if isinstance(outcome.exception, ValueError):
+            return False
+        return await super().handle_failure(execution, outcome)
+
+async def import_record(
+    record_id: str,
+    retry: Retry = RetryUnlessInvalid(attempts=5),
+) -> None:
+    await import_from_source(record_id)
+```
+
+Each attempt receives a shallow copy of the retry the task declared, with `attempt` set, so attributes a subclass sets in its constructor are available in the task and in `handle_failure`. An attribute that an attempt assigns on its copy is not carried to the next attempt, which may run on another worker; keep a count that must outlast one attempt in Redis or another store. A mutable attribute such as a list is the same object in every copy, so do not use one for per-attempt state.
+
 ## Task Timeouts
 
 Prevent tasks from running too long with the `Timeout` dependency:

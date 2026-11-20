@@ -8,10 +8,11 @@ millisecond timestamps.
 
 from __future__ import annotations
 
+import copy
 import time
 from datetime import timedelta
 from types import TracebackType
-from typing import Any
+from typing import Any, Self
 
 from .._lua import Arg, Key, redis_script
 from .._redis import RedisClient
@@ -74,8 +75,8 @@ class RateLimit(Dependency["RateLimit"]):
         self._ratelimit_key: str | None = None
         self._member: str | None = None
 
-    def bind_to_parameter(self, name: str, value: Any) -> RateLimit:
-        bound = RateLimit(self.limit, per=self.per, drop=self.drop, scope=self.scope)
+    def bind_to_parameter(self, name: str, value: Any) -> Self:
+        bound = copy.copy(self)
         bound._argument_name = name
         bound._argument_value = value
         return bound

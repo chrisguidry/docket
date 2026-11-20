@@ -126,3 +126,49 @@ async def test_perpetual_after_is_respected_on_failure(docket: Docket, worker: W
     delay = run_times[1] - run_times[0]
     # Should have waited ~100ms between runs
     assert delay >= timedelta(milliseconds=50)
+
+
+async def test_cancel_on_the_final_attempt_stops_a_perpetual_task(
+    docket: Docket, worker: Worker
+):
+    """A perpetual task with retries stops rescheduling itself when it cancels
+    on its last attempt."""
+    attempts: list[int] = []
+
+    async def the_task(
+        retry: Retry = Retry(attempts=3),
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
+    ):
+        attempts.append(retry.attempt)
+        if retry.attempt == retry.attempts:
+            perpetual.cancel()
+        raise ValueError("failing every attempt")
+
+    await docket.add(the_task)()
+
+    await worker.run_until_finished()
+
+    assert attempts == [1, 2, 3]
+
+
+async def test_cancel_on_a_retried_attempt_does_not_stop_a_perpetual_task(
+    docket: Docket, worker: Worker
+):
+    """Each attempt has its own Perpetual, so a cancel on an attempt that is
+    retried is not seen when the run finally completes."""
+    attempts: list[int] = []
+
+    async def the_task(
+        retry: Retry = Retry(attempts=2),
+        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
+    ):
+        attempts.append(retry.attempt)
+        if retry.attempt == 1:
+            perpetual.cancel()
+        raise ValueError("failing every attempt")
+
+    execution = await docket.add(the_task)()
+
+    await worker.run_at_most({execution.key: 4})
+
+    assert attempts == [1, 2, 1, 2]
