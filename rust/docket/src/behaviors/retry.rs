@@ -68,6 +68,9 @@ impl Failure for Retry {
 
 /// Retries a failed task with a delay that doubles each time:
 /// `minimum_delay`, then twice that, up to `maximum_delay`.
+///
+/// With [`Perpetual`](super::Perpetual) or [`Cron`](super::Cron), the
+/// attempts apply within one run, and each run starts again at attempt 1.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExponentialRetry {
     attempts: Option<u32>,

@@ -265,11 +265,27 @@ async def hourly_sync(
     perpetual: Perpetual = Perpetual(every=timedelta(hours=1)),
     retry: Retry = Retry(attempts=3, delay=timedelta(seconds=30)),
 ) -> None:
-    # Up to 3 attempts each hour, 30 seconds apart
+    # Up to 3 attempts per run, 30 seconds apart; the next run is scheduled
+    # an hour after the last attempt started
     await sync_external_data()
 ```
 
-Exhausted retries never stop the cycle. A task that should stop rescheduling itself calls `perpetual.cancel()`. For an automatic task that only pauses it until a worker next adds it, so use `docket.strike()` to stop one durably.
+Exhausted retries never stop the cycle. A task that should stop rescheduling itself once its retries run out calls `perpetual.cancel()` on its last attempt:
+
+```python
+async def sync_until_it_fails(
+    perpetual: Perpetual = Perpetual(every=timedelta(hours=1)),
+    retry: Retry = Retry(attempts=3, delay=timedelta(seconds=30)),
+) -> None:
+    try:
+        await sync_external_data()
+    except Exception:
+        if retry.attempt == retry.attempts:
+            perpetual.cancel()
+        raise
+```
+
+Each attempt receives its own `Perpetual`, so `cancel()`, `perpetuate()`, `after()`, and `at()` take effect only on the attempt that ends the run; a call on an attempt that is retried is discarded. For an automatic task `cancel()` only pauses it until a worker next adds it, so use `docket.strike()` to stop one durably.
 
 ### Custom Retry Policies
 
@@ -293,7 +309,7 @@ async def import_record(
     await import_from_source(record_id)
 ```
 
-Each attempt receives a copy of the retry the task declared, with `attempt` set, so attributes a subclass sets in its constructor are available in the task and in `handle_failure`.
+Each attempt receives a shallow copy of the retry the task declared, with `attempt` set, so attributes a subclass sets in its constructor are available in the task and in `handle_failure`. An attribute that an attempt assigns on its copy is not carried to the next attempt, which may run on another worker; keep a count that must outlast one attempt in Redis or another store. A mutable attribute such as a list is the same object in every copy, so do not use one for per-attempt state.
 
 ## Task Timeouts
 

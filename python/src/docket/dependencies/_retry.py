@@ -36,8 +36,9 @@ class Retry(FailureHandler["Retry"]):
     starts again at attempt 1.
 
     Subclasses can override `handle_failure` to decide which failures are
-    retried.  Each attempt receives a copy of the declared instance, so state a
-    subclass sets in its constructor is kept.
+    retried.  Each attempt receives a shallow copy of the declared instance, so
+    state a subclass sets in its constructor is kept, and an attribute an
+    attempt assigns on its copy is not carried to the next attempt.
 
     Examples:
 
@@ -68,7 +69,7 @@ class Retry(FailureHandler["Retry"]):
         self.attempt = 1
 
     @classmethod
-    def forever(cls, delay: timedelta = timedelta(0)) -> Retry:
+    def forever(cls, delay: timedelta = timedelta(0)) -> Self:
         """Create a retry that retries indefinitely until the task succeeds.
 
         Example:
@@ -177,6 +178,9 @@ class ExponentialRetry(Retry):
     of attempts (or `None` to retry indefinitely), and the minimum and maximum delays
     between attempts.
 
+    With `Perpetual` or `Cron`, the attempts apply within one run, and each run
+    starts again at attempt 1.
+
     Examples:
 
     ```python
@@ -211,7 +215,7 @@ class ExponentialRetry(Retry):
         cls,
         delay: timedelta = timedelta(seconds=1),
         maximum_delay: timedelta = timedelta(seconds=64),
-    ) -> ExponentialRetry:
+    ) -> Self:
         """Create an exponential retry that retries indefinitely.
 
         Args:
