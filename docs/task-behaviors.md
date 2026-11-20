@@ -256,6 +256,45 @@ async def call_flaky_api(
 
 You can also pass `attempts=None` directly, which is equivalent.
 
+### Retries with Perpetual and Cron
+
+A task can declare a retry alongside `Perpetual` or `Cron`. The retry applies within one run: a run that fails is retried until it succeeds or its attempts are used up, and only then is the next run scheduled. Each run starts again at attempt 1, so a task that always fails makes `attempts` attempts in every run.
+
+```python
+async def hourly_sync(
+    perpetual: Perpetual = Perpetual(every=timedelta(hours=1)),
+    retry: Retry = Retry(attempts=3, delay=timedelta(seconds=30)),
+) -> None:
+    # Up to 3 attempts each hour, 30 seconds apart
+    await sync_external_data()
+```
+
+Exhausted retries never stop the cycle. A task that should stop rescheduling itself calls `perpetual.cancel()`. For an automatic task that only pauses it until a worker next adds it, so use `docket.strike()` to stop one durably.
+
+### Custom Retry Policies
+
+To decide for yourself which failures are retried, subclass `Retry` or `ExponentialRetry` and override `handle_failure`. Return `False` to let the task fail, or call the base method to retry as usual:
+
+```python
+from docket import Retry
+from docket.dependencies import TaskOutcome
+from docket.execution import Execution
+
+class RetryUnlessInvalid(Retry):
+    async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
+        if isinstance(outcome.exception, ValueError):
+            return False
+        return await super().handle_failure(execution, outcome)
+
+async def import_record(
+    record_id: str,
+    retry: Retry = RetryUnlessInvalid(attempts=5),
+) -> None:
+    await import_from_source(record_id)
+```
+
+Each attempt receives a copy of the retry the task declared, with `attempt` set, so attributes a subclass sets in its constructor are available in the task and in `handle_failure`.
+
 ## Task Timeouts
 
 Prevent tasks from running too long with the `Timeout` dependency:

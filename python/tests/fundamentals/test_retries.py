@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from docket import Docket, ExponentialRetry, Retry, Worker
+from docket.dependencies import TaskOutcome
+from docket.execution import Execution
 
 
 async def test_errors_are_logged(
@@ -336,3 +338,99 @@ async def test_supports_exponential_backoff_retries_under_maximum_delay(
     assert total_delay >= timedelta(milliseconds=25 + 50 + 100 + 100)
 
     assert calls == 5
+
+
+class NeverRetry(Retry):
+    async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
+        return False
+
+
+class NeverExponentialRetry(ExponentialRetry):
+    async def handle_failure(self, execution: Execution, outcome: TaskOutcome) -> bool:
+        return False
+
+
+@pytest.mark.parametrize(
+    "retry",
+    [NeverRetry(attempts=3), NeverExponentialRetry(attempts=3)],
+)
+async def test_subclass_decides_whether_to_retry(
+    docket: Docket, worker: Worker, retry: Retry
+):
+    """A subclass's handle_failure decides whether a failed task is retried."""
+
+    calls = 0
+
+    async def the_task(retry: Retry = retry) -> None:
+        nonlocal calls
+        calls += 1
+        raise Exception("Failed")
+
+    await docket.add(the_task)()
+
+    await worker.run_until_finished()
+
+    assert calls == 1
+
+
+class LabeledRetry(Retry):
+    def __init__(self, label: str, attempts: int | None = 1) -> None:
+        super().__init__(attempts=attempts)
+        self.label = label
+
+
+class LabeledExponentialRetry(ExponentialRetry):
+    def __init__(self, label: str, attempts: int | None = 1) -> None:
+        super().__init__(attempts=attempts, minimum_delay=timedelta(0))
+        self.label = label
+
+
+@pytest.mark.parametrize(
+    "retry",
+    [
+        LabeledRetry("billing", attempts=2),
+        LabeledExponentialRetry("billing", attempts=2),
+    ],
+)
+async def test_task_receives_subclass_with_its_own_arguments(
+    docket: Docket, worker: Worker, retry: LabeledRetry | LabeledExponentialRetry
+):
+    """A task receives its retry subclass, including state from a constructor
+    that takes different arguments than the base class."""
+
+    received: list[tuple[type[Retry], str, int]] = []
+
+    async def the_task(
+        retry: LabeledRetry | LabeledExponentialRetry = retry,
+    ) -> None:
+        received.append((type(retry), retry.label, retry.attempt))
+        raise Exception("Failed")
+
+    await docket.add(the_task)()
+
+    await worker.run_until_finished()
+
+    assert received == [(type(retry), "billing", 1), (type(retry), "billing", 2)]
+
+
+async def test_forced_retry_delay_applies_to_one_attempt_only(
+    docket: Docket, worker: Worker
+):
+    """The delay a task passes to after() does not change the delay the task
+    declared for its later attempts."""
+
+    declared = Retry(attempts=3, delay=timedelta(milliseconds=5))
+    delays: list[timedelta] = []
+
+    async def the_task(retry: Retry = declared) -> None:
+        delays.append(retry.delay)
+        if retry.attempt == 1:
+            retry.after(timedelta(milliseconds=10))
+        raise Exception("Failed")
+
+    await docket.add(the_task)()
+
+    await worker.run_until_finished()
+
+    assert delays == [timedelta(milliseconds=5)] * 3
+    assert declared.delay == timedelta(milliseconds=5)

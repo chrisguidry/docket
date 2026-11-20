@@ -10,6 +10,9 @@ use crate::task::Task;
 /// Retries a failed task after a fixed delay.  `attempts` counts every run,
 /// the first included, so `Retry::attempts(1)` never retries.
 ///
+/// With [`Perpetual`](super::Perpetual) or [`Cron`](super::Cron), the
+/// attempts apply within one run, and each run starts again at attempt 1.
+///
 /// A handler can ask for a retry at a time it chooses by returning
 /// [`ForcedRetry`]; that spends an attempt like any failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
