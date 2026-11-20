@@ -80,6 +80,18 @@ await docket.replace_many(
 )
 ```
 
+`cancel_many` is the batched form of `cancel`. It takes the keys to cancel
+and the same `chunk_size`, and cancels each key exactly as `cancel` does:
+the task comes off the queue or the stream, its record moves to
+`CANCELLED`, and a running task gets its cancellation signal.  A chunk
+costs two round-trips, one for the cancels and one for the signals.  There
+is no atomicity across the batch: if Redis fails a command, `cancel_many`
+raises after that chunk, and the chunks before it stay cancelled.
+
+```python
+await docket.cancel_many(f"freshness-{d.id}" for d in retired_deployments)
+```
+
 ## Task Scattering with Agenda
 
 For "find-and-flood" workloads, you often want to distribute a batch of tasks over time rather than scheduling them all immediately. The `Agenda` class collects related tasks and scatters them evenly across a time window.

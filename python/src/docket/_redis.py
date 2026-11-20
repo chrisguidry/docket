@@ -151,6 +151,7 @@ class Pipeline(Protocol):
         value: EncodableT | None = None,
         mapping: Mapping[KeyT, EncodableT] | None = None,
     ) -> "Pipeline": ...
+    def publish(self, channel: KeyT, message: EncodableT) -> "Pipeline": ...
     def sadd(self, name: KeyT, *values: EncodableT) -> "Pipeline": ...
     def xack(self, name: KeyT, groupname: KeyT, *ids: StreamIDT) -> "Pipeline": ...
     def xdel(self, name: KeyT, *ids: StreamIDT) -> "Pipeline": ...
@@ -610,6 +611,22 @@ def is_cluster_client(redis: RedisClient) -> bool:
     return isinstance(redis, RedisCluster)
 
 
+def non_transactional_pipeline(redis: RedisClient) -> Pipeline:
+    """Open a pipeline that sends its commands without MULTI/EXEC.
+
+    Wrapping a batch in MULTI/EXEC would make it one uninterruptible block on
+    the server, which delays worker claims and heartbeats.  The batch methods
+    don't need it, because each command they send is atomic on its own.
+    """
+    try:
+        return redis.pipeline(transaction=False)
+    except TypeError:  # pragma: no cover - burner's pipeline() takes no arguments
+        # The in-process memory backend executes commands sequentially
+        # with no MULTI/EXEC concept, so its default pipeline already
+        # behaves this way.
+        return redis.pipeline()
+
+
 async def close_resource(resource: AsyncCloseable, name: str) -> None:
     """Close a resource with error handling.
 
@@ -1013,6 +1030,23 @@ class RedisConnection:
         else:  # pragma: no cover - needs a standalone Redis server
             client = require_open(self._client)
             return cast(int, await client.publish(channel, message))  # pyright: ignore[reportUnknownMemberType]
+
+    async def publish_many(self, messages: Sequence[tuple[str, str]]) -> None:
+        """Publish each ``(channel, message)`` pair in one pipelined round-trip.
+
+        On a cluster this goes through the node client, as ``publish`` does,
+        because redis-py blocks PUBLISH in cluster pipelines.
+        """
+        if self._cluster_client is not None:  # pragma: no cover
+            client = cast(RedisClient, require_open(self._node_client))
+        elif self._memory_client is not None:
+            client = self._memory_client
+        else:  # pragma: no cover - needs a standalone Redis server
+            client = cast(RedisClient, require_open(self._client))
+        async with non_transactional_pipeline(client) as pipeline:
+            for channel, message in messages:
+                pipeline.publish(channel, message)
+            await pipeline.execute()
 
     @asynccontextmanager
     async def _cluster_pubsub(self) -> AsyncGenerator[PubSub, None]:  # pragma: no cover

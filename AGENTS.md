@@ -112,6 +112,7 @@ prose ride along to a PR. Only switch into the skill's standalone
   - `replace()`: Replace existing scheduled tasks
   - `call()` + `add_many()`/`replace_many()`: Batch scheduling in one pipelined round-trip
   - `cancel()`: Cancel pending tasks
+  - `cancel_many()`: Batch cancellation in pipelined round-trips
   - `strike()`/`restore()`: Conditionally block/unblock tasks
   - `snapshot()`: Get current state for observability
 

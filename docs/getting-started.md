@@ -139,7 +139,7 @@ await docket.add_many(
 )
 ```
 
-See [Batch Scheduling](task-patterns.md#batch-scheduling-with-add_many-and-replace_many) for the details.
+`cancel_many` does the same for a batch of keys to cancel.  See [Batch Scheduling](task-patterns.md#batch-scheduling-with-add_many-and-replace_many) for the details.
 
 ## Running Tasks: Workers
 
