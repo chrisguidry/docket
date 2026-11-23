@@ -31,6 +31,7 @@ from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task, can
 from ._lua import Arg, Key, redis_script
 from ._redelivery import RedeliverySweep, renew_leases
 from ._redis import RedisClient, redis_is_unavailable
+from ._subscription import Subscription
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import LockError, RedisError, ResponseError
@@ -1431,21 +1432,16 @@ class Worker:
         log_context = self._log_context()
         while not session.stopping.is_set():
             try:
-                async with self.docket._pubsub() as pubsub:
-                    await pubsub.psubscribe(cancel_pattern)
+                async with Subscription(
+                    self.docket, patterns=[cancel_pattern]
+                ) as subscription:
+                    # The server has confirmed the subscription, so
+                    # cancellations published from here on will be delivered.
+                    session.cancellation_ready.set()
                     while not session.stopping.is_set():  # pragma: no branch
-                        message = await pubsub.get_message(
-                            ignore_subscribe_messages=False, timeout=0.1
-                        )
-                        if message is None:
-                            continue  # pragma: no cover - CPython gh-106749
-                        if message["type"] == "pmessage":
+                        message = await subscription.get_message(timeout=0.1)
+                        if message is not None:
                             await self._handle_cancellation(message)
-                        else:
-                            # The PSUBSCRIBE confirmation: the server now has
-                            # the subscription, so cancellations published
-                            # from here on will be delivered.
-                            session.cancellation_ready.set()
             except RedisError:
                 if session.stopping.is_set():
                     return  # pragma: no cover

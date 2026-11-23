@@ -242,6 +242,8 @@ class PubSubClient(Protocol):
 
     async def subscribe(self, *channels: KeyT) -> None: ...
     async def psubscribe(self, *patterns: KeyT) -> None: ...
+    async def unsubscribe(self, *channels: KeyT) -> None: ...
+    async def punsubscribe(self, *patterns: KeyT) -> None: ...
     async def get_message(
         self,
         ignore_subscribe_messages: bool = False,
@@ -839,6 +841,11 @@ class RedisConnection:
     def is_memory(self) -> bool:
         """Check if this connection is to an in-memory backend."""
         return self._parsed.scheme == "memory"
+
+    @property
+    def rotations(self) -> int:
+        """How many times the credential provider has rotated its credentials."""
+        return self._rotation.rotations
 
     @property
     def cluster_client(self) -> RedisCluster | None:

@@ -17,6 +17,7 @@ from uncalled_for import current_frame
 from .._cancellation import CANCEL_MSG_CLEANUP, cancel_task
 from .._lua import Arg, Args, Key, redis_script
 from .._redis import RedisClient
+from .._subscription import Subscription
 from ..instrumentation import message_setter
 from ._base import (
     AdmissionBlocked,
@@ -396,12 +397,9 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         publish.
         """
         pattern = f"{docket.prefix}:cancel:*"
-        async with docket._pubsub() as pubsub:
+        async with Subscription(docket, patterns=[pattern]) as subscription:
             try:
-                await pubsub.psubscribe(pattern)
-                async for message in pubsub.listen():  # pragma: no branch
-                    if message.get("type") != "pmessage":
-                        continue
+                async for message in subscription.listen():  # pragma: no branch
                     data = message.get("data")
                     if isinstance(data, bytes):
                         task_key = data.decode()
@@ -414,11 +412,6 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                     await cls._cleanup_cancelled_waiter(docket, task_key)
             except asyncio.CancelledError:
                 pass
-            finally:
-                try:
-                    await pubsub.punsubscribe(pattern)
-                except Exception:  # pragma: no cover
-                    pass
 
     @classmethod
     async def _cleanup_cancelled_waiter(cls, docket: "Docket", task_key: str) -> None:

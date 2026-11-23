@@ -10,7 +10,8 @@ pool and cluster that uses the provider.
 
 A subscribed RESP2 connection can't send AUTH, so it keeps the credentials it
 connected with.  Its reader owns its socket, and a reconnect from here would
-race the reader for it.
+race the reader for it.  So the callback only counts the rotation, and each
+Subscription moves itself to a new connection on its next read.
 
 A connection in use during a refresh gets its AUTH when it comes back to its
 pool.  redis-py sends that AUTH from a listener that runs after the connection
@@ -71,6 +72,7 @@ class Rotation:
     def __init__(self) -> None:
         self._pools: set[ConnectionPool] = set()
         self._clusters: set[RedisCluster] = set()
+        self.rotations = 0
 
     def following_pool(self, pool: ConnectionPool) -> AbstractContextManager[None]:
         return _member(self._pools, pool)
@@ -86,7 +88,8 @@ class Rotation:
         # A pool sends AUTH on its idle connections now, and on each connection
         # in use when that connection comes back to the pool.  A subscriber's
         # connection is disconnected before it comes back, so it never gets
-        # that AUTH.
+        # that AUTH, and its Subscription moves to a new connection instead.
+        self.rotations += 1
         for pool in list(self._pools):
             await pool.re_auth_callback(token)
         for cluster in list(self._clusters):

@@ -11,7 +11,7 @@ import asyncio
 import gc
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
-from typing import Any, AsyncGenerator, Callable, NamedTuple
+from typing import AsyncGenerator, Callable, NamedTuple
 from uuid import uuid4
 
 import pytest
@@ -19,6 +19,7 @@ from redis.asyncio import Redis
 
 from docket import Docket, Worker
 from docket._redis import RedisConnection
+from docket._subscription import Subscription
 from tests._container import ACL_ENABLED, ACLCredentials
 from tests._rotating_provider import RotatingProvider
 from tests.conftest import skip_cluster, skip_memory, wait_until
@@ -159,16 +160,14 @@ async def subscribers(admin: Redis, users: tuple[User, User]) -> list[str]:
 
 
 @asynccontextmanager
-async def reading(pubsub: Any) -> AsyncGenerator[list[bytes], None]:
+async def reading(subscription: Subscription) -> AsyncGenerator[list[bytes], None]:
     """Read messages the way the worker's cancellation listener does, until
     the context exits."""
     received: list[bytes] = []
 
     async def read() -> None:
         while True:
-            message = await pubsub.get_message(
-                ignore_subscribe_messages=True, timeout=0.1
-            )
+            message = await subscription.get_message(timeout=0.1)
             if message is not None:
                 received.append(message["data"])
 
@@ -183,34 +182,53 @@ async def reading(pubsub: Any) -> AsyncGenerator[list[bytes], None]:
             await reader
 
 
-async def test_a_rotation_leaves_a_reading_subscriber_alone(
-    credential_less_url: str, admin: Redis, users: tuple[User, User]
+async def test_a_rotation_moves_a_reading_subscription_to_the_new_user(
+    credential_less_url: str,
+    admin: Redis,
+    users: tuple[User, User],
+    make_docket_name: Callable[[], str],
 ):
-    """A RESP2 subscriber can't send AUTH, and its reader owns its socket, so a
-    rotation leaves it alone: one connection, still getting messages."""
+    """A RESP2 subscriber can't send AUTH, so after a rotation its reader moves
+    the subscription to a connection authenticated as the new user, and keeps
+    every message published before, during, and after the move."""
     old, new = users
     provider = RotatingProvider(*old)
     # One statement for both, because coverage.py's sys.monitoring core reports
     # a false partial branch on the innermost of three nested with statements.
     async with (
-        RedisConnection(credential_less_url, provider) as connection,
-        connection.pubsub() as pubsub,
+        Docket(
+            name=make_docket_name(),
+            url=credential_less_url,
+            credential_provider=provider,
+        ) as docket,
+        Subscription(docket, channels=["rotation"]) as subscription,
     ):
-        await pubsub.subscribe("rotation")
-        async with reading(pubsub) as received:
+        async with reading(subscription) as received:
             await wait_until(
                 lambda: subscribed_as(admin, users, old),
                 description="the subscriber to authenticate as the old user",
             )
 
+            sent = [f"{i}".encode() for i in range(100)]
+
+            async def publish() -> None:
+                for message in sent:
+                    await admin.publish("rotation", message)  # type: ignore[reportUnknownMemberType]
+
+            publishing = asyncio.create_task(publish())
             await provider.rotate(*new)
-            await admin.publish("rotation", "after")  # type: ignore[reportUnknownMemberType]
+            await publishing
+
             await wait_until(
-                lambda: b"after" in received,
-                description="a message published after the rotation",
+                lambda: subscribed_as(admin, users, new),
+                description="the subscriber to authenticate as the new user",
+            )
+            await wait_until(
+                lambda: set(sent) <= set(received),
+                description="every message published around the rotation",
             )
 
-            assert await subscribers(admin, users) == [old.name]
+            assert await subscribers(admin, users) == [new.name]
 
 
 async def test_a_rotation_before_connecting_reaches_the_first_connection(

@@ -39,10 +39,10 @@ from ._execution_progress import ExecutionProgress, ProgressEvent, StateEvent
 from ._execution_scripts import _claim, _schedule, _terminal
 from ._redis import (
     RedisClient,
-    confirm_subscriptions,
     is_cluster_client,
     non_transactional_pipeline,
 )
+from ._subscription import Subscription
 from .annotations import Logged
 from .instrumentation import CACHE_SIZE, message_getter, message_setter
 
@@ -1092,10 +1092,9 @@ class Execution:
 
         state_channel = self.docket.key(f"state:{self.key}")
         progress_channel = self.docket.key(f"progress:{self.key}")
-        async with self.docket._pubsub() as pubsub:
-            await pubsub.subscribe(state_channel, progress_channel)
-            await confirm_subscriptions(pubsub, 2)
-
+        async with Subscription(
+            self.docket, channels=[state_channel, progress_channel]
+        ) as subscription:
             # Redis delivers a message only to current subscribers, so this read
             # finds any change published between the first read and the
             # subscription.  Without it, a task that finishes in that window
@@ -1111,12 +1110,11 @@ class Execution:
             if latest_progress != progress_event:
                 yield latest_progress
 
-            async for message in pubsub.listen():  # pragma: no cover
-                if message["type"] == "message":
-                    message_data = json.loads(message["data"])
-                    if message_data["type"] == "state":
-                        message_data["state"] = ExecutionState(message_data["state"])
-                    yield message_data
+            async for message in subscription.listen():  # pragma: no cover
+                message_data = json.loads(message["data"])
+                if message_data["type"] == "state":
+                    message_data["state"] = ExecutionState(message_data["state"])
+                yield message_data
 
 
 def compact_signature(function: Callable[..., Any]) -> str:
