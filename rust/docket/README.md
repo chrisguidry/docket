@@ -10,7 +10,7 @@ tasks, and runs a worker.
 
 ```toml
 [dependencies]
-docket-rs = "0.5"
+docket-rs = "0.6"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 ```
@@ -116,7 +116,7 @@ features brings `aws-lc-rs`.  If your build has no backend, turn on
 
 ```toml
 [dependencies]
-docket-rs = { version = "0.5", features = ["tls-ring"] }
+docket-rs = { version = "0.6", features = ["tls-ring"] }
 ```
 
 With no backend, the first `rediss://` connect panics.  With two backends,
@@ -126,7 +126,7 @@ Without TLS, turn off the default features:
 
 ```toml
 [dependencies]
-docket-rs = { version = "0.5", default-features = false }
+docket-rs = { version = "0.6", default-features = false }
 ```
 
 Every connection docket-rs opens to Redis gives up on a connect after 10
@@ -176,7 +176,7 @@ last one left there:
 
 ```toml
 [dev-dependencies]
-docket-rs = { version = "0.5", features = ["memory"] }
+docket-rs = { version = "0.6", features = ["memory"] }
 ```
 
 An application that keeps keys of its own in the docket's Redis reaches them
