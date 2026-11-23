@@ -88,6 +88,15 @@ other crates' types:
 | `chrono-tz` | `chrono_tz::Tz` to `TimeZone`, by its IANA name |
 | `jiff-02` | jiff 0.2's `Timestamp` and `TimeZone` to docket's, and back |
 
+`TimeZone::get` and the `chrono-tz` conversion look zones up by name in the
+system's time zone database, such as `/usr/share/zoneinfo`.  When the system
+has no database, as on distroless, scratch, or Alpine images without
+`tzdata`, or its database has no zone by that name, they read a copy built
+into the binary by the `tzdb-bundle` feature.  The feature is on by default
+and adds about 230 KB to a release build.  If you turn off default features,
+add `tzdb-bundle` back unless every image you run on has a time zone
+database.
+
 ```rust
 use std::time::Duration;
 

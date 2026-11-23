@@ -102,6 +102,27 @@ fn finds_time_zones_by_name() {
     );
 }
 
+#[cfg(feature = "tzdb-bundle")]
+#[test]
+fn finds_named_zones_without_a_system_database() {
+    let empty = jiff::tz::TimeZoneDatabase::none();
+    let zone = super::zone_named(&empty, "America/Los_Angeles").unwrap();
+    assert_eq!(zone.0.iana_name(), Some("America/Los_Angeles"));
+}
+
+#[cfg(not(feature = "tzdb-bundle"))]
+#[test]
+fn without_the_bundle_a_missing_system_database_fails() {
+    let empty = jiff::tz::TimeZoneDatabase::none();
+    let error = super::zone_named(&empty, "America/Los_Angeles")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("America/Los_Angeles is not a time zone"),
+        "{error}"
+    );
+}
+
 #[cfg(feature = "chrono")]
 mod chrono {
     use chrono::{DateTime, FixedOffset, TimeZone as _, Utc};

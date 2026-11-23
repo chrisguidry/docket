@@ -15,11 +15,14 @@ include = ["src/**", "lua/*.lua", "LICENSE", "README.md"]
 name = "docket"
 
 [features]
-default = ["tls"]
+default = ["tls", "tzdb-bundle"]
 # From conversions between docket::Timestamp and chrono's DateTime.
 chrono = ["dep:chrono"]
 # TryFrom chrono-tz's Tz to docket::TimeZone.
 chrono-tz = ["dep:chrono-tz"]
+# A copy of the IANA time zone database built into the binary, which
+# TimeZone::get reads when the system's database has no zone by that name.
+tzdb-bundle = ["jiff/tzdb-bundle-always"]
 # From conversions between docket's Timestamp and TimeZone and jiff 0.2's.
 # The version is in the name so that a feature for a later jiff can sit
 # beside it.

@@ -210,17 +210,29 @@ impl TimeZone {
     /// The time zone with this IANA name, such as `America/Los_Angeles`.
     ///
     /// docket-rs reads the names from the system's time zone database, such
-    /// as `/usr/share/zoneinfo`, and on Windows from a copy built into
-    /// jiff.
+    /// as `/usr/share/zoneinfo`.  When that database is missing or has no
+    /// zone by this name, it reads the copy that the `tzdb-bundle` feature,
+    /// on by default, builds into the binary.  On Windows, jiff builds a
+    /// copy in without the feature.
     ///
     /// # Errors
     ///
-    /// [`Error::Invalid`] when the database has no zone with this name.
+    /// [`Error::Invalid`] when neither database has a zone with this name.
     pub fn get(name: &str) -> Result<Self> {
-        jiff::tz::TimeZone::get(name)
-            .map(Self)
-            .map_err(|error| Error::Invalid(format!("{name} is not a time zone: {error}")))
+        zone_named(jiff::tz::db(), name)
     }
+}
+
+fn zone_named(system: &jiff::tz::TimeZoneDatabase, name: &str) -> Result<TimeZone> {
+    system
+        .get(name)
+        .or_else(|error| {
+            jiff::tz::TimeZoneDatabase::bundled()
+                .get(name)
+                .map_err(|_| error)
+        })
+        .map(TimeZone)
+        .map_err(|error| Error::Invalid(format!("{name} is not a time zone: {error}")))
 }
 
 /// Looks the zone up by its IANA name, as [`TimeZone::get`] does.
