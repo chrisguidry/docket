@@ -12,12 +12,16 @@ connection, which authenticates with the current credentials, and waits for the
 server to confirm its subscriptions.  Only then does it unsubscribe the first
 connection and read what that connection still holds.  The two connections are
 subscribed at the same time for one round trip, so a message published then
-arrives on both, and the reader receives it twice.  No message is lost.
+arrives on both, and the reader receives it twice.  No message is lost.  When
+the new connection can't subscribe, such as when the pub/sub pool is at its
+max_connections, the reader keeps the old connection and tries again on the
+next rotation.
 
 The reader owns its connection's socket, so the move happens in the reader's
 own task, between two reads.
 """
 
+import logging
 from collections import deque
 from contextlib import AsyncExitStack
 from types import TracebackType
@@ -27,6 +31,8 @@ from ._redis import PubSubClient
 
 if TYPE_CHECKING:  # pragma: no cover
     from .docket import Docket
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 # How long listen() waits on one read before it checks for a rotation.  A
 # rotation reaches a listening Subscription within this long.
@@ -129,20 +135,33 @@ class Subscription:
                 received.append(message)
 
     async def _move(self) -> None:
-        """Subscribe a new connection, then unsubscribe the old one."""
+        """Subscribe a new connection, then unsubscribe the old one.  If the
+        new connection fails, the old one stays, and the next rotation tries
+        again."""
         self._rotations = self._docket._redis.rotations  # pyright: ignore[reportPrivateUsage]
 
         stack = AsyncExitStack()
         early: deque[Message] = deque()
         try:
             pubsub = await self._subscribe(stack, early)
+        except BaseException as error:
+            await stack.aclose()
+            if not isinstance(error, Exception):
+                raise
+            logger.warning(
+                "Could not move a subscription to the rotated credentials",
+                exc_info=True,
+            )
+            return
 
+        old, old_stack = self._pubsub, self._stack
+        self._pubsub, self._stack = pubsub, stack
+        try:
             # Everything the old connection received before the new one
             # subscribed comes first.  Redis delivers what it published before
             # the UNSUBSCRIBE ahead of the confirmation, but the memory backend
             # drops a channel's queued messages once it is unsubscribed, so
             # those are read first.
-            old = self._pubsub
             if self._docket._redis.is_memory:  # pyright: ignore[reportPrivateUsage]  # pragma: no cover - only the memory backend
                 while message := await old.get_message(
                     ignore_subscribe_messages=True, timeout=0
@@ -153,11 +172,12 @@ class Subscription:
             if self._patterns:
                 await old.punsubscribe(*self._patterns)
             await self._read_until(old, UNSUBSCRIBED, self._received)
-        except BaseException:
-            await stack.aclose()
-            raise
+        except Exception:
+            # The old connection broke, so it holds nothing more to read.
+            logger.warning(
+                "The old connection failed while a subscription moved",
+                exc_info=True,
+            )
+        finally:
+            await old_stack.aclose()
         self._received.extend(early)
-
-        await self._stack.aclose()
-        self._stack = stack
-        self._pubsub = pubsub

@@ -110,20 +110,20 @@ async def test_listen_yields_messages_across_a_rotation(docket: Docket):
             assert (await reading)["data"] == b"after"
 
 
-async def test_a_failed_move_closes_the_new_connection(docket: Docket):
-    channel = docket.key("state:subscription")
+def second_pubsub_fails(
+    docket: Docket, error: BaseException, opened: list[Any], closed: list[Any]
+) -> Any:
+    """Patches the docket so the second connection it opens can't subscribe."""
     original_pubsub = docket._pubsub
-    opened: list[Any] = []
-    closed: list[Any] = []
 
     @asynccontextmanager
-    async def failing_second_pubsub() -> AsyncGenerator[Any, None]:
+    async def pubsub() -> AsyncGenerator[Any, None]:
         async with original_pubsub() as pubsub:
             opened.append(pubsub)
             if len(opened) == 2:
 
                 async def fail(*channels: Any) -> None:
-                    raise ConnectionError("subscribe failed")
+                    raise error
 
                 pubsub.subscribe = fail
             try:
@@ -131,14 +131,59 @@ async def test_a_failed_move_closes_the_new_connection(docket: Docket):
             finally:
                 closed.append(pubsub)
 
-    with patch.object(docket, "_pubsub", failing_second_pubsub):
+    return patch.object(docket, "_pubsub", pubsub)
+
+
+async def test_a_failed_move_keeps_the_old_connection(
+    docket: Docket, caplog: pytest.LogCaptureFixture
+):
+    channel = docket.key("state:subscription")
+    opened: list[Any] = []
+    closed: list[Any] = []
+    with second_pubsub_fails(docket, ConnectionError("pool is full"), opened, closed):
         async with Subscription(docket, channels=[channel]) as subscription:
             rotate(docket)
-            with pytest.raises(ConnectionError, match="subscribe failed"):
-                await subscription.get_message(timeout=0)
+            await docket._publish(channel, "kept")
+            assert await read(subscription, 1) == [b"kept"]
+            assert subscription._pubsub is opened[0]
             assert closed == [opened[1]]
 
     assert closed == [opened[1], opened[0]]
+    assert "Could not move a subscription" in caplog.text
+
+
+async def test_a_cancelled_move_closes_the_new_connection(docket: Docket):
+    channel = docket.key("state:subscription")
+    opened: list[Any] = []
+    closed: list[Any] = []
+    with second_pubsub_fails(docket, asyncio.CancelledError(), opened, closed):
+        async with Subscription(docket, channels=[channel]) as subscription:
+            rotate(docket)
+            with pytest.raises(asyncio.CancelledError):
+                await subscription.get_message(timeout=0)
+            assert closed == [opened[1]]
+
+
+async def test_a_broken_old_connection_still_hands_over(
+    docket: Docket, caplog: pytest.LogCaptureFixture
+):
+    channel = docket.key("state:subscription")
+    async with Subscription(docket, channels=[channel]) as subscription:
+        old = subscription._pubsub
+        unsubscribe = old.unsubscribe
+
+        async def fail(*channels: Any) -> None:
+            # Closing the connection unsubscribes it again, which works.
+            old.unsubscribe = unsubscribe
+            raise ConnectionError("the old connection is gone")
+
+        old.unsubscribe = fail
+        rotate(docket)
+        await docket._publish(channel, "after")
+        assert await read(subscription, 1) == [b"after"]
+        assert subscription._pubsub is not old
+
+    assert "The old connection failed" in caplog.text
 
 
 async def test_a_failed_subscribe_closes_the_connection(docket: Docket):
