@@ -14,8 +14,10 @@ use redis::{BasicAuth, RedisResult, StreamingCredentialsProvider};
 use rstest::rstest;
 use tokio::sync::watch;
 
+use super::super::tests::silent;
 use super::super::{Backend, Connection, Settings, Shared, Subscription, Topics};
 use super::Provider;
+use crate::telemetry::tests::Logs;
 
 /// Gives the credentials in force when a connection subscribes, then each
 /// later set, the way a provider that refreshes a token does.
@@ -224,4 +226,178 @@ async fn a_connection_opened_after_a_rotation_authenticates_as_the_new_user() {
         command_connections(&mut nodes, &users).await,
         vec![after.username().to_owned(); 3 * nodes.len()]
     );
+}
+
+/// What the backend logs when the server refuses a set.
+const REFUSED: &str = "the server refused the credential provider's new credentials";
+
+/// The credentials of `user` with a password the server refuses.
+fn wrong(user: &BasicAuth) -> BasicAuth {
+    BasicAuth::new(user.username().into(), "wrong".into())
+}
+
+/// redis-rs stops renewing a connection after one AUTH fails, so a refused
+/// set that reached the connections would leave them on the old user
+/// through every later rotation.
+#[tokio::test]
+async fn a_refused_set_leaves_the_next_rotation_to_reach_every_command_connection() {
+    let (logs, _guard) = Logs::capture();
+    let Some(url) = server_url() else { return };
+    let mut nodes = nodes(&url).await;
+    let users = users(&mut nodes, "refused-then-rotated").await;
+    let [before, after] = &users;
+    let (provider, rotations) = rotating(before);
+    let _held = hold(open(&url, &provider)).await;
+    let opened = 3 * nodes.len();
+
+    rotations.send_replace(wrong(after));
+    logs.wait_for(REFUSED).await;
+    rotations.send_replace(after.clone());
+
+    settle(
+        &mut nodes,
+        &users,
+        &vec![after.username().to_owned(); opened],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_refused_set_leaves_the_connections_working_as_the_old_user() {
+    let (logs, _guard) = Logs::capture();
+    let Some(url) = server_url() else { return };
+    let mut nodes = nodes(&url).await;
+    let users = users(&mut nodes, "refused").await;
+    let [before, after] = &users;
+    let (provider, rotations) = rotating(before);
+    let (shared, mut blocking, mut application, _subscription) = hold(open(&url, &provider)).await;
+
+    rotations.send_replace(wrong(after));
+    logs.wait_for(REFUSED).await;
+
+    touch(&mut shared.get().await.unwrap()).await;
+    touch(&mut blocking).await;
+    touch(&mut application).await;
+    assert_eq!(
+        command_connections(&mut nodes, &users).await,
+        vec![before.username().to_owned(); 3 * nodes.len()]
+    );
+}
+
+/// The number of AUTHs as `user` that the nodes refused, from `ACL LOG`.
+async fn refusals(nodes: &mut [Connection], user: &BasicAuth) -> i64 {
+    let mut total = 0;
+    for node in nodes.iter_mut() {
+        let entries: Vec<std::collections::HashMap<String, redis::Value>> = redis::cmd("ACL")
+            .arg("LOG")
+            .query_async(node)
+            .await
+            .unwrap();
+        total += entries
+            .iter()
+            .filter(|entry| {
+                redis::from_redis_value_ref::<String>(&entry["username"]).unwrap()
+                    == user.username()
+            })
+            .map(|entry| redis::from_redis_value_ref::<i64>(&entry["count"]).unwrap())
+            .sum::<i64>();
+    }
+    total
+}
+
+/// The user is named for this test alone, so every refusal `ACL LOG`
+/// records for it comes from this backend: the one check, and no
+/// connection sending the set after it.
+#[tokio::test]
+async fn a_backend_checks_each_set_once_for_all_its_connections() {
+    let (logs, _guard) = Logs::capture();
+    let Some(url) = server_url() else { return };
+    let mut nodes = nodes(&url).await;
+    let users = users(&mut nodes, "checked-once").await;
+    let [before, after] = &users;
+    for node in &mut nodes {
+        redis::cmd("ACL")
+            .arg("LOG")
+            .arg("RESET")
+            .query_async::<()>(node)
+            .await
+            .unwrap();
+    }
+    let (provider, rotations) = rotating(before);
+    let _held = hold(open(&url, &provider)).await;
+
+    rotations.send_replace(wrong(after));
+    logs.wait_for(REFUSED).await;
+
+    assert_eq!(rotations.receiver_count(), 1);
+    assert_eq!(refusals(&mut nodes, after).await, 1);
+}
+
+/// A server that refuses connections.
+async fn unreachable() -> String {
+    "redis://127.0.0.1:1/0".to_owned()
+}
+
+/// A server that accepts connections and never answers.
+async fn unanswered() -> String {
+    format!("redis://{}/0", silent().await)
+}
+
+/// Sentinels that refuse connections, so the check can't find the primary.
+async fn unreachable_sentinels() -> String {
+    "redis+sentinel://127.0.0.1:1/mymaster".to_owned()
+}
+
+/// When the check can't reach the server, a connection could not either, so
+/// the set goes on to the connections.
+#[rstest]
+#[case::refused_connection(unreachable)]
+#[case::no_answer(unanswered)]
+#[case::refused_by_the_sentinels(unreachable_sentinels)]
+#[tokio::test]
+async fn a_set_that_cannot_be_checked_is_passed_on<F: Future<Output = String>>(
+    #[case] server: fn() -> F,
+) {
+    let before = BasicAuth::new("before".into(), "before-pw".into());
+    let after = BasicAuth::new("after".into(), "after-pw".into());
+    let (provider, rotations) = rotating(&before);
+    let settings = Settings {
+        connection_timeout: Duration::from_millis(200),
+        ..Settings::default()
+    };
+    let backend = Backend::open(&server().await, Some(provider), settings).unwrap();
+    let mut credentials = backend.credentials.as_ref().unwrap().subscribe();
+    let first = credentials.next().await.unwrap().unwrap();
+
+    rotations.send_replace(after.clone());
+    let next = tokio::time::timeout(Duration::from_secs(5), credentials.next())
+        .await
+        .expect("the set is passed on in time");
+
+    assert_eq!(first.username(), before.username());
+    assert_eq!(next.unwrap().unwrap().username(), after.username());
+}
+
+/// The task holds the provider's only subscription, so the provider sees it
+/// close.
+#[tokio::test]
+async fn the_check_ends_when_the_backend_drops() {
+    let before = BasicAuth::new("before".into(), "before-pw".into());
+    let (provider, rotations) = rotating(&before);
+    let backend = Backend::open("redis://127.0.0.1:1/0", Some(provider), Settings::default());
+    let backend = backend.unwrap();
+    let mut credentials = backend.credentials.as_ref().unwrap().subscribe();
+    credentials.next().await.unwrap().unwrap();
+    assert_eq!(rotations.receiver_count(), 1);
+
+    drop(backend);
+
+    let waiting = async {
+        while rotations.receiver_count() > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("the check ends in time");
 }

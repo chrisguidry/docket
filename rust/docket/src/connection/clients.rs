@@ -8,14 +8,14 @@ use redis::sentinel::{SentinelClient, SentinelClientBuilder, SentinelServerType}
 use redis::{Client, ConnectionAddr, IntoConnectionInfo, RedisResult, TlsMode};
 
 use super::url::SentinelUrl;
-use super::{Provider, Settings};
+use super::{Checked, Settings};
 
 /// A client for the cluster that `node` belongs to.
 pub(super) fn cluster_client(
     node: &str,
     settings: &Settings,
     response_timeout: Option<Duration>,
-    credentials: Option<&Provider>,
+    credentials: Option<&Checked>,
 ) -> RedisResult<ClusterClient> {
     let (min_wait, max_wait) = settings.retry_millis();
     let builder = ClusterClient::builder([node])

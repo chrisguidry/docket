@@ -19,10 +19,12 @@ use redis::cluster_async::ClusterConnection;
 use redis::sentinel::SentinelClient;
 use redis::{AsyncConnectionConfig, Client, Cmd, Pipeline, RedisFuture, RedisResult, Value};
 use tokio::sync::Mutex;
+use tokio_util::sync::DropGuard;
 
 use crate::error::Result;
 use clients::{client, cluster_client};
 pub(crate) use credentials::Provider;
+use credentials::{Checked, Server};
 pub(crate) use settings::{Keepalive, Settings};
 use subscription::Resp3;
 pub(crate) use subscription::{Subscription, Topics};
@@ -32,7 +34,12 @@ pub(crate) use url::redact;
 /// How to reach the Redis behind a docket.
 pub(crate) struct Backend {
     kind: Kind,
-    credentials: Option<Provider>,
+    /// The provider's credentials, each new set checked against the server
+    /// first; `None` without a provider, or on the memory engine, which
+    /// ignores credentials.
+    credentials: Option<Checked>,
+    /// Ends the task that checks the provider's credentials.
+    _checking: Option<DropGuard>,
     settings: Settings,
 }
 
@@ -47,7 +54,9 @@ enum Kind {
         /// node relays every published message.
         pubsub: Client,
     },
-    Sentinel(Mutex<SentinelClient>),
+    /// Shared with the checks of new credentials, which authenticate
+    /// against the primary the sentinels name.
+    Sentinel(Arc<Mutex<SentinelClient>>),
     #[cfg(feature = "memory")]
     Memory(crate::memory::MemoryServer),
 }
@@ -62,27 +71,43 @@ impl Backend {
             ));
         }
         settings.validate()?;
-        let kind = match url::parse(url)? {
-            Target::Standalone(url) => client(&url, &settings).map(Kind::Standalone),
-            Target::Cluster(node) => {
+        let has_provider = credentials.is_some();
+        let checking = |server| {
+            credentials.map(|provider| Checked::new(provider, server, settings.connection_timeout))
+        };
+        let (kind, checked) = match url::parse(url)? {
+            Target::Standalone(url) => client(&url, &settings).map(|client| {
+                let checked = checking(Server::Direct(Box::new(client.clone())));
+                (Kind::Standalone(client), checked)
+            }),
+            Target::Cluster(node) => client(&node, &settings).and_then(|pubsub| {
+                let checked = checking(Server::Direct(Box::new(pubsub.clone())));
                 let cluster = |response_timeout| {
-                    cluster_client(&node, &settings, response_timeout, credentials.as_ref())
+                    cluster_client(&node, &settings, response_timeout, checked.as_ref())
                         .map(Box::new)
                 };
-                client(&node, &settings).and_then(|pubsub| {
-                    cluster(settings.response_timeout).and_then(|client| {
-                        cluster(None).map(|application| Kind::Cluster {
+                cluster(settings.response_timeout).and_then(|client| {
+                    cluster(None).map(|application| {
+                        let kind = Kind::Cluster {
                             client,
                             application,
                             pubsub,
-                        })
+                        };
+                        (kind, checked.clone())
                     })
                 })
+            }),
+            Target::Sentinel(sentinel) => {
+                clients::sentinel_client(sentinel, &settings).map(|client| {
+                    let client = Arc::new(Mutex::new(client));
+                    let checked = checking(Server::Sentinel(Arc::clone(&client)));
+                    (Kind::Sentinel(client), checked)
+                })
             }
-            Target::Sentinel(sentinel) => clients::sentinel_client(sentinel, &settings)
-                .map(|client| Kind::Sentinel(Mutex::new(client))),
             #[cfg(feature = "memory")]
-            Target::Memory(url) => Ok(Kind::Memory(crate::memory::MemoryServer::open(&url))),
+            Target::Memory(url) => {
+                Ok((Kind::Memory(crate::memory::MemoryServer::open(&url)), None))
+            }
             #[cfg(not(feature = "memory"))]
             Target::Memory(url) => {
                 return Err(crate::Error::url(
@@ -99,7 +124,7 @@ impl Backend {
             #[cfg(feature = "memory")]
             Kind::Memory(_) => false,
         };
-        if credentials.is_some() && url_credentials {
+        if has_provider && url_credentials {
             return Err(crate::Error::url(
                 url,
                 "it carries credentials, and a credential provider gives them too",
@@ -107,7 +132,8 @@ impl Backend {
         }
         Ok(Self {
             kind,
-            credentials,
+            _checking: checked.as_ref().map(Checked::guard),
+            credentials: checked,
             settings,
         })
     }

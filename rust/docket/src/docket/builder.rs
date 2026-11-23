@@ -147,8 +147,12 @@ impl DocketBuilder {
     /// for servers whose passwords are tokens that rotate, such as Azure
     /// Entra ID.  Command connections renew their credentials when the
     /// provider gives new ones, and so do subscriptions, which speak RESP3
-    /// with a provider so that their subscribed connections take AUTH.  A
-    /// URL that carries credentials of its own is refused.
+    /// with a provider so that their subscribed connections take AUTH.  The
+    /// docket checks each new set by authenticating once with it before any
+    /// connection takes it.  A set the server refuses is skipped and logged
+    /// as a warning, so the connections keep the credentials they have, and
+    /// the provider's next set is checked again.  A URL that carries
+    /// credentials of its own is refused.
     #[must_use]
     pub fn credentials_provider(
         mut self,

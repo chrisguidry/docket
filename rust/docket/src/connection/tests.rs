@@ -57,6 +57,19 @@ async fn a_tls_connect_reaches_the_network() {
     assert!(error.is_connection_refusal(), "{error}");
 }
 
+/// The address of a server that accepts connections and never answers.
+pub(super) async fn silent() -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    address
+}
+
 /// The Redis the suite runs against, or an in-process one.
 fn url() -> String {
     std::env::var("DOCKET_TEST_URL")
@@ -204,29 +217,14 @@ mod credentials {
 }
 
 mod settings {
-    use std::net::SocketAddr;
     use std::time::Duration;
 
     use redis::{AsyncCommands, RedisResult};
     use rstest::rstest;
-    use tokio::net::TcpListener;
 
     use super::super::{Backend, Settings, slots};
-    use super::channel;
+    use super::{channel, silent};
     use crate::Docket;
-
-    /// The address of a server that accepts connections and never answers.
-    async fn silent() -> SocketAddr {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok((socket, _)) = listener.accept().await {
-                held.push(socket);
-            }
-        });
-        address
-    }
 
     #[test]
     fn a_backend_refuses_settings_that_would_fail_every_connection() {

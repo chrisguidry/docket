@@ -77,10 +77,10 @@ class Subscription:
         dropped, and the wait for the next one starts over."""
         if self._early:
             return self._early.popleft()
-        while message := await self._pubsub.get_message(timeout=timeout):
-            if message["type"] in PUBLISHED:
+        while True:
+            message = await self._pubsub.get_message(timeout=timeout)
+            if message is None or message["type"] in PUBLISHED:
                 return message
-        return None
 
     async def listen(self) -> AsyncIterator[Message]:
         """Every published message, until the reader stops."""

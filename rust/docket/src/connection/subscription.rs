@@ -7,15 +7,18 @@
 //!
 //! So with a credentials provider, a subscription speaks RESP3, under which
 //! a subscribed connection takes any command, and it sends AUTH on its own
-//! connection each time the provider gives new credentials.  The connection
-//! stays open and subscribed throughout, so no message is lost, repeated,
-//! or reordered.  When the server refuses an AUTH, the connection keeps the
-//! credentials it had and goes on delivering, and the next rotation tries
-//! again.
+//! connection each time the backend passes on new credentials.  The
+//! connection stays open and subscribed throughout, so no message is lost,
+//! repeated, or reordered.  The backend checks each new set against the
+//! server first, and skips and logs a set the server refuses, so the
+//! subscription never sends one.  When the server refuses an AUTH anyway,
+//! the connection keeps the credentials it had and goes on delivering, and
+//! the next rotation tries again.
 //!
 //! redis-rs can send these AUTHs itself, but its renewal task stops for good
-//! after one AUTH fails, so docket sends them.  Without a provider there is
-//! nothing to renew, and a subscription uses redis-rs's `PubSub`.
+//! after one AUTH fails, for example on a timeout, so docket sends them.
+//! Without a provider there is nothing to renew, and a subscription uses
+//! redis-rs's `PubSub`.
 
 use std::future::ready;
 use std::pin::Pin;
@@ -24,13 +27,13 @@ use std::task::{Context, Poll};
 use futures::{Stream, StreamExt, stream};
 use redis::aio::{MultiplexedConnection, PubSub};
 use redis::{
-    AsyncConnectionConfig, BasicAuth, Client, Msg, PushInfo, PushKind, RedisResult,
+    AsyncConnectionConfig, Client, Msg, PushInfo, PushKind, RedisResult,
     StreamingCredentialsProvider,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::{Provider, Settings, credentials};
+use super::{Checked, Settings, credentials};
 
 #[cfg(test)]
 mod tests;
@@ -99,9 +102,7 @@ impl Drop for Renewal {
 pub(super) struct Resp3 {
     connection: MultiplexedConnection,
     pushes: mpsc::UnboundedReceiver<PushInfo>,
-    /// The credentials the connection opened with.
-    auth: BasicAuth,
-    /// The provider's later credentials.
+    /// The later credentials that the backend passes on.
     rotations: credentials::Credentials,
 }
 
@@ -112,7 +113,7 @@ impl Resp3 {
     /// commands wait as long as the response timeout.
     pub(super) async fn open(
         client: &Client,
-        provider: &Provider,
+        provider: &Checked,
         settings: &Settings,
     ) -> RedisResult<Self> {
         let mut rotations = provider.subscribe();
@@ -128,7 +129,6 @@ impl Resp3 {
             .map(|connection| Self {
                 connection,
                 pushes,
-                auth,
                 rotations,
             })
     }
@@ -157,14 +157,10 @@ impl Subscription {
         let Resp3 {
             mut connection,
             mut pushes,
-            auth,
             rotations,
         } = opened;
         topics.subscribe_resp3(&mut connection).await?;
-        let task = tokio::spawn(renew(
-            connection.clone(),
-            credentials::follow(auth, rotations),
-        ));
+        let task = tokio::spawn(renew(connection.clone(), rotations));
         // redis-rs sends a Disconnection push when the server drops the
         // connection, then drops its sender, which ends the stream.
         let messages = stream::poll_fn(move |cx| pushes.poll_recv(cx))
@@ -185,13 +181,14 @@ impl Subscription {
     }
 }
 
-/// Sends AUTH on `connection` with each new set of credentials, until the
-/// provider's stream ends.  An AUTH the server refuses leaves the
-/// connection with the credentials it had, so the task logs it and waits
-/// for the next set.
-async fn renew(mut connection: MultiplexedConnection, mut rotations: watch::Receiver<BasicAuth>) {
-    while rotations.changed().await.is_ok() {
-        let auth = rotations.borrow_and_update().clone();
+/// Sends AUTH on `connection` with each new set of credentials that the
+/// backend passes on.  The backend never passes on an error after the
+/// first set, so the loop runs until the subscription drops or the backend
+/// and every connection with it are gone.  An AUTH the server
+/// refuses leaves the connection with the credentials it had, so the task
+/// logs it and waits for the next set.
+async fn renew(mut connection: MultiplexedConnection, mut rotations: credentials::Credentials) {
+    while let Some(Ok(auth)) = rotations.next().await {
         let authenticated: RedisResult<()> = redis::cmd("AUTH")
             .arg(auth.username())
             .arg(auth.password())
