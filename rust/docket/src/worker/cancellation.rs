@@ -65,8 +65,9 @@ async fn reconnect(worker: &Shared) {
 async fn forget_waiter(docket: &crate::Docket, key: &str) -> Result<()> {
     let keys = docket.keys();
     let mut connection = docket.handle();
-    let runs: std::collections::HashMap<String, String> =
+    let runs: std::collections::HashMap<String, Vec<u8>> =
         redis::AsyncCommands::hgetall(&mut connection, keys.runs(key)).await?;
+    let runs = crate::execution::runs_text(runs);
     let (Some(stream), Some(entry)) = (runs.get("waiter_stream"), runs.get("waiter_entry_id"))
     else {
         return Ok(());

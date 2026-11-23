@@ -12,7 +12,7 @@ use crate::Timestamp;
 use crate::behaviors::{AdmissionBlocked, AfterCompletion};
 use crate::docket::{Docket, Placement};
 use crate::error::Result;
-use crate::execution::{Disposition, Message, State};
+use crate::execution::{Disposition, Message, State, runs_text};
 use crate::keys::WORKER_GROUP;
 use crate::scripts;
 use crate::telemetry::{self, format_duration};
@@ -96,11 +96,12 @@ impl Run<'_> {
         let mut connection = self.docket.handle();
         // The reply is the claim's status, the runs hash, and the progress
         // hash.
-        let (status, runs, _): (String, HashMap<String, String>, Value) =
+        let (status, runs, _): (String, HashMap<String, Vec<u8>>, Value) =
             call.run(&mut connection).await?;
         Ok(match status.as_str() {
             "OK" => Claim::Claimed(
-                runs.get("generation")
+                runs_text(runs)
+                    .get("generation")
                     .and_then(|generation| generation.parse().ok())
                     .unwrap_or(self.message().generation),
             ),

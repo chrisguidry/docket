@@ -152,6 +152,14 @@ impl Status {
     }
 }
 
+/// A runs hash with its values as text.  pydocket writes a task's pickled
+/// arguments to the hash, and their bytes that are not UTF-8 become U+FFFD.
+pub(crate) fn runs_text(runs: HashMap<String, Vec<u8>>) -> HashMap<String, String> {
+    runs.into_iter()
+        .map(|(field, value)| (field, String::from_utf8_lossy(&value).into_owned()))
+        .collect()
+}
+
 fn seconds_to_time(seconds: f64) -> Option<Timestamp> {
     #[expect(
         clippy::cast_possible_truncation,
@@ -253,8 +261,8 @@ impl<O: DeserializeOwned> Execution<O> {
 // compiles once rather than once for each output type.
 
 async fn status(docket: &Docket, key: &str) -> Result<Option<Status>> {
-    let hash: HashMap<String, String> = docket.handle().hgetall(docket.keys().runs(key)).await?;
-    Ok(Status::from_hash(&hash))
+    let runs: HashMap<String, Vec<u8>> = docket.handle().hgetall(docket.keys().runs(key)).await?;
+    Ok(Status::from_hash(&runs_text(runs)))
 }
 
 /// Waits for the run of `key` to end, and returns its output.

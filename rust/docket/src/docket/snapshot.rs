@@ -9,7 +9,7 @@ use redis::{AsyncCommands, RedisResult};
 use super::Docket;
 use crate::Timestamp;
 use crate::error::Result;
-use crate::execution::{Execution, Message, Status};
+use crate::execution::{Execution, Message, Status, runs_text};
 use crate::keys::WORKER_GROUP;
 use crate::scripts;
 use crate::telemetry;
@@ -156,7 +156,8 @@ impl Docket {
     /// nothing of it, for example after its state expired.
     pub async fn execution(&self, key: &str) -> Result<Option<Execution>> {
         let mut connection = self.handle();
-        let runs: HashMap<String, String> = connection.hgetall(self.keys().runs(key)).await?;
+        let runs: HashMap<String, Vec<u8>> = connection.hgetall(self.keys().runs(key)).await?;
+        let runs = runs_text(runs);
         let Some(function) = runs.get("function") else {
             return Ok(None);
         };

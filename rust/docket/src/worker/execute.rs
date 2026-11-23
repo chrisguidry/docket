@@ -17,7 +17,7 @@ use super::session::{Active, Delivery, Shared};
 use crate::behaviors::{AfterFailure, BoxError, NotAdmitted, Outcome, Release, Released};
 use crate::context::{self, Context};
 use crate::docket::Registered;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::execution::State;
 use crate::telemetry::{self, call_repr, format_duration};
 use crate::wire::iso;
@@ -80,8 +80,35 @@ pub(super) async fn run(worker: Arc<Shared>, delivery: Delivery) -> Result<()> {
             });
             Ok(())
         }
+        // A reconnect or a redelivery reads the same reply again, so the
+        // run ends here.
+        Err(error) if error.is_undecodable_reply() => {
+            span.in_scope(|| {
+                tracing::error!(
+                    %error,
+                    "Could not decode a reply from Redis for task {:?}, so it failed",
+                    message.key
+                );
+            });
+            undecodable(&worker, &delivery, &error).await
+        }
         result => result,
     }
+}
+
+/// Ends a run as failed, with `error` as its error, after Redis sent a reply
+/// for it that did not decode.
+async fn undecodable(worker: &Shared, delivery: &Delivery, error: &Error) -> Result<()> {
+    let message = &delivery.message;
+    let run = Run {
+        docket: &worker.docket,
+        delivery,
+        worker: &worker.settings.name,
+        name: &message.function,
+        call: message.function.clone(),
+    };
+    let error = vec![("error".to_owned(), error.to_string().into_bytes())];
+    run.terminal(State::Failed, message.generation, error).await
 }
 
 async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Result<()> {

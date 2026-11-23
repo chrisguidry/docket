@@ -34,6 +34,7 @@ mod sweeping;
 mod testing_helpers;
 mod timeouts;
 mod traces;
+mod undecodable;
 mod unreachable;
 #[cfg(feature = "memory")]
 mod virtual_time;
