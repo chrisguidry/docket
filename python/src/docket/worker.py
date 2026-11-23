@@ -1440,8 +1440,9 @@ class Worker:
                     session.cancellation_ready.set()
                     while not session.stopping.is_set():  # pragma: no branch
                         message = await subscription.get_message(timeout=0.1)
-                        if message is not None:
-                            await self._handle_cancellation(message)
+                        if message is None:
+                            continue  # pragma: no cover - CPython gh-106749
+                        await self._handle_cancellation(message)
             except RedisError:
                 if session.stopping.is_set():
                     return  # pragma: no cover

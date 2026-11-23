@@ -90,8 +90,9 @@ class Subscription:
         """Every published message, until the reader stops."""
         while True:
             message = await self.get_message(timeout=LISTEN_READ_TIMEOUT)
-            if message is not None:
-                yield message
+            if message is None:
+                continue  # pragma: no cover - CPython gh-106749
+            yield message
 
     async def _subscribe(
         self, stack: AsyncExitStack, received: deque[Message]
@@ -124,7 +125,7 @@ class Subscription:
                 continue
             if message["type"] in confirmations:
                 remaining -= 1
-            else:
+            else:  # pragma: no cover - CPython gh-106749 hides this on 3.11
                 received.append(message)
 
     async def _move(self) -> None:
@@ -137,14 +138,16 @@ class Subscription:
             pubsub = await self._subscribe(stack, early)
 
             # Everything the old connection received before the new one
-            # subscribed comes first.  Read what it already holds before
-            # unsubscribing it, because the memory backend drops queued
-            # messages for a channel once it is unsubscribed.
+            # subscribed comes first.  Redis delivers what it published before
+            # the UNSUBSCRIBE ahead of the confirmation, but the memory backend
+            # drops a channel's queued messages once it is unsubscribed, so
+            # those are read first.
             old = self._pubsub
-            while message := await old.get_message(
-                ignore_subscribe_messages=True, timeout=0
-            ):
-                self._received.append(message)
+            if self._docket._redis.is_memory:  # pyright: ignore[reportPrivateUsage]  # pragma: no cover - only the memory backend
+                while message := await old.get_message(
+                    ignore_subscribe_messages=True, timeout=0
+                ):
+                    self._received.append(message)
             if self._channels:
                 await old.unsubscribe(*self._channels)
             if self._patterns:

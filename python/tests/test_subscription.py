@@ -33,7 +33,7 @@ async def read(subscription: Subscription, count: int) -> list[bytes]:
 async def test_a_subscription_keeps_its_connection_without_a_rotation(
     docket: Docket,
 ):
-    channel = docket.key("subscription")
+    channel = docket.key("state:subscription")
     async with Subscription(docket, channels=[channel]) as subscription:
         before = subscription._pubsub
         await docket._publish(channel, "one")
@@ -44,7 +44,7 @@ async def test_a_subscription_keeps_its_connection_without_a_rotation(
 async def test_a_rotation_moves_a_subscription_to_a_new_connection(docket: Docket):
     """Messages that the old connection holds unread come first, then the
     ones published after the move, each once."""
-    channel = docket.key("subscription")
+    channel = docket.key("state:subscription")
     async with Subscription(docket, channels=[channel]) as subscription:
         before = subscription._pubsub
         for i in range(5):
@@ -69,7 +69,7 @@ async def test_a_rotation_moves_a_pattern_subscription(docket: Docket):
 
 
 async def test_a_rotation_loses_nothing_published_during_the_move(docket: Docket):
-    channel = docket.key("subscription")
+    channel = docket.key("state:subscription")
     sent = [f"{i}".encode() for i in range(200)]
     async with Subscription(docket, channels=[channel]) as subscription:
 
@@ -93,7 +93,7 @@ async def test_a_rotation_loses_nothing_published_during_the_move(docket: Docket
 
 
 async def test_listen_yields_messages_across_a_rotation(docket: Docket):
-    channel = docket.key("subscription")
+    channel = docket.key("state:subscription")
     async with Subscription(docket, channels=[channel]) as subscription:
         messages = subscription.listen()
         await docket._publish(channel, "before")
@@ -111,7 +111,7 @@ async def test_listen_yields_messages_across_a_rotation(docket: Docket):
 
 
 async def test_a_failed_move_closes_the_new_connection(docket: Docket):
-    channel = docket.key("subscription")
+    channel = docket.key("state:subscription")
     original_pubsub = docket._pubsub
     opened: list[Any] = []
     closed: list[Any] = []
@@ -160,7 +160,34 @@ async def test_a_failed_subscribe_closes_the_connection(docket: Docket):
 
     with patch.object(docket, "_pubsub", failing_pubsub):
         with pytest.raises(ConnectionError, match="subscribe failed"):
-            async with Subscription(docket, channels=[docket.key("subscription")]):
+            async with Subscription(
+                docket, channels=[docket.key("state:subscription")]
+            ):
                 pass  # pragma: no cover
 
     assert len(closed) == 1
+
+
+async def test_messages_before_the_last_confirmation_are_kept(docket: Docket):
+    """A message on a channel the server has confirmed can arrive before the
+    confirmation of a pattern subscribed after it."""
+    channel = docket.key("state:subscription")
+    original_pubsub = docket._pubsub
+
+    @asynccontextmanager
+    async def publishing_pubsub() -> AsyncGenerator[Any, None]:
+        async with original_pubsub() as pubsub:
+            psubscribe = pubsub.psubscribe
+
+            async def publish_then_psubscribe(*patterns: Any) -> None:
+                await docket._publish(channel, "early")
+                await psubscribe(*patterns)
+
+            pubsub.psubscribe = publish_then_psubscribe
+            yield pubsub
+
+    with patch.object(docket, "_pubsub", publishing_pubsub):
+        async with Subscription(
+            docket, channels=[channel], patterns=[docket.key("cancel:*")]
+        ) as subscription:
+            assert await read(subscription, 1) == [b"early"]
