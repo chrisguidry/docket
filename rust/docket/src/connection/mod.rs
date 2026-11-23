@@ -5,6 +5,7 @@ mod credentials;
 mod settings;
 #[cfg(test)]
 pub(crate) mod slots;
+mod subscription;
 #[cfg(test)]
 mod tests;
 mod url;
@@ -12,17 +13,20 @@ mod url;
 use std::sync::Arc;
 use std::time::Duration;
 
-use redis::aio::{ConnectionLike, MultiplexedConnection, PubSub};
+use redis::aio::{ConnectionLike, MultiplexedConnection, PubSub, PubSubSink, PubSubStream};
 use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
 use redis::sentinel::SentinelClient;
-use redis::{AsyncConnectionConfig, Client, Cmd, Pipeline, RedisFuture, RedisResult, Value};
+use redis::{
+    AsyncConnectionConfig, BasicAuth, Client, Cmd, Pipeline, RedisFuture, RedisResult, Value,
+};
 use tokio::sync::Mutex;
 
 use crate::error::Result;
 use clients::{client, cluster_client};
 pub(crate) use credentials::Provider;
 pub(crate) use settings::{Keepalive, Settings};
+pub(crate) use subscription::{Subscription, Topics};
 use url::Target;
 pub(crate) use url::redact;
 
@@ -176,42 +180,50 @@ impl Backend {
         }
     }
 
-    /// Opens a connection subscribed to `channels`.
-    pub async fn subscribe(&self, channels: &[String]) -> RedisResult<PubSub> {
-        let mut pubsub = self.pubsub().await?;
-        within(self.settings.response_timeout, pubsub.subscribe(channels))
-            .await
-            .map(|()| pubsub)
+    /// Subscribes to `topics`, on a connection that moves to a new one each
+    /// time the credentials rotate.
+    pub async fn subscribe(self: &Arc<Self>, topics: Topics) -> RedisResult<Subscription> {
+        Subscription::open(Arc::clone(self), topics).await
     }
 
-    /// Opens a connection subscribed to the channels that match `pattern`.
-    pub async fn psubscribe(&self, pattern: String) -> RedisResult<PubSub> {
-        let mut pubsub = self.pubsub().await?;
-        within(self.settings.response_timeout, pubsub.psubscribe(pattern))
-            .await
-            .map(|()| pubsub)
+    /// Opens a connection with `auth`, or with the URL's credentials without
+    /// it, and subscribes it to `topics`.
+    async fn subscribed(
+        &self,
+        topics: &Topics,
+        auth: Option<&BasicAuth>,
+    ) -> RedisResult<(PubSubSink, PubSubStream)> {
+        let mut pubsub = self.pubsub(auth).await?;
+        within(
+            self.settings.response_timeout,
+            topics.subscribe(&mut pubsub),
+        )
+        .await?;
+        Ok(pubsub.split())
     }
 
     /// Opens a connection for subscriptions.  redis-rs takes no timeouts
     /// for these, so docket bounds the connect itself, and the subscribe
     /// when the docket has a response timeout.  Once subscribed, the connection waits for messages as long as it
     /// takes, and TCP keepalive finds a peer that is gone.
-    async fn pubsub(&self) -> RedisResult<PubSub> {
-        within(Some(self.settings.connection_timeout), self.open_pubsub()).await
+    async fn pubsub(&self, auth: Option<&BasicAuth>) -> RedisResult<PubSub> {
+        within(
+            Some(self.settings.connection_timeout),
+            self.open_pubsub(auth),
+        )
+        .await
     }
 
-    async fn open_pubsub(&self) -> RedisResult<PubSub> {
+    async fn open_pubsub(&self, auth: Option<&BasicAuth>) -> RedisResult<PubSub> {
         let client = match &self.kind {
             Kind::Standalone(client) | Kind::Cluster { pubsub: client, .. } => client.clone(),
             Kind::Sentinel(client) => client.lock().await.async_get_client().await?,
             #[cfg(feature = "memory")]
             Kind::Memory(server) => return server.pubsub().await,
         };
-        match &self.credentials {
-            Some(provider) => {
-                provider
-                    .authenticate(&client)
-                    .await?
+        match auth {
+            Some(auth) => {
+                credentials::authenticate(&client, auth)?
                     .get_async_pubsub()
                     .await
             }

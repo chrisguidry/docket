@@ -146,9 +146,10 @@ impl DocketBuilder {
     /// Takes the username and password from `provider`, in place of the URL,
     /// for servers whose passwords are tokens that rotate, such as Azure
     /// Entra ID.  Command connections renew their credentials when the
-    /// provider gives new ones, and subscriptions take the credentials in
-    /// force when they open.  A URL that carries credentials of its own is
-    /// refused.
+    /// provider gives new ones.  A subscribed connection can't, so each
+    /// subscription opens a new connection with the new credentials, and
+    /// unsubscribes the old one once the new one is confirmed.  A URL that
+    /// carries credentials of its own is refused.
     #[must_use]
     pub fn credentials_provider(
         mut self,

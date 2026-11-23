@@ -7,6 +7,11 @@ use super::clients::sentinel_client;
 use super::url::SentinelUrl;
 use super::{Backend, Provider, Settings, Shared};
 
+/// A subscription to one channel.
+fn channel() -> super::Topics {
+    super::Topics::Channels(vec!["channel".to_owned()])
+}
+
 /// Opens a backend with the default connection settings.
 fn open(url: &str, credentials: Option<Provider>) -> crate::Result<Backend> {
     Backend::open(url, credentials, Settings::default())
@@ -76,7 +81,7 @@ mod credentials {
     use rstest::rstest;
 
     use super::super::Provider;
-    use super::open;
+    use super::{channel, open};
 
     /// A provider whose stream ends without giving credentials.
     struct Empty;
@@ -148,20 +153,35 @@ mod credentials {
     #[tokio::test]
     async fn a_subscription_opens_without_a_provider() {
         let backend = open(&super::url(), None).unwrap();
-        assert!(backend.subscribe(&["channel".to_owned()]).await.is_ok());
+        assert!(
+            std::sync::Arc::new(backend)
+                .subscribe(channel())
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
     async fn an_unreachable_sentinel_fails_a_subscription() {
         let backend = open("redis+sentinel://localhost:1/mymaster", None).unwrap();
-        assert!(backend.subscribe(&["channel".to_owned()]).await.is_err());
+        assert!(
+            std::sync::Arc::new(backend)
+                .subscribe(channel())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn a_subscription_opens_with_the_providers_credentials() {
         let (url, provider) = split(&super::url());
         let backend = open(&url, provider).unwrap();
-        assert!(backend.subscribe(&["channel".to_owned()]).await.is_ok());
+        assert!(
+            std::sync::Arc::new(backend)
+                .subscribe(channel())
+                .await
+                .is_ok()
+        );
     }
 
     #[rstest]
@@ -188,8 +208,8 @@ mod credentials {
     #[tokio::test]
     async fn a_provider_that_gives_nothing_fails_a_subscription() {
         let backend = open("redis://localhost:1/0", Some(empty())).unwrap();
-        let error = backend
-            .subscribe(&["channel".to_owned()])
+        let error = std::sync::Arc::new(backend)
+            .subscribe(channel())
             .await
             .err()
             .unwrap();
@@ -211,6 +231,7 @@ mod settings {
     use tokio::net::TcpListener;
 
     use super::super::{Backend, Settings, slots};
+    use super::channel;
     use crate::Docket;
 
     /// The address of a server that accepts connections and never answers.
@@ -247,7 +268,7 @@ mod settings {
         let backend = Backend::open(&url, None, settings).unwrap();
         let subscribed = tokio::time::timeout(
             Duration::from_secs(3),
-            backend.subscribe(&["channel".to_owned()]),
+            std::sync::Arc::new(backend).subscribe(channel()),
         )
         .await
         .expect("the subscription gives up in time");

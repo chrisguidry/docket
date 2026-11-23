@@ -7,6 +7,10 @@ use std::sync::Arc;
 use futures::{Stream, StreamExt};
 use redis::{BasicAuth, Client, RedisResult, StreamingCredentialsProvider};
 
+/// The credentials a provider gives, the first now and each later one when
+/// they rotate.
+pub(crate) type Credentials = Pin<Box<dyn Stream<Item = RedisResult<BasicAuth>> + Send + 'static>>;
+
 /// A credentials provider that several connections share.
 #[derive(Clone)]
 pub(crate) struct Provider(pub Arc<dyn StreamingCredentialsProvider>);
@@ -23,31 +27,28 @@ impl StreamingCredentialsProvider for Provider {
     }
 }
 
-impl Provider {
-    /// The credentials the provider gives now.
-    async fn current(&self) -> RedisResult<BasicAuth> {
-        self.subscribe().next().await.unwrap_or_else(|| {
-            Err(redis::RedisError::from((
-                redis::ErrorKind::AuthenticationFailed,
-                "the credential provider gave no credentials",
-            )))
-        })
-    }
+/// The next credentials from `credentials`, which for a stream that has
+/// given none yet are the ones in force now.
+pub(crate) async fn next(credentials: &mut Credentials) -> RedisResult<BasicAuth> {
+    credentials.next().await.unwrap_or_else(|| {
+        Err(redis::RedisError::from((
+            redis::ErrorKind::AuthenticationFailed,
+            "the credential provider gave no credentials",
+        )))
+    })
+}
 
-    /// `client` with the provider's current credentials.  redis-rs renews
-    /// credentials only on command connections, so a subscription takes the
-    /// ones in force when it opens; docket's subscribers open a new one when
-    /// Redis drops theirs.
-    pub async fn authenticate(&self, client: &Client) -> RedisResult<Client> {
-        let auth = self.current().await?;
-        let info = client.get_connection_info().clone();
-        let settings = info
-            .redis_settings()
-            .clone()
-            .set_username(auth.username())
-            .set_password(auth.password());
-        Client::open(info.set_redis_settings(settings))
-    }
+/// `client` with `auth` in place of the credentials in its URL.  redis-rs
+/// renews credentials only on command connections, so a subscription takes
+/// the ones it opens with, and moves to a new connection when they rotate.
+pub(crate) fn authenticate(client: &Client, auth: &BasicAuth) -> RedisResult<Client> {
+    let info = client.get_connection_info().clone();
+    let settings = info
+        .redis_settings()
+        .clone()
+        .set_username(auth.username())
+        .set_password(auth.password());
+    Client::open(info.set_redis_settings(settings))
 }
 
 /// Whether a client's URL carries a username or a password.
