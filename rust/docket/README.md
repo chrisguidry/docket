@@ -90,8 +90,8 @@ other crates' types:
 
 `TimeZone::get` and the `chrono-tz` conversion look zones up by name in the
 system's time zone database, such as `/usr/share/zoneinfo`.  When the system
-has no database, as on distroless, scratch, or Alpine images without
-`tzdata`, or its database has no zone by that name, they read a copy built
+has no database, as on scratch images or Alpine images without `tzdata`, or
+its database has no zone by that name, they read a copy built
 into the binary by the `tzdb-bundle` feature.  The feature is on by default
 and adds about 230 KB to a release build.  If you turn off default features,
 add `tzdb-bundle` back unless every image you run on has a time zone
@@ -131,11 +131,12 @@ docket-rs = { version = "0.6", features = ["tls-ring"] }
 With no backend, the first `rediss://` connect panics.  With two backends,
 every rustls config in the process panics, the application's own included,
 unless it calls `rustls::crypto::CryptoProvider::install_default` first.
-Without TLS, turn off the default features:
+Without TLS, turn off the default features, and keep the bundled time zone
+database (see Times):
 
 ```toml
 [dependencies]
-docket-rs = { version = "0.6", default-features = false }
+docket-rs = { version = "0.6", default-features = false, features = ["tzdb-bundle"] }
 ```
 
 Every connection docket-rs opens to Redis gives up on a connect after 10

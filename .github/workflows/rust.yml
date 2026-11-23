@@ -41,6 +41,11 @@ jobs:
       - name: Run clippy without default features
         run: cargo clippy -p docket-rs --all-targets --no-default-features --locked -- -D warnings
 
+      # The test runs below use --all-features, which skips the tests for a
+      # build without default features.  memory:// stands in for Redis.
+      - name: Run the tests without default features
+        run: cargo test -p docket-rs --lib --no-default-features --features memory --locked
+
       - name: Build the docs
         env:
           RUSTDOCFLAGS: -D warnings

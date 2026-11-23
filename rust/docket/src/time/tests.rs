@@ -104,10 +104,40 @@ fn finds_time_zones_by_name() {
 
 #[cfg(feature = "tzdb-bundle")]
 #[test]
-fn finds_named_zones_without_a_system_database() {
+fn reads_the_bundle_when_the_system_database_cannot_resolve_the_name() {
     let empty = jiff::tz::TimeZoneDatabase::none();
     let zone = super::zone_named(&empty, "America/Los_Angeles").unwrap();
     assert_eq!(zone.0.iana_name(), Some("America/Los_Angeles"));
+}
+
+/// A `TZif` file, version 1, for a zone fixed at five hours east of UTC.
+fn fixed_five_hours_east_tzif() -> Vec<u8> {
+    let mut tzif = b"TZif".to_vec();
+    tzif.extend([0; 16]);
+    for count in [0_u32, 0, 0, 0, 1, 4] {
+        tzif.extend(count.to_be_bytes());
+    }
+    tzif.extend(18_000_i32.to_be_bytes());
+    tzif.extend([0, 0]);
+    tzif.extend(b"FIV\0");
+    tzif
+}
+
+#[test]
+fn prefers_the_system_database_to_the_bundle() {
+    let tzdir = std::env::temp_dir().join(format!("docket-tzdir-{}", std::process::id()));
+    std::fs::create_dir_all(tzdir.join("America")).unwrap();
+    std::fs::write(
+        tzdir.join("America/Los_Angeles"),
+        fixed_five_hours_east_tzif(),
+    )
+    .unwrap();
+    let system = jiff::tz::TimeZoneDatabase::from_dir(&tzdir).unwrap();
+    let zone = super::zone_named(&system, "America/Los_Angeles").unwrap();
+    std::fs::remove_dir_all(&tzdir).unwrap();
+
+    let offset = zone.0.to_offset(jiff::Timestamp::UNIX_EPOCH);
+    assert_eq!(offset, jiff::tz::Offset::constant(5));
 }
 
 #[cfg(not(feature = "tzdb-bundle"))]
@@ -119,6 +149,10 @@ fn without_the_bundle_a_missing_system_database_fails() {
         .to_string();
     assert!(
         error.contains("America/Los_Angeles is not a time zone"),
+        "{error}"
+    );
+    assert!(
+        error.contains("no time zone database configured"),
         "{error}"
     );
 }

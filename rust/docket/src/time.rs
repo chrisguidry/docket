@@ -223,14 +223,17 @@ impl TimeZone {
     }
 }
 
+// jiff's global database is already the bundle when no system database exists;
+// this fallback adds a system database that lacks the name, such as a pruned tzdata.
 fn zone_named(system: &jiff::tz::TimeZoneDatabase, name: &str) -> Result<TimeZone> {
-    system
-        .get(name)
-        .or_else(|error| {
-            jiff::tz::TimeZoneDatabase::bundled()
-                .get(name)
-                .map_err(|_| error)
-        })
+    let found = system.get(name);
+    #[cfg(feature = "tzdb-bundle")]
+    let found = found.or_else(|error| {
+        jiff::tz::TimeZoneDatabase::bundled()
+            .get(name)
+            .map_err(|_| error)
+    });
+    found
         .map(TimeZone)
         .map_err(|error| Error::Invalid(format!("{name} is not a time zone: {error}")))
 }
