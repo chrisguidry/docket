@@ -41,6 +41,11 @@ pub enum Error {
     #[error("{0}")]
     Invalid(String),
 
+    /// Redis answered with a reply that docket cannot interpret, such as a
+    /// claim whose status is not text.  Redis is still available.
+    #[error("could not interpret a reply from Redis: {0}")]
+    Undecodable(String),
+
     /// A command of [`docket::cli`](crate::cli) could not write its output.
     #[cfg(feature = "cli")]
     #[error("could not write the output: {0}")]
@@ -61,21 +66,10 @@ impl Error {
     /// Whether the error means that Redis is unavailable, so that a worker
     /// should reconnect instead of stopping.  Every error from Redis counts,
     /// because a server that refuses commands (for example a read-only
-    /// replica after a failover) recovers the same way a lost one does.  A
-    /// reply that docket cannot decode, such as a hash value that is not
-    /// UTF-8 text, does not count: a reconnect reads the same reply again.
+    /// replica after a failover) recovers the same way a lost one does.
     #[must_use]
     pub fn is_redis_unavailable(&self) -> bool {
-        matches!(self, Self::Redis(_)) && !self.is_undecodable_reply()
-    }
-
-    /// Whether Redis sent a reply that did not convert to the type docket
-    /// asked for.
-    pub(crate) fn is_undecodable_reply(&self) -> bool {
-        // redis-rs gives a malformed reply on the wire the same kind, but it
-        // also drops that connection, so the next command reports Redis as
-        // unavailable.
-        matches!(self, Self::Redis(error) if error.kind() == redis::ErrorKind::Parse)
+        matches!(self, Self::Redis(_))
     }
 
     /// Whether Redis answered a command with an error that concerns that
@@ -105,49 +99,26 @@ impl Error {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::Error;
 
-    /// The error redis-rs returns for a hash whose value is not UTF-8, as a
-    /// hash that pydocket wrote with pickled arguments is.
-    fn undecodable_hash() -> Error {
-        let reply = redis::Value::Map(vec![(
-            redis::Value::BulkString(b"args".to_vec()),
-            redis::Value::BulkString(vec![0x80, 0x05, 0x95]),
-        )]);
-        redis::from_redis_value::<HashMap<String, String>>(reply)
-            .map_err(redis::RedisError::from)
-            .unwrap_err()
-            .into()
-    }
-
     #[test]
-    fn an_undecodable_reply_is_not_redis_being_unavailable() {
-        let error = undecodable_hash();
-        assert!(
-            error.to_string().contains("Cannot convert from UTF-8"),
-            "{error}"
-        );
-        assert!(error.is_undecodable_reply());
+    fn a_reply_docket_cannot_interpret_is_not_redis_being_unavailable() {
+        let error = Error::Undecodable("a claim status of 5".to_owned());
         assert!(!error.is_redis_unavailable());
+        assert_eq!(
+            error.to_string(),
+            "could not interpret a reply from Redis: a claim status of 5"
+        );
     }
 
+    /// redis-rs reports a connection that closes partway through a reply as
+    /// a parse error, so a parse error must count as unavailable.
     #[test]
-    fn a_refused_connection_is_redis_being_unavailable() {
-        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
-        let error = Error::from(redis::RedisError::from(refused));
+    fn a_parse_error_from_redis_rs_is_redis_being_unavailable() {
+        let reply = redis::Value::BulkString(vec![0xff]);
+        let parse = redis::from_redis_value::<String>(reply).unwrap_err();
+        let error = Error::from(redis::RedisError::from(parse));
+        assert!(error.to_string().contains("UTF-8"), "{error}");
         assert!(error.is_redis_unavailable());
-        assert!(!error.is_undecodable_reply());
-    }
-
-    #[test]
-    fn an_error_from_the_server_is_redis_being_unavailable() {
-        let error = Error::from(redis::RedisError::from((
-            redis::ErrorKind::Server(redis::ServerErrorKind::ReadOnly),
-            "READONLY",
-        )));
-        assert!(error.is_redis_unavailable());
-        assert!(!error.is_undecodable_reply());
     }
 }

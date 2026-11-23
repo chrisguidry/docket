@@ -102,7 +102,7 @@ pub(super) async fn subscribe(docket: &Docket, key: &str) -> Result<Events> {
     // Reading after the subscription is confirmed means no change can fall
     // between the read and the first message.
     let mut initial = Vec::new();
-    let (runs, progress): (HashMap<String, Vec<u8>>, HashMap<String, String>) = redis::pipe()
+    let (runs, progress): (HashMap<Vec<u8>, Vec<u8>>, HashMap<String, String>) = redis::pipe()
         .hgetall(keys.runs(key))
         .hgetall(keys.progress(key))
         .query_async(&mut docket.handle())

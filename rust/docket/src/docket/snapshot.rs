@@ -156,7 +156,7 @@ impl Docket {
     /// nothing of it, for example after its state expired.
     pub async fn execution(&self, key: &str) -> Result<Option<Execution>> {
         let mut connection = self.handle();
-        let runs: HashMap<String, Vec<u8>> = connection.hgetall(self.keys().runs(key)).await?;
+        let runs: HashMap<Vec<u8>, Vec<u8>> = connection.hgetall(self.keys().runs(key)).await?;
         let runs = runs_text(runs);
         let Some(function) = runs.get("function") else {
             return Ok(None);

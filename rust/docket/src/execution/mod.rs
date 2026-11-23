@@ -152,11 +152,13 @@ impl Status {
     }
 }
 
-/// A runs hash with its values as text.  pydocket writes a task's pickled
-/// arguments to the hash, and their bytes that are not UTF-8 become U+FFFD.
-pub(crate) fn runs_text(runs: HashMap<String, Vec<u8>>) -> HashMap<String, String> {
+/// A runs hash with its field names and values as text, for reading only.
+/// pydocket writes a task's pickled arguments to the hash, and their bytes
+/// that are not UTF-8 become U+FFFD.
+pub(crate) fn runs_text(runs: HashMap<Vec<u8>, Vec<u8>>) -> HashMap<String, String> {
+    let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
     runs.into_iter()
-        .map(|(field, value)| (field, String::from_utf8_lossy(&value).into_owned()))
+        .map(|(field, value)| (text(field), text(value)))
         .collect()
 }
 
@@ -261,7 +263,7 @@ impl<O: DeserializeOwned> Execution<O> {
 // compiles once rather than once for each output type.
 
 async fn status(docket: &Docket, key: &str) -> Result<Option<Status>> {
-    let runs: HashMap<String, Vec<u8>> = docket.handle().hgetall(docket.keys().runs(key)).await?;
+    let runs: HashMap<Vec<u8>, Vec<u8>> = docket.handle().hgetall(docket.keys().runs(key)).await?;
     Ok(Status::from_hash(&runs_text(runs)))
 }
 

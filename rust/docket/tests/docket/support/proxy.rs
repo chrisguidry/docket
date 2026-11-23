@@ -16,14 +16,52 @@ use tokio::task::JoinSet;
 
 type Matcher = Box<dyn Fn(&[Vec<u8>]) -> bool + Send>;
 
-/// Fails the next `times` commands that `matches` picks, with `error` in
-/// place of the reply, or with a generic error when `error` is `None`.
+/// Answers the next `times` commands that `matches` picks with `reply`, a
+/// RESP reply, or with a generic error when `reply` is `None`.
 struct Rule {
     matches: Matcher,
     times: usize,
-    error: Option<String>,
+    reply: Option<Vec<u8>>,
+    /// Closes the connection after the reply, as Redis does when it goes
+    /// away partway through one.
+    close: bool,
     /// Picks only commands on connections that have subscribed.
     subscribers_only: bool,
+}
+
+impl Rule {
+    fn new(
+        times: usize,
+        reply: Option<Vec<u8>>,
+        matches: impl Fn(&[Vec<u8>]) -> bool + Send + 'static,
+    ) -> Self {
+        Self {
+            matches: Box::new(matches),
+            times,
+            reply,
+            close: false,
+            subscribers_only: false,
+        }
+    }
+}
+
+/// The start of a reply whose last bulk string never finishes.
+const TRUNCATED: &[u8] = b"*2\r\n$4\r\nargs\r\n$10\r\nabc";
+
+/// A rule for the runs of the Lua script with this source.
+fn script_rule(source: &str, times: usize, reply: Option<Vec<u8>>) -> Rule {
+    let sha = Sha1::digest(source.as_bytes())
+        .iter()
+        .fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+    Rule::new(times, reply, move |args| {
+        args[0].eq_ignore_ascii_case(b"EVALSHA")
+            && args
+                .get(1)
+                .is_some_and(|arg| arg.eq_ignore_ascii_case(sha.as_bytes()))
+    })
 }
 
 #[derive(Default)]
@@ -67,17 +105,21 @@ impl State {
         self.silent
     }
 
-    /// The error reply for this command when it should fail, spending one
-    /// of a rule's failures.
-    fn failure(&mut self, args: &[Vec<u8>], name: &[u8], subscribed: bool) -> Option<Vec<u8>> {
+    /// The injected reply for this command, when a rule picks it, spending
+    /// one of the rule's replies, and whether the connection closes after it.
+    fn failure(
+        &mut self,
+        args: &[Vec<u8>],
+        name: &[u8],
+        subscribed: bool,
+    ) -> Option<(Vec<u8>, bool)> {
         let rule = self.rules.iter_mut().find(|rule| {
             rule.times > 0 && (subscribed || !rule.subscribers_only) && (rule.matches)(args)
         })?;
         rule.times -= 1;
-        let error = rule.error.clone().unwrap_or_else(|| {
-            format!("ERR injected failure for {}", String::from_utf8_lossy(name))
-        });
-        Some(format!("-{error}\r\n").into_bytes())
+        let name = String::from_utf8_lossy(name);
+        let generic = format!("-ERR injected failure for {name}\r\n").into_bytes();
+        Some((rule.reply.clone().unwrap_or(generic), rule.close))
     }
 }
 
@@ -126,52 +168,60 @@ impl Proxy {
 
     fn fail_named(&self, command: &str, times: usize, subscribers_only: bool) {
         let command = command.to_ascii_uppercase();
-        self.add(times, None, subscribers_only, move |args| {
+        let rule = Rule::new(times, None, move |args| {
             args[0].eq_ignore_ascii_case(command.as_bytes())
+        });
+        self.add(Rule {
+            subscribers_only,
+            ..rule
+        });
+    }
+
+    /// Answers the next command named `command` with the start of a reply,
+    /// then closes the connection, as when Redis goes away partway through a
+    /// reply.
+    pub fn cut_reply(&self, command: &str) {
+        let command = command.to_ascii_uppercase();
+        let rule = Rule::new(1, Some(TRUNCATED.to_vec()), move |args| {
+            args[0].eq_ignore_ascii_case(command.as_bytes())
+        });
+        self.add(Rule {
+            close: true,
+            ..rule
+        });
+    }
+
+    /// Answers the next run of the Lua script with this source with the
+    /// start of a reply, then closes the connection.
+    pub fn cut_script_reply(&self, source: &str) {
+        let rule = script_rule(source, 1, Some(TRUNCATED.to_vec()));
+        self.add(Rule {
+            close: true,
+            ..rule
         });
     }
 
     /// Answers the next `times` runs of the Lua script with this source with
     /// an error.
     pub fn fail_script(&self, source: &str, times: usize) {
-        self.refuse_script(source, times, None);
+        self.answer_script(source, times, None);
     }
 
     /// Answers the next `times` runs of the Lua script with this source with
     /// `error`, such as `READONLY You can't write against a read only
     /// replica.`
     pub fn fail_script_with(&self, source: &str, times: usize, error: &str) {
-        self.refuse_script(source, times, Some(error.to_owned()));
+        self.answer_script(source, times, Some(format!("-{error}\r\n").into_bytes()));
     }
 
-    fn refuse_script(&self, source: &str, times: usize, error: Option<String>) {
-        let sha = Sha1::digest(source.as_bytes())
-            .iter()
-            .fold(String::new(), |mut hex, byte| {
-                let _ = write!(hex, "{byte:02x}");
-                hex
-            });
-        self.add(times, error, false, move |args| {
-            args[0].eq_ignore_ascii_case(b"EVALSHA")
-                && args
-                    .get(1)
-                    .is_some_and(|arg| arg.eq_ignore_ascii_case(sha.as_bytes()))
-        });
+    /// Answers the next `times` runs of the Lua script with this source with
+    /// `reply`, a RESP reply, or with an error when `reply` is `None`.
+    pub fn answer_script(&self, source: &str, times: usize, reply: Option<Vec<u8>>) {
+        self.add(script_rule(source, times, reply));
     }
 
-    fn add(
-        &self,
-        times: usize,
-        error: Option<String>,
-        subscribers_only: bool,
-        matches: impl Fn(&[Vec<u8>]) -> bool + Send + 'static,
-    ) {
-        self.state.lock().unwrap().rules.push(Rule {
-            matches: Box::new(matches),
-            times,
-            error,
-            subscribers_only,
-        });
+    fn add(&self, rule: Rule) {
+        self.state.lock().unwrap().rules.push(rule);
     }
 
     /// Drops every connection and refuses new ones, as if Redis went away.
@@ -302,7 +352,7 @@ async fn relay(client: TcpStream, server: TcpStream, state: Arc<Mutex<State>>) {
 
     let writer = tokio::spawn(async move {
         while let Some(bytes) = outgoing.recv().await {
-            if client_write.write_all(&bytes).await.is_err() {
+            if bytes.is_empty() || client_write.write_all(&bytes).await.is_err() {
                 break;
             }
         }
@@ -393,7 +443,13 @@ async fn commands(
             } else {
                 state.lock().unwrap().failure(&args, &name, subscribed)
             };
-            let Some(error) = failure else {
+            if let Some((cut, true)) = &failure {
+                // An empty message tells the writer to close the connection.
+                let _ = connection.to_client.send(cut.clone());
+                let _ = connection.to_client.send(Vec::new());
+                continue;
+            }
+            let Some((error, _)) = failure else {
                 if name == b"HELLO" && args.get(1).is_some_and(|version| version == b"3") {
                     connection.resp3.store(true, Ordering::SeqCst);
                 }

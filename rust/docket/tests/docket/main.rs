@@ -11,6 +11,7 @@ mod automatic;
 mod batches;
 mod behavior_faults;
 mod cancellation;
+mod claim_replies;
 #[cfg(feature = "cli")]
 mod cli;
 mod concurrency;

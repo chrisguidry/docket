@@ -80,35 +80,8 @@ pub(super) async fn run(worker: Arc<Shared>, delivery: Delivery) -> Result<()> {
             });
             Ok(())
         }
-        // A reconnect or a redelivery reads the same reply again, so the
-        // run ends here.
-        Err(error) if error.is_undecodable_reply() => {
-            span.in_scope(|| {
-                tracing::error!(
-                    %error,
-                    "Could not decode a reply from Redis for task {:?}, so it failed",
-                    message.key
-                );
-            });
-            undecodable(&worker, &delivery, &error).await
-        }
         result => result,
     }
-}
-
-/// Ends a run as failed, with `error` as its error, after Redis sent a reply
-/// for it that did not decode.
-async fn undecodable(worker: &Shared, delivery: &Delivery, error: &Error) -> Result<()> {
-    let message = &delivery.message;
-    let run = Run {
-        docket: &worker.docket,
-        delivery,
-        worker: &worker.settings.name,
-        name: &message.function,
-        call: message.function.clone(),
-    };
-    let error = vec![("error".to_owned(), error.to_string().into_bytes())];
-    run.terminal(State::Failed, message.generation, error).await
 }
 
 async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Result<()> {
@@ -133,7 +106,20 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
         metrics.tasks_stricken.add(1, &run.labels_where("worker"));
         return run.strike().await;
     }
-    let generation = match run.claim().await? {
+    let claim = match run.claim().await {
+        // Without the claim's status, the run's state is unknown, so the
+        // delivery stays pending for the redelivery sweep.
+        Err(error @ Error::Undecodable(_)) => {
+            tracing::error!(
+                %error,
+                "Could not interpret the claim of task {:?}, so it will be redelivered",
+                message.key
+            );
+            return Ok(());
+        }
+        claim => claim?,
+    };
+    let generation = match claim {
         Claim::Claimed(generation) => {
             worker.limited.count_run(&message.key);
             generation
@@ -147,6 +133,15 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
             tracing::info!("↬ {} (superseded)", run.call);
             metrics.tasks_superseded.add(1, &run.labels_where("worker"));
             return Ok(());
+        }
+        // The task is claimed, and a redelivery would read the same hash,
+        // so the run ends as failed.
+        Claim::Unreadable(reason) => {
+            let error = Error::Undecodable(reason).to_string();
+            tracing::error!(error, "↩ {}", run.call);
+            metrics.tasks_failed.add(1, &run.labels());
+            let error = vec![("error".to_owned(), error.into_bytes())];
+            return run.terminal(State::Failed, message.generation, error).await;
         }
     };
 

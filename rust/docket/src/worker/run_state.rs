@@ -11,7 +11,7 @@ use super::session::Delivery;
 use crate::Timestamp;
 use crate::behaviors::{AdmissionBlocked, AfterCompletion};
 use crate::docket::{Docket, Placement};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::execution::{Disposition, Message, State, runs_text};
 use crate::keys::WORKER_GROUP;
 use crate::scripts;
@@ -29,6 +29,9 @@ pub(super) enum Claim {
     Cancelled,
     /// A newer copy of the task took its key.
     Superseded,
+    /// The claim succeeded, but its copy of the runs hash could not be
+    /// interpreted, for this reason.
+    Unreadable(String),
 }
 
 /// One delivery, as the worker records what becomes of it.
@@ -95,16 +98,30 @@ impl Run<'_> {
         .call();
         let mut connection = self.docket.handle();
         // The reply is the claim's status, the runs hash, and the progress
-        // hash.
-        let (status, runs, _): (String, HashMap<String, Vec<u8>>, Value) =
-            call.run(&mut connection).await?;
+        // hash.  The status decides what happens, so it is read on its own,
+        // and the runs hash matters only to a claim that succeeded.
+        let reply: Value = call.run(&mut connection).await?;
+        let parts = match reply {
+            Value::Array(parts) => parts,
+            other => return Err(Error::Undecodable(format!("a claim of {other:?}"))),
+        };
+        let status = parts.first().unwrap_or(&Value::Nil);
+        let Ok(status) = redis::from_redis_value_ref::<String>(status) else {
+            return Err(Error::Undecodable(format!(
+                "a claim whose status is {status:?}"
+            )));
+        };
+        let runs = parts.get(1).unwrap_or(&Value::Nil);
         Ok(match status.as_str() {
-            "OK" => Claim::Claimed(
-                runs_text(runs)
-                    .get("generation")
-                    .and_then(|generation| generation.parse().ok())
-                    .unwrap_or(self.message().generation),
-            ),
+            "OK" => match redis::from_redis_value_ref::<HashMap<Vec<u8>, Vec<u8>>>(runs) {
+                Ok(runs) => Claim::Claimed(
+                    runs_text(runs)
+                        .get("generation")
+                        .and_then(|generation| generation.parse().ok())
+                        .unwrap_or(self.message().generation),
+                ),
+                Err(error) => Claim::Unreadable(format!("the runs hash of a claim: {error}")),
+            },
             "CANCELLED" => Claim::Cancelled,
             _ => Claim::Superseded,
         })
