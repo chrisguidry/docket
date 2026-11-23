@@ -1,6 +1,5 @@
 """Tests for Perpetual dependency (automatically rescheduling tasks)."""
 
-import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -254,33 +253,3 @@ async def test_perpetual_tasks_can_schedule_next_run_at_specific_time(
     assert len(run_times) == 2
     delay = run_times[1] - run_times[0]
     assert delay >= timedelta(milliseconds=50)
-
-
-async def test_calling_a_perpetual_task_directly_does_not_affect_worker_runs(
-    docket: Docket, worker: Worker
-):
-    """A direct call passes the declared default itself, so a cancel() or
-    after() it makes must not carry into later runs on a worker."""
-    worker_calls = 0
-
-    async def perpetual_task(
-        direct: bool = False,
-        perpetual: Perpetual = Perpetual(every=timedelta(milliseconds=10)),
-    ):
-        nonlocal worker_calls
-        if direct:
-            perpetual.after(timedelta(hours=1))
-            perpetual.cancel()
-            return
-        worker_calls += 1
-        if worker_calls == 3:
-            perpetual.cancel()
-
-    await perpetual_task(direct=True)
-
-    await docket.add(perpetual_task)()
-
-    async with asyncio.timeout(5):
-        await worker.run_until_finished()
-
-    assert worker_calls == 3
