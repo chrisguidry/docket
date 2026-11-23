@@ -5,8 +5,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::{Stream, StreamExt};
-use redis::{BasicAuth, Client, RedisResult, StreamingCredentialsProvider};
+use redis::{BasicAuth, Client, ProtocolVersion, RedisResult, StreamingCredentialsProvider};
 use tokio::sync::watch;
+
+#[cfg(test)]
+mod tests;
 
 /// The credentials a provider gives, the first now and each later one when
 /// they rotate.
@@ -44,9 +47,11 @@ pub(crate) async fn next(credentials: &mut Credentials) -> RedisResult<BasicAuth
 ///
 /// A provider can wait for each subscriber to take one set of credentials
 /// before it sends the next: redis-rs's Entra ID provider gives each
-/// subscriber a channel that holds one.  A subscription reads only when its
-/// owner does, so without this task, one that nobody reads would hold up
-/// every refresh, and the command connections' credentials would expire.
+/// subscriber a channel that holds one.  A subscription takes the next set
+/// only once the server answers its AUTH for the last one, which can take
+/// as long as the response timeout, or forever without one.  Without this
+/// task, a slow AUTH on one subscription would hold up every refresh, and
+/// the command connections' credentials would expire.
 pub(crate) fn follow(first: BasicAuth, mut credentials: Credentials) -> watch::Receiver<BasicAuth> {
     let (sender, receiver) = watch::channel(first);
     tokio::spawn(async move {
@@ -68,14 +73,16 @@ pub(crate) fn follow(first: BasicAuth, mut credentials: Credentials) -> watch::R
     receiver
 }
 
-/// `client` with `auth` in place of the credentials in its URL.  redis-rs
-/// renews credentials only on command connections, so a subscription takes
-/// the ones it opens with, and moves to a new connection when they rotate.
-pub(crate) fn authenticate(client: &Client, auth: &BasicAuth) -> Client {
+/// `client` speaking RESP3, with `auth` in place of the credentials in its
+/// URL.  Under RESP3 a subscribed connection takes any command, so a
+/// subscription can send AUTH on its own connection when the credentials
+/// rotate.
+pub(crate) fn resp3(client: &Client, auth: &BasicAuth) -> Client {
     let info = client.get_connection_info().clone();
     let settings = info
         .redis_settings()
         .clone()
+        .set_protocol(ProtocolVersion::RESP3)
         .set_username(auth.username())
         .set_password(auth.password());
     Client::open(info.set_redis_settings(settings))

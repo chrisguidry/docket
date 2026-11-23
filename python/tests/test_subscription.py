@@ -1,7 +1,8 @@
-"""Moving a pub/sub subscription to a new connection after a rotation.
+"""A Subscription confirms before it returns and hands its reader only
+published messages.
 
-These count a rotation without sending AUTH, so they run on every backend.
-tests/test_credential_rotation.py rotates real credentials on a real Redis.
+tests/test_credential_rotation.py re-authenticates subscriptions on a real
+Redis.
 """
 
 # pyright: reportPrivateUsage=false
@@ -11,340 +12,155 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from contextlib import asynccontextmanager
-from types import CoroutineType
-from typing import Any, AsyncGenerator, Callable, cast
-from unittest.mock import patch
+from typing import Any, AsyncGenerator, AsyncIterator
 
 import pytest
 
 from docket import Docket
-from docket._subscription import (
-    SUBSCRIBED,
-    UNSUBSCRIBED,
-    Subscription,
-    not_delivered,
+from docket._redis import PubSubClient
+from docket._subscription import Subscription
+
+
+@pytest.mark.parametrize(
+    ("channels", "patterns", "published_to"),
+    [
+        pytest.param(["state:a"], [], "state:a", id="channel"),
+        pytest.param([], ["cancel:*"], "cancel:a", id="pattern"),
+    ],
 )
-from tests.conftest import skip_memory
-
-
-def rotate(docket: Docket) -> None:
-    docket._redis._rotation.rotations += 1
-
-
-async def read(subscription: Subscription, count: int) -> list[bytes]:
-    received: list[bytes] = []
-    while len(received) < count:
-        message = await subscription.get_message(timeout=1)
-        assert message is not None, f"only {received} arrived"
-        received.append(message["data"])
-    return received
-
-
-async def test_a_subscription_keeps_its_connection_without_a_rotation(
-    docket: Docket,
+async def test_a_message_published_right_after_entering_arrives(
+    docket: Docket, channels: list[str], patterns: list[str], published_to: str
 ):
-    channel = docket.key("state:subscription")
-    async with Subscription(docket, channels=[channel]) as subscription:
-        before = subscription._pubsub
-        await docket._publish(channel, "one")
-        assert await read(subscription, 1) == [b"one"]
-        assert subscription._pubsub is before
+    async with docket._subscription(
+        channels=[docket.key(c) for c in channels],
+        patterns=[docket.key(p) for p in patterns],
+    ) as subscription:
+        await docket._publish(docket.key(published_to), "hello")
+        message = await subscription.get_message(timeout=5)
+
+    assert message is not None
+    assert message["data"] == b"hello"
 
 
-async def test_a_rotation_moves_a_subscription_to_a_new_connection(docket: Docket):
-    """Messages that the old connection holds unread come first, then the
-    ones published after the move, each once."""
-    channel = docket.key("state:subscription")
-    async with Subscription(docket, channels=[channel]) as subscription:
-        before = subscription._pubsub
-        for i in range(5):
+async def test_get_message_returns_none_when_nothing_is_published(docket: Docket):
+    async with docket._subscription(channels=[docket.key("state:a")]) as subscription:
+        assert await subscription.get_message(timeout=0.01) is None
+
+
+async def test_listen_yields_published_messages_in_order(docket: Docket):
+    channel = docket.key("state:a")
+    async with docket._subscription(channels=[channel]) as subscription:
+        for i in range(3):
             await docket._publish(channel, f"{i}")
-
-        rotate(docket)
-        assert await read(subscription, 1) == [b"0"]
-        assert subscription._pubsub is not before
-
-        for i in range(5, 10):
-            await docket._publish(channel, f"{i}")
-        assert await read(subscription, 9) == [f"{i}".encode() for i in range(1, 10)]
-
-
-async def test_a_rotation_moves_a_pattern_subscription(docket: Docket):
-    pattern = docket.key("cancel:*")
-    async with Subscription(docket, patterns=[pattern]) as subscription:
-        await docket._publish(docket.key("cancel:a"), "a")
-        rotate(docket)
-        await docket._publish(docket.key("cancel:b"), "b")
-        assert await read(subscription, 2) == [b"a", b"b"]
-
-
-# The memory backend delivers each message to a subscriber's queue from a
-# background thread, so a message published just before the move can reach the
-# old connection after it is unsubscribed.  Redis delivers it first.
-@skip_memory
-async def test_a_rotation_loses_nothing_published_during_the_move(  # pragma: no cover
-    docket: Docket,
-):
-    channel = docket.key("state:subscription")
-    sent = [f"{i}".encode() for i in range(200)]
-    async with Subscription(docket, channels=[channel]) as subscription:
-
-        async def publish() -> None:
-            for i, message in enumerate(sent):
-                await docket._publish(channel, message.decode())
-                if i == 50:
-                    rotate(docket)
-                await asyncio.sleep(0)
-
-        publishing = asyncio.create_task(publish())
-        received: list[bytes] = []
-        while not set(sent) <= set(received):
-            message = await subscription.get_message(timeout=1)
-            assert message is not None
-            received.append(message["data"])
-        await publishing
-
-    # A message published while both connections are subscribed arrives twice.
-    assert sorted(set(received), key=int) == sent
-
-
-async def test_listen_yields_messages_across_a_rotation(docket: Docket):
-    channel = docket.key("state:subscription")
-    async with Subscription(docket, channels=[channel]) as subscription:
         messages = subscription.listen()
-        await docket._publish(channel, "before")
-        assert (await anext(messages))["data"] == b"before"
+        received = [(await anext(messages))["data"] for _ in range(3)]
 
-        async def next_message() -> dict[str, Any]:
-            return await anext(messages)
-
-        rotate(docket)
-        with patch("docket._subscription.LISTEN_READ_TIMEOUT", 0.01):
-            reading = asyncio.create_task(next_message())
-            await asyncio.sleep(0.05)
-            await docket._publish(channel, "after")
-            assert (await reading)["data"] == b"after"
+    assert received == [b"0", b"1", b"2"]
 
 
-async def never_confirmed(*channels: Any) -> None:
-    """A SUBSCRIBE or UNSUBSCRIBE that the server never answers."""
+class ScriptedPubSub:
+    """A pub/sub connection whose reads return ``replies`` in order, then None.
+    Redis can't be made to send these replies at a chosen moment."""
+
+    def __init__(self, replies: list[dict[str, Any]]) -> None:
+        self.replies = deque(replies)
+
+    async def subscribe(self, *channels: Any) -> None:
+        pass
+
+    async def psubscribe(self, *patterns: Any) -> None:
+        pass
+
+    async def get_message(
+        self, ignore_subscribe_messages: bool = False, timeout: float | None = 0.0
+    ) -> dict[str, Any] | None:
+        return self.replies.popleft() if self.replies else None
+
+    def listen(self) -> AsyncIterator[dict[str, Any]]:
+        raise NotImplementedError  # pragma: no cover
+
+    async def aclose(self) -> None:
+        pass  # pragma: no cover
 
 
-def failing_with(error: BaseException) -> Callable[..., CoroutineType[Any, Any, None]]:
-    async def fail(*channels: Any) -> None:
-        raise error
-
-    return fail
+@asynccontextmanager
+async def opened(pubsub: PubSubClient) -> AsyncGenerator[PubSubClient, None]:
+    yield pubsub
 
 
-def second_pubsub_subscribes_with(
-    docket: Docket,
-    subscribe: Callable[..., CoroutineType[Any, Any, None]],
-    opened: list[Any],
-    closed: list[Any],
-) -> Any:
-    """Patches the docket so the second connection it opens subscribes with
-    ``subscribe``."""
-    original_pubsub = docket._pubsub
-
-    @asynccontextmanager
-    async def pubsub() -> AsyncGenerator[Any, None]:
-        async with original_pubsub() as pubsub:
-            opened.append(pubsub)
-            if len(opened) == 2:
-                pubsub.subscribe = subscribe
-            try:
-                yield pubsub
-            finally:
-                closed.append(pubsub)
-
-    return patch.object(docket, "_pubsub", pubsub)
+def reply(type: str, data: Any = b"") -> dict[str, Any]:
+    return {"type": type, "pattern": None, "channel": b"c", "data": data}
 
 
 @pytest.mark.parametrize(
-    "subscribe",
+    "dropped",
     [
-        pytest.param(failing_with(ConnectionError("pool is full")), id="fails"),
-        pytest.param(never_confirmed, id="never-confirmed"),
+        # The server's "+OK" to an AUTH that a rotation wrote
+        pytest.param(reply("pong", b"OK"), id="auth-reply"),
+        # The confirmations redis-py reads when it reconnects and resubscribes
+        pytest.param(reply("subscribe", 1), id="resubscribed"),
+        pytest.param(reply("psubscribe", 1), id="presubscribed"),
     ],
 )
-async def test_a_failed_move_keeps_the_old_connection(
-    docket: Docket,
-    caplog: pytest.LogCaptureFixture,
-    subscribe: Callable[..., CoroutineType[Any, Any, None]],
+async def test_get_message_drops_replies_that_are_not_messages(
+    dropped: dict[str, Any],
 ):
-    channel = docket.key("state:subscription")
-    opened: list[Any] = []
-    closed: list[Any] = []
-    with (
-        patch("docket._subscription.MOVE_TIMEOUT", 0.1),
-        second_pubsub_subscribes_with(docket, subscribe, opened, closed),
-    ):
-        async with Subscription(docket, channels=[channel]) as subscription:
-            rotate(docket)
-            await docket._publish(channel, "kept")
-            assert await read(subscription, 1) == [b"kept"]
-            assert subscription._pubsub is opened[0]
-            assert closed == [opened[1]]
+    pubsub = ScriptedPubSub(
+        [reply("subscribe", 1), dropped, reply("message", b"published")]
+    )
+    async with Subscription(opened(pubsub), channels=["c"]) as subscription:
+        message = await subscription.get_message(timeout=0)
 
-    assert closed == [opened[1], opened[0]]
-    assert "Could not move a subscription" in caplog.text
+    assert message == reply("message", b"published")
 
 
-async def test_a_cancelled_move_closes_the_new_connection(docket: Docket):
-    channel = docket.key("state:subscription")
-    opened: list[Any] = []
-    closed: list[Any] = []
-    with second_pubsub_subscribes_with(
-        docket, failing_with(asyncio.CancelledError()), opened, closed
-    ):
-        async with Subscription(docket, channels=[channel]) as subscription:
-            rotate(docket)
-            with pytest.raises(asyncio.CancelledError):
-                await subscription.get_message(timeout=0)
-            assert closed == [opened[1]]
+async def test_an_auth_reply_before_the_confirmation_is_dropped():
+    """A rotation can write AUTH between the SUBSCRIBE and its confirmation."""
+    pubsub = ScriptedPubSub(
+        [reply("pong", b"OK"), reply("subscribe", 1), reply("message", b"published")]
+    )
+    async with Subscription(opened(pubsub), channels=["c"]) as subscription:
+        message = await subscription.get_message(timeout=0)
+
+    assert message == reply("message", b"published")
 
 
-@pytest.mark.parametrize(
-    "unsubscribe",
-    [
-        pytest.param(failing_with(ConnectionError("it is gone")), id="fails"),
-        pytest.param(never_confirmed, id="never-confirmed"),
-    ],
-)
-async def test_a_broken_old_connection_still_hands_over(
-    docket: Docket,
-    caplog: pytest.LogCaptureFixture,
-    unsubscribe: Callable[..., CoroutineType[Any, Any, None]],
-):
-    channel = docket.key("state:subscription")
-    async with Subscription(docket, channels=[channel]) as subscription:
-        old = subscription._pubsub
-        # Closing the connection unsubscribes it again, which works.
-        old_stack = subscription._stack
-        old_stack.push_async_callback(restore, old, "unsubscribe", old.unsubscribe)
-        old.unsubscribe = unsubscribe
-        rotate(docket)
-        # A connection that is really broken holds nothing to read, so the
-        # message goes out after the move, when only the new one can get it.
-        with patch("docket._subscription.MOVE_TIMEOUT", 0.1):
-            assert await subscription.get_message(timeout=0) is None
-        await docket._publish(channel, "after")
-        assert await read(subscription, 1) == [b"after"]
-        assert subscription._pubsub is not old
-
-    assert "The old connection failed" in caplog.text
-
-
-async def restore(target: Any, name: str, value: Any) -> None:
-    setattr(target, name, value)
-
-
-async def test_a_failure_closing_the_old_connection_still_hands_over(
-    docket: Docket, caplog: pytest.LogCaptureFixture
-):
-    channel = docket.key("state:subscription")
-    async with Subscription(docket, channels=[channel]) as subscription:
-        subscription._stack.push_async_callback(
-            failing_with(ConnectionError("the close failed"))
-        )
-        await docket._publish(channel, "before")
-        rotate(docket)
-        await docket._publish(channel, "after")
-        assert await read(subscription, 2) == [b"before", b"after"]
-
-    assert "Could not close a subscription's old connection" in caplog.text
-
-
-async def test_a_failed_subscribe_closes_the_connection(docket: Docket):
-    original_pubsub = docket._pubsub
-    closed: list[Any] = []
-
-    @asynccontextmanager
-    async def failing_pubsub() -> AsyncGenerator[Any, None]:
-        async with original_pubsub() as pubsub:
-
-            async def fail(*channels: Any) -> None:
-                raise ConnectionError("subscribe failed")
-
-            pubsub.subscribe = fail
-            try:
-                yield pubsub
-            finally:
-                closed.append(pubsub)
-
-    with patch.object(docket, "_pubsub", failing_pubsub):
-        with pytest.raises(ConnectionError, match="subscribe failed"):
-            async with Subscription(
-                docket, channels=[docket.key("state:subscription")]
-            ):
-                pass  # pragma: no cover
-
-    assert len(closed) == 1
-
-
-async def test_messages_before_the_last_confirmation_are_kept(docket: Docket):
+async def test_messages_before_the_last_confirmation_are_kept():
     """A message on a channel the server has confirmed can arrive before the
     confirmation of a pattern subscribed after it."""
-    channel = docket.key("state:subscription")
-    replies = [
-        {"type": "subscribe", "channel": channel, "data": 1},
-        {"type": "message", "channel": channel, "data": b"early"},
-        {"type": "psubscribe", "channel": docket.key("cancel:*"), "data": 2},
-    ]
-
-    class Replies:
-        async def get_message(self, **kwargs: Any) -> dict[str, Any]:
-            return replies.pop(0)
-
-    subscription = Subscription(
-        docket, channels=[channel], patterns=[docket.key("cancel:*")]
+    pubsub = ScriptedPubSub(
+        [
+            reply("subscribe", 1),
+            reply("message", b"early"),
+            reply("psubscribe", 2),
+            reply("pmessage", b"later"),
+        ]
     )
-    received: deque[dict[str, Any]] = deque()
-    await subscription._read_until(cast(Any, Replies()), SUBSCRIBED, received)
-    assert [message["data"] for message in received] == [b"early"]
-    assert replies == []
+    async with Subscription(
+        opened(pubsub), channels=["c"], patterns=["p*"]
+    ) as subscription:
+        first = await subscription.get_message(timeout=0)
+        second = await subscription.get_message(timeout=0)
+
+    assert [first, second] == [reply("message", b"early"), reply("pmessage", b"later")]
 
 
-async def test_a_confirmation_from_a_reconnect_is_not_a_message(docket: Docket):
-    """redis-py subscribes again when it reconnects, so a subscribe
-    confirmation can arrive while the subscription waits to be unsubscribed."""
-    pattern = docket.key("cancel:*")
-    replies = [
-        {"type": "psubscribe", "channel": pattern, "data": 1},
-        {"type": "punsubscribe", "channel": pattern, "data": 0},
-    ]
+async def test_a_failed_subscribe_closes_the_connection():
+    closed = asyncio.Event()
 
-    class Replies:
-        async def get_message(self, **kwargs: Any) -> dict[str, Any]:
-            return replies.pop(0)
+    class FailingPubSub(ScriptedPubSub):
+        async def subscribe(self, *channels: Any) -> None:
+            raise ConnectionError("subscribe failed")
 
-    subscription = Subscription(docket, patterns=[pattern])
-    received: deque[dict[str, Any]] = deque()
-    await subscription._read_until(cast(Any, Replies()), UNSUBSCRIBED, received)
-    assert list(received) == []
-    assert replies == []
+    @asynccontextmanager
+    async def opening() -> AsyncGenerator[PubSubClient, None]:
+        try:
+            yield FailingPubSub([])
+        finally:
+            closed.set()
 
+    with pytest.raises(ConnectionError, match="subscribe failed"):
+        async with Subscription(opening(), channels=["c"]):
+            pass  # pragma: no cover
 
-def message(data: bytes) -> dict[str, Any]:
-    return {"type": "message", "pattern": None, "channel": b"c", "data": data}
-
-
-@pytest.mark.parametrize(
-    ("early", "delivered", "kept"),
-    [
-        ([], [b"a"], []),
-        ([b"a"], [b"a"], []),
-        ([b"a", b"b"], [b"a"], [b"b"]),
-        ([b"a", b"a"], [b"a"], [b"a"]),
-    ],
-)
-def test_only_the_new_connections_early_messages_that_are_not_copies_are_kept(
-    early: list[bytes], delivered: list[bytes], kept: list[bytes]
-):
-    """What the new connection receives before its confirmations also reaches
-    the old one, unless the old one broke first."""
-    result = not_delivered(
-        [message(data) for data in early], [message(data) for data in delivered]
-    )
-    assert [m["data"] for m in result] == kept
+    assert closed.is_set()

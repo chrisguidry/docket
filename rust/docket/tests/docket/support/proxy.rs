@@ -22,6 +22,8 @@ struct Rule {
     matches: Matcher,
     times: usize,
     error: Option<String>,
+    /// Picks only commands on connections that have subscribed.
+    subscribers_only: bool,
 }
 
 #[derive(Default)]
@@ -37,6 +39,9 @@ struct State {
     connections: JoinSet<()>,
     /// How many of each command reached Redis, by upper-case name.
     counts: std::collections::HashMap<String, usize>,
+    /// How many of each command reached Redis on a connection that had
+    /// subscribed, by upper-case name.
+    subscriber_counts: std::collections::HashMap<String, usize>,
     /// How many reads from a client carried each command, by upper-case
     /// name.  A client writes a pipeline at once and waits for its replies,
     /// so a small pipeline arrives in one read.
@@ -64,11 +69,10 @@ impl State {
 
     /// The error reply for this command when it should fail, spending one
     /// of a rule's failures.
-    fn failure(&mut self, args: &[Vec<u8>], name: &[u8]) -> Option<Vec<u8>> {
-        let rule = self
-            .rules
-            .iter_mut()
-            .find(|rule| rule.times > 0 && (rule.matches)(args))?;
+    fn failure(&mut self, args: &[Vec<u8>], name: &[u8], subscribed: bool) -> Option<Vec<u8>> {
+        let rule = self.rules.iter_mut().find(|rule| {
+            rule.times > 0 && (subscribed || !rule.subscribers_only) && (rule.matches)(args)
+        })?;
         rule.times -= 1;
         let error = rule.error.clone().unwrap_or_else(|| {
             format!("ERR injected failure for {}", String::from_utf8_lossy(name))
@@ -110,8 +114,19 @@ impl Proxy {
     /// Answers the next `times` commands named `command` with an error,
     /// without sending them to Redis.
     pub fn fail(&self, command: &str, times: usize) {
+        self.fail_named(command, times, false);
+    }
+
+    /// Answers the next `times` commands named `command` on connections
+    /// that have subscribed with an error, without sending them to Redis.
+    /// Only a RESP3 connection sends commands once it has subscribed.
+    pub fn fail_on_subscribers(&self, command: &str, times: usize) {
+        self.fail_named(command, times, true);
+    }
+
+    fn fail_named(&self, command: &str, times: usize, subscribers_only: bool) {
         let command = command.to_ascii_uppercase();
-        self.add(times, None, move |args| {
+        self.add(times, None, subscribers_only, move |args| {
             args[0].eq_ignore_ascii_case(command.as_bytes())
         });
     }
@@ -136,7 +151,7 @@ impl Proxy {
                 let _ = write!(hex, "{byte:02x}");
                 hex
             });
-        self.add(times, error, move |args| {
+        self.add(times, error, false, move |args| {
             args[0].eq_ignore_ascii_case(b"EVALSHA")
                 && args
                     .get(1)
@@ -148,12 +163,14 @@ impl Proxy {
         &self,
         times: usize,
         error: Option<String>,
+        subscribers_only: bool,
         matches: impl Fn(&[Vec<u8>]) -> bool + Send + 'static,
     ) {
         self.state.lock().unwrap().rules.push(Rule {
             matches: Box::new(matches),
             times,
             error,
+            subscribers_only,
         });
     }
 
@@ -210,6 +227,17 @@ impl Proxy {
             .copied()
             .unwrap_or(0)
     }
+
+    /// How many commands named `command` reached the proxy, failed or not,
+    /// on connections that had subscribed.
+    pub fn count_on_subscribers(&self, command: &str) -> usize {
+        let state = self.state.lock().unwrap();
+        state
+            .subscriber_counts
+            .get(&command.to_ascii_uppercase())
+            .copied()
+            .unwrap_or(0)
+    }
 }
 
 async fn accept(listener: TcpListener, upstream: String, state: Arc<Mutex<State>>) {
@@ -239,11 +267,27 @@ enum Pending {
 /// One proxied connection's shared state.
 struct Connection {
     pending: Mutex<VecDeque<Pending>>,
-    /// Set once the client subscribes; from then on Redis pushes messages
-    /// that answer no command, so the proxy forwards bytes untouched.
-    transparent: AtomicBool,
+    /// Set once the client asks for RESP3 with `HELLO 3`.  Under RESP3,
+    /// Redis marks each message that answers no command as a push.
+    resp3: AtomicBool,
+    /// Set once the client subscribes.
+    subscribed: AtomicBool,
     to_client: UnboundedSender<Vec<u8>>,
 }
+
+impl Connection {
+    /// Whether the proxy forwards Redis's bytes untouched.  A subscribed
+    /// RESP2 connection receives messages that look like replies but answer
+    /// no command, so the proxy can no longer pair replies with commands.
+    fn transparent(&self) -> bool {
+        self.subscribed.load(Ordering::SeqCst) && !self.resp3.load(Ordering::SeqCst)
+    }
+}
+
+/// The commands whose replies under RESP3 are pushes, one per channel or
+/// pattern, rather than a reply.
+const SUBSCRIBE_COMMANDS: [&[u8]; 4] =
+    [b"SUBSCRIBE", b"PSUBSCRIBE", b"UNSUBSCRIBE", b"PUNSUBSCRIBE"];
 
 async fn relay(client: TcpStream, server: TcpStream, state: Arc<Mutex<State>>) {
     let (client_read, mut client_write) = client.into_split();
@@ -251,7 +295,8 @@ async fn relay(client: TcpStream, server: TcpStream, state: Arc<Mutex<State>>) {
     let (to_client, mut outgoing) = unbounded_channel::<Vec<u8>>();
     let connection = Arc::new(Connection {
         pending: Mutex::new(VecDeque::new()),
-        transparent: AtomicBool::new(false),
+        resp3: AtomicBool::new(false),
+        subscribed: AtomicBool::new(false),
         to_client,
     });
 
@@ -267,7 +312,7 @@ async fn relay(client: TcpStream, server: TcpStream, state: Arc<Mutex<State>>) {
     let dropped = async {
         loop {
             drop_subscribers.notified().await;
-            if connection.transparent.load(Ordering::SeqCst) {
+            if connection.subscribed.load(Ordering::SeqCst) {
                 break;
             }
         }
@@ -281,17 +326,23 @@ async fn relay(client: TcpStream, server: TcpStream, state: Arc<Mutex<State>>) {
 }
 
 /// Passes Redis's replies to the client, with injected errors in place.
+/// A RESP3 push answers no command, so it passes through without taking a
+/// command's place.
 async fn replies(mut server: OwnedReadHalf, connection: Arc<Connection>) {
     let mut buffer = Vec::new();
     let mut chunk = vec![0u8; 16384];
     while let Ok(read @ 1..) = server.read(&mut chunk).await {
         buffer.extend_from_slice(&chunk[..read]);
-        if connection.transparent.load(Ordering::SeqCst) {
+        if connection.transparent() {
             let _ = connection.to_client.send(std::mem::take(&mut buffer));
             continue;
         }
         while let Some(length) = reply_end(&buffer, 0) {
             let mut out: Vec<u8> = buffer.drain(..length).collect();
+            if out[0] == b'>' {
+                let _ = connection.to_client.send(out);
+                continue;
+            }
             let mut pending = connection.pending.lock().unwrap();
             pending.pop_front();
             // Injected errors wait until the replies ahead of them arrive.
@@ -327,29 +378,37 @@ async fn commands(
             if state.lock().unwrap().silences(&name) {
                 continue;
             }
-            names.insert(String::from_utf8_lossy(&name).into_owned());
-            *state
-                .lock()
-                .unwrap()
-                .counts
-                .entry(String::from_utf8_lossy(&name).into_owned())
-                .or_default() += 1;
-            let failure = if connection.transparent.load(Ordering::SeqCst) {
+            let command = String::from_utf8_lossy(&name).into_owned();
+            let subscribed = connection.subscribed.load(Ordering::SeqCst);
+            {
+                let mut state = state.lock().unwrap();
+                *state.counts.entry(command.clone()).or_default() += 1;
+                if subscribed {
+                    *state.subscriber_counts.entry(command.clone()).or_default() += 1;
+                }
+            }
+            names.insert(command);
+            let failure = if connection.transparent() {
                 None
             } else {
-                state.lock().unwrap().failure(&args, &name)
+                state.lock().unwrap().failure(&args, &name, subscribed)
             };
-            // A failed SUBSCRIBE leaves the connection unsubscribed, so only
-            // one that reaches Redis makes the proxy transparent.
-            if failure.is_none() && (name == b"SUBSCRIBE" || name == b"PSUBSCRIBE") {
-                connection.transparent.store(true, Ordering::SeqCst);
-            }
             let Some(error) = failure else {
-                connection
-                    .pending
-                    .lock()
-                    .unwrap()
-                    .push_back(Pending::Forwarded);
+                if name == b"HELLO" && args.get(1).is_some_and(|version| version == b"3") {
+                    connection.resp3.store(true, Ordering::SeqCst);
+                }
+                if name == b"SUBSCRIBE" || name == b"PSUBSCRIBE" {
+                    connection.subscribed.store(true, Ordering::SeqCst);
+                }
+                let pushed = connection.resp3.load(Ordering::SeqCst)
+                    && SUBSCRIBE_COMMANDS.contains(&name.as_slice());
+                if !pushed {
+                    connection
+                        .pending
+                        .lock()
+                        .unwrap()
+                        .push_back(Pending::Forwarded);
+                }
                 forward.extend(raw);
                 continue;
             };
@@ -403,8 +462,8 @@ fn line(buffer: &[u8], at: usize, prefix: u8) -> Option<(i64, usize)> {
     Some((number, end + 2))
 }
 
-/// Where the RESP2 reply that starts at `at` ends, once it has fully
-/// arrived.
+/// Where the RESP2 or RESP3 reply that starts at `at` ends, once it has
+/// fully arrived.
 fn reply_end(buffer: &[u8], at: usize) -> Option<usize> {
     let end = at
         + buffer
@@ -413,9 +472,16 @@ fn reply_end(buffer: &[u8], at: usize) -> Option<usize> {
             .position(|pair| pair == b"\r\n")?;
     let header = &buffer[at + 1..end];
     let next = end + 2;
+    let elements = |count: i64, mut position: usize| {
+        for _ in 0..count.max(0) {
+            position = reply_end(buffer, position)?;
+        }
+        Some(position)
+    };
+    let count = || -> Option<i64> { std::str::from_utf8(header).ok()?.parse().ok() };
     match buffer[at] {
-        b'+' | b'-' | b':' => Some(next),
-        b'$' => {
+        b'+' | b'-' | b':' | b'_' | b',' | b'#' | b'(' => Some(next),
+        b'$' | b'!' | b'=' => {
             let length: i64 = std::str::from_utf8(header).ok()?.parse().ok()?;
             if length < 0 {
                 return Some(next);
@@ -423,14 +489,10 @@ fn reply_end(buffer: &[u8], at: usize) -> Option<usize> {
             let finish = next + usize::try_from(length).ok()? + 2;
             (buffer.len() >= finish).then_some(finish)
         }
-        b'*' => {
-            let count: i64 = std::str::from_utf8(header).ok()?.parse().ok()?;
-            let mut position = next;
-            for _ in 0..count.max(0) {
-                position = reply_end(buffer, position)?;
-            }
-            Some(position)
-        }
+        b'*' | b'~' | b'>' => elements(count()?, next),
+        b'%' => elements(count()? * 2, next),
+        // Attributes come ahead of the reply they describe.
+        b'|' => reply_end(buffer, elements(count()? * 2, next)?),
         _ => None,
     }
 }

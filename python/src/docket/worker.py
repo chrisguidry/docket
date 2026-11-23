@@ -31,7 +31,6 @@ from ._cancellation import CANCEL_MSG_CLEANUP, _wait_for_event, cancel_task, can
 from ._lua import Arg, Key, redis_script
 from ._redelivery import RedeliverySweep, renew_leases
 from ._redis import RedisClient, redis_is_unavailable
-from ._subscription import Subscription
 from ._telemetry import suppress_instrumentation
 from redis.asyncio import Redis
 from redis.exceptions import LockError, RedisError, ResponseError
@@ -1432,8 +1431,8 @@ class Worker:
         log_context = self._log_context()
         while not session.stopping.is_set():
             try:
-                async with Subscription(
-                    self.docket, patterns=[cancel_pattern]
+                async with self.docket._subscription(
+                    patterns=[cancel_pattern]
                 ) as subscription:
                     # The server has confirmed the subscription, so
                     # cancellations published from here on will be delivered.
@@ -1470,8 +1469,9 @@ class Worker:
         key: TaskKey = data.decode() if isinstance(data, bytes) else data
 
         task = self._tasks_by_key.get(key)
-        # A cancel arrives twice when the subscription moves after a rotation,
-        # and a second Task.cancel() would interrupt the task's cleanup.
+        # A cancel can arrive twice: once from Docket.cancel() and once from a
+        # worker that refuses to claim the cancelled task.  A second
+        # Task.cancel() would interrupt the task's cleanup.
         if task is None or task in self._cancelled_by_docket:
             return
         logger.info("Cancelling running task %r", key, extra=self._log_context())

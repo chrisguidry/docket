@@ -30,7 +30,6 @@ from ._docket_snapshot import WorkerInfo as WorkerInfo
 from ._execution_scripts import _cancel_task
 from ._lua import Arg, Key, redis_script
 from ._redis import (
-    PubSubClient,
     RedisClient,
     RedisConnection,
     RedisMessage as RedisMessage,
@@ -44,6 +43,7 @@ from ._redis import (
     non_transactional_pipeline,
 )
 from ._result_store import ResultStorage
+from ._subscription import Subscription
 from ._uuid7 import uuid7
 from .execution import (
     Disposition,
@@ -241,10 +241,10 @@ class Docket(DocketSnapshotMixin):
         async with self._redis.client() as r:
             yield r
 
-    @asynccontextmanager
-    async def _pubsub(self) -> AsyncGenerator[PubSubClient, None]:
-        async with self._redis.pubsub() as pubsub:
-            yield pubsub
+    def _subscription(
+        self, *, channels: Iterable[str] = (), patterns: Iterable[str] = ()
+    ) -> Subscription:
+        return self._redis.subscription(channels=channels, patterns=patterns)
 
     async def _publish(self, channel: str, message: str) -> int:
         """Publish a message to a pub/sub channel.

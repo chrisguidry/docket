@@ -185,10 +185,10 @@ async def test_reading_a_finished_task_opens_no_pubsub_connection(
     execution = await docket.add(returns_value)()
     await worker.run_until_finished()
 
-    pubsub = Mock(wraps=docket._pubsub)  # pyright: ignore[reportPrivateUsage]
-    monkeypatch.setattr(docket, "_pubsub", pubsub)
+    subscription = Mock(wraps=docket._subscription)  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(docket, "_subscription", subscription)
     assert await read(execution) == expected
-    pubsub.assert_not_called()
+    subscription.assert_not_called()
 
 
 async def test_get_result_with_expired_timeout(docket: Docket):

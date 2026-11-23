@@ -42,7 +42,6 @@ from ._redis import (
     is_cluster_client,
     non_transactional_pipeline,
 )
-from ._subscription import Subscription
 from .annotations import Logged
 from .instrumentation import CACHE_SIZE, message_getter, message_setter
 
@@ -1065,10 +1064,9 @@ class Execution:
         appear twice: once from the second read and once as a real-time update.
         A cancel can also arrive twice as real-time updates: once from
         ``Docket.cancel()`` and once from a worker that refuses to claim the
-        cancelled task.  After a credential provider rotates the credentials,
-        the subscription moves to a new connection, and an update published
-        during the move arrives twice, the second time after updates
-        published later.
+        cancelled task.  A token refresh from a streaming credential provider
+        re-authenticates the subscribed connection without reconnecting it, so
+        the refresh loses no update and repeats none.
 
         Args:
             ready: Optional ``asyncio.Event``.  ``subscribe()`` sets it after
@@ -1095,8 +1093,8 @@ class Execution:
 
         state_channel = self.docket.key(f"state:{self.key}")
         progress_channel = self.docket.key(f"progress:{self.key}")
-        async with Subscription(
-            self.docket, channels=[state_channel, progress_channel]
+        async with self.docket._subscription(
+            channels=[state_channel, progress_channel]
         ) as subscription:
             # Redis delivers a message only to current subscribers, so this read
             # finds any change published between the first read and the

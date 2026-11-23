@@ -27,7 +27,6 @@ import pytest
 from docket import ConcurrencyLimit, Docket, Worker
 
 from tests.conftest import wait_for_event
-from tests._pubsub import confirm_subscriptions
 
 # Weird key that exercises the five escapes the Lua side handles:
 # - `"` would close the JSON string mid-value.
@@ -51,13 +50,11 @@ async def state_messages(docket: Docket):
     ready = asyncio.Event()
 
     async def collector() -> None:
-        async with docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
-            await pubsub.subscribe(docket.key(f"state:{WEIRD_KEY}"))
-            await confirm_subscriptions(pubsub, 1)
+        async with docket._subscription(  # pyright: ignore[reportPrivateUsage]
+            channels=[docket.key(f"state:{WEIRD_KEY}")]
+        ) as subscription:
             ready.set()
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue  # pragma: no cover
+            async for message in subscription.listen():
                 data = message["data"]
                 payload = data.decode() if isinstance(data, bytes) else data
                 messages.append(json.loads(payload))

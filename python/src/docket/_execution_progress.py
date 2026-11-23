@@ -16,7 +16,6 @@ from typing import (
 
 from ._lua import Arg, Args, Key, redis_script
 from ._redis import Pipeline, RedisClient
-from ._subscription import Subscription
 
 from ._telemetry import suppress_instrumentation
 from typing_extensions import Self
@@ -265,7 +264,7 @@ class ExecutionProgress:
             - updated_at: ISO 8601 timestamp
         """
         channel = self.docket.key(f"progress:{self.key}")
-        async with Subscription(self.docket, channels=[channel]) as subscription:
+        async with self.docket._subscription(channels=[channel]) as subscription:
             if ready is not None:
                 ready.set()
             async for message in subscription.listen():  # pragma: no cover

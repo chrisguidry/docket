@@ -1,32 +1,36 @@
-//! A subscription that moves to a new connection when the credentials rotate.
+//! A subscription that stays authenticated when the credentials rotate.
 //!
-//! redis-rs renews credentials only on command connections, so a subscribed
-//! connection stays authenticated with the credentials it opened with.  Some
-//! servers close a connection a fixed time after its last AUTH: `ElastiCache`
-//! with IAM authentication closes it after 12 hours.  Pub/sub doesn't
-//! redeliver, so anything published before docket subscribes again is lost.
+//! Some servers close a connection a fixed time after its last AUTH:
+//! `ElastiCache` with IAM authentication closes it after 12 hours.  Pub/sub
+//! doesn't redeliver, so anything published before docket subscribes again
+//! would be lost.
 //!
-//! So each time the provider gives new credentials, the subscription opens a
-//! second connection with them and waits for the server to confirm its
-//! subscription.  Only then does it unsubscribe the first connection and take
-//! what that connection received before it was unsubscribed.  The two
-//! connections are subscribed at the same time for one round trip, so a
-//! message published then arrives on both, and the subscription yields it
-//! twice: once from the first connection, and again from the second after
-//! messages published later.  No message is lost.
+//! So with a credentials provider, a subscription speaks RESP3, under which
+//! a subscribed connection takes any command, and it sends AUTH on its own
+//! connection each time the provider gives new credentials.  The connection
+//! stays open and subscribed throughout, so no message is lost, repeated,
+//! or reordered.  When the server refuses an AUTH, the connection keeps the
+//! credentials it had and goes on delivering, and the next rotation tries
+//! again.
+//!
+//! redis-rs can send these AUTHs itself, but its renewal task stops for good
+//! after one AUTH fails, so docket sends them.  Without a provider there is
+//! nothing to renew, and a subscription uses redis-rs's `PubSub`.
 
-use std::collections::VecDeque;
+use std::future::ready;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use futures::{FutureExt, Stream, StreamExt, stream};
-use redis::aio::{PubSub, PubSubSink, PubSubStream};
-use redis::{BasicAuth, Msg, RedisResult, StreamingCredentialsProvider};
-use tokio::sync::watch;
+use futures::{Stream, StreamExt, stream};
+use redis::aio::{MultiplexedConnection, PubSub};
+use redis::{
+    AsyncConnectionConfig, BasicAuth, Client, Msg, PushInfo, PushKind, RedisResult,
+    StreamingCredentialsProvider,
+};
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 
-use super::credentials;
-use super::{Backend, within};
+use super::{Provider, Settings, credentials};
 
 #[cfg(test)]
 mod tests;
@@ -39,17 +43,17 @@ pub(crate) enum Topics {
 }
 
 impl Topics {
-    pub(super) async fn subscribe(&self, pubsub: &mut PubSub) -> RedisResult<()> {
+    pub(super) async fn subscribe_pubsub(&self, pubsub: &mut PubSub) -> RedisResult<()> {
         match self {
             Topics::Channels(channels) => pubsub.subscribe(channels).await,
             Topics::Pattern(pattern) => pubsub.psubscribe(pattern).await,
         }
     }
 
-    async fn unsubscribe(&self, sink: &mut PubSubSink) -> RedisResult<()> {
+    async fn subscribe_resp3(&self, connection: &mut MultiplexedConnection) -> RedisResult<()> {
         match self {
-            Topics::Channels(channels) => sink.unsubscribe(channels).await,
-            Topics::Pattern(pattern) => sink.punsubscribe(pattern).await,
+            Topics::Channels(channels) => connection.subscribe(channels).await,
+            Topics::Pattern(pattern) => connection.psubscribe(pattern).await,
         }
     }
 }
@@ -57,114 +61,144 @@ impl Topics {
 /// The messages published to some topics.  It ends only when Redis drops
 /// the connection.
 pub(crate) struct Subscription {
-    inner: Pin<Box<dyn Stream<Item = Msg> + Send>>,
+    messages: Pin<Box<dyn Stream<Item = Msg> + Send>>,
+    /// `None` without a credentials provider.  The subscription holds it so
+    /// that dropping the subscription closes the connection; only tests
+    /// read it.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "held until the subscription drops")
+    )]
+    renewal: Option<Renewal>,
+}
+
+/// The connection of a subscription that follows a credentials provider,
+/// and the task that sends AUTH on it.
+struct Renewal {
+    /// Keeps the connection open after the provider's stream ends and the
+    /// task with it.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "held until the subscription drops")
+    )]
+    connection: MultiplexedConnection,
+    task: JoinHandle<()>,
+}
+
+impl Drop for Renewal {
+    /// The task holds a clone of the connection, and redis-rs closes a
+    /// connection only once every clone is gone, so a subscription dropped
+    /// without this would stay subscribed.
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// A RESP3 connection to the server, opened with a provider's credentials
+/// and not yet subscribed.
+pub(super) struct Resp3 {
+    connection: MultiplexedConnection,
+    pushes: mpsc::UnboundedReceiver<PushInfo>,
+    /// The credentials the connection opened with.
+    auth: BasicAuth,
+    /// The provider's later credentials.
+    rotations: credentials::Credentials,
+}
+
+impl Resp3 {
+    /// Opens a RESP3 connection to `client` with the provider's current
+    /// credentials.  It has no connection timeout of its own, because the
+    /// caller bounds the whole open, server lookup included, with one.  Its
+    /// commands wait as long as the response timeout.
+    pub(super) async fn open(
+        client: &Client,
+        provider: &Provider,
+        settings: &Settings,
+    ) -> RedisResult<Self> {
+        let mut rotations = provider.subscribe();
+        let auth = credentials::next(&mut rotations).await?;
+        let (sender, pushes) = mpsc::unbounded_channel();
+        let config = AsyncConnectionConfig::new()
+            .set_connection_timeout(None)
+            .set_response_timeout(settings.response_timeout)
+            .set_push_sender(sender);
+        credentials::resp3(client, &auth)
+            .get_multiplexed_async_connection_with_config(&config)
+            .await
+            .map(|connection| Self {
+                connection,
+                pushes,
+                auth,
+                rotations,
+            })
+    }
 }
 
 impl Stream for Subscription {
     type Item = Msg;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Msg>> {
-        self.inner.as_mut().poll_next(cx)
+        self.messages.as_mut().poll_next(cx)
     }
 }
 
 impl Subscription {
-    pub(super) async fn open(backend: Arc<Backend>, topics: Topics) -> RedisResult<Self> {
-        let (auth, rotations) = match &backend.credentials {
-            Some(provider) => {
-                let mut stream = provider.subscribe();
-                let auth = credentials::next(&mut stream).await?;
-                (Some(auth.clone()), Some(credentials::follow(auth, stream)))
-            }
-            None => (None, None),
-        };
-        let (sink, messages) = backend.subscribed(&topics, auth.as_ref()).await?;
-        let state = State {
-            backend,
-            topics,
+    /// The messages on `pubsub`, which is already subscribed.
+    pub(super) fn plain(pubsub: PubSub) -> Self {
+        Self {
+            messages: Box::pin(pubsub.into_on_message()),
+            renewal: None,
+        }
+    }
+
+    /// Subscribes `opened` to `topics`, and sends AUTH on it each time the
+    /// provider's credentials rotate.
+    pub(super) async fn renewed(opened: Resp3, topics: &Topics) -> RedisResult<Self> {
+        let Resp3 {
+            mut connection,
+            mut pushes,
+            auth,
             rotations,
-            sink,
-            messages,
-            received: VecDeque::new(),
-        };
+        } = opened;
+        topics.subscribe_resp3(&mut connection).await?;
+        let task = tokio::spawn(renew(
+            connection.clone(),
+            credentials::follow(auth, rotations),
+        ));
+        // redis-rs sends a Disconnection push when the server drops the
+        // connection, then drops its sender, which ends the stream.
+        let messages = stream::poll_fn(move |cx| pushes.poll_recv(cx))
+            .take_while(|push: &PushInfo| ready(push.kind != PushKind::Disconnection))
+            .filter_map(|push| ready(Msg::from_push_info(push)));
         Ok(Self {
-            inner: Box::pin(stream::unfold(state, State::next)),
+            messages: Box::pin(messages),
+            renewal: Some(Renewal { connection, task }),
         })
     }
-}
 
-struct State {
-    backend: Arc<Backend>,
-    topics: Topics,
-    /// The provider's latest credentials, or `None` without a provider or
-    /// once its stream ends.
-    rotations: Option<watch::Receiver<BasicAuth>>,
-    sink: PubSubSink,
-    messages: PubSubStream,
-    /// What the previous connection received before it was unsubscribed,
-    /// which comes before anything on this one.
-    received: VecDeque<Msg>,
-}
-
-enum Next {
-    Message(Option<Msg>),
-    /// New credentials, or `None` once the provider's stream has ended.
-    Rotation(Option<BasicAuth>),
-}
-
-impl State {
-    async fn next(mut self) -> Option<(Msg, Self)> {
-        loop {
-            if let Some(message) = self.received.pop_front() {
-                return Some((message, self));
-            }
-            let rotations = &mut self.rotations;
-            let next = tokio::select! {
-                message = self.messages.next() => Next::Message(message),
-                auth = async {
-                    match rotations {
-                        Some(rotations) => rotations
-                            .changed()
-                            .await
-                            .ok()
-                            .map(|()| rotations.borrow_and_update().clone()),
-                        None => std::future::pending().await,
-                    }
-                } => Next::Rotation(auth),
-            };
-            match next {
-                Next::Message(message) => return message.map(|message| (message, self)),
-                Next::Rotation(Some(auth)) => {
-                    if let Err(error) = self.move_to(&auth).await {
-                        tracing::warn!(%error, "moving a subscription to rotated credentials failed");
-                    }
-                }
-                Next::Rotation(None) => self.rotations = None,
-            }
-        }
+    /// The subscribed connection, when the subscription follows a provider.
+    #[cfg(test)]
+    fn connection(&self) -> Option<MultiplexedConnection> {
+        self.renewal
+            .as_ref()
+            .map(|renewal| renewal.connection.clone())
     }
+}
 
-    /// Subscribes a connection with `auth`, then unsubscribes the current one.
-    async fn move_to(&mut self, auth: &BasicAuth) -> RedisResult<()> {
-        let (sink, messages) = self.backend.subscribed(&self.topics, Some(auth)).await?;
-        let mut old_sink = std::mem::replace(&mut self.sink, sink);
-        let mut old_messages = std::mem::replace(&mut self.messages, messages);
-        // redis-rs passes on each message that arrives before the server
-        // confirms the unsubscribe, so once the confirmation is in, the old
-        // stream already holds everything the old connection will deliver.
-        let unsubscribed = within(
-            self.backend.settings.response_timeout,
-            self.topics.unsubscribe(&mut old_sink),
-        )
-        .await;
-        // tokio's cooperative budget would make a receiver look empty after
-        // about 128 messages, and the rest of a backlog would be dropped
-        // with the old stream.
-        while let Some(Some(message)) =
-            tokio::task::coop::unconstrained(old_messages.next()).now_or_never()
-        {
-            self.received.push_back(message);
+/// Sends AUTH on `connection` with each new set of credentials, until the
+/// provider's stream ends.  An AUTH the server refuses leaves the
+/// connection with the credentials it had, so the task logs it and waits
+/// for the next set.
+async fn renew(mut connection: MultiplexedConnection, mut rotations: watch::Receiver<BasicAuth>) {
+    while rotations.changed().await.is_ok() {
+        let auth = rotations.borrow_and_update().clone();
+        let authenticated: RedisResult<()> = redis::cmd("AUTH")
+            .arg(auth.username())
+            .arg(auth.password())
+            .query_async(&mut connection)
+            .await;
+        if let Err(error) = authenticated {
+            tracing::warn!(%error, "re-authenticating a subscription failed");
         }
-        unsubscribed
     }
 }

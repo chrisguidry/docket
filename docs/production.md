@@ -260,16 +260,17 @@ async with Docket(
 Docket hands the provider to every connection it opens: the data and pub/sub
 connections, the result store, and the strike list. A URL with credentials and
 a provider together raise a `ValueError`. With a streaming provider, like
-`redis-entraid`'s, docket re-authenticates its open connections when the token
-is refreshed. A pub/sub connection can't re-authenticate while it is
-subscribed, so each subscriber opens a new connection with the refreshed token
-within a second of the refresh. It closes the old connection only after the
-server confirms the new subscription, so no message is lost. A message
-published during that handoff arrives twice, the second time after messages
-published later. During the handoff each subscriber holds two pub/sub
-connections, so a `max_connections` on the URL needs room for twice the
-subscribers. A subscriber that can't open its new connection keeps the old one,
-logs a warning, and tries again at the next refresh.
+`redis-entraid`'s, docket re-authenticates every open connection when the token
+is refreshed, including the subscribed pub/sub connections. A subscribed
+connection can send `AUTH` only under RESP3, so with a streaming provider the
+pub/sub connections negotiate RESP3, and docket sends the new token on each of
+them in place. Nothing reconnects, so a refresh doesn't lose, repeat, or
+reorder pub/sub messages. If the server rejects the refreshed token on an idle
+pooled connection, the refresh stops there and the subscribers keep their old
+token. If a subscriber is the first connection to send the rejected token, its
+next read raises redis-py's `AuthenticationError` and redis-py closes the
+connection. That error reaches the caller of `Execution.subscribe()`, and the
+worker's own subscribers log it and subscribe again after a second.
 
 Give docket a provider of its own. A streaming provider like `redis-entraid`'s
 keeps one refresh callback, so a redis-py client of yours that shares the

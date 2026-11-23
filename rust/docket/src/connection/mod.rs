@@ -13,19 +13,18 @@ mod url;
 use std::sync::Arc;
 use std::time::Duration;
 
-use redis::aio::{ConnectionLike, MultiplexedConnection, PubSub, PubSubSink, PubSubStream};
+use redis::aio::{ConnectionLike, MultiplexedConnection, PubSub};
 use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
 use redis::sentinel::SentinelClient;
-use redis::{
-    AsyncConnectionConfig, BasicAuth, Client, Cmd, Pipeline, RedisFuture, RedisResult, Value,
-};
+use redis::{AsyncConnectionConfig, Client, Cmd, Pipeline, RedisFuture, RedisResult, Value};
 use tokio::sync::Mutex;
 
 use crate::error::Result;
 use clients::{client, cluster_client};
 pub(crate) use credentials::Provider;
 pub(crate) use settings::{Keepalive, Settings};
+use subscription::Resp3;
 pub(crate) use subscription::{Subscription, Topics};
 use url::Target;
 pub(crate) use url::redact;
@@ -180,54 +179,50 @@ impl Backend {
         }
     }
 
-    /// Subscribes to `topics`, on a connection that moves to a new one each
-    /// time the credentials rotate.
-    pub async fn subscribe(self: &Arc<Self>, topics: Topics) -> RedisResult<Subscription> {
-        Subscription::open(Arc::clone(self), topics).await
-    }
-
-    /// Opens a connection with `auth`, or with the URL's credentials without
-    /// it, and subscribes it to `topics`.
-    async fn subscribed(
-        &self,
-        topics: &Topics,
-        auth: Option<&BasicAuth>,
-    ) -> RedisResult<(PubSubSink, PubSubStream)> {
-        let mut pubsub = self.pubsub(auth).await?;
-        within(
-            self.settings.response_timeout,
-            topics.subscribe(&mut pubsub),
+    /// Subscribes to `topics`.  With a credentials provider, the
+    /// subscription sends AUTH on its own connection each time the
+    /// credentials rotate.
+    ///
+    /// One connection timeout bounds the whole open: finding the Sentinel
+    /// primary, taking the provider's credentials, and connecting.  The
+    /// subscribe is bounded by the response timeout when the docket has one:
+    /// redis-rs's `PubSub` takes no timeouts, so docket applies it there, and
+    /// the RESP3 connection takes it from its config.
+    /// Once subscribed, a connection waits for messages as long as it takes,
+    /// and TCP keepalive finds a peer that is gone.
+    pub async fn subscribe(&self, topics: Topics) -> RedisResult<Subscription> {
+        let opened = within(
+            Some(self.settings.connection_timeout),
+            self.connect_for_subscription(),
         )
         .await?;
-        Ok(pubsub.split())
+        match opened {
+            Opened::PubSub(mut pubsub) => within(
+                self.settings.response_timeout,
+                topics.subscribe_pubsub(&mut pubsub),
+            )
+            .await
+            .map(|()| Subscription::plain(pubsub)),
+            Opened::Resp3(resp3) => Subscription::renewed(resp3, &topics).await,
+        }
     }
 
-    /// Opens a connection for subscriptions.  redis-rs takes no timeouts
-    /// for these, so docket bounds the connect itself, and the subscribe
-    /// when the docket has a response timeout.  Once subscribed, the connection waits for messages as long as it
-    /// takes, and TCP keepalive finds a peer that is gone.
-    async fn pubsub(&self, auth: Option<&BasicAuth>) -> RedisResult<PubSub> {
-        within(
-            Some(self.settings.connection_timeout),
-            self.open_pubsub(auth),
-        )
-        .await
-    }
-
-    async fn open_pubsub(&self, auth: Option<&BasicAuth>) -> RedisResult<PubSub> {
+    /// Opens a connection for a subscription: RESP3 with a credentials
+    /// provider, and redis-rs's `PubSub` without one or on the memory engine.
+    async fn connect_for_subscription(&self) -> RedisResult<Opened> {
         let client = match &self.kind {
             Kind::Standalone(client) | Kind::Cluster { pubsub: client, .. } => client.clone(),
             Kind::Sentinel(client) => client.lock().await.async_get_client().await?,
+            // The memory engine has no HELLO, so it can't speak RESP3, and it
+            // ignores credentials, so there are none to renew.
             #[cfg(feature = "memory")]
-            Kind::Memory(server) => return server.pubsub().await,
+            Kind::Memory(server) => return server.pubsub().await.map(Opened::PubSub),
         };
-        match auth {
-            Some(auth) => {
-                credentials::authenticate(&client, auth)
-                    .get_async_pubsub()
-                    .await
-            }
-            None => client.get_async_pubsub().await,
+        match &self.credentials {
+            Some(provider) => Resp3::open(&client, provider, &self.settings)
+                .await
+                .map(Opened::Resp3),
+            None => client.get_async_pubsub().await.map(Opened::PubSub),
         }
     }
 
@@ -251,6 +246,12 @@ impl Backend {
     pub fn is_cluster(&self) -> bool {
         matches!(self.kind, Kind::Cluster { .. })
     }
+}
+
+/// A connection for a subscription, before it subscribes.
+enum Opened {
+    PubSub(PubSub),
+    Resp3(Resp3),
 }
 
 /// Whose commands a connection carries.

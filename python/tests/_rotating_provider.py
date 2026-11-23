@@ -3,9 +3,9 @@
 It behaves like redis-entraid's EntraIdCredentialsProvider without Azure.  That
 provider keeps its callback in redis-py's CredentialsListener, which has one
 slot, so each on_next() replaces the callback before it; this one does the
-same.  rotate() is the token refresh: it changes the credentials that new
-connections get, and pushes them to that one callback as an AUTH token whose
-"oid" claim is the username.
+same, and counts the calls in ``registrations``.  rotate() is the token
+refresh: it changes the credentials that new connections get, and pushes them
+to that one callback as an AUTH token whose "oid" claim is the username.
 """
 
 from typing import Any, Callable
@@ -18,6 +18,7 @@ class RotatingProvider(StreamingCredentialProvider):
     def __init__(self, username: str, password: str) -> None:
         self.credentials = (username, password)
         self._on_next: Callable[[Any], Any] | None = None
+        self.registrations = 0
 
     # Only the async method: docket's clients are all asyncio, so redis-py
     # never asks for the credentials synchronously.
@@ -26,6 +27,7 @@ class RotatingProvider(StreamingCredentialProvider):
 
     def on_next(self, callback: Callable[[Any], Any]) -> None:
         self._on_next = callback
+        self.registrations += 1
 
     def on_error(self, callback: Callable[[Exception], Any]) -> None:
         pass

@@ -114,7 +114,7 @@ mod credentials {
 
     /// The suite's URL without credentials, and a provider that gives them,
     /// or the default user, which takes any password on a server with none.
-    fn split(url: &str) -> (String, Option<Provider>) {
+    pub(super) fn split(url: &str) -> (String, Option<Provider>) {
         let (scheme, rest) = url.split_once("://").unwrap();
         let (url, auth) = match rest.split_once('@') {
             Some((userinfo, host)) => {
@@ -153,35 +153,20 @@ mod credentials {
     #[tokio::test]
     async fn a_subscription_opens_without_a_provider() {
         let backend = open(&super::url(), None).unwrap();
-        assert!(
-            std::sync::Arc::new(backend)
-                .subscribe(channel())
-                .await
-                .is_ok()
-        );
+        assert!(backend.subscribe(channel()).await.is_ok());
     }
 
     #[tokio::test]
     async fn an_unreachable_sentinel_fails_a_subscription() {
         let backend = open("redis+sentinel://localhost:1/mymaster", None).unwrap();
-        assert!(
-            std::sync::Arc::new(backend)
-                .subscribe(channel())
-                .await
-                .is_err()
-        );
+        assert!(backend.subscribe(channel()).await.is_err());
     }
 
     #[tokio::test]
     async fn a_subscription_opens_with_the_providers_credentials() {
         let (url, provider) = split(&super::url());
         let backend = open(&url, provider).unwrap();
-        assert!(
-            std::sync::Arc::new(backend)
-                .subscribe(channel())
-                .await
-                .is_ok()
-        );
+        assert!(backend.subscribe(channel()).await.is_ok());
     }
 
     #[rstest]
@@ -208,11 +193,7 @@ mod credentials {
     #[tokio::test]
     async fn a_provider_that_gives_nothing_fails_a_subscription() {
         let backend = open("redis://localhost:1/0", Some(empty())).unwrap();
-        let error = std::sync::Arc::new(backend)
-            .subscribe(channel())
-            .await
-            .err()
-            .unwrap();
+        let error = backend.subscribe(channel()).await.err().unwrap();
         assert!(
             error
                 .to_string()
@@ -257,21 +238,24 @@ mod settings {
         assert!(matches!(error, Some(crate::Error::Invalid(_))), "{error:?}");
     }
 
+    /// With a provider, the subscription's RESP3 connection waits for the
+    /// server to answer its HELLO.
+    #[rstest]
+    #[case::without_a_provider(false)]
+    #[case::with_a_provider(true)]
     #[tokio::test]
-    async fn a_subscription_to_a_silent_server_times_out() {
+    async fn a_subscription_to_a_silent_server_times_out(#[case] with_a_provider: bool) {
         let settings = Settings {
             connection_timeout: Duration::from_millis(200),
             response_timeout: Some(Duration::from_millis(200)),
             ..Settings::default()
         };
         let url = format!("redis://{}/0", silent().await);
-        let backend = Backend::open(&url, None, settings).unwrap();
-        let subscribed = tokio::time::timeout(
-            Duration::from_secs(3),
-            std::sync::Arc::new(backend).subscribe(channel()),
-        )
-        .await
-        .expect("the subscription gives up in time");
+        let provider = with_a_provider.then(|| super::credentials::split(&url).1.unwrap());
+        let backend = Backend::open(&url, provider, settings).unwrap();
+        let subscribed = tokio::time::timeout(Duration::from_secs(3), backend.subscribe(channel()))
+            .await
+            .expect("the subscription gives up in time");
         assert!(subscribed.is_err());
     }
 

@@ -1,7 +1,7 @@
 """A cancellation that reaches the worker twice.
 
-A subscription that moves to a new connection after a credential rotation can
-deliver a cancel message twice.
+A cancel can arrive twice: once from ``Docket.cancel()`` and once from a worker
+that refuses to claim the cancelled task.
 """
 
 # pyright: reportPrivateUsage=false
