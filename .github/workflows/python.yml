@@ -233,7 +233,7 @@ jobs:
         # real, standalone Redis is required since the bug this guards (#425)
         # is a client socket timeout.
         redis-py:
-          - { name: "6", spec: ">=6,<7" }
+          - { name: "6", spec: ">=6.2,<7" }
           - { name: "7", spec: ">=7,<8" }
           - { name: "8", spec: ">=8" }
     steps:

@@ -253,8 +253,11 @@ async fn a_waiting_result_subscribes_again_when_its_subscription_drops() {
         .await
         .unwrap();
     let waiting = tokio::spawn(async move { execution.result().await });
+    // The wait reads the run's state once Redis confirms the subscription.
+    // Dropping the connection while the SUBSCRIBE waits for its reply fails
+    // the subscribe itself, which is not what this test is about.
     within(10, async {
-        while proxy.count("SUBSCRIBE") == 0 {
+        while proxy.count("HGETALL") == 0 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })

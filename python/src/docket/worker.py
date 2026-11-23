@@ -1431,21 +1431,17 @@ class Worker:
         log_context = self._log_context()
         while not session.stopping.is_set():
             try:
-                async with self.docket._pubsub() as pubsub:
-                    await pubsub.psubscribe(cancel_pattern)
+                async with self.docket._subscription(
+                    patterns=[cancel_pattern]
+                ) as subscription:
+                    # The server has confirmed the subscription, so
+                    # cancellations published from here on will be delivered.
+                    session.cancellation_ready.set()
                     while not session.stopping.is_set():  # pragma: no branch
-                        message = await pubsub.get_message(
-                            ignore_subscribe_messages=False, timeout=0.1
-                        )
+                        message = await subscription.get_message(timeout=0.1)
                         if message is None:
                             continue  # pragma: no cover - CPython gh-106749
-                        if message["type"] == "pmessage":
-                            await self._handle_cancellation(message)
-                        else:
-                            # The PSUBSCRIBE confirmation: the server now has
-                            # the subscription, so cancellations published
-                            # from here on will be delivered.
-                            session.cancellation_ready.set()
+                        await self._handle_cancellation(message)
             except RedisError:
                 if session.stopping.is_set():
                     return  # pragma: no cover
@@ -1472,11 +1468,12 @@ class Worker:
         data = message["data"]
         key: TaskKey = data.decode() if isinstance(data, bytes) else data
 
-        if task := self._tasks_by_key.get(key):  # pragma: no branch
-            logger.info(
-                "Cancelling running task %r",
-                key,
-                extra=self._log_context(),
-            )
-            self._cancelled_by_docket.add(task)
-            task.cancel()
+        task = self._tasks_by_key.get(key)
+        # A cancel can arrive twice: once from Docket.cancel() and once from a
+        # worker that refuses to claim the cancelled task.  A second
+        # Task.cancel() would interrupt the task's cleanup.
+        if task is None or task in self._cancelled_by_docket:
+            return
+        logger.info("Cancelling running task %r", key, extra=self._log_context())
+        self._cancelled_by_docket.add(task)
+        task.cancel()

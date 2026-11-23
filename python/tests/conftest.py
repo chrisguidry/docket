@@ -254,17 +254,21 @@ def redis_server(
 
 
 @pytest.fixture(scope="session")
-def redis_port(redis_server: Container | None) -> int:
+def redis_ports(redis_server: Container | None) -> tuple[int, ...]:
+    """The data port of each node of the test Redis: the one port of a
+    standalone server, or the port of each of the cluster's three primaries."""
     if redis_server is None:
-        return 0
+        return (0,)
     if CLUSTER_ENABLED:
-        env_list = redis_server.attrs["Config"]["Env"]
-        for env in env_list:
-            if env.startswith("CLUSTER_PORT_0="):
-                return int(env.split("=")[1])
-        raise RuntimeError("CLUSTER_PORT_0 not found in container environment")
+        env = dict(entry.split("=", 1) for entry in redis_server.attrs["Config"]["Env"])
+        return tuple(int(env[f"CLUSTER_PORT_{i}"]) for i in range(3))
     port_bindings = redis_server.attrs["HostConfig"]["PortBindings"]["6379/tcp"]
-    return int(port_bindings[0]["HostPort"])
+    return (int(port_bindings[0]["HostPort"]),)
+
+
+@pytest.fixture(scope="session")
+def redis_port(redis_ports: tuple[int, ...]) -> int:
+    return redis_ports[0]
 
 
 @pytest.fixture
@@ -290,6 +294,8 @@ def redis_url(redis_port: int, acl_credentials: ACLCredentials) -> str:
 @pytest.fixture
 def credential_less_url(redis_url: str, redis_port: int) -> str:
     """The test Redis without credentials in the URL (redis_url flushes it)."""
+    if CLUSTER_ENABLED:
+        return f"redis+cluster://localhost:{redis_port}"
     return f"redis://localhost:{redis_port}/0"
 
 

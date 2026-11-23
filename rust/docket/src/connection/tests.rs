@@ -7,6 +7,11 @@ use super::clients::sentinel_client;
 use super::url::SentinelUrl;
 use super::{Backend, Provider, Settings, Shared};
 
+/// A subscription to one channel.
+fn channel() -> super::Topics {
+    super::Topics::Channels(vec!["channel".to_owned()])
+}
+
 /// Opens a backend with the default connection settings.
 fn open(url: &str, credentials: Option<Provider>) -> crate::Result<Backend> {
     Backend::open(url, credentials, Settings::default())
@@ -52,6 +57,19 @@ async fn a_tls_connect_reaches_the_network() {
     assert!(error.is_connection_refusal(), "{error}");
 }
 
+/// The address of a server that accepts connections and never answers.
+pub(super) async fn silent() -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    address
+}
+
 /// The Redis the suite runs against, or an in-process one.
 fn url() -> String {
     std::env::var("DOCKET_TEST_URL")
@@ -76,7 +94,7 @@ mod credentials {
     use rstest::rstest;
 
     use super::super::Provider;
-    use super::open;
+    use super::{channel, open};
 
     /// A provider whose stream ends without giving credentials.
     struct Empty;
@@ -109,7 +127,7 @@ mod credentials {
 
     /// The suite's URL without credentials, and a provider that gives them,
     /// or the default user, which takes any password on a server with none.
-    fn split(url: &str) -> (String, Option<Provider>) {
+    pub(super) fn split(url: &str) -> (String, Option<Provider>) {
         let (scheme, rest) = url.split_once("://").unwrap();
         let (url, auth) = match rest.split_once('@') {
             Some((userinfo, host)) => {
@@ -148,20 +166,20 @@ mod credentials {
     #[tokio::test]
     async fn a_subscription_opens_without_a_provider() {
         let backend = open(&super::url(), None).unwrap();
-        assert!(backend.subscribe(&["channel".to_owned()]).await.is_ok());
+        assert!(backend.subscribe(channel()).await.is_ok());
     }
 
     #[tokio::test]
     async fn an_unreachable_sentinel_fails_a_subscription() {
         let backend = open("redis+sentinel://localhost:1/mymaster", None).unwrap();
-        assert!(backend.subscribe(&["channel".to_owned()]).await.is_err());
+        assert!(backend.subscribe(channel()).await.is_err());
     }
 
     #[tokio::test]
     async fn a_subscription_opens_with_the_providers_credentials() {
         let (url, provider) = split(&super::url());
         let backend = open(&url, provider).unwrap();
-        assert!(backend.subscribe(&["channel".to_owned()]).await.is_ok());
+        assert!(backend.subscribe(channel()).await.is_ok());
     }
 
     #[rstest]
@@ -188,11 +206,7 @@ mod credentials {
     #[tokio::test]
     async fn a_provider_that_gives_nothing_fails_a_subscription() {
         let backend = open("redis://localhost:1/0", Some(empty())).unwrap();
-        let error = backend
-            .subscribe(&["channel".to_owned()])
-            .await
-            .err()
-            .unwrap();
+        let error = backend.subscribe(channel()).await.err().unwrap();
         assert!(
             error
                 .to_string()
@@ -203,28 +217,14 @@ mod credentials {
 }
 
 mod settings {
-    use std::net::SocketAddr;
     use std::time::Duration;
 
     use redis::{AsyncCommands, RedisResult};
     use rstest::rstest;
-    use tokio::net::TcpListener;
 
     use super::super::{Backend, Settings, slots};
+    use super::{channel, silent};
     use crate::Docket;
-
-    /// The address of a server that accepts connections and never answers.
-    async fn silent() -> SocketAddr {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok((socket, _)) = listener.accept().await {
-                held.push(socket);
-            }
-        });
-        address
-    }
 
     #[test]
     fn a_backend_refuses_settings_that_would_fail_every_connection() {
@@ -236,21 +236,24 @@ mod settings {
         assert!(matches!(error, Some(crate::Error::Invalid(_))), "{error:?}");
     }
 
+    /// With a provider, the subscription's RESP3 connection waits for the
+    /// server to answer its HELLO.
+    #[rstest]
+    #[case::without_a_provider(false)]
+    #[case::with_a_provider(true)]
     #[tokio::test]
-    async fn a_subscription_to_a_silent_server_times_out() {
+    async fn a_subscription_to_a_silent_server_times_out(#[case] with_a_provider: bool) {
         let settings = Settings {
             connection_timeout: Duration::from_millis(200),
             response_timeout: Some(Duration::from_millis(200)),
             ..Settings::default()
         };
         let url = format!("redis://{}/0", silent().await);
-        let backend = Backend::open(&url, None, settings).unwrap();
-        let subscribed = tokio::time::timeout(
-            Duration::from_secs(3),
-            backend.subscribe(&["channel".to_owned()]),
-        )
-        .await
-        .expect("the subscription gives up in time");
+        let provider = with_a_provider.then(|| super::credentials::split(&url).1.unwrap());
+        let backend = Backend::open(&url, provider, settings).unwrap();
+        let subscribed = tokio::time::timeout(Duration::from_secs(3), backend.subscribe(channel()))
+            .await
+            .expect("the subscription gives up in time");
         assert!(subscribed.is_err());
     }
 

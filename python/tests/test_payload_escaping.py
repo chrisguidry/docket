@@ -25,7 +25,6 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from docket import ConcurrencyLimit, Docket, Worker
-from docket._redis import confirm_subscriptions
 
 from tests.conftest import wait_for_event
 
@@ -51,13 +50,11 @@ async def state_messages(docket: Docket):
     ready = asyncio.Event()
 
     async def collector() -> None:
-        async with docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
-            await pubsub.subscribe(docket.key(f"state:{WEIRD_KEY}"))
-            await confirm_subscriptions(pubsub, 1)
+        async with docket._subscription(  # pyright: ignore[reportPrivateUsage]
+            channels=[docket.key(f"state:{WEIRD_KEY}")]
+        ) as subscription:
             ready.set()
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue  # pragma: no cover
+            async for message in subscription.listen():
                 data = message["data"]
                 payload = data.decode() if isinstance(data, bytes) else data
                 messages.append(json.loads(payload))

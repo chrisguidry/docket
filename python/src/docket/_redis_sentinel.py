@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import socket
 from dataclasses import dataclass
-from typing import Any, Sequence, cast
+from typing import Any, Sequence, Unpack, cast
 from urllib.parse import ParseResult, parse_qs, unquote, urlencode, urlparse
 
 from redis.asyncio import ConnectionPool, Redis
@@ -20,7 +20,7 @@ from redis.asyncio.sentinel import Sentinel, SentinelConnectionPool
 from redis.credentials import CredentialProvider
 
 from ._redis import close_resource
-from ._redis_credentials import ReauthenticatingPool
+from ._redis_credentials import ProtocolOptions, ReauthenticatingPool
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -261,10 +261,10 @@ def sentinel_connection_pool(
     url: str,
     *,
     decode_responses: bool,
-    protocol: int | None = None,
     credential_provider: CredentialProvider | None = None,
     socket_timeout: float | None,
     socket_connect_timeout: float | None,
+    **protocol: Unpack[ProtocolOptions],
 ) -> ConnectionPool:
     """Create a connection pool that resolves the master through Sentinel.
 
@@ -277,13 +277,13 @@ def sentinel_connection_pool(
     Args:
         url: The redis+sentinel:// or rediss+sentinel:// URL.
         decode_responses: If True, decode Redis responses from bytes to strings.
-        protocol: The RESP version to negotiate, or None to leave redis-py's
-            default alone.
         credential_provider: Supplies the data-node credentials in place of
             the URL's, or None to use the URL's.
         socket_timeout: The read timeout for data-node connections.
         socket_connect_timeout: The TCP connect timeout for data-node
             connections.
+        protocol: The RESP version to negotiate and the parser to read it
+            with, or nothing to leave redis-py's defaults alone.
 
     Returns:
         A ConnectionPool ready for use with Redis clients.
@@ -300,11 +300,10 @@ def sentinel_connection_pool(
         "socket_keepalive": True,
         "socket_keepalive_options": SENTINEL_SOCKET_KEEPALIVE_OPTIONS,
         **config.connection_kwargs,
+        # redis-py 6 sends ``HELLO None`` for an explicit ``protocol=None``, so
+        # the pool gets only the keys the caller gave.
+        **protocol,
     }
-    # redis-py 6 sends ``HELLO None`` for an explicit ``protocol=None``, so
-    # the key is only present when a version is set.
-    if protocol is not None:
-        pool_kwargs["protocol"] = protocol
     if credential_provider is not None:
         pool_kwargs["credential_provider"] = credential_provider
     return OwnedSentinelConnectionPool(config.service_name, sentinel, **pool_kwargs)

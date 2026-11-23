@@ -5,6 +5,7 @@ mod credentials;
 mod settings;
 #[cfg(test)]
 pub(crate) mod slots;
+mod subscription;
 #[cfg(test)]
 mod tests;
 mod url;
@@ -18,18 +19,27 @@ use redis::cluster_async::ClusterConnection;
 use redis::sentinel::SentinelClient;
 use redis::{AsyncConnectionConfig, Client, Cmd, Pipeline, RedisFuture, RedisResult, Value};
 use tokio::sync::Mutex;
+use tokio_util::sync::DropGuard;
 
 use crate::error::Result;
 use clients::{client, cluster_client};
 pub(crate) use credentials::Provider;
+use credentials::{Checked, Server};
 pub(crate) use settings::{Keepalive, Settings};
+use subscription::Resp3;
+pub(crate) use subscription::{Subscription, Topics};
 use url::Target;
 pub(crate) use url::redact;
 
 /// How to reach the Redis behind a docket.
 pub(crate) struct Backend {
     kind: Kind,
-    credentials: Option<Provider>,
+    /// The provider's credentials, each new set checked against the server
+    /// first; `None` without a provider, or on the memory engine, which
+    /// ignores credentials.
+    credentials: Option<Checked>,
+    /// Ends the task that checks the provider's credentials.
+    _checking: Option<DropGuard>,
     settings: Settings,
 }
 
@@ -44,7 +54,9 @@ enum Kind {
         /// node relays every published message.
         pubsub: Client,
     },
-    Sentinel(Mutex<SentinelClient>),
+    /// Shared with the checks of new credentials, which authenticate
+    /// against the primary the sentinels name.
+    Sentinel(Arc<Mutex<SentinelClient>>),
     #[cfg(feature = "memory")]
     Memory(crate::memory::MemoryServer),
 }
@@ -59,27 +71,43 @@ impl Backend {
             ));
         }
         settings.validate()?;
-        let kind = match url::parse(url)? {
-            Target::Standalone(url) => client(&url, &settings).map(Kind::Standalone),
-            Target::Cluster(node) => {
+        let has_provider = credentials.is_some();
+        let checking = |server| {
+            credentials.map(|provider| Checked::new(provider, server, settings.connection_timeout))
+        };
+        let (kind, checked) = match url::parse(url)? {
+            Target::Standalone(url) => client(&url, &settings).map(|client| {
+                let checked = checking(Server::Direct(Box::new(client.clone())));
+                (Kind::Standalone(client), checked)
+            }),
+            Target::Cluster(node) => client(&node, &settings).and_then(|pubsub| {
+                let checked = checking(Server::Direct(Box::new(pubsub.clone())));
                 let cluster = |response_timeout| {
-                    cluster_client(&node, &settings, response_timeout, credentials.as_ref())
+                    cluster_client(&node, &settings, response_timeout, checked.as_ref())
                         .map(Box::new)
                 };
-                client(&node, &settings).and_then(|pubsub| {
-                    cluster(settings.response_timeout).and_then(|client| {
-                        cluster(None).map(|application| Kind::Cluster {
+                cluster(settings.response_timeout).and_then(|client| {
+                    cluster(None).map(|application| {
+                        let kind = Kind::Cluster {
                             client,
                             application,
                             pubsub,
-                        })
+                        };
+                        (kind, checked.clone())
                     })
                 })
+            }),
+            Target::Sentinel(sentinel) => {
+                clients::sentinel_client(sentinel, &settings).map(|client| {
+                    let client = Arc::new(Mutex::new(client));
+                    let checked = checking(Server::Sentinel(Arc::clone(&client)));
+                    (Kind::Sentinel(client), checked)
+                })
             }
-            Target::Sentinel(sentinel) => clients::sentinel_client(sentinel, &settings)
-                .map(|client| Kind::Sentinel(Mutex::new(client))),
             #[cfg(feature = "memory")]
-            Target::Memory(url) => Ok(Kind::Memory(crate::memory::MemoryServer::open(&url))),
+            Target::Memory(url) => {
+                Ok((Kind::Memory(crate::memory::MemoryServer::open(&url)), None))
+            }
             #[cfg(not(feature = "memory"))]
             Target::Memory(url) => {
                 return Err(crate::Error::url(
@@ -96,7 +124,7 @@ impl Backend {
             #[cfg(feature = "memory")]
             Kind::Memory(_) => false,
         };
-        if credentials.is_some() && url_credentials {
+        if has_provider && url_credentials {
             return Err(crate::Error::url(
                 url,
                 "it carries credentials, and a credential provider gives them too",
@@ -104,7 +132,8 @@ impl Backend {
         }
         Ok(Self {
             kind,
-            credentials,
+            _checking: checked.as_ref().map(Checked::guard),
+            credentials: checked,
             settings,
         })
     }
@@ -176,46 +205,50 @@ impl Backend {
         }
     }
 
-    /// Opens a connection subscribed to `channels`.
-    pub async fn subscribe(&self, channels: &[String]) -> RedisResult<PubSub> {
-        let mut pubsub = self.pubsub().await?;
-        within(self.settings.response_timeout, pubsub.subscribe(channels))
+    /// Subscribes to `topics`.  With a credentials provider, the
+    /// subscription sends AUTH on its own connection each time the
+    /// credentials rotate.
+    ///
+    /// One connection timeout bounds the whole open: finding the Sentinel
+    /// primary, taking the provider's credentials, and connecting.  The
+    /// subscribe is bounded by the response timeout when the docket has one:
+    /// redis-rs's `PubSub` takes no timeouts, so docket applies it there, and
+    /// the RESP3 connection takes it from its config.
+    /// Once subscribed, a connection waits for messages as long as it takes,
+    /// and TCP keepalive finds a peer that is gone.
+    pub async fn subscribe(&self, topics: Topics) -> RedisResult<Subscription> {
+        let opened = within(
+            Some(self.settings.connection_timeout),
+            self.connect_for_subscription(),
+        )
+        .await?;
+        match opened {
+            Opened::PubSub(mut pubsub) => within(
+                self.settings.response_timeout,
+                topics.subscribe_pubsub(&mut pubsub),
+            )
             .await
-            .map(|()| pubsub)
+            .map(|()| Subscription::plain(pubsub)),
+            Opened::Resp3(resp3) => Subscription::renewed(resp3, &topics).await,
+        }
     }
 
-    /// Opens a connection subscribed to the channels that match `pattern`.
-    pub async fn psubscribe(&self, pattern: String) -> RedisResult<PubSub> {
-        let mut pubsub = self.pubsub().await?;
-        within(self.settings.response_timeout, pubsub.psubscribe(pattern))
-            .await
-            .map(|()| pubsub)
-    }
-
-    /// Opens a connection for subscriptions.  redis-rs takes no timeouts
-    /// for these, so docket bounds the connect itself, and the subscribe
-    /// when the docket has a response timeout.  Once subscribed, the connection waits for messages as long as it
-    /// takes, and TCP keepalive finds a peer that is gone.
-    async fn pubsub(&self) -> RedisResult<PubSub> {
-        within(Some(self.settings.connection_timeout), self.open_pubsub()).await
-    }
-
-    async fn open_pubsub(&self) -> RedisResult<PubSub> {
+    /// Opens a connection for a subscription: RESP3 with a credentials
+    /// provider, and redis-rs's `PubSub` without one or on the memory engine.
+    async fn connect_for_subscription(&self) -> RedisResult<Opened> {
         let client = match &self.kind {
             Kind::Standalone(client) | Kind::Cluster { pubsub: client, .. } => client.clone(),
             Kind::Sentinel(client) => client.lock().await.async_get_client().await?,
+            // The memory engine has no HELLO, so it can't speak RESP3, and it
+            // ignores credentials, so there are none to renew.
             #[cfg(feature = "memory")]
-            Kind::Memory(server) => return server.pubsub().await,
+            Kind::Memory(server) => return server.pubsub().await.map(Opened::PubSub),
         };
         match &self.credentials {
-            Some(provider) => {
-                provider
-                    .authenticate(&client)
-                    .await?
-                    .get_async_pubsub()
-                    .await
-            }
-            None => client.get_async_pubsub().await,
+            Some(provider) => Resp3::open(&client, provider, &self.settings)
+                .await
+                .map(Opened::Resp3),
+            None => client.get_async_pubsub().await.map(Opened::PubSub),
         }
     }
 
@@ -239,6 +272,12 @@ impl Backend {
     pub fn is_cluster(&self) -> bool {
         matches!(self.kind, Kind::Cluster { .. })
     }
+}
+
+/// A connection for a subscription, before it subscribes.
+enum Opened {
+    PubSub(PubSub),
+    Resp3(Resp3),
 }
 
 /// Whose commands a connection carries.

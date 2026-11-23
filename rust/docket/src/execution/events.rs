@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use super::{State, Status, progress};
 use crate::Timestamp;
+use crate::connection::Topics;
 use crate::docket::Docket;
 use crate::error::{Error, Result};
 
@@ -95,7 +96,7 @@ pub(super) async fn subscribe(docket: &Docket, key: &str) -> Result<Events> {
     let keys = docket.keys();
     let pubsub = docket
         .backend()
-        .subscribe(&[keys.state(key), keys.progress(key)])
+        .subscribe(Topics::Channels(vec![keys.state(key), keys.progress(key)]))
         .await?;
 
     // Reading after the subscription is confirmed means no change can fall
@@ -124,7 +125,7 @@ pub(super) async fn subscribe(docket: &Docket, key: &str) -> Result<Events> {
         updated_at: snapshot.updated_at,
     })));
 
-    let messages = pubsub.into_on_message().map(|message| {
+    let messages = pubsub.map(|message| {
         let payload: String = message.get_payload().map_err(Error::from)?;
         Ok(match serde_json::from_str::<Payload>(&payload)? {
             Payload::State(event) => Event::State(event),

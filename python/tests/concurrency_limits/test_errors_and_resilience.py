@@ -13,11 +13,13 @@ This module tests how concurrency limits handle error conditions and stress:
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from typing import Any, AsyncGenerator
 from unittest.mock import patch
 
 from redis.exceptions import ConnectionError
 
 from docket import ConcurrencyLimit, Docket, Worker
+from tests.concurrency_limits.waiters import wait_for_xlen
 
 
 async def test_worker_concurrency_with_task_failures(docket: Docket):
@@ -232,3 +234,58 @@ async def test_worker_graceful_shutdown_with_concurrency_management(docket: Dock
         await worker.run_until_finished()
         assert task_started.is_set(), "Task should have started"
         assert task_completed.is_set(), "Task should have completed"
+
+
+async def test_the_cancel_subscriber_subscribes_again_after_a_redis_error(
+    docket: Docket, worker: Worker
+):
+    """The concurrency cancel subscriber's first subscribe fails, and a cancel
+    of a parked task still removes its waiter entry while the holder has the
+    slot, which only the subscriber does."""
+    subscribed_again = asyncio.Event()
+    original_pubsub = docket._redis.pubsub  # pyright: ignore[reportPrivateUsage]
+    attempts = 0
+
+    @asynccontextmanager
+    async def first_subscribe_fails() -> AsyncGenerator[Any, None]:
+        nonlocal attempts
+        async with original_pubsub() as pubsub:
+            task = asyncio.current_task()
+            assert task is not None
+            if task.get_name().endswith("concurrency cancel subscriber"):
+                attempts += 1
+                if attempts == 1:
+                    raise ConnectionError("Redis went away")
+                subscribed_again.set()
+            yield pubsub
+
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def holder(
+        customer_id: int,
+        concurrency: ConcurrencyLimit = ConcurrencyLimit(
+            "customer_id", max_concurrent=1
+        ),
+    ):
+        holder_entered.set()
+        await asyncio.wait_for(release_holder.wait(), timeout=10)
+
+    with (
+        patch.object(docket._redis, "pubsub", first_subscribe_fails),  # pyright: ignore[reportPrivateUsage]
+        patch("docket.dependencies._concurrency.RESUBSCRIBE_DELAY", 0.01),
+    ):
+        await docket.add(holder)(customer_id=1)
+        worker_task = asyncio.create_task(worker.run_until_finished())
+        await asyncio.wait_for(holder_entered.wait(), timeout=5)
+        await asyncio.wait_for(subscribed_again.wait(), timeout=5)
+
+        parked = await docket.add(holder)(customer_id=1)
+        waiters_stream = f"{docket.prefix}:concurrency:customer_id:1:waiters"
+        await wait_for_xlen(docket, waiters_stream, 1)
+
+        await docket.cancel(parked.key)
+        await wait_for_xlen(docket, waiters_stream, 0)
+
+        release_holder.set()
+        await asyncio.wait_for(worker_task, timeout=5)

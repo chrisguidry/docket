@@ -16,7 +16,6 @@ from docket.dependencies import (
     TaskOutcome,
 )
 from docket.execution import Execution, ExecutionState
-from docket._redis import confirm_subscriptions
 
 
 async def test_dependencies_may_be_duplicated(docket: Docket, worker: Worker):
@@ -384,13 +383,11 @@ async def test_safety_net_publishes_failed_state_event_with_no_error(
     ready = asyncio.Event()
 
     async def collector() -> None:
-        async with docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
-            await pubsub.subscribe(docket.key(f"state:{task_key}"))
-            await confirm_subscriptions(pubsub, 1)
+        async with docket._subscription(  # pyright: ignore[reportPrivateUsage]
+            channels=[docket.key(f"state:{task_key}")]
+        ) as subscription:
             ready.set()
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue  # pragma: no cover
+            async for message in subscription.listen():
                 data = message["data"]
                 payload = data.decode() if isinstance(data, bytes) else data
                 state_events.append(json.loads(payload))

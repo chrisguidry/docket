@@ -8,6 +8,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 use super::session::Shared;
+use crate::connection::Topics;
 use crate::error::Result;
 
 /// How long the listener waits to subscribe again after Redis drops it.
@@ -28,7 +29,7 @@ async fn listen(worker: Arc<Shared>, mut subscribed: Option<oneshot::Sender<()>>
     loop {
         let pubsub = docket
             .backend()
-            .psubscribe(docket.keys().cancel_pattern())
+            .subscribe(Topics::Pattern(docket.keys().cancel_pattern()))
             .await;
         if let Some(subscribed) = subscribed.take() {
             let _ = subscribed.send(());
@@ -39,9 +40,8 @@ async fn listen(worker: Arc<Shared>, mut subscribed: Option<oneshot::Sender<()>>
         };
         // Docket publishes the task's key, so a message that is not text
         // names no task.
-        let mut keys = pubsub
-            .into_on_message()
-            .filter_map(|message| std::future::ready(message.get_payload::<String>().ok()));
+        let mut keys =
+            pubsub.filter_map(|message| std::future::ready(message.get_payload::<String>().ok()));
         while let Some(key) = keys.next().await {
             worker.cancel_key(&key);
             if let Err(error) = forget_waiter(docket, &key).await {

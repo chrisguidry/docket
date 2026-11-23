@@ -22,7 +22,7 @@ def listener_loses_cancels(docket: Docket):
     It reads from Redis until the PSUBSCRIBE confirmation, which the worker
     waits for before it starts.  After that, each read waits until a cancel and
     then returns None, so every cancel lands in a read and is lost."""
-    original_pubsub = docket._pubsub  # pyright: ignore[reportPrivateUsage]
+    original_pubsub = docket._redis.pubsub  # pyright: ignore[reportPrivateUsage]
 
     @asynccontextmanager
     async def pubsub_that_loses_cancels() -> AsyncGenerator[Any, None]:
@@ -45,7 +45,7 @@ def listener_loses_cancels(docket: Docket):
             pubsub.get_message = get_message  # type: ignore[method-assign]
             yield pubsub
 
-    with patch.object(docket, "_pubsub", pubsub_that_loses_cancels):
+    with patch.object(docket._redis, "pubsub", pubsub_that_loses_cancels):  # pyright: ignore[reportPrivateUsage]
         yield
 
 

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, AsyncIterator, Self, overload
 
 from opentelemetry import propagate
+from redis.exceptions import RedisError
 
 from uncalled_for import current_frame
 
@@ -42,6 +43,10 @@ LEASE_RENEWAL_FACTOR = 4
 # Minimum TTL in seconds for Redis keys to avoid immediate expiration when
 # redelivery_timeout is very small (e.g., in tests with 200ms timeouts).
 MINIMUM_TTL_SECONDS = 1
+
+# How long the cancel subscriber waits after a Redis error before it subscribes
+# again, the same as the worker's cancellation listener.
+RESUBSCRIBE_DELAY: float = 1.0
 
 
 @redis_script
@@ -393,32 +398,36 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
         ``runs.state == 'cancelled'`` check in ``_RELEASE_AND_WAKE`` /
         ``_SCAVENGE_AND_WAKE`` is the correctness backstop that ensures
         cancelled tasks never run regardless of whether we observe the
-        publish.
+        publish.  After a Redis error it subscribes again, so one dropped
+        connection doesn't end the cleanup for the life of the worker.
         """
         pattern = f"{docket.prefix}:cancel:*"
-        async with docket._pubsub() as pubsub:
-            try:
-                await pubsub.psubscribe(pattern)
-                async for message in pubsub.listen():  # pragma: no branch
-                    if message.get("type") != "pmessage":
-                        continue
-                    data = message.get("data")
-                    if isinstance(data, bytes):
-                        task_key = data.decode()
-                    elif isinstance(data, str):  # pragma: no cover
-                        task_key = data
-                    else:  # pragma: no cover
-                        continue
-                    if not task_key:  # pragma: no cover
-                        continue
-                    await cls._cleanup_cancelled_waiter(docket, task_key)
-            except asyncio.CancelledError:
-                pass
-            finally:
+        try:
+            while True:
                 try:
-                    await pubsub.punsubscribe(pattern)
-                except Exception:  # pragma: no cover
-                    pass
+                    async with docket._subscription(patterns=[pattern]) as subscription:
+                        async for message in subscription.listen():  # pragma: no branch
+                            data = message.get("data")
+                            if isinstance(data, bytes):
+                                task_key = data.decode()
+                            elif isinstance(data, str):  # pragma: no cover
+                                task_key = data
+                            else:  # pragma: no cover
+                                continue
+                            if not task_key:  # pragma: no cover
+                                continue
+                            await cls._cleanup_cancelled_waiter(docket, task_key)
+                except RedisError:
+                    # The subscriber lives as long as the worker, so a dropped
+                    # connection or a rejected AUTH must not end it.
+                    logger.warning(
+                        "Redis error in the concurrency cancel subscriber, "
+                        "subscribing again",
+                        exc_info=True,
+                    )
+                    await asyncio.sleep(RESUBSCRIBE_DELAY)
+        except asyncio.CancelledError:
+            pass
 
     @classmethod
     async def _cleanup_cancelled_waiter(cls, docket: "Docket", task_key: str) -> None:

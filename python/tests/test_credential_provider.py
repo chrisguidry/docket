@@ -6,17 +6,24 @@ they need no Redis.  The last two authenticate against a real, standalone Redis.
 
 # pyright: reportPrivateUsage=false
 
+import asyncio
 import socket
 from typing import Any, Callable
 
 import pytest
+from redis.asyncio.connection import Connection
 from redis.auth.token import SimpleToken
 from redis.credentials import CredentialProvider, StreamingCredentialProvider
+from redis.event import (
+    AfterPubSubConnectionInstantiationEvent,
+    ClientType,
+    EventDispatcher,
+)
 from redis.exceptions import AuthenticationError, ConnectionError
 
 from docket import Docket, Worker
 from docket._redis import RedisConnection
-from docket._redis_credentials import ReauthenticatingPool
+from docket._redis_credentials import ReauthenticatingPool, WithoutPubSubReauth
 from tests._container import ACLCredentials
 from tests.conftest import skip_cluster, skip_memory
 
@@ -90,6 +97,30 @@ async def test_pubsub_adds_no_reauth_callbacks():
         assert len(provider.callbacks) == registered
 
 
+@pytest.mark.parametrize(
+    ("dispatcher", "registrations"),
+    [
+        pytest.param(EventDispatcher, 1, id="redis-py"),
+        pytest.param(WithoutPubSubReauth, 0, id="docket"),
+    ],
+)
+async def test_subscribing_registers_nothing_with_the_provider(
+    dispatcher: type[EventDispatcher], registrations: int
+):
+    """redis-py registers a re-auth callback with the provider each time a
+    RESP3 subscriber connects, which would take the refreshes away from
+    docket's Rotation.  docket's pub/sub clients dispatch without it."""
+    provider = StreamingProvider()
+    connection = Connection(credential_provider=provider, protocol=3)
+    event = AfterPubSubConnectionInstantiationEvent(
+        connection, None, ClientType.ASYNC, asyncio.Lock()
+    )
+
+    dispatcher().dispatch(event)
+
+    assert len(provider.callbacks) == registrations
+
+
 async def test_connections_sharing_a_provider_register_one_callback():
     """A Docket and its strike list share a provider, and a provider like
     redis-entraid's keeps only the newest callback, so they must share one."""
@@ -124,18 +155,46 @@ async def test_sentinel_pool_gets_the_provider():
     await pool.aclose()
 
 
-async def test_a_failed_reauthentication_leaves_nothing_to_resend():
-    """A token's AUTH that fails as the connection comes back must not be sent
-    again by redis-py's listener after the connection is available."""
+@pytest.fixture
+def pool() -> ReauthenticatingPool:
+    """A pool for a port where nothing listens, so any connect fails."""
     with socket.socket() as closed:
         closed.bind(("localhost", 0))
         port = closed.getsockname()[1]
-    pool = ReauthenticatingPool(host="localhost", port=port)
+    return ReauthenticatingPool(host="localhost", port=port)
+
+
+async def test_a_failed_reauthentication_leaves_nothing_to_resend(
+    pool: ReauthenticatingPool,
+):
+    """A token's AUTH that fails as the connection comes back must not be sent
+    again by redis-py's listener after the connection is available."""
     connection = pool.get_available_connection()
+    # A socket whose peer has gone, so the AUTH fails on a connected connection
+    ours, theirs = socket.socketpair()
+    theirs.close()
+    connection._reader, connection._writer = await asyncio.open_connection(sock=ours)
     connection.set_re_auth_token(SimpleToken("secret", -1, -1, {"oid": "user"}))
 
     with pytest.raises(ConnectionError):
         await pool.release(connection)
+
+    assert connection in pool._available_connections
+    assert connection._re_auth_token is None
+    assert not connection.is_connected
+    await pool.aclose()
+
+
+async def test_a_closed_connection_comes_back_without_sending_its_auth(
+    pool: ReauthenticatingPool,
+):
+    """A closed connection authenticates with the provider's current
+    credentials when it next connects, so it isn't reconnected to send a
+    queued AUTH.  A subscriber's connection always comes back closed."""
+    connection = pool.get_available_connection()
+    connection.set_re_auth_token(SimpleToken("secret", -1, -1, {"oid": "user"}))
+
+    await pool.release(connection)
 
     assert connection in pool._available_connections
     assert connection._re_auth_token is None

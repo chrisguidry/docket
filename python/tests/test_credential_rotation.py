@@ -3,13 +3,18 @@
 A provider like redis-entraid's refreshes its token before the old one expires,
 and the server drops a connection whose token has expired.  So after a
 rotation, every connection that docket holds must authenticate as the new
-identity.  These need a real, standalone Redis: they read CLIENT LIST to see
-which user each connection is authenticated as.
+identity.  These need a real Redis, standalone or clustered: they read CLIENT
+LIST on each node to see which user each connection is authenticated as.
 """
 
 import asyncio
 import gc
-from contextlib import asynccontextmanager, suppress
+from contextlib import (
+    AbstractAsyncContextManager,
+    AsyncExitStack,
+    asynccontextmanager,
+    suppress,
+)
 from datetime import timedelta
 from typing import Any, AsyncGenerator, Callable, NamedTuple
 from uuid import uuid4
@@ -19,11 +24,13 @@ from redis.asyncio import Redis
 
 from docket import Docket, Worker
 from docket._redis import RedisConnection
+from docket._subscription import Subscription
+from redis.exceptions import AuthenticationError
 from tests._container import ACL_ENABLED, ACLCredentials
 from tests._rotating_provider import RotatingProvider
 from tests.conftest import skip_cluster, skip_memory, wait_until
 
-pytestmark = [skip_memory, skip_cluster]
+pytestmark = [skip_memory]
 
 
 class User(NamedTuple):
@@ -31,75 +38,114 @@ class User(NamedTuple):
     password: str
 
 
+class Admin:
+    """The default user on every node of the test Redis: the one standalone
+    server, or each primary of the cluster.  A cluster keeps its ACL users and
+    its client list per node, and a PUBLISH on any node of a cluster reaches
+    the subscribers on every node."""
+
+    def __init__(self, nodes: list[Redis]) -> None:
+        self.nodes = nodes
+
+    async def add_user(self, user: User) -> None:
+        for node in self.nodes:
+            await node.acl_setuser(  # type: ignore[reportUnknownMemberType]
+                user.name,
+                enabled=True,
+                passwords=[f"+{user.password}"],
+                keys=["*"],
+                channels=["*"],
+                commands=["+@all"],
+            )
+
+    async def delete_users(self, *users: User) -> None:
+        for node in self.nodes:
+            await node.acl_deluser(*(user.name for user in users))  # type: ignore[reportUnknownMemberType]
+
+    async def client_list(self) -> list[dict[str, Any]]:
+        return [
+            client
+            for node in self.nodes
+            for client in await node.client_list()  # type: ignore[reportUnknownMemberType]
+        ]
+
+    async def publish(self, channel: str, message: str | bytes) -> None:
+        await self.nodes[0].publish(channel, message)  # type: ignore[reportUnknownMemberType]
+
+
 @pytest.fixture
 async def admin(
-    redis_port: int, acl_credentials: ACLCredentials
-) -> AsyncGenerator[Redis, None]:
+    redis_ports: tuple[int, ...], acl_credentials: ACLCredentials
+) -> AsyncGenerator[Admin, None]:
     password = acl_credentials.admin_password if ACL_ENABLED else None
-    async with Redis(host="localhost", port=redis_port, password=password) as r:
-        yield r
+    async with AsyncExitStack() as stack:
+        yield Admin(
+            [
+                await stack.enter_async_context(
+                    Redis(host="localhost", port=port, password=password)
+                )
+                for port in redis_ports
+            ]
+        )
 
 
 @pytest.fixture
-async def users(admin: Redis) -> AsyncGenerator[tuple[User, User], None]:
+async def users(admin: Admin) -> AsyncGenerator[tuple[User, User], None]:
     """Two users with the same access: the identity before a token refresh,
     and the identity after it."""
     old = User(f"old-{uuid4()}", "old-secret")
     new = User(f"new-{uuid4()}", "new-secret")
     for user in (old, new):
-        await admin.acl_setuser(  # type: ignore[reportUnknownMemberType]
-            user.name,
-            enabled=True,
-            passwords=[f"+{user.password}"],
-            keys=["*"],
-            channels=["*"],
-            commands=["+@all"],
-        )
+        await admin.add_user(user)
     yield old, new
-    await admin.acl_deluser(old.name, new.name)  # type: ignore[reportUnknownMemberType]
+    await admin.delete_users(old, new)
 
 
 async def authenticated_as(
-    admin: Redis, users: tuple[User, User], *, subscribed: bool
+    admin: Admin, users: tuple[User, User], *, subscribed: bool
 ) -> set[str]:
     """The users that the data connections (or the subscribed connections)
     of these two users are authenticated as.  Redis flags a subscriber "P"."""
     names = {user.name for user in users}
     return {
         client["user"]
-        for client in await admin.client_list()  # type: ignore[reportUnknownMemberType]
+        for client in await admin.client_list()
         if client["user"] in names and ("P" in client["flags"]) == subscribed
     }
 
 
-async def no_connections(admin: Redis, users: tuple[User, User]) -> bool:
+async def no_connections(admin: Admin, users: tuple[User, User]) -> bool:
     return await authenticated_as(admin, users, subscribed=False) == set()
 
 
-async def subscribed_as(admin: Redis, users: tuple[User, User], user: User) -> bool:
+async def subscribed_as(admin: Admin, users: tuple[User, User], user: User) -> bool:
     return await authenticated_as(admin, users, subscribed=True) == {user.name}
 
 
-async def test_a_rotation_reauthenticates_the_data_connections_after_pubsub(
-    credential_less_url: str, admin: Redis, users: tuple[User, User]
+async def test_a_rotation_reauthenticates_the_data_connections_after_subscribing(
+    credential_less_url: str, admin: Admin, users: tuple[User, User]
 ):
-    """Opening pub/sub must not take the token refresh away from the data
-    connections: they carry the Lua scripts and the stream reads."""
+    """Subscribing must not take the token refresh away from the data
+    connections: they carry the Lua scripts and the stream reads.  redis-py
+    registers a callback of its own with the provider for each RESP3
+    subscriber unless docket turns that off."""
     old, new = users
     provider = RotatingProvider(*old)
-    async with RedisConnection(credential_less_url, provider) as connection:
+    async with (
+        RedisConnection(credential_less_url, provider) as connection,
+        connection.subscription(channels=["rotation"]),
+    ):
         async with connection.client() as r:
             await r.exists("rotation")
-        async with connection.pubsub():
-            pass
 
         await provider.rotate(*new)
 
+        assert provider.registrations == 1
         assert await authenticated_as(admin, users, subscribed=False) == {new.name}
 
 
 async def test_a_rotation_reauthenticates_every_connection_sharing_the_provider(
-    credential_less_url: str, admin: Redis, users: tuple[User, User]
+    credential_less_url: str, admin: Admin, users: tuple[User, User]
 ):
     """A Docket and its strike list each open a RedisConnection with the same
     provider, and a token refresh must reach both of them."""
@@ -148,27 +194,28 @@ async def test_commands_running_through_a_rotation_keep_their_own_replies(
             await asyncio.gather(rotate(), *(command(n) for n in range(16)))
 
 
-async def subscribers(admin: Redis, users: tuple[User, User]) -> list[str]:
-    """The user of each subscribed connection, one entry per connection."""
+async def subscribers(
+    admin: Admin, users: tuple[User, User]
+) -> list[tuple[str, str, str]]:
+    """The node address, client id, and user of each subscribed connection.
+    Each node of a cluster numbers its clients on its own."""
     names = {user.name for user in users}
     return sorted(
-        client["user"]
-        for client in await admin.client_list()  # type: ignore[reportUnknownMemberType]
+        (client["laddr"], client["id"], client["user"])
+        for client in await admin.client_list()
         if client["user"] in names and "P" in client["flags"]
     )
 
 
 @asynccontextmanager
-async def reading(pubsub: Any) -> AsyncGenerator[list[bytes], None]:
+async def reading(subscription: Subscription) -> AsyncGenerator[list[bytes], None]:
     """Read messages the way the worker's cancellation listener does, until
     the context exits."""
     received: list[bytes] = []
 
     async def read() -> None:
         while True:
-            message = await pubsub.get_message(
-                ignore_subscribe_messages=True, timeout=0.1
-            )
+            message = await subscription.get_message(timeout=0.1)
             if message is not None:
                 received.append(message["data"])
 
@@ -183,38 +230,122 @@ async def reading(pubsub: Any) -> AsyncGenerator[list[bytes], None]:
             await reader
 
 
-async def test_a_rotation_leaves_a_reading_subscriber_alone(
-    credential_less_url: str, admin: Redis, users: tuple[User, User]
+@asynccontextmanager
+async def not_reading(
+    subscription: Subscription,
+) -> AsyncGenerator[list[bytes], None]:
+    """Leave the subscription unread, like an Execution.subscribe() generator
+    whose caller has not asked for the next event."""
+    yield []
+
+
+async def test_messages_published_around_a_rotation_each_arrive_once_in_order(
+    credential_less_url: str, admin: Admin, users: tuple[User, User]
 ):
-    """A RESP2 subscriber can't send AUTH, and its reader owns its socket, so a
-    rotation leaves it alone: one connection, still getting messages."""
+    """The rotation writes AUTH onto the subscribed connection and never
+    reconnects it, so a message published before, during, or after it arrives
+    once, in the order it was published."""
     old, new = users
     provider = RotatingProvider(*old)
-    # One statement for both, because coverage.py's sys.monitoring core reports
-    # a false partial branch on the innermost of three nested with statements.
+    sent = [f"{i}".encode() for i in range(100)]
     async with (
         RedisConnection(credential_less_url, provider) as connection,
-        connection.pubsub() as pubsub,
+        connection.subscription(channels=["rotation"]) as subscription,
+        reading(subscription) as received,
     ):
-        await pubsub.subscribe("rotation")
-        async with reading(pubsub) as received:
-            await wait_until(
-                lambda: subscribed_as(admin, users, old),
-                description="the subscriber to authenticate as the old user",
-            )
+        for i, message in enumerate(sent):
+            if i == 50:
+                await provider.rotate(*new)
+            await admin.publish("rotation", message)
 
-            await provider.rotate(*new)
-            await admin.publish("rotation", "after")  # type: ignore[reportUnknownMemberType]
-            await wait_until(
-                lambda: b"after" in received,
-                description="a message published after the rotation",
-            )
+        await wait_until(
+            lambda: len(received) >= len(sent),
+            description="every message published around the rotation",
+        )
+        assert received == sent
 
-            assert await subscribers(admin, users) == [old.name]
+
+@pytest.mark.parametrize("reader", [reading, not_reading], ids=["reading", "idle"])
+async def test_a_rotation_reauthenticates_the_subscribed_connection_in_place(
+    credential_less_url: str,
+    admin: Admin,
+    users: tuple[User, User],
+    reader: Callable[[Subscription], AbstractAsyncContextManager[list[bytes]]],
+):
+    """The subscribed connection keeps its client id and authenticates as the
+    new user, whether or not anything is reading from it."""
+    old, new = users
+    provider = RotatingProvider(*old)
+    async with (
+        RedisConnection(credential_less_url, provider) as connection,
+        connection.subscription(channels=["rotation"]) as subscription,
+        reader(subscription),
+    ):
+        [(node, client_id, user)] = await subscribers(admin, users)
+
+        await provider.rotate(*new)
+
+        await wait_until(
+            lambda: subscribed_as(admin, users, new),
+            description="the subscriber to authenticate as the new user",
+        )
+        assert user == old.name
+        assert await subscribers(admin, users) == [(node, client_id, new.name)]
+
+
+async def test_a_rejected_pool_auth_writes_nothing_to_subscribers(
+    credential_less_url: str, admin: Admin, users: tuple[User, User]
+):
+    """A pool's AUTH reads its reply, so a token the server rejects on an idle
+    data connection raises from the rotation before any subscriber is sent it.
+    The subscriber keeps its connection and its old user."""
+    old, new = users
+    provider = RotatingProvider(*old)
+    async with (
+        RedisConnection(credential_less_url, provider) as connection,
+        connection.subscription(channels=["rotation"]) as subscription,
+    ):
+        async with connection.client() as r:
+            await r.exists("rotation")
+        before = await subscribers(admin, users)
+
+        with pytest.raises(AuthenticationError):
+            await provider.rotate(new.name, "not-the-password")
+
+        await admin.publish("rotation", "after")
+        message = await subscription.get_message(timeout=5)
+        assert message is not None
+        assert message["data"] == b"after"
+        assert await subscribers(admin, users) == before
+
+
+# A cluster client always holds idle connections to its nodes from discovering
+# the slots, and the rotation re-authenticates those before any subscriber, so
+# on a cluster a rejected token raises from the rotation, as it does in
+# test_a_rejected_pool_auth_writes_nothing_to_subscribers.
+@skip_cluster
+async def test_a_rejected_subscriber_auth_raises_from_the_next_read(
+    credential_less_url: str, admin: Admin, users: tuple[User, User]
+):
+    """With no idle pool connection to try the token on first, a subscriber is
+    the first to send it.  redis-py raises the server's rejection from the
+    subscriber's next read, as it does for any command whose AUTH fails, and
+    closes the connection."""
+    old, new = users
+    provider = RotatingProvider(*old)
+    async with (
+        RedisConnection(credential_less_url, provider) as connection,
+        connection.subscription(channels=["rotation"]) as subscription,
+    ):
+        await provider.rotate(new.name, "not-the-password")
+
+        with pytest.raises(AuthenticationError):
+            await subscription.get_message(timeout=5)
+        assert await subscribers(admin, users) == []
 
 
 async def test_a_rotation_before_connecting_reaches_the_first_connection(
-    credential_less_url: str, admin: Redis, users: tuple[User, User]
+    credential_less_url: str, admin: Admin, users: tuple[User, User]
 ):
     """A token refresh can land before docket opens any connection, and the
     first connection must authenticate with the refreshed token."""
@@ -230,7 +361,7 @@ async def test_a_rotation_before_connecting_reaches_the_first_connection(
 
 
 async def test_a_rotation_after_close_opens_no_connections(
-    credential_less_url: str, admin: Redis, users: tuple[User, User]
+    credential_less_url: str, admin: Admin, users: tuple[User, User]
 ):
     """A closed connection has no connections to re-authenticate, and a token
     refresh must not open them again."""
@@ -257,7 +388,7 @@ async def test_a_rotation_after_close_opens_no_connections(
 
 async def test_a_worker_keeps_working_when_the_old_user_is_revoked(
     credential_less_url: str,
-    admin: Redis,
+    admin: Admin,
     users: tuple[User, User],
     make_docket_name: Callable[[], str],
 ):
@@ -282,7 +413,7 @@ async def test_a_worker_keeps_working_when_the_old_user_is_revoked(
             assert await before.get_result() == 3
 
             await provider.rotate(*new)
-            await admin.acl_deluser(old.name)  # type: ignore[reportUnknownMemberType]
+            await admin.delete_users(old)
 
             after = await docket.add(add)(3, 4)
             await worker.run_until_finished()

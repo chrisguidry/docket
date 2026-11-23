@@ -18,6 +18,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta
 from types import TracebackType
 from typing import (
+    TYPE_CHECKING,
     Any,
     AsyncGenerator,
     AsyncIterator,
@@ -29,6 +30,7 @@ from typing import (
     TypeAlias,
     TypedDict,
     TypeVar,
+    Unpack,
     cast,
     overload,
     runtime_checkable,
@@ -42,7 +44,15 @@ from redis.asyncio.connection import Connection, SSLConnection
 from redis.credentials import CredentialProvider
 from redis.exceptions import ConnectionError, RedisError
 
-from ._redis_credentials import ReauthenticatingPool
+from ._redis_credentials import (
+    ProtocolOptions,
+    ReauthenticatingPool,
+    WithoutPubSubReauth,
+    pubsub_protocol,
+)
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ._subscription import Subscription
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -62,19 +72,6 @@ BLOCKING_READ_SOCKET_TIMEOUT: float | None = None
 # retry layer surface a stalled connect as an error instead of hanging the
 # caller (a worker clearing its heartbeat during shutdown, for example).
 CONNECT_TIMEOUT: float = 10.0
-
-# hiredis-py leaks one small list for every RESP3 push reply: it passes a new
-# list to PyList_SetSlice, which does not steal the reference, so nothing ever
-# frees it.  Under RESP3 every pub/sub message is a push reply, and docket's
-# subscribers listen for the life of a worker, so the leak has no bound: about
-# 100 bytes per message until the process dies.  Streams and ordinary commands
-# are not push replies, so only the pub/sub connections drop to RESP2 and the
-# rest of the client keeps whatever redis-py negotiates.  Remove this once
-# hiredis-py releases the fix.
-# https://github.com/redis/hiredis-py/issues/235
-# https://github.com/redis/hiredis-py/pull/239
-PUBSUB_RESP_VERSION: int = 2
-
 
 # ---------------------------------------------------------------------------
 # Input type aliases (mirror redis-py's type domain)
@@ -249,22 +246,6 @@ class PubSubClient(Protocol):
     ) -> dict[str, Any] | None: ...
     def listen(self) -> AsyncIterator[dict[str, Any]]: ...
     async def aclose(self) -> None: ...
-
-
-async def confirm_subscriptions(pubsub: PubSubClient, count: int) -> None:
-    """Block until the server has confirmed ``count`` subscription commands.
-
-    ``PubSub.subscribe()`` only sends the SUBSCRIBE command; the server's
-    confirmation arrives later as the first pub/sub message.  A publisher on
-    another connection can therefore beat the subscription unless the caller
-    waits for the confirmation before signaling readiness.
-
-    Subscription confirmations are delivered on a fresh connection before any
-    published message can arrive, so consuming the first ``count`` messages
-    consumes exactly the confirmations.
-    """
-    for _ in range(count):
-        await pubsub.get_message(ignore_subscribe_messages=False, timeout=None)
 
 
 # ---------------------------------------------------------------------------
@@ -675,7 +656,7 @@ class RedisConnection:
     # client copies its whole response-callback table, so a client per call
     # costs real CPU.
     _client: Redis | None
-    # Standalone mode: a second pool, at PUBSUB_RESP_VERSION, for pub/sub only
+    # Standalone mode: a second pool for pub/sub only, at pubsub_protocol()
     _pubsub_pool: ConnectionPool | None
     # Cluster mode: the RedisCluster client for data operations
     _cluster_client: RedisCluster | None
@@ -766,7 +747,9 @@ class RedisConnection:
             )
             self._stack.enter_context(self._rotation.following_pool(self._node_pool))
 
-            self._node_client = Redis(connection_pool=self._node_pool)
+            self._node_client = Redis(
+                connection_pool=self._node_pool, event_dispatcher=WithoutPubSubReauth()
+            )
             self._stack.callback(lambda: setattr(self, "_node_client", None))
             self._stack.push_async_callback(
                 close_resource, self._node_client, "node client"
@@ -794,7 +777,7 @@ class RedisConnection:
             self._stack.push_async_callback(close_resource, self._client, "client")
 
             self._pubsub_pool = await self._connection_pool_from_url(
-                protocol=PUBSUB_RESP_VERSION
+                **pubsub_protocol(self._credential_provider)
             )
             self._stack.callback(lambda: setattr(self, "_pubsub_pool", None))
             self._stack.push_async_callback(
@@ -933,13 +916,13 @@ class RedisConnection:
             if self._parsed.scheme == "rediss+cluster"
             else Connection,
             decode_responses=False,
-            protocol=PUBSUB_RESP_VERSION,
+            **pubsub_protocol(self._credential_provider),
             socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
             socket_connect_timeout=CONNECT_TIMEOUT,
         )
 
     async def _connection_pool_from_url(
-        self, decode_responses: bool = False, protocol: int | None = None
+        self, decode_responses: bool = False, **protocol: Unpack[ProtocolOptions]
     ) -> ConnectionPool:
         """Create a Redis connection pool from the URL.
 
@@ -949,24 +932,21 @@ class RedisConnection:
 
         Args:
             decode_responses: If True, decode Redis responses from bytes to strings
-            protocol: The RESP version to negotiate, or None to leave redis-py's
-                default alone.  redis-py 6 sends ``HELLO None`` when the
-                pool carries an explicit ``protocol=None``, so the key is only
-                passed when a version is set.
+            protocol: The RESP version to negotiate and the parser to read it
+                with, or nothing to leave redis-py's defaults alone.  redis-py
+                6 sends ``HELLO None`` when the pool carries an explicit
+                ``protocol=None``, so the pool gets only the keys given here.
 
         Returns:
             A ConnectionPool ready for use with Redis clients
         """
-        protocol_kwargs: dict[str, int] = (
-            {"protocol": protocol} if protocol is not None else {}
-        )
         if self.is_sentinel:
             from ._redis_sentinel import sentinel_connection_pool
 
             return sentinel_connection_pool(
                 self.url,
                 decode_responses=decode_responses,
-                **protocol_kwargs,
+                **protocol,
                 **self._credential_kwargs,
                 socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
                 socket_connect_timeout=CONNECT_TIMEOUT,
@@ -974,7 +954,7 @@ class RedisConnection:
         return ReauthenticatingPool.from_url(  # pyright: ignore[reportUnknownMemberType]
             self.url,
             decode_responses=decode_responses,
-            **protocol_kwargs,
+            **protocol,
             **self._credential_kwargs,
             socket_timeout=BLOCKING_READ_SOCKET_TIMEOUT,
             socket_connect_timeout=CONNECT_TIMEOUT,
@@ -1005,10 +985,14 @@ class RedisConnection:
 
     @asynccontextmanager
     async def pubsub(self) -> AsyncGenerator[PubSubClient, None]:
-        """Get a pub/sub connection, handling standalone, cluster, and memory modes."""
+        """Get a pub/sub connection, handling standalone, cluster, and memory modes.
+
+        While it is open, a credential rotation re-authenticates it in place
+        (see ``_redis_credentials``)."""
         if self._cluster_client is not None:  # pragma: no cover
             async with self._cluster_pubsub() as ps:
-                yield cast(PubSubClient, ps)
+                with self._rotation.following_subscriber(ps):
+                    yield cast(PubSubClient, ps)
         elif self._memory_client is not None:
             ps = self._memory_client.pubsub()
             try:
@@ -1016,9 +1000,24 @@ class RedisConnection:
             finally:
                 await ps.aclose()
         else:  # pragma: no cover - needs a standalone Redis server
-            async with Redis(connection_pool=require_open(self._pubsub_pool)) as r:
-                async with r.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
+            async with (
+                Redis(
+                    connection_pool=require_open(self._pubsub_pool),
+                    event_dispatcher=WithoutPubSubReauth(),
+                ) as r,
+                r.pubsub() as pubsub,  # pyright: ignore[reportUnknownMemberType]
+            ):
+                with self._rotation.following_subscriber(pubsub):
                     yield cast(PubSubClient, pubsub)
+
+    def subscription(
+        self, *, channels: Iterable[str] = (), patterns: Iterable[str] = ()
+    ) -> Subscription:
+        """A Subscription to these channels and patterns, on a pub/sub
+        connection of its own that it opens when entered."""
+        from ._subscription import Subscription
+
+        return Subscription(self.pubsub(), channels=channels, patterns=patterns)
 
     async def publish(self, channel: str, message: str) -> int:
         """Publish a message to a pub/sub channel."""

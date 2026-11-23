@@ -11,7 +11,6 @@ from docket import (
     Docket,
     Worker,
 )
-from docket._redis import confirm_subscriptions
 
 from tests.concurrency_limits.waiters import wait_for_xlen
 
@@ -378,13 +377,11 @@ async def test_admission_blocked_handled_does_not_publish_failed_event(
     ready = asyncio.Event()
 
     async def collector() -> None:
-        async with docket._pubsub() as pubsub:  # pyright: ignore[reportPrivateUsage]
-            await pubsub.subscribe(docket.key(f"state:{contender_key}"))
-            await confirm_subscriptions(pubsub, 1)
+        async with docket._subscription(  # pyright: ignore[reportPrivateUsage]
+            channels=[docket.key(f"state:{contender_key}")]
+        ) as subscription:
             ready.set()
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue  # pragma: no cover
+            async for message in subscription.listen():
                 data = message["data"]
                 payload = data.decode() if isinstance(data, bytes) else data
                 state_events.append(json.loads(payload))

@@ -14,7 +14,7 @@ from typing import Any, AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from docket._redis import RedisClient
+from docket._redis import RedisClient, RedisConnection
 from docket.execution import Execution
 from redis.exceptions import (
     ConnectionError,
@@ -254,7 +254,7 @@ async def test_heartbeat_resumes_after_reconnect(docket: Docket):
             return result
 
     original_redis = Docket.redis
-    original_pubsub = Docket._pubsub  # pyright: ignore[reportPrivateUsage]
+    original_pubsub = RedisConnection.pubsub
 
     @asynccontextmanager
     async def flaky_redis(self: Docket) -> AsyncGenerator[RedisClient, None]:
@@ -262,7 +262,7 @@ async def test_heartbeat_resumes_after_reconnect(docket: Docket):
             yield FailNextRead(redis)  # type: ignore[arg-type]
 
     @asynccontextmanager
-    async def flaky_pubsub(self: Docket) -> AsyncGenerator[Any, None]:
+    async def flaky_pubsub(self: RedisConnection) -> AsyncGenerator[Any, None]:
         if fail_pubsub.is_set() and not pubsub_failed.is_set():
             pubsub_failed.set()
             raise ConnectionError("Simulated server loss on PSUBSCRIBE")
@@ -277,7 +277,7 @@ async def test_heartbeat_resumes_after_reconnect(docket: Docket):
 
     with (
         patch.object(Docket, "redis", flaky_redis),
-        patch.object(Docket, "_pubsub", flaky_pubsub),
+        patch.object(RedisConnection, "pubsub", flaky_pubsub),
     ):
         async with Worker(
             docket,
