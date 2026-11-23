@@ -6,6 +6,8 @@ tests/test_credential_rotation.py rotates real credentials on a real Redis.
 
 # pyright: reportPrivateUsage=false
 
+from __future__ import annotations
+
 import asyncio
 from collections import deque
 from contextlib import asynccontextmanager

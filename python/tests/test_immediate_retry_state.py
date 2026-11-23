@@ -24,9 +24,9 @@ from datetime import timedelta
 import pytest
 from docket import Docket, Worker
 from docket.dependencies import Retry
-from docket._redis import confirm_subscriptions
 
 from tests.conftest import wait_for_event
+from tests._pubsub import confirm_subscriptions
 
 TASK_KEY = "immediate-retry"
 

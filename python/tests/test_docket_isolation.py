@@ -21,9 +21,9 @@ from typing import AsyncGenerator, Callable
 
 import pytest
 from docket import Docket
-from docket._redis import confirm_subscriptions
 
 from tests.conftest import wait_for_event
+from tests._pubsub import confirm_subscriptions
 
 
 @pytest.fixture

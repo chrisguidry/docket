@@ -25,9 +25,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from docket import ConcurrencyLimit, Docket, Worker
-from docket._redis import confirm_subscriptions
 
 from tests.conftest import wait_for_event
+from tests._pubsub import confirm_subscriptions
 
 # Weird key that exercises the five escapes the Lua side handles:
 # - `"` would close the JSON string mid-value.

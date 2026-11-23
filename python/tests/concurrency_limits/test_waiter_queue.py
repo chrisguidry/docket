@@ -11,9 +11,9 @@ from docket import (
     Docket,
     Worker,
 )
-from docket._redis import confirm_subscriptions
 
 from tests.concurrency_limits.waiters import wait_for_xlen
+from tests._pubsub import confirm_subscriptions
 
 
 async def test_blocked_task_parks_on_waiter_stream(docket: Docket, worker: Worker):

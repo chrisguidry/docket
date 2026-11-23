@@ -16,7 +16,7 @@ from docket.dependencies import (
     TaskOutcome,
 )
 from docket.execution import Execution, ExecutionState
-from docket._redis import confirm_subscriptions
+from tests._pubsub import confirm_subscriptions
 
 
 async def test_dependencies_may_be_duplicated(docket: Docket, worker: Worker):
