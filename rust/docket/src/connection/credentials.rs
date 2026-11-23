@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use futures::{Stream, StreamExt};
 use redis::{BasicAuth, Client, RedisResult, StreamingCredentialsProvider};
+use tokio::sync::watch;
 
 /// The credentials a provider gives, the first now and each later one when
 /// they rotate.
@@ -38,10 +39,39 @@ pub(crate) async fn next(credentials: &mut Credentials) -> RedisResult<BasicAuth
     })
 }
 
+/// The latest credentials from `credentials`, starting with `first`, read by
+/// a task of its own until the stream ends or the receiver is dropped.
+///
+/// A provider can wait for each subscriber to take one set of credentials
+/// before it sends the next: redis-rs's Entra ID provider gives each
+/// subscriber a channel that holds one.  A subscription reads only when its
+/// owner does, so without this task, one that nobody reads would hold up
+/// every refresh, and the command connections' credentials would expire.
+pub(crate) fn follow(first: BasicAuth, mut credentials: Credentials) -> watch::Receiver<BasicAuth> {
+    let (sender, receiver) = watch::channel(first);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = sender.closed() => return,
+                next = credentials.next() => match next {
+                    Some(Ok(auth)) => {
+                        sender.send_replace(auth);
+                    }
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "the credential provider failed to refresh");
+                    }
+                    None => return,
+                },
+            }
+        }
+    });
+    receiver
+}
+
 /// `client` with `auth` in place of the credentials in its URL.  redis-rs
 /// renews credentials only on command connections, so a subscription takes
 /// the ones it opens with, and moves to a new connection when they rotate.
-pub(crate) fn authenticate(client: &Client, auth: &BasicAuth) -> RedisResult<Client> {
+pub(crate) fn authenticate(client: &Client, auth: &BasicAuth) -> Client {
     let info = client.get_connection_info().clone();
     let settings = info
         .redis_settings()
@@ -49,6 +79,7 @@ pub(crate) fn authenticate(client: &Client, auth: &BasicAuth) -> RedisResult<Cli
         .set_username(auth.username())
         .set_password(auth.password());
     Client::open(info.set_redis_settings(settings))
+        .expect("a client opens from a ConnectionInfo without checking it")
 }
 
 /// Whether a client's URL carries a username or a password.

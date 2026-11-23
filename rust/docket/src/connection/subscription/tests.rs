@@ -6,8 +6,9 @@ use futures::{Stream, StreamExt, stream};
 use redis::{BasicAuth, RedisError, RedisResult, StreamingCredentialsProvider};
 use tokio::sync::broadcast;
 
-use super::super::{Backend, Provider, Settings};
+use super::super::{Backend, Connection, Kind, Provider, Settings, credentials};
 use super::{Subscription, Topics};
+use crate::telemetry::tests::Logs;
 
 #[derive(Clone, Debug)]
 enum Rotation {
@@ -76,8 +77,20 @@ fn channel() -> String {
     format!("subscription-{}", uuid::Uuid::now_v7())
 }
 
+/// Publishes on the node the subscriptions connect to.  On a cluster, a
+/// message published on another node reaches that one later, through the
+/// cluster bus, so it could reach both connections while a subscription
+/// moves, or arrive behind a later message.
 async fn publish(backend: &Backend, channel: &str, messages: std::ops::Range<usize>) {
-    let mut connection = backend.connect().await.unwrap();
+    let mut connection = match &backend.kind {
+        Kind::Cluster { pubsub, .. } => {
+            let provider = backend.credentials.as_ref().unwrap();
+            let auth = credentials::next(&mut provider.subscribe()).await.unwrap();
+            let client = credentials::authenticate(pubsub, &auth);
+            Connection::Single(client.get_multiplexed_async_connection().await.unwrap())
+        }
+        _ => backend.connect().await.unwrap(),
+    };
     for message in messages {
         redis::cmd("PUBLISH")
             .arg(channel)
@@ -141,6 +154,7 @@ async fn a_rotation_moves_a_pattern_subscription() {
 
 #[tokio::test]
 async fn a_failed_refresh_or_an_ended_provider_keeps_the_subscription() {
+    let (logs, _guard) = Logs::capture();
     let (backend, _, rotations) = backend();
     let channel = channel();
     let mut subscription = backend
@@ -149,11 +163,45 @@ async fn a_failed_refresh_or_an_ended_provider_keeps_the_subscription() {
         .unwrap();
 
     rotations.send(Rotation::Fail).unwrap();
+    logs.wait_for("the credential provider failed to refresh")
+        .await;
     rotations.send(Rotation::End).unwrap();
     publish(&backend, &channel, 0..1).await;
     assert_eq!(read(&mut subscription, 1).await, vec![0]);
     publish(&backend, &channel, 1..2).await;
     assert_eq!(read(&mut subscription, 1).await, vec![1]);
+}
+
+/// A backend on the suite's server, or `None` on the memory backend, which
+/// takes any credentials.
+fn on_a_server() -> Option<(Arc<Backend>, BasicAuth, broadcast::Sender<Rotation>)> {
+    std::env::var("DOCKET_TEST_URL")
+        .ok()
+        .filter(|url| !url.is_empty())
+        .map(|_| backend())
+}
+
+#[tokio::test]
+async fn a_move_the_server_refuses_keeps_the_subscription() {
+    let (logs, _guard) = Logs::capture();
+    let Some((backend, _, rotations)) = on_a_server() else {
+        return;
+    };
+    let channel = channel();
+    let mut subscription = backend
+        .subscribe(Topics::Channels(vec![channel.clone()]))
+        .await
+        .unwrap();
+
+    let refused = BasicAuth::new("docket-test-nobody".into(), "wrong".into());
+    rotations.send(Rotation::To(refused)).unwrap();
+    // Nothing is published yet, so the next poll takes the rotation.
+    let next = tokio::time::timeout(Duration::from_secs(1), subscription.next()).await;
+    assert!(next.is_err(), "no message arrives");
+    assert!(logs.contains("moving a subscription to rotated credentials failed"));
+
+    publish(&backend, &channel, 0..1).await;
+    assert_eq!(read(&mut subscription, 1).await, vec![0]);
 }
 
 #[tokio::test]
@@ -181,4 +229,90 @@ async fn rotations_lose_nothing_published_while_the_subscription_moves() {
     }
     publishing.await.unwrap();
     assert_eq!(received, (0..200).collect());
+}
+
+#[tokio::test]
+async fn a_rotation_keeps_a_backlog_of_messages() {
+    let (backend, auth, rotations) = backend();
+    let channel = channel();
+    let mut subscription = backend
+        .subscribe(Topics::Channels(vec![channel.clone()]))
+        .await
+        .unwrap();
+
+    publish(&backend, &channel, 0..600).await;
+    // Time for the old connection to queue the backlog before the move.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    rotations.send(Rotation::To(auth)).unwrap();
+    assert_eq!(
+        read(&mut subscription, 600).await,
+        (0..600).collect::<Vec<_>>()
+    );
+}
+
+/// Gives each subscriber a channel that holds one set of credentials, the
+/// way redis-rs's Entra ID provider does.
+struct OneAtATime {
+    auth: BasicAuth,
+    senders: Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<BasicAuth>>>>,
+}
+
+impl StreamingCredentialsProvider for OneAtATime {
+    fn subscribe(&self) -> Pin<Box<dyn Stream<Item = RedisResult<BasicAuth>> + Send + 'static>> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        self.senders.lock().unwrap().push(sender);
+        let later = stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|auth| (Ok(auth), receiver))
+        });
+        Box::pin(stream::iter([Ok(self.auth.clone())]).chain(later))
+    }
+}
+
+#[tokio::test]
+async fn an_unread_subscription_never_holds_up_the_provider() {
+    let senders = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let auth = BasicAuth::new("default".into(), "anything".into());
+    let provider = Provider(Arc::new(OneAtATime {
+        auth: auth.clone(),
+        senders: Arc::clone(&senders),
+    }));
+    let backend = Arc::new(
+        Backend::open(
+            "memory://subscription-tests",
+            Some(provider),
+            Settings::default(),
+        )
+        .unwrap(),
+    );
+    let _unread = backend
+        .subscribe(Topics::Channels(vec![channel()]))
+        .await
+        .unwrap();
+
+    let sender = senders.lock().unwrap()[0].clone();
+    for _ in 0..3 {
+        tokio::time::timeout(Duration::from_secs(5), sender.send(auth.clone()))
+            .await
+            .expect("the provider can send its next credentials")
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_dropped_subscription_stops_following_the_provider() {
+    let (backend, _, rotations) = backend();
+    let subscription = backend
+        .subscribe(Topics::Channels(vec![channel()]))
+        .await
+        .unwrap();
+    assert_eq!(rotations.receiver_count(), 1);
+
+    drop(subscription);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while rotations.receiver_count() > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the provider's stream is dropped");
 }

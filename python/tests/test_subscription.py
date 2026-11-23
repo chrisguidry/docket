@@ -9,13 +9,19 @@ tests/test_credential_rotation.py rotates real credentials on a real Redis.
 import asyncio
 from collections import deque
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, cast
+from types import CoroutineType
+from typing import Any, AsyncGenerator, Callable, cast
 from unittest.mock import patch
 
 import pytest
 
 from docket import Docket
-from docket._subscription import SUBSCRIBED, Subscription
+from docket._subscription import (
+    SUBSCRIBED,
+    UNSUBSCRIBED,
+    Subscription,
+    not_delivered,
+)
 from tests.conftest import skip_memory
 
 
@@ -118,10 +124,25 @@ async def test_listen_yields_messages_across_a_rotation(docket: Docket):
             assert (await reading)["data"] == b"after"
 
 
-def second_pubsub_fails(
-    docket: Docket, error: BaseException, opened: list[Any], closed: list[Any]
+async def never_confirmed(*channels: Any) -> None:
+    """A SUBSCRIBE or UNSUBSCRIBE that the server never answers."""
+
+
+def failing_with(error: BaseException) -> Callable[..., CoroutineType[Any, Any, None]]:
+    async def fail(*channels: Any) -> None:
+        raise error
+
+    return fail
+
+
+def second_pubsub_subscribes_with(
+    docket: Docket,
+    subscribe: Callable[..., CoroutineType[Any, Any, None]],
+    opened: list[Any],
+    closed: list[Any],
 ) -> Any:
-    """Patches the docket so the second connection it opens can't subscribe."""
+    """Patches the docket so the second connection it opens subscribes with
+    ``subscribe``."""
     original_pubsub = docket._pubsub
 
     @asynccontextmanager
@@ -129,11 +150,7 @@ def second_pubsub_fails(
         async with original_pubsub() as pubsub:
             opened.append(pubsub)
             if len(opened) == 2:
-
-                async def fail(*channels: Any) -> None:
-                    raise error
-
-                pubsub.subscribe = fail
+                pubsub.subscribe = subscribe
             try:
                 yield pubsub
             finally:
@@ -142,13 +159,25 @@ def second_pubsub_fails(
     return patch.object(docket, "_pubsub", pubsub)
 
 
+@pytest.mark.parametrize(
+    "subscribe",
+    [
+        pytest.param(failing_with(ConnectionError("pool is full")), id="fails"),
+        pytest.param(never_confirmed, id="never-confirmed"),
+    ],
+)
 async def test_a_failed_move_keeps_the_old_connection(
-    docket: Docket, caplog: pytest.LogCaptureFixture
+    docket: Docket,
+    caplog: pytest.LogCaptureFixture,
+    subscribe: Callable[..., CoroutineType[Any, Any, None]],
 ):
     channel = docket.key("state:subscription")
     opened: list[Any] = []
     closed: list[Any] = []
-    with second_pubsub_fails(docket, ConnectionError("pool is full"), opened, closed):
+    with (
+        patch("docket._subscription.MOVE_TIMEOUT", 0.1),
+        second_pubsub_subscribes_with(docket, subscribe, opened, closed),
+    ):
         async with Subscription(docket, channels=[channel]) as subscription:
             rotate(docket)
             await docket._publish(channel, "kept")
@@ -164,7 +193,9 @@ async def test_a_cancelled_move_closes_the_new_connection(docket: Docket):
     channel = docket.key("state:subscription")
     opened: list[Any] = []
     closed: list[Any] = []
-    with second_pubsub_fails(docket, asyncio.CancelledError(), opened, closed):
+    with second_pubsub_subscribes_with(
+        docket, failing_with(asyncio.CancelledError()), opened, closed
+    ):
         async with Subscription(docket, channels=[channel]) as subscription:
             rotate(docket)
             with pytest.raises(asyncio.CancelledError):
@@ -172,26 +203,55 @@ async def test_a_cancelled_move_closes_the_new_connection(docket: Docket):
             assert closed == [opened[1]]
 
 
+@pytest.mark.parametrize(
+    "unsubscribe",
+    [
+        pytest.param(failing_with(ConnectionError("it is gone")), id="fails"),
+        pytest.param(never_confirmed, id="never-confirmed"),
+    ],
+)
 async def test_a_broken_old_connection_still_hands_over(
-    docket: Docket, caplog: pytest.LogCaptureFixture
+    docket: Docket,
+    caplog: pytest.LogCaptureFixture,
+    unsubscribe: Callable[..., CoroutineType[Any, Any, None]],
 ):
     channel = docket.key("state:subscription")
     async with Subscription(docket, channels=[channel]) as subscription:
         old = subscription._pubsub
-        unsubscribe = old.unsubscribe
-
-        async def fail(*channels: Any) -> None:
-            # Closing the connection unsubscribes it again, which works.
-            old.unsubscribe = unsubscribe
-            raise ConnectionError("the old connection is gone")
-
-        old.unsubscribe = fail
+        # Closing the connection unsubscribes it again, which works.
+        old_stack = subscription._stack
+        old_stack.push_async_callback(restore, old, "unsubscribe", old.unsubscribe)
+        old.unsubscribe = unsubscribe
         rotate(docket)
+        # A connection that is really broken holds nothing to read, so the
+        # message goes out after the move, when only the new one can get it.
+        with patch("docket._subscription.MOVE_TIMEOUT", 0.1):
+            assert await subscription.get_message(timeout=0) is None
         await docket._publish(channel, "after")
         assert await read(subscription, 1) == [b"after"]
         assert subscription._pubsub is not old
 
     assert "The old connection failed" in caplog.text
+
+
+async def restore(target: Any, name: str, value: Any) -> None:
+    setattr(target, name, value)
+
+
+async def test_a_failure_closing_the_old_connection_still_hands_over(
+    docket: Docket, caplog: pytest.LogCaptureFixture
+):
+    channel = docket.key("state:subscription")
+    async with Subscription(docket, channels=[channel]) as subscription:
+        subscription._stack.push_async_callback(
+            failing_with(ConnectionError("the close failed"))
+        )
+        await docket._publish(channel, "before")
+        rotate(docket)
+        await docket._publish(channel, "after")
+        assert await read(subscription, 2) == [b"before", b"after"]
+
+    assert "Could not close a subscription's old connection" in caplog.text
 
 
 async def test_a_failed_subscribe_closes_the_connection(docket: Docket):
@@ -242,3 +302,47 @@ async def test_messages_before_the_last_confirmation_are_kept(docket: Docket):
     await subscription._read_until(cast(Any, Replies()), SUBSCRIBED, received)
     assert [message["data"] for message in received] == [b"early"]
     assert replies == []
+
+
+async def test_a_confirmation_from_a_reconnect_is_not_a_message(docket: Docket):
+    """redis-py subscribes again when it reconnects, so a subscribe
+    confirmation can arrive while the subscription waits to be unsubscribed."""
+    pattern = docket.key("cancel:*")
+    replies = [
+        {"type": "psubscribe", "channel": pattern, "data": 1},
+        {"type": "punsubscribe", "channel": pattern, "data": 0},
+    ]
+
+    class Replies:
+        async def get_message(self, **kwargs: Any) -> dict[str, Any]:
+            return replies.pop(0)
+
+    subscription = Subscription(docket, patterns=[pattern])
+    received: deque[dict[str, Any]] = deque()
+    await subscription._read_until(cast(Any, Replies()), UNSUBSCRIBED, received)
+    assert list(received) == []
+    assert replies == []
+
+
+def message(data: bytes) -> dict[str, Any]:
+    return {"type": "message", "pattern": None, "channel": b"c", "data": data}
+
+
+@pytest.mark.parametrize(
+    ("early", "delivered", "kept"),
+    [
+        ([], [b"a"], []),
+        ([b"a"], [b"a"], []),
+        ([b"a", b"b"], [b"a"], [b"b"]),
+        ([b"a", b"a"], [b"a"], [b"a"]),
+    ],
+)
+def test_only_the_new_connections_early_messages_that_are_not_copies_are_kept(
+    early: list[bytes], delivered: list[bytes], kept: list[bytes]
+):
+    """What the new connection receives before its confirmations also reaches
+    the old one, unless the old one broke first."""
+    result = not_delivered(
+        [message(data) for data in early], [message(data) for data in delivered]
+    )
+    assert [m["data"] for m in result] == kept

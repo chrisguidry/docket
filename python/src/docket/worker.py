@@ -1469,11 +1469,11 @@ class Worker:
         data = message["data"]
         key: TaskKey = data.decode() if isinstance(data, bytes) else data
 
-        if task := self._tasks_by_key.get(key):  # pragma: no branch
-            logger.info(
-                "Cancelling running task %r",
-                key,
-                extra=self._log_context(),
-            )
-            self._cancelled_by_docket.add(task)
-            task.cancel()
+        task = self._tasks_by_key.get(key)
+        # A cancel arrives twice when the subscription moves after a rotation,
+        # and a second Task.cancel() would interrupt the task's cleanup.
+        if task is None or task in self._cancelled_by_docket:
+            return
+        logger.info("Cancelling running task %r", key, extra=self._log_context())
+        self._cancelled_by_docket.add(task)
+        task.cancel()

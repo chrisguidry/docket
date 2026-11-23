@@ -168,7 +168,9 @@ async def reading(subscription: Subscription) -> AsyncGenerator[list[bytes], Non
     async def read() -> None:
         while True:
             message = await subscription.get_message(timeout=0.1)
-            if message is not None:
+            # A read times out only if the reader waits 0.1 seconds between
+            # the test's messages, which it does on some runs and not others.
+            if message is not None:  # pragma: no branch
                 received.append(message["data"])
 
     reader = asyncio.create_task(read())

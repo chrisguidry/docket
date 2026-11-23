@@ -232,7 +232,9 @@ impl<O> Execution<O> {
 
     /// Follows the run's state and progress events as they happen.  The
     /// stream starts with the current state and progress, and it can repeat
-    /// an event.
+    /// an event.  After a credentials provider rotates the credentials, the
+    /// subscription moves to a new connection, and an event published during
+    /// the move arrives twice, the second time after events published later.
     pub async fn subscribe(&self) -> Result<Events> {
         events::subscribe(&self.docket, &self.key).await
     }

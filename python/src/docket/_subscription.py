@@ -12,20 +12,22 @@ connection, which authenticates with the current credentials, and waits for the
 server to confirm its subscriptions.  Only then does it unsubscribe the first
 connection and read what that connection still holds.  The two connections are
 subscribed at the same time for one round trip, so a message published then
-arrives on both, and the reader receives it twice.  No message is lost.  When
-the new connection can't subscribe, such as when the pub/sub pool is at its
-max_connections, the reader keeps the old connection and tries again on the
-next rotation.
+arrives on both, and the reader receives it twice: once from the old
+connection, and again from the new one after messages published later.  No
+message is lost.  When the new connection can't subscribe in time, such as when
+the pub/sub pool is at its max_connections, the reader keeps the old connection
+and tries again on the next rotation.
 
 The reader owns its connection's socket, so the move happens in the reader's
 own task, between two reads.
 """
 
+import asyncio
 import logging
 from collections import deque
 from contextlib import AsyncExitStack
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, AsyncIterator, Sequence
+from typing import TYPE_CHECKING, Any, AsyncIterator, Iterable, Sequence
 
 from ._redis import PubSubClient
 
@@ -38,10 +40,15 @@ logger: logging.Logger = logging.getLogger(__name__)
 # rotation reaches a listening Subscription within this long.
 LISTEN_READ_TIMEOUT: float = 1.0
 
+# How long each half of a move waits for the server.  The reader's next message
+# waits on the move, so a connection that stops answering is given up on.
+MOVE_TIMEOUT: float = 10.0
+
 Message = dict[str, Any]
 
 SUBSCRIBED = ("subscribe", "psubscribe")
 UNSUBSCRIBED = ("unsubscribe", "punsubscribe")
+PUBLISHED = ("message", "pmessage")
 
 
 class Subscription:
@@ -121,7 +128,9 @@ class Subscription:
         received: deque[Message],
     ) -> None:
         """Read until the server confirms each channel and pattern, keeping the
-        published messages that arrive first."""
+        published messages that arrive first.  Other replies are dropped, such
+        as the confirmations redis-py reads when it reconnects and subscribes
+        again."""
         remaining = len(self._channels) + len(self._patterns)
         while remaining:
             message = await pubsub.get_message(
@@ -131,7 +140,7 @@ class Subscription:
                 continue
             if message["type"] in confirmations:
                 remaining -= 1
-            else:  # pragma: no cover - CPython gh-106749 hides this on 3.11
+            elif message["type"] in PUBLISHED:
                 received.append(message)
 
     async def _move(self) -> None:
@@ -143,7 +152,8 @@ class Subscription:
         stack = AsyncExitStack()
         early: deque[Message] = deque()
         try:
-            pubsub = await self._subscribe(stack, early)
+            async with asyncio.timeout(MOVE_TIMEOUT):
+                pubsub = await self._subscribe(stack, early)
         except BaseException as error:
             await stack.aclose()
             if not isinstance(error, Exception):
@@ -156,28 +166,58 @@ class Subscription:
 
         old, old_stack = self._pubsub, self._stack
         self._pubsub, self._stack = pubsub, stack
+        delivered: deque[Message] = deque()
         try:
-            # Everything the old connection received before the new one
-            # subscribed comes first.  Redis delivers what it published before
-            # the UNSUBSCRIBE ahead of the confirmation, but the memory backend
-            # drops a channel's queued messages once it is unsubscribed, so
-            # those are read first.
-            if self._docket._redis.is_memory:  # pyright: ignore[reportPrivateUsage]  # pragma: no cover - only the memory backend
-                while message := await old.get_message(
-                    ignore_subscribe_messages=True, timeout=0
-                ):
-                    self._received.append(message)
-            if self._channels:
-                await old.unsubscribe(*self._channels)
-            if self._patterns:
-                await old.punsubscribe(*self._patterns)
-            await self._read_until(old, UNSUBSCRIBED, self._received)
+            async with asyncio.timeout(MOVE_TIMEOUT):
+                # Redis delivers what it published before the UNSUBSCRIBE
+                # ahead of the confirmation, but the memory backend drops a
+                # channel's queued messages once it is unsubscribed, so those
+                # are read first.
+                if self._docket._redis.is_memory:  # pyright: ignore[reportPrivateUsage]  # pragma: no cover - only the memory backend
+                    while message := await old.get_message(
+                        ignore_subscribe_messages=True, timeout=0
+                    ):
+                        delivered.append(message)
+                if self._channels:
+                    await old.unsubscribe(*self._channels)
+                if self._patterns:
+                    await old.punsubscribe(*self._patterns)
+                await self._read_until(old, UNSUBSCRIBED, delivered)
         except Exception:
-            # The old connection broke, so it holds nothing more to read.
+            # The old connection broke or stopped answering, so what it
+            # delivered before then is all it gives.
             logger.warning(
                 "The old connection failed while a subscription moved",
                 exc_info=True,
             )
         finally:
-            await old_stack.aclose()
-        self._received.extend(early)
+            # Everything the old connection delivered comes first, then what
+            # the new one received before its confirmations, apart from the
+            # copies of what the old one delivered.
+            self._received.extend(delivered)
+            self._received.extend(not_delivered(early, delivered))
+            await close_old_connection(old_stack)
+
+
+def not_delivered(
+    messages: Iterable[Message], delivered: Iterable[Message]
+) -> list[Message]:
+    """The ``messages`` that are not copies of ones in ``delivered``, each
+    copy matching one delivered message."""
+    remaining = list(delivered)
+    kept: list[Message] = []
+    for message in messages:
+        if message in remaining:
+            remaining.remove(message)
+        else:
+            kept.append(message)
+    return kept
+
+
+async def close_old_connection(stack: AsyncExitStack) -> None:
+    """Close a connection the subscription moved away from.  The subscription
+    already reads from its new connection, so a failure here is only logged."""
+    try:
+        await stack.aclose()
+    except Exception:
+        logger.warning("Could not close a subscription's old connection", exc_info=True)

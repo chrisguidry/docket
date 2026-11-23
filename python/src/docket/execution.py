@@ -1065,7 +1065,10 @@ class Execution:
         appear twice: once from the second read and once as a real-time update.
         A cancel can also arrive twice as real-time updates: once from
         ``Docket.cancel()`` and once from a worker that refuses to claim the
-        cancelled task.
+        cancelled task.  After a credential provider rotates the credentials,
+        the subscription moves to a new connection, and an update published
+        during the move arrives twice, the second time after updates
+        published later.
 
         Args:
             ready: Optional ``asyncio.Event``.  ``subscribe()`` sets it after

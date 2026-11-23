@@ -265,7 +265,11 @@ is refreshed. A pub/sub connection can't re-authenticate while it is
 subscribed, so each subscriber opens a new connection with the refreshed token
 within a second of the refresh. It closes the old connection only after the
 server confirms the new subscription, so no message is lost. A message
-published during that handoff can arrive twice.
+published during that handoff arrives twice, the second time after messages
+published later. During the handoff each subscriber holds two pub/sub
+connections, so a `max_connections` on the URL needs room for twice the
+subscribers. A subscriber that can't open its new connection keeps the old one,
+logs a warning, and tries again at the next refresh.
 
 Give docket a provider of its own. A streaming provider like `redis-entraid`'s
 keeps one refresh callback, so a redis-py client of yours that shares the

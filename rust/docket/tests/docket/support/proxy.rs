@@ -327,9 +327,6 @@ async fn commands(
             if state.lock().unwrap().silences(&name) {
                 continue;
             }
-            if name == b"SUBSCRIBE" || name == b"PSUBSCRIBE" {
-                connection.transparent.store(true, Ordering::SeqCst);
-            }
             names.insert(String::from_utf8_lossy(&name).into_owned());
             *state
                 .lock()
@@ -342,6 +339,11 @@ async fn commands(
             } else {
                 state.lock().unwrap().failure(&args, &name)
             };
+            // A failed SUBSCRIBE leaves the connection unsubscribed, so only
+            // one that reaches Redis makes the proxy transparent.
+            if failure.is_none() && (name == b"SUBSCRIBE" || name == b"PSUBSCRIBE") {
+                connection.transparent.store(true, Ordering::SeqCst);
+            }
             let Some(error) = failure else {
                 connection
                     .pending

@@ -8,6 +8,8 @@
 mod logs;
 mod metrics;
 mod propagation;
+#[cfg(test)]
+pub(crate) mod tests;
 
 use std::borrow::Cow;
 

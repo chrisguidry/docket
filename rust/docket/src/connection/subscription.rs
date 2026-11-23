@@ -12,7 +12,8 @@
 //! what that connection received before it was unsubscribed.  The two
 //! connections are subscribed at the same time for one round trip, so a
 //! message published then arrives on both, and the subscription yields it
-//! twice.  No message is lost.
+//! twice: once from the first connection, and again from the second after
+//! messages published later.  No message is lost.
 
 use std::collections::VecDeque;
 use std::pin::Pin;
@@ -22,8 +23,9 @@ use std::task::{Context, Poll};
 use futures::{FutureExt, Stream, StreamExt, stream};
 use redis::aio::{PubSub, PubSubSink, PubSubStream};
 use redis::{BasicAuth, Msg, RedisResult, StreamingCredentialsProvider};
+use tokio::sync::watch;
 
-use super::credentials::{self, Credentials};
+use super::credentials;
 use super::{Backend, within};
 
 #[cfg(test)]
@@ -68,13 +70,13 @@ impl Stream for Subscription {
 
 impl Subscription {
     pub(super) async fn open(backend: Arc<Backend>, topics: Topics) -> RedisResult<Self> {
-        let mut rotations = backend
-            .credentials
-            .as_ref()
-            .map(StreamingCredentialsProvider::subscribe);
-        let auth = match &mut rotations {
-            Some(rotations) => Some(credentials::next(rotations).await?),
-            None => None,
+        let (auth, rotations) = match &backend.credentials {
+            Some(provider) => {
+                let mut stream = provider.subscribe();
+                let auth = credentials::next(&mut stream).await?;
+                (Some(auth.clone()), Some(credentials::follow(auth, stream)))
+            }
+            None => (None, None),
         };
         let (sink, messages) = backend.subscribed(&topics, auth.as_ref()).await?;
         let state = State {
@@ -94,9 +96,9 @@ impl Subscription {
 struct State {
     backend: Arc<Backend>,
     topics: Topics,
-    /// The provider's later credentials, or `None` without a provider or
+    /// The provider's latest credentials, or `None` without a provider or
     /// once its stream ends.
-    rotations: Option<Credentials>,
+    rotations: Option<watch::Receiver<BasicAuth>>,
     sink: PubSubSink,
     messages: PubSubStream,
     /// What the previous connection received before it was unsubscribed,
@@ -106,7 +108,8 @@ struct State {
 
 enum Next {
     Message(Option<Msg>),
-    Rotation(Option<RedisResult<BasicAuth>>),
+    /// New credentials, or `None` once the provider's stream has ended.
+    Rotation(Option<BasicAuth>),
 }
 
 impl State {
@@ -120,20 +123,21 @@ impl State {
                 message = self.messages.next() => Next::Message(message),
                 auth = async {
                     match rotations {
-                        Some(rotations) => rotations.next().await,
+                        Some(rotations) => rotations
+                            .changed()
+                            .await
+                            .ok()
+                            .map(|()| rotations.borrow_and_update().clone()),
                         None => std::future::pending().await,
                     }
                 } => Next::Rotation(auth),
             };
             match next {
                 Next::Message(message) => return message.map(|message| (message, self)),
-                Next::Rotation(Some(Ok(auth))) => {
+                Next::Rotation(Some(auth)) => {
                     if let Err(error) = self.move_to(&auth).await {
                         tracing::warn!(%error, "moving a subscription to rotated credentials failed");
                     }
-                }
-                Next::Rotation(Some(Err(error))) => {
-                    tracing::warn!(%error, "the credential provider failed to refresh");
                 }
                 Next::Rotation(None) => self.rotations = None,
             }
@@ -153,7 +157,12 @@ impl State {
             self.topics.unsubscribe(&mut old_sink),
         )
         .await;
-        while let Some(Some(message)) = old_messages.next().now_or_never() {
+        // tokio's cooperative budget would make a receiver look empty after
+        // about 128 messages, and the rest of a backlog would be dropped
+        // with the old stream.
+        while let Some(Some(message)) =
+            tokio::task::coop::unconstrained(old_messages.next()).now_or_never()
+        {
             self.received.push_back(message);
         }
         unsubscribed

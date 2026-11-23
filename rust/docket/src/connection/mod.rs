@@ -223,7 +223,7 @@ impl Backend {
         };
         match auth {
             Some(auth) => {
-                credentials::authenticate(&client, auth)?
+                credentials::authenticate(&client, auth)
                     .get_async_pubsub()
                     .await
             }
