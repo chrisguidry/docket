@@ -90,9 +90,13 @@ class Perpetual(CompletionHandler["Perpetual"]):
         # Each attempt gets a copy of the declared instance, so what the task
         # asks of it (cancel, perpetuate, after, at) applies to that attempt
         # alone.  Copying keeps a subclass and its state without calling its
-        # constructor, whose arguments may differ from this class's.
+        # constructor, whose arguments may differ from this class's.  A task
+        # called directly, outside a worker, receives the declared instance
+        # itself, so the copy resets what cancel(), after(), and at() set.
         execution = current_execution.get()
         perpetual = copy.copy(self)
+        perpetual.cancelled = False
+        perpetual._next_when = None
         perpetual.args = execution.args
         perpetual.kwargs = execution.kwargs
         return perpetual
