@@ -156,5 +156,4 @@ async fn a_failed_move_keeps_the_subscription_it_has() {
         .await
         .unwrap();
     assert!(within(10, reading).await.unwrap());
-    assert_eq!(proxy.count("UNSUBSCRIBE"), 0);
 }

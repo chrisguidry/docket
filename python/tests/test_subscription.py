@@ -7,14 +7,16 @@ tests/test_credential_rotation.py rotates real credentials on a real Redis.
 # pyright: reportPrivateUsage=false
 
 import asyncio
+from collections import deque
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, cast
 from unittest.mock import patch
 
 import pytest
 
 from docket import Docket
-from docket._subscription import Subscription
+from docket._subscription import SUBSCRIBED, Subscription
+from tests.conftest import skip_memory
 
 
 def rotate(docket: Docket) -> None:
@@ -68,7 +70,13 @@ async def test_a_rotation_moves_a_pattern_subscription(docket: Docket):
         assert await read(subscription, 2) == [b"a", b"b"]
 
 
-async def test_a_rotation_loses_nothing_published_during_the_move(docket: Docket):
+# The memory backend delivers each message to a subscriber's queue from a
+# background thread, so a message published just before the move can reach the
+# old connection after it is unsubscribed.  Redis delivers it first.
+@skip_memory
+async def test_a_rotation_loses_nothing_published_during_the_move(  # pragma: no cover
+    docket: Docket,
+):
     channel = docket.key("state:subscription")
     sent = [f"{i}".encode() for i in range(200)]
     async with Subscription(docket, channels=[channel]) as subscription:
@@ -217,22 +225,20 @@ async def test_messages_before_the_last_confirmation_are_kept(docket: Docket):
     """A message on a channel the server has confirmed can arrive before the
     confirmation of a pattern subscribed after it."""
     channel = docket.key("state:subscription")
-    original_pubsub = docket._pubsub
+    replies = [
+        {"type": "subscribe", "channel": channel, "data": 1},
+        {"type": "message", "channel": channel, "data": b"early"},
+        {"type": "psubscribe", "channel": docket.key("cancel:*"), "data": 2},
+    ]
 
-    @asynccontextmanager
-    async def publishing_pubsub() -> AsyncGenerator[Any, None]:
-        async with original_pubsub() as pubsub:
-            psubscribe = pubsub.psubscribe
+    class Replies:
+        async def get_message(self, **kwargs: Any) -> dict[str, Any]:
+            return replies.pop(0)
 
-            async def publish_then_psubscribe(*patterns: Any) -> None:
-                await docket._publish(channel, "early")
-                await psubscribe(*patterns)
-
-            pubsub.psubscribe = publish_then_psubscribe
-            yield pubsub
-
-    with patch.object(docket, "_pubsub", publishing_pubsub):
-        async with Subscription(
-            docket, channels=[channel], patterns=[docket.key("cancel:*")]
-        ) as subscription:
-            assert await read(subscription, 1) == [b"early"]
+    subscription = Subscription(
+        docket, channels=[channel], patterns=[docket.key("cancel:*")]
+    )
+    received: deque[dict[str, Any]] = deque()
+    await subscription._read_until(cast(Any, Replies()), SUBSCRIBED, received)
+    assert [message["data"] for message in received] == [b"early"]
+    assert replies == []
