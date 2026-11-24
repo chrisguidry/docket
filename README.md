@@ -8,7 +8,9 @@ on the scheduling of future work as seamlessly and efficiently as immediate work
 [![PyPI - License](https://img.shields.io/pypi/l/pydocket)](https://github.com/chrisguidry/docket/blob/main/LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-latest-blue.svg)](https://docket.lol/)
 
-<video src="https://github.com/user-attachments/assets/f7dd099a-c1e3-4b02-aaf1-9f2fd8c0b294" poster="https://github.com/user-attachments/assets/1c0f883d-00c6-49e2-9ef4-6b9962a28b9c" width="360" controls></video>
+https://github.com/user-attachments/assets/f7dd099a-c1e3-4b02-aaf1-9f2fd8c0b294
+
+_Thanks to the [Prefect](https://www.prefect.io) team for their support, and to Josie for her rad design._
 
 ## At a glance
 
