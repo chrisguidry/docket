@@ -128,7 +128,7 @@ def duration(duration_str: str | timedelta) -> timedelta:
         return timedelta(seconds=int(duration_str))
 
 
-def set_logging_format(format: LogFormat) -> None:
+def set_logging_format(format: LogFormat) -> LogFormat:
     root_logger = logging.getLogger()
     if format == LogFormat.JSON:
         from pythonjsonlogger.json import JsonFormatter
@@ -154,10 +154,12 @@ def set_logging_format(format: LogFormat) -> None:
         formatter = logging.Formatter("%(message)s", datefmt="[%X]")
         handler.setFormatter(formatter)
         root_logger.addHandler(handler)
+    return format
 
 
-def set_logging_level(level: LogLevel) -> None:
+def set_logging_level(level: LogLevel) -> LogLevel:
     logging.getLogger().setLevel(level.value)
+    return level
 
 
 def validate_url(url: str) -> str:

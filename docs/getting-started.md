@@ -182,6 +182,17 @@ docket worker --tasks tasks:tasks --concurrency 5
 
 Workers automatically handle concurrency (processing multiple tasks simultaneously), retries on failure, and graceful shutdown. By default, a worker processes up to 10 tasks concurrently.
 
+For local development, add `--reload` to restart the worker when Python files
+change under the current directory. Run the command from your project root.
+
+```bash
+python -m docket worker --tasks tasks:tasks --reload
+```
+
+The reloader keeps watching if the worker fails to start, so saving a fix
+starts it again. Use Ctrl+C to stop the reloader and worker. The `--reload`
+and `--until-finished` options are mutually exclusive.
+
 ## Basic Error Handling
 
 By default, if a task fails (raises an exception), Docket will log the error and mark the task as failed in its OpenTelemetry traces. The task won't be retried and the worker will move on to the next task.
