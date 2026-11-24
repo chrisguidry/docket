@@ -123,7 +123,9 @@ def test_reload_runs_worker_with_cli_options(
 
 
 async def test_reload_rejects_until_finished() -> None:
-    result = await run_cli("worker", "--reload", "--until-finished")
+    result = await run_cli(
+        "worker", "--reload", "--until-finished", env={"TERM": "dumb"}
+    )
 
     assert result.exit_code == 2
     assert "--reload cannot be used with --until-finished" in result.output
