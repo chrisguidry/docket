@@ -10,7 +10,7 @@ on the scheduling of future work as seamlessly and efficiently as immediate work
 
 https://github.com/user-attachments/assets/f7dd099a-c1e3-4b02-aaf1-9f2fd8c0b294
 
-_Thanks to the [Prefect](https://www.prefect.io) team for their support, and to Josie for her rad design._
+_Thanks to the [Prefect](https://www.prefect.io) team for their support, and to [Josie](https://www.linkedin.com/in/josie-azzam-2487042/) for her rad design._
 
 ## At a glance
 

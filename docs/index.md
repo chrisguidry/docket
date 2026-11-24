@@ -11,7 +11,7 @@ on the scheduling of future work as seamlessly and efficiently as immediate work
 
 <video src="how-docket-works.mp4" poster="how-docket-works.jpg" width="360" controls preload="metadata"></video>
 
-_Thanks to the [Prefect](https://www.prefect.io) team for their support, and to Josie for her rad design._
+_Thanks to the [Prefect](https://www.prefect.io) team for their support, and to [Josie](https://www.linkedin.com/in/josie-azzam-2487042/) for her rad design._
 
 ## Install
 
