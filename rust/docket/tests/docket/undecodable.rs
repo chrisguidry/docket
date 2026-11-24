@@ -1,8 +1,6 @@
 //! What docket does with a task whose data in Redis is not UTF-8 text, as a
 //! task that pydocket added is: pydocket pickles its arguments.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use docket::{Docket, Event, Perpetual, State};
@@ -250,39 +248,73 @@ async fn a_claim_whose_runs_hash_has_a_field_that_is_not_text_fails_the_run() {
     assert_eq!(within(10, normal.result()).await.unwrap(), "normal");
     let status = garbled.status().await.unwrap().unwrap();
     assert_eq!(status.state, State::Failed);
-    let error = status.error.unwrap();
-    assert!(
-        error.contains("its \"error\" field is not UTF-8 text"),
-        "{error}"
+    assert_eq!(
+        status.error.as_deref(),
+        Some("could not read the runs hash of a claim: its \"error\" field is not UTF-8 text")
     );
     assert_eq!(value(&docket, "docket_tasks_failed", &[]), Some(1.0));
     assert_no_disruption(&docket, &logs);
 }
 
+/// A field that docket-rs does not read, such as one a later pydocket adds,
+/// may hold any bytes, and the run reads and runs as usual.
 #[tokio::test]
-async fn an_automatic_task_is_scheduled_when_its_runs_hash_holds_bytes_that_are_not_text() {
+async fn a_field_docket_does_not_read_may_hold_bytes_that_are_not_text() {
     let (logs, _guard) = Logs::capture();
     let docket = docket().await;
-    let runs = Arc::new(AtomicU32::new(0));
-    let counted = Arc::clone(&runs);
+    docket.register(|_ctx, args: Echo| async move { Ok::<_, std::io::Error>(args.text) });
+    let execution = docket.add(Echo::new("hello")).key("future").await.unwrap();
+    let mut redis = docket.redis().await.unwrap();
+    let () = redis
+        .hset(docket_key(&docket, "runs:future"), "added_later", PICKLED)
+        .await
+        .unwrap();
+    assert_eq!(
+        execution.status().await.unwrap().unwrap().state,
+        State::Queued
+    );
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert_eq!(within(10, execution.result()).await.unwrap(), "hello");
+    let found = docket.execution("future").await.unwrap().unwrap();
+    assert_eq!(
+        found.status().await.unwrap().unwrap().state,
+        State::Completed
+    );
+    assert_no_disruption(&docket, &logs);
+}
+
+/// An automatic task's runs hash with bytes that are not UTF-8, in its
+/// arguments or in a field docket reads, does not stop the worker from
+/// scheduling it.
+#[rstest::rstest]
+#[case::in_its_arguments("kwargs")]
+#[case::in_a_field_docket_reads("error")]
+#[tokio::test]
+async fn an_automatic_task_is_scheduled_when_its_runs_hash_holds_bytes_that_are_not_text(
+    #[case] field: &str,
+) {
+    let (logs, _guard) = Logs::capture();
+    let docket = docket().await;
     docket
-        .register(move |_ctx, _: Noop| {
-            counted.fetch_add(1, Ordering::SeqCst);
-            async { Ok::<_, std::io::Error>(()) }
-        })
+        .register(|_ctx, _: Noop| async { Ok::<_, std::io::Error>(()) })
         .with(Perpetual::every(Duration::from_mins(1)).automatic());
     let mut redis = docket.redis().await.unwrap();
     let runs_key = docket_key(&docket, "runs:noop");
     let () = redis.hset(&runs_key, "state", "completed").await.unwrap();
-    let () = redis.hset(&runs_key, "kwargs", PICKLED).await.unwrap();
+    let () = redis.hset(&runs_key, field, PICKLED).await.unwrap();
 
     let run = tokio::spawn(worker(&docket).run_forever());
     within(10, async {
-        while runs.load(Ordering::SeqCst) == 0 {
+        while value(&docket, "docket_tasks_started", &[]).is_none() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await;
+    assert!(!run.is_finished());
     run.abort();
 
     assert_no_disruption(&docket, &logs);

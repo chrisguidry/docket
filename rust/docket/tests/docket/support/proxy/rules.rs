@@ -23,7 +23,8 @@ pub(super) struct Rule {
     /// away partway through one.
     pub(super) close: bool,
     /// How long the reply waits, which holds up the connection's later
-    /// replies too.
+    /// replies too.  Without `forward`, the wait also holds back the
+    /// commands that arrived ahead of this one in the same read.
     pub(super) delay: Duration,
     /// Sends the command to Redis, and gives the client `reply` in place of
     /// Redis's reply.

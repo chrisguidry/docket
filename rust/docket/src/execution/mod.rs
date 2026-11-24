@@ -152,24 +152,41 @@ impl Status {
     }
 }
 
-/// The fields of a runs hash that hold a producer's own bytes: pydocket
-/// writes a task's pickled arguments there.
-const PAYLOAD_FIELDS: [&str; 2] = ["args", "kwargs"];
+/// The fields of a runs hash whose text docket-rs reads.
+const READ_FIELDS: [&str; 10] = [
+    "state",
+    "when",
+    "worker",
+    "started_at",
+    "completed_at",
+    "error",
+    "function",
+    "generation",
+    "waiter_stream",
+    "waiter_entry_id",
+];
 
-/// A runs hash as text, for reading only.  The bytes of `args` and `kwargs`
-/// that are not UTF-8 become U+FFFD, and any other value that is not UTF-8
-/// makes the hash unreadable.
+/// A runs hash as text, for reading only.  A field that docket-rs reads must
+/// be UTF-8 text, or the hash is unreadable.  Any other field, such as the
+/// pickled arguments pydocket writes, has its bytes that are not UTF-8
+/// replaced with U+FFFD.
 pub(crate) fn runs_text(runs: HashMap<Vec<u8>, Vec<u8>>) -> Result<HashMap<String, String>> {
+    runs_fields(runs).map_err(Error::Undecodable)
+}
+
+/// [`runs_text`], with the reason a hash is unreadable as text.
+pub(crate) fn runs_fields(
+    runs: HashMap<Vec<u8>, Vec<u8>>,
+) -> std::result::Result<HashMap<String, String>, String> {
     runs.into_iter()
         .map(|(field, value)| {
             // A field name that is not UTF-8 names no field docket reads.
             let field = String::from_utf8_lossy(&field).into_owned();
-            let value = if PAYLOAD_FIELDS.contains(&field.as_str()) {
-                String::from_utf8_lossy(&value).into_owned()
+            let value = if READ_FIELDS.contains(&field.as_str()) {
+                String::from_utf8(value)
+                    .map_err(|_| format!("its {field:?} field is not UTF-8 text"))?
             } else {
-                String::from_utf8(value).map_err(|_| {
-                    Error::Undecodable(format!("its {field:?} field is not UTF-8 text"))
-                })?
+                String::from_utf8_lossy(&value).into_owned()
             };
             Ok((field, value))
         })
@@ -243,7 +260,8 @@ impl<O> Execution<O> {
     }
 
     /// The run's current status, or `None` when the docket knows nothing of
-    /// it, for example after its state expired.
+    /// it, for example after its state expired.  A run whose record cannot
+    /// be read returns [`Error::Undecodable`].
     pub async fn status(&self) -> Result<Option<Status>> {
         status(&self.docket, &self.key).await
     }
@@ -256,7 +274,8 @@ impl<O> Execution<O> {
 
     /// Follows the run's state and progress events as they happen.  The
     /// stream starts with the current state and progress, and it can repeat
-    /// an event.
+    /// an event.  A run whose record cannot be read returns
+    /// [`Error::Undecodable`].
     pub async fn subscribe(&self) -> Result<Events> {
         events::subscribe(&self.docket, &self.key).await
     }
@@ -264,8 +283,9 @@ impl<O> Execution<O> {
 
 impl<O: DeserializeOwned> Execution<O> {
     /// Waits for the task to end, and returns its output.  A failed task
-    /// returns [`Error::TaskFailed`], and a cancelled one
-    /// [`Error::TaskCancelled`].  Bound the wait with `tokio::time::timeout`.
+    /// returns [`Error::TaskFailed`], a cancelled one
+    /// [`Error::TaskCancelled`], and one whose record cannot be read
+    /// [`Error::Undecodable`].  Bound the wait with `tokio::time::timeout`.
     pub async fn result(&self) -> Result<O> {
         output(&self.docket, &self.key)
             .await

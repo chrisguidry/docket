@@ -53,7 +53,8 @@ pub(super) async fn seed(worker: &Shared) -> Result<()> {
     let result = async {
         for (name, automatic) in automatic {
             // The task's name is its key, so there is one copy per docket.
-            // Read as bytes, so a hash with pickled arguments still answers.
+            // Read as bytes: a field that is not UTF-8 makes runs_text fail,
+            // and a failed seed at startup stops the worker.
             let runs: HashMap<Vec<u8>, Vec<u8>> = connection.hgetall(keys.runs(&name)).await?;
             let live = runs.contains_key(b"known".as_slice())
                 || runs.get(b"state".as_slice()).map(Vec::as_slice) == Some(b"running");

@@ -158,14 +158,14 @@ async fn a_claim_whose_runs_hash_cannot_be_read_fails_the_run() {
     assert_eq!(status.state, State::Failed);
     let error = status.error.unwrap();
     assert!(
-        error.starts_with("could not interpret a reply from Redis: the runs hash"),
+        error.starts_with("could not read the runs hash of a claim: "),
         "{error}"
     );
     assert_eq!(value(&docket, "docket_tasks_started", &[]), Some(1.0));
     assert_eq!(value(&docket, "docket_tasks_failed", &[]), Some(1.0));
     assert_eq!(value(&docket, "docket_tasks_completed", &[]), Some(1.0));
     assert_eq!(value(&docket, "docket_tasks_running", &[]), Some(0.0));
-    assert!(logs.contains("could not interpret a reply from Redis"));
+    assert!(logs.contains("could not read the runs hash of a claim"));
     assert_no_disruption(&docket, &logs);
 }
 

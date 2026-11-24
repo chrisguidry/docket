@@ -192,7 +192,7 @@ async fn unreadable_run(
     if active.cancelled_by_docket.load(Ordering::SeqCst) {
         return cancelled(run, &span, generation, 0.0).await;
     }
-    let error = format!("could not interpret a reply from Redis: {reason}");
+    let error = reason;
     run.docket
         .telemetry()
         .metrics

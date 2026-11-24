@@ -153,7 +153,9 @@ impl Docket {
     }
 
     /// The run of the task with this key, or `None` when the docket knows
-    /// nothing of it, for example after its state expired.
+    /// nothing of it, for example after its state expired.  A run whose
+    /// record cannot be read returns
+    /// [`Error::Undecodable`](crate::Error::Undecodable).
     pub async fn execution(&self, key: &str) -> Result<Option<Execution>> {
         let mut connection = self.handle();
         let runs: HashMap<Vec<u8>, Vec<u8>> = connection.hgetall(self.keys().runs(key)).await?;

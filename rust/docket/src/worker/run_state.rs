@@ -12,7 +12,7 @@ use crate::Timestamp;
 use crate::behaviors::{AdmissionBlocked, AfterCompletion};
 use crate::docket::{Docket, Placement};
 use crate::error::Result;
-use crate::execution::{Disposition, Message, State, runs_text};
+use crate::execution::{Disposition, Message, State, runs_fields};
 use crate::keys::WORKER_GROUP;
 use crate::scripts;
 use crate::telemetry::{self, format_duration};
@@ -30,7 +30,7 @@ pub(super) enum Claim {
     /// A newer copy of the task took its key.
     Superseded,
     /// The claim succeeded, but its copy of the runs hash could not be
-    /// interpreted, for this reason.
+    /// read.  This is the failure text the run stores.
     Unreadable(String),
     /// The claim's status could not be read, for this reason, so whether the
     /// claim succeeded is unknown.
@@ -126,17 +126,21 @@ impl Run<'_> {
         };
         let runs = parts.get(1).unwrap_or(&Value::Nil);
         Ok(match status.as_str() {
-            "OK" => match redis::from_redis_value_ref::<HashMap<Vec<u8>, Vec<u8>>>(runs) {
-                Ok(runs) => match runs_text(runs) {
+            "OK" => {
+                let runs = redis::from_redis_value_ref::<HashMap<Vec<u8>, Vec<u8>>>(runs)
+                    .map_err(|error| error.to_string())
+                    .and_then(runs_fields);
+                match runs {
                     Ok(runs) => Claim::Claimed(
                         runs.get("generation")
                             .and_then(|generation| generation.parse().ok())
                             .unwrap_or(self.message().generation),
                     ),
-                    Err(error) => Claim::Unreadable(format!("the runs hash of a claim: {error}")),
-                },
-                Err(error) => Claim::Unreadable(format!("the runs hash of a claim: {error}")),
-            },
+                    Err(reason) => Claim::Unreadable(format!(
+                        "could not read the runs hash of a claim: {reason}"
+                    )),
+                }
+            }
             "CANCELLED" => Claim::Cancelled,
             _ => Claim::Superseded,
         })
