@@ -106,10 +106,10 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
         metrics.tasks_stricken.add(1, &run.labels_where("worker"));
         return run.strike().await;
     }
-    let generation = match run.claim().await? {
+    let (generation, unreadable) = match run.claim().await? {
         Claim::Claimed(generation) => {
             worker.limited.count_run(&message.key);
-            generation
+            (generation, None)
         }
         // Docket::cancel counted the cancellation already.
         Claim::Cancelled => {
@@ -119,6 +119,23 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
         Claim::Superseded => {
             tracing::info!("↬ {} (superseded)", run.call);
             metrics.tasks_superseded.add(1, &run.labels_where("worker"));
+            return Ok(());
+        }
+        Claim::Unreadable(reason) => {
+            worker.limited.count_run(&message.key);
+            (message.generation, Some(reason))
+        }
+        // The claim script may have acknowledged the delivery, so this run
+        // writes nothing, and the redelivery sweep hands back any delivery
+        // it left pending.
+        Claim::Unknown(reason) => {
+            tracing::error!(
+                reason,
+                "Could not read the claim of task {:?}, so its state is unknown; \
+                 if the claim did not acknowledge the delivery, the redelivery \
+                 sweep hands it back",
+                message.key
+            );
             return Ok(());
         }
     };
@@ -141,15 +158,50 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
             .telemetry()
             .consumer_span(message, attributes, worker.settings.parent_task_spans);
     let ctx = context(worker, delivery, &registered);
-    let (result, duration) = attempt(&run, &registered, &ctx, active, generation)
-        .with_context(span.clone())
-        .await;
+    let (result, duration) = match unreadable {
+        None => {
+            attempt(&run, &registered, &ctx, active, generation)
+                .with_context(span.clone())
+                .await
+        }
+        Some(reason) => {
+            let ended = unreadable_run(&run, active, generation, reason)
+                .with_context(span.clone())
+                .await;
+            (ended, 0.0)
+        }
+    };
     span.span().end();
 
     metrics.tasks_running.add(-1, &labels);
     metrics.tasks_completed.add(1, &labels);
     metrics.task_duration.record(duration, &labels);
     result
+}
+
+/// Ends a claimed run whose runs hash could not be read, without running
+/// it: a redelivery would read the same hash.
+async fn unreadable_run(
+    run: &Run<'_>,
+    active: &Active,
+    generation: i64,
+    reason: String,
+) -> Result<()> {
+    let span = opentelemetry::Context::current();
+    // A cancel that came after the claim wins, as it does for a run.
+    if active.cancelled_by_docket.load(Ordering::SeqCst) {
+        return cancelled(run, &span, generation, 0.0).await;
+    }
+    let error = reason;
+    run.docket
+        .telemetry()
+        .metrics
+        .tasks_failed
+        .add(1, &run.labels());
+    telemetry::fail(&span, &error);
+    tracing::error!(error, "↩ {}", run.call);
+    let error = vec![("error".to_owned(), error.into_bytes())];
+    run.terminal(State::Failed, generation, error).await
 }
 
 /// Admits and runs the task, then records its end.  Returns the outcome and

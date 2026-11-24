@@ -5,11 +5,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use docket::{ConcurrencyLimit, Docket, Execution, State};
+use redis::AsyncCommands;
+use redis::streams::StreamRangeReply;
 use tokio::sync::Notify;
 
 use crate::logs::Logs;
 use crate::support::proxy::Proxy;
 use crate::support::{Echo, Noop, docket, docket_through, proxy, within, worker};
+use crate::undecodable::{PICKLED, docket_key};
 
 /// Whether the docket has a safeguard scheduled for a parked task.
 async fn safeguard_scheduled(docket: &Docket) -> bool {
@@ -74,6 +77,57 @@ async fn cancelling_a_parked_task_takes_it_out_of_line() {
         parked.status().await.unwrap().unwrap().state,
         State::Cancelled
     );
+}
+
+/// A task that pydocket added has pickled arguments in its runs hash, which
+/// the worker reads to find the task's place in line.
+#[tokio::test]
+async fn cancelling_a_parked_task_with_pickled_arguments_takes_it_out_of_line() {
+    let (logs, _guard) = Logs::capture();
+    let docket = docket().await;
+    let (_, release) = register_held(&docket);
+    let run = tokio::spawn(worker(&docket).concurrency(2).run_until_finished());
+    let parked = park_one(&docket).await;
+    let runs = docket_key(&docket, &format!("runs:{}", parked.key()));
+    let mut redis = docket.redis().await.unwrap();
+    let () = redis.hset(&runs, "kwargs", PICKLED).await.unwrap();
+    let waiters: String = redis.hget(&runs, "waiter_stream").await.unwrap();
+    let entry: String = redis.hget(&runs, "waiter_entry_id").await.unwrap();
+
+    docket.cancel(parked.key()).await.unwrap();
+    within(10, async {
+        while safeguard_scheduled(&docket).await {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    release.notify_one();
+    within(10, run).await.unwrap().unwrap();
+
+    let line: StreamRangeReply = redis.xrange(&waiters, &entry, &entry).await.unwrap();
+    assert_eq!(line.ids.len(), 0);
+    assert!(!logs.contains("cleaning up a cancelled waiter failed"));
+}
+
+/// A parked task's runs hash with a value outside its arguments that is not
+/// UTF-8 text cannot be read, so the worker logs the cleanup it skipped.
+#[tokio::test]
+async fn a_worker_logs_a_parked_task_whose_runs_hash_cannot_be_read() {
+    let (logs, _guard) = Logs::capture();
+    let docket = docket().await;
+    let (_, release) = register_held(&docket);
+    let run = tokio::spawn(worker(&docket).concurrency(2).run_until_finished());
+    let parked = park_one(&docket).await;
+    let runs = docket_key(&docket, &format!("runs:{}", parked.key()));
+    let mut redis = docket.redis().await.unwrap();
+    let () = redis.hset(&runs, "worker", PICKLED).await.unwrap();
+
+    docket.cancel(parked.key()).await.unwrap();
+    within(10, logs.wait_for("cleaning up a cancelled waiter failed")).await;
+    release.notify_one();
+    within(10, run).await.unwrap().unwrap();
+
+    assert!(logs.contains("field is not UTF-8 text"));
 }
 
 #[rstest::rstest]

@@ -420,8 +420,15 @@ impl Handle {
     /// Forgets the shared connection when a command fails because the
     /// connection is gone, so that the next command opens a new one.
     async fn check<T>(&self, result: RedisResult<T>) -> RedisResult<T> {
+        // These replies are raw values, so a parse error here comes from the
+        // connection, such as one that closed partway through a reply.
+        let gone = |error: &redis::RedisError| {
+            error.is_connection_dropped()
+                || error.is_io_error()
+                || error.kind() == redis::ErrorKind::Parse
+        };
         if let Err(error) = &result
-            && (error.is_connection_dropped() || error.is_io_error())
+            && gone(error)
         {
             self.shared.forget().await;
         }

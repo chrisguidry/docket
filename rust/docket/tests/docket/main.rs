@@ -11,6 +11,7 @@ mod automatic;
 mod batches;
 mod behavior_faults;
 mod cancellation;
+mod claim_replies;
 #[cfg(feature = "cli")]
 mod cli;
 mod concurrency;
@@ -34,6 +35,7 @@ mod sweeping;
 mod testing_helpers;
 mod timeouts;
 mod traces;
+mod undecodable;
 mod unreachable;
 #[cfg(feature = "memory")]
 mod virtual_time;

@@ -41,6 +41,11 @@ pub enum Error {
     #[error("{0}")]
     Invalid(String),
 
+    /// A run's record in Redis that docket cannot read, such as a state
+    /// that is not UTF-8 text.
+    #[error("a run's record in Redis cannot be read: {0}")]
+    Undecodable(String),
+
     /// A command of [`docket::cli`](crate::cli) could not write its output.
     #[cfg(feature = "cli")]
     #[error("could not write the output: {0}")]
@@ -89,5 +94,21 @@ impl Error {
                 && error.code() != Some("OOM")
                 && !error.detail().is_some_and(|detail| detail.contains("-OOM "))
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    /// A parse error, whether a bad conversion or a reply cut short, counts
+    /// as unavailable: redis-rs gives both the same kind.
+    #[test]
+    fn a_parse_error_from_redis_rs_is_redis_being_unavailable() {
+        let reply = redis::Value::BulkString(vec![0xff]);
+        let parse = redis::from_redis_value::<String>(reply).unwrap_err();
+        let error = Error::from(redis::RedisError::from(parse));
+        assert!(error.to_string().contains("UTF-8"), "{error}");
+        assert!(error.is_redis_unavailable());
     }
 }

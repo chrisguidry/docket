@@ -2,29 +2,22 @@
 //! what docket does when Redis refuses a command or goes away.
 
 use std::collections::VecDeque;
-use std::fmt::Write;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use sha1::{Digest, Sha1};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::task::JoinSet;
 
-type Matcher = Box<dyn Fn(&[Vec<u8>]) -> bool + Send>;
+use resp::{parse_command, reply_end};
+use rules::{Injection, Rule};
 
-/// Fails the next `times` commands that `matches` picks, with `error` in
-/// place of the reply, or with a generic error when `error` is `None`.
-struct Rule {
-    matches: Matcher,
-    times: usize,
-    error: Option<String>,
-    /// Picks only commands on connections that have subscribed.
-    subscribers_only: bool,
-}
+mod resp;
+mod rules;
 
 #[derive(Default)]
 struct State {
@@ -67,17 +60,21 @@ impl State {
         self.silent
     }
 
-    /// The error reply for this command when it should fail, spending one
-    /// of a rule's failures.
-    fn failure(&mut self, args: &[Vec<u8>], name: &[u8], subscribed: bool) -> Option<Vec<u8>> {
+    /// What the proxy does in place of this command's reply, when a rule
+    /// picks it, spending one of the rule's replies.
+    fn failure(&mut self, args: &[Vec<u8>], name: &[u8], subscribed: bool) -> Option<Injection> {
         let rule = self.rules.iter_mut().find(|rule| {
             rule.times > 0 && (subscribed || !rule.subscribers_only) && (rule.matches)(args)
         })?;
         rule.times -= 1;
-        let error = rule.error.clone().unwrap_or_else(|| {
-            format!("ERR injected failure for {}", String::from_utf8_lossy(name))
-        });
-        Some(format!("-{error}\r\n").into_bytes())
+        let name = String::from_utf8_lossy(name);
+        let generic = format!("-ERR injected failure for {name}\r\n").into_bytes();
+        Some(Injection {
+            reply: rule.reply.clone().unwrap_or(generic),
+            close: rule.close,
+            delay: rule.delay,
+            forward: rule.forward,
+        })
     }
 }
 
@@ -109,69 +106,6 @@ impl Proxy {
             Some(userinfo) => format!("redis://{userinfo}@{}/0", self.address),
             None => format!("redis://{}/0", self.address),
         }
-    }
-
-    /// Answers the next `times` commands named `command` with an error,
-    /// without sending them to Redis.
-    pub fn fail(&self, command: &str, times: usize) {
-        self.fail_named(command, times, false);
-    }
-
-    /// Answers the next `times` commands named `command` on connections
-    /// that have subscribed with an error, without sending them to Redis.
-    /// Only a RESP3 connection sends commands once it has subscribed.
-    pub fn fail_on_subscribers(&self, command: &str, times: usize) {
-        self.fail_named(command, times, true);
-    }
-
-    fn fail_named(&self, command: &str, times: usize, subscribers_only: bool) {
-        let command = command.to_ascii_uppercase();
-        self.add(times, None, subscribers_only, move |args| {
-            args[0].eq_ignore_ascii_case(command.as_bytes())
-        });
-    }
-
-    /// Answers the next `times` runs of the Lua script with this source with
-    /// an error.
-    pub fn fail_script(&self, source: &str, times: usize) {
-        self.refuse_script(source, times, None);
-    }
-
-    /// Answers the next `times` runs of the Lua script with this source with
-    /// `error`, such as `READONLY You can't write against a read only
-    /// replica.`
-    pub fn fail_script_with(&self, source: &str, times: usize, error: &str) {
-        self.refuse_script(source, times, Some(error.to_owned()));
-    }
-
-    fn refuse_script(&self, source: &str, times: usize, error: Option<String>) {
-        let sha = Sha1::digest(source.as_bytes())
-            .iter()
-            .fold(String::new(), |mut hex, byte| {
-                let _ = write!(hex, "{byte:02x}");
-                hex
-            });
-        self.add(times, error, false, move |args| {
-            args[0].eq_ignore_ascii_case(b"EVALSHA")
-                && args
-                    .get(1)
-                    .is_some_and(|arg| arg.eq_ignore_ascii_case(sha.as_bytes()))
-        });
-    }
-
-    fn add(
-        &self,
-        times: usize,
-        error: Option<String>,
-        subscribers_only: bool,
-        matches: impl Fn(&[Vec<u8>]) -> bool + Send + 'static,
-    ) {
-        self.state.lock().unwrap().rules.push(Rule {
-            matches: Box::new(matches),
-            times,
-            error,
-            subscribers_only,
-        });
     }
 
     /// Drops every connection and refuses new ones, as if Redis went away.
@@ -262,6 +196,9 @@ enum Pending {
     Forwarded,
     /// An error the proxy made up.
     Injected(Vec<u8>),
+    /// The next reply from Redis, which the client gets as this one after
+    /// this wait.
+    Replaced(Vec<u8>, Duration),
 }
 
 /// One proxied connection's shared state.
@@ -302,7 +239,7 @@ async fn relay(client: TcpStream, server: TcpStream, state: Arc<Mutex<State>>) {
 
     let writer = tokio::spawn(async move {
         while let Some(bytes) = outgoing.recv().await {
-            if client_write.write_all(&bytes).await.is_err() {
+            if bytes.is_empty() || client_write.write_all(&bytes).await.is_err() {
                 break;
             }
         }
@@ -343,8 +280,19 @@ async fn replies(mut server: OwnedReadHalf, connection: Arc<Connection>) {
                 let _ = connection.to_client.send(out);
                 continue;
             }
+            // The entry stays at the front of the line while its reply waits,
+            // so that no injected reply overtakes it.
+            let delay = match connection.pending.lock().unwrap().front() {
+                Some(Pending::Replaced(_, delay)) => *delay,
+                _ => Duration::ZERO,
+            };
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
             let mut pending = connection.pending.lock().unwrap();
-            pending.pop_front();
+            if let Some(Pending::Replaced(reply, _)) = pending.pop_front() {
+                out = reply;
+            }
             // Injected errors wait until the replies ahead of them arrive.
             while let Some(Pending::Injected(_)) = pending.front() {
                 if let Some(Pending::Injected(error)) = pending.pop_front() {
@@ -383,6 +331,12 @@ async fn commands(
             {
                 let mut state = state.lock().unwrap();
                 *state.counts.entry(command.clone()).or_default() += 1;
+                if name == b"EVALSHA"
+                    && let Some(sha) = args.get(1)
+                {
+                    let script = format!("EVALSHA {}", String::from_utf8_lossy(sha));
+                    *state.counts.entry(script.to_ascii_uppercase()).or_default() += 1;
+                }
                 if subscribed {
                     *state.subscriber_counts.entry(command.clone()).or_default() += 1;
                 }
@@ -393,7 +347,28 @@ async fn commands(
             } else {
                 state.lock().unwrap().failure(&args, &name, subscribed)
             };
-            let Some(error) = failure else {
+            if let Some(injection) = &failure
+                && injection.close
+            {
+                // An empty message tells the writer to close the connection.
+                let _ = connection.to_client.send(injection.reply.clone());
+                let _ = connection.to_client.send(Vec::new());
+                continue;
+            }
+            if let Some(injection) = &failure
+                && injection.forward
+            {
+                let replaced = Pending::Replaced(injection.reply.clone(), injection.delay);
+                connection.pending.lock().unwrap().push_back(replaced);
+                forward.extend(raw);
+                continue;
+            }
+            if let Some(injection) = &failure
+                && !injection.delay.is_zero()
+            {
+                tokio::time::sleep(injection.delay).await;
+            }
+            let Some(Injection { reply: error, .. }) = failure else {
                 if name == b"HELLO" && args.get(1).is_some_and(|version| version == b"3") {
                     connection.resp3.store(true, Ordering::SeqCst);
                 }
@@ -428,71 +403,5 @@ async fn commands(
         if !forward.is_empty() && server.write_all(&forward).await.is_err() {
             break;
         }
-    }
-}
-
-/// The length of the RESP2 command at the start of `buffer` and its
-/// arguments, once it has fully arrived.
-fn parse_command(buffer: &[u8]) -> Option<(usize, Vec<Vec<u8>>)> {
-    let (count, mut at) = line(buffer, 0, b'*')?;
-    let mut args = Vec::new();
-    for _ in 0..count {
-        let (length, start) = line(buffer, at, b'$')?;
-        let end = start + usize::try_from(length).ok()?;
-        if buffer.len() < end + 2 {
-            return None;
-        }
-        args.push(buffer[start..end].to_vec());
-        at = end + 2;
-    }
-    Some((at, args))
-}
-
-/// Reads `<prefix><number>\r\n` at `at`, and returns the number and where
-/// the next line starts.
-fn line(buffer: &[u8], at: usize, prefix: u8) -> Option<(i64, usize)> {
-    if *buffer.get(at)? != prefix {
-        return None;
-    }
-    let end = at + buffer[at..].windows(2).position(|pair| pair == b"\r\n")?;
-    let number = std::str::from_utf8(&buffer[at + 1..end])
-        .ok()?
-        .parse()
-        .ok()?;
-    Some((number, end + 2))
-}
-
-/// Where the RESP2 or RESP3 reply that starts at `at` ends, once it has
-/// fully arrived.
-fn reply_end(buffer: &[u8], at: usize) -> Option<usize> {
-    let end = at
-        + buffer
-            .get(at..)?
-            .windows(2)
-            .position(|pair| pair == b"\r\n")?;
-    let header = &buffer[at + 1..end];
-    let next = end + 2;
-    let elements = |count: i64, mut position: usize| {
-        for _ in 0..count.max(0) {
-            position = reply_end(buffer, position)?;
-        }
-        Some(position)
-    };
-    let count = || -> Option<i64> { std::str::from_utf8(header).ok()?.parse().ok() };
-    match buffer[at] {
-        b'+' | b'-' | b':' | b'_' | b',' | b'#' | b'(' => Some(next),
-        b'$' | b'!' | b'=' => {
-            let length: i64 = std::str::from_utf8(header).ok()?.parse().ok()?;
-            if length < 0 {
-                return Some(next);
-            }
-            let finish = next + usize::try_from(length).ok()? + 2;
-            (buffer.len() >= finish).then_some(finish)
-        }
-        b'*' | b'~' | b'>' => elements(count()?, next),
-        b'%' => elements(count()? * 2, next),
-        // Attributes come ahead of the reply they describe.
-        b'|' => reply_end(buffer, elements(count()? * 2, next)?),
-        _ => None,
     }
 }

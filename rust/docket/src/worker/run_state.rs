@@ -12,7 +12,7 @@ use crate::Timestamp;
 use crate::behaviors::{AdmissionBlocked, AfterCompletion};
 use crate::docket::{Docket, Placement};
 use crate::error::Result;
-use crate::execution::{Disposition, Message, State};
+use crate::execution::{Disposition, Message, State, runs_fields};
 use crate::keys::WORKER_GROUP;
 use crate::scripts;
 use crate::telemetry::{self, format_duration};
@@ -29,6 +29,23 @@ pub(super) enum Claim {
     Cancelled,
     /// A newer copy of the task took its key.
     Superseded,
+    /// The claim succeeded, but its copy of the runs hash could not be
+    /// read.  This is the failure text the run stores.
+    Unreadable(String),
+    /// The claim's status could not be read, for this reason, so whether the
+    /// claim succeeded is unknown.
+    Unknown(String),
+}
+
+/// How a log line shows a reply, cut short so that a large reply does not
+/// fill the log.
+fn shown(reply: &Value) -> String {
+    const LIMIT: usize = 100;
+    let text = format!("{reply:?}");
+    match text.char_indices().nth(LIMIT) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text,
+    }
 }
 
 /// One delivery, as the worker records what becomes of it.
@@ -95,15 +112,35 @@ impl Run<'_> {
         .call();
         let mut connection = self.docket.handle();
         // The reply is the claim's status, the runs hash, and the progress
-        // hash.
-        let (status, runs, _): (String, HashMap<String, String>, Value) =
-            call.run(&mut connection).await?;
+        // hash.  The status decides what happens, so it is read on its own,
+        // and the runs hash matters only to a claim that succeeded.
+        let reply: Value = call.run(&mut connection).await?;
+        let parts = match reply {
+            Value::Array(parts) => parts,
+            other => return Ok(Claim::Unknown(format!("a claim of {}", shown(&other)))),
+        };
+        let status = parts.first().unwrap_or(&Value::Nil);
+        let Ok(status) = redis::from_redis_value_ref::<String>(status) else {
+            let shown = shown(status);
+            return Ok(Claim::Unknown(format!("a claim whose status is {shown}")));
+        };
+        let runs = parts.get(1).unwrap_or(&Value::Nil);
         Ok(match status.as_str() {
-            "OK" => Claim::Claimed(
-                runs.get("generation")
-                    .and_then(|generation| generation.parse().ok())
-                    .unwrap_or(self.message().generation),
-            ),
+            "OK" => {
+                let runs = redis::from_redis_value_ref::<HashMap<Vec<u8>, Vec<u8>>>(runs)
+                    .map_err(|error| error.to_string())
+                    .and_then(runs_fields);
+                match runs {
+                    Ok(runs) => Claim::Claimed(
+                        runs.get("generation")
+                            .and_then(|generation| generation.parse().ok())
+                            .unwrap_or(self.message().generation),
+                    ),
+                    Err(reason) => Claim::Unreadable(format!(
+                        "could not read the runs hash of a claim: {reason}"
+                    )),
+                }
+            }
             "CANCELLED" => Claim::Cancelled,
             _ => Claim::Superseded,
         })

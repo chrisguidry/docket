@@ -7,7 +7,7 @@ use std::task::{Context, Poll};
 use futures::{Stream, StreamExt, stream};
 use serde::Deserialize;
 
-use super::{State, Status, progress};
+use super::{State, Status, progress, runs_text};
 use crate::Timestamp;
 use crate::connection::Topics;
 use crate::docket::Docket;
@@ -102,12 +102,12 @@ pub(super) async fn subscribe(docket: &Docket, key: &str) -> Result<Events> {
     // Reading after the subscription is confirmed means no change can fall
     // between the read and the first message.
     let mut initial = Vec::new();
-    let (runs, progress): (HashMap<String, String>, HashMap<String, String>) = redis::pipe()
+    let (runs, progress): (HashMap<Vec<u8>, Vec<u8>>, HashMap<String, String>) = redis::pipe()
         .hgetall(keys.runs(key))
         .hgetall(keys.progress(key))
         .query_async(&mut docket.handle())
         .await?;
-    if let Some(status) = Status::from_hash(&runs) {
+    if let Some(status) = Status::from_hash(&runs_text(runs)?) {
         initial.push(Ok(Event::State(StateEvent {
             state: status.state,
             when: status.when,
