@@ -67,6 +67,8 @@ async fn forget_waiter(docket: &crate::Docket, key: &str) -> Result<()> {
     let mut connection = docket.handle();
     let runs: std::collections::HashMap<Vec<u8>, Vec<u8>> =
         redis::AsyncCommands::hgetall(&mut connection, keys.runs(key)).await?;
+    // Only the arguments are pickled.  Every docket writes the waiter
+    // stream's key and entry id as UTF-8 text, so they read back unchanged.
     let runs = crate::execution::runs_text(runs);
     let (Some(stream), Some(entry)) = (runs.get("waiter_stream"), runs.get("waiter_entry_id"))
     else {

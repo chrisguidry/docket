@@ -41,11 +41,6 @@ pub enum Error {
     #[error("{0}")]
     Invalid(String),
 
-    /// Redis answered with a reply that docket cannot interpret, such as a
-    /// claim whose status is not text.  Redis is still available.
-    #[error("could not interpret a reply from Redis: {0}")]
-    Undecodable(String),
-
     /// A command of [`docket::cli`](crate::cli) could not write its output.
     #[cfg(feature = "cli")]
     #[error("could not write the output: {0}")]
@@ -101,18 +96,8 @@ impl Error {
 mod tests {
     use super::Error;
 
-    #[test]
-    fn a_reply_docket_cannot_interpret_is_not_redis_being_unavailable() {
-        let error = Error::Undecodable("a claim status of 5".to_owned());
-        assert!(!error.is_redis_unavailable());
-        assert_eq!(
-            error.to_string(),
-            "could not interpret a reply from Redis: a claim status of 5"
-        );
-    }
-
-    /// redis-rs reports a connection that closes partway through a reply as
-    /// a parse error, so a parse error must count as unavailable.
+    /// A parse error, whether a bad conversion or a reply cut short, counts
+    /// as unavailable: redis-rs gives both the same kind.
     #[test]
     fn a_parse_error_from_redis_rs_is_redis_being_unavailable() {
         let reply = redis::Value::BulkString(vec![0xff]);

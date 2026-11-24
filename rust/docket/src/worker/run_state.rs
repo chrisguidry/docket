@@ -11,7 +11,7 @@ use super::session::Delivery;
 use crate::Timestamp;
 use crate::behaviors::{AdmissionBlocked, AfterCompletion};
 use crate::docket::{Docket, Placement};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::execution::{Disposition, Message, State, runs_text};
 use crate::keys::WORKER_GROUP;
 use crate::scripts;
@@ -32,6 +32,20 @@ pub(super) enum Claim {
     /// The claim succeeded, but its copy of the runs hash could not be
     /// interpreted, for this reason.
     Unreadable(String),
+    /// The claim's status could not be read, for this reason, so whether the
+    /// claim succeeded is unknown.
+    Unknown(String),
+}
+
+/// How a log line shows a reply, cut short so that a large reply does not
+/// fill the log.
+fn shown(reply: &Value) -> String {
+    const LIMIT: usize = 100;
+    let text = format!("{reply:?}");
+    match text.char_indices().nth(LIMIT) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text,
+    }
 }
 
 /// One delivery, as the worker records what becomes of it.
@@ -103,13 +117,12 @@ impl Run<'_> {
         let reply: Value = call.run(&mut connection).await?;
         let parts = match reply {
             Value::Array(parts) => parts,
-            other => return Err(Error::Undecodable(format!("a claim of {other:?}"))),
+            other => return Ok(Claim::Unknown(format!("a claim of {}", shown(&other)))),
         };
         let status = parts.first().unwrap_or(&Value::Nil);
         let Ok(status) = redis::from_redis_value_ref::<String>(status) else {
-            return Err(Error::Undecodable(format!(
-                "a claim whose status is {status:?}"
-            )));
+            let shown = shown(status);
+            return Ok(Claim::Unknown(format!("a claim whose status is {shown}")));
         };
         let runs = parts.get(1).unwrap_or(&Value::Nil);
         Ok(match status.as_str() {

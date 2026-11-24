@@ -190,7 +190,7 @@ async fn a_superseded_run_with_a_field_name_that_is_not_text_publishes_nothing()
             states.push(event.state);
         }
     }
-    assert!(!states.is_empty());
+    assert_ne!(states.len(), 0);
     assert!(states.iter().all(|state| *state == before), "{states:?}");
     assert_eq!(stale.status().await.unwrap().unwrap().state, before);
     let superseded = value(&docket, "docket_tasks_superseded", &["docket.where=worker"]);

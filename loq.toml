@@ -41,7 +41,3 @@ max_lines = 552
 [[rules]]
 path = "python/tests/instrumentation/test_tracing.py"
 max_lines = 578
-
-[[rules]]
-path = "rust/docket/tests/docket/support/proxy.rs"
-max_lines = 554
