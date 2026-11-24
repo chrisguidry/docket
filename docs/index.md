@@ -9,6 +9,10 @@ on the scheduling of future work as seamlessly and efficiently as immediate work
 [![Codecov](https://img.shields.io/codecov/c/github/chrisguidry/docket)](https://app.codecov.io/gh/chrisguidry/docket)
 [![PyPI - License](https://img.shields.io/pypi/l/pydocket)](https://github.com/chrisguidry/docket/blob/main/LICENSE)
 
+<video src="how-docket-works.mp4" poster="how-docket-works.jpg" width="360" controls preload="metadata"></video>
+
+_Thanks to the [Prefect](https://www.prefect.io) team for their support, and to [Josie](https://www.linkedin.com/in/josie-azzam-2487042/) for her rad design._
+
 ## Install
 
 ```bash

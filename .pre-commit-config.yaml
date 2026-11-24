@@ -7,6 +7,8 @@ repos:
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
+        # The animation on the docs home page is about 2 MB.
+        exclude: ^docs/how-docket-works\.mp4$
 
   - repo: https://github.com/codespell-project/codespell
     rev: v2.2.6
