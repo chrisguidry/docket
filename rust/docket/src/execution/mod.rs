@@ -152,13 +152,27 @@ impl Status {
     }
 }
 
-/// A runs hash with its field names and values as text, for reading only.
-/// pydocket writes a task's pickled arguments to the hash, and their bytes
-/// that are not UTF-8 become U+FFFD.
-pub(crate) fn runs_text(runs: HashMap<Vec<u8>, Vec<u8>>) -> HashMap<String, String> {
-    let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+/// The fields of a runs hash that hold a producer's own bytes: pydocket
+/// writes a task's pickled arguments there.
+const PAYLOAD_FIELDS: [&str; 2] = ["args", "kwargs"];
+
+/// A runs hash as text, for reading only.  The bytes of `args` and `kwargs`
+/// that are not UTF-8 become U+FFFD, and any other value that is not UTF-8
+/// makes the hash unreadable.
+pub(crate) fn runs_text(runs: HashMap<Vec<u8>, Vec<u8>>) -> Result<HashMap<String, String>> {
     runs.into_iter()
-        .map(|(field, value)| (text(field), text(value)))
+        .map(|(field, value)| {
+            // A field name that is not UTF-8 names no field docket reads.
+            let field = String::from_utf8_lossy(&field).into_owned();
+            let value = if PAYLOAD_FIELDS.contains(&field.as_str()) {
+                String::from_utf8_lossy(&value).into_owned()
+            } else {
+                String::from_utf8(value).map_err(|_| {
+                    Error::Undecodable(format!("its {field:?} field is not UTF-8 text"))
+                })?
+            };
+            Ok((field, value))
+        })
         .collect()
 }
 
@@ -264,7 +278,7 @@ impl<O: DeserializeOwned> Execution<O> {
 
 async fn status(docket: &Docket, key: &str) -> Result<Option<Status>> {
     let runs: HashMap<Vec<u8>, Vec<u8>> = docket.handle().hgetall(docket.keys().runs(key)).await?;
-    Ok(Status::from_hash(&runs_text(runs)))
+    Ok(Status::from_hash(&runs_text(runs)?))
 }
 
 /// Waits for the run of `key` to end, and returns its output.

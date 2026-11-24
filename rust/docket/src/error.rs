@@ -41,6 +41,11 @@ pub enum Error {
     #[error("{0}")]
     Invalid(String),
 
+    /// A run's record in Redis that docket cannot read, such as a state
+    /// that is not UTF-8 text.
+    #[error("a run's record in Redis cannot be read: {0}")]
+    Undecodable(String),
+
     /// A command of [`docket::cli`](crate::cli) could not write its output.
     #[cfg(feature = "cli")]
     #[error("could not write the output: {0}")]

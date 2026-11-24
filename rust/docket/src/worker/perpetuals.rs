@@ -9,7 +9,7 @@ use redis::AsyncCommands;
 use super::session::Shared;
 use crate::docket::Placement;
 use crate::error::Result;
-use crate::execution::{Message, runs_text};
+use crate::execution::Message;
 
 /// How long one worker holds the seeding lock.
 const LOCK_MILLIS: u64 = 10_000;
@@ -53,10 +53,10 @@ pub(super) async fn seed(worker: &Shared) -> Result<()> {
     let result = async {
         for (name, automatic) in automatic {
             // The task's name is its key, so there is one copy per docket.
+            // Read as bytes, so a hash with pickled arguments still answers.
             let runs: HashMap<Vec<u8>, Vec<u8>> = connection.hgetall(keys.runs(&name)).await?;
-            let runs = runs_text(runs);
-            let live = runs.contains_key("known")
-                || runs.get("state").map(String::as_str) == Some("running");
+            let live = runs.contains_key(b"known".as_slice())
+                || runs.get(b"state".as_slice()).map(Vec::as_slice) == Some(b"running");
             if live {
                 continue;
             }

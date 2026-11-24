@@ -127,12 +127,14 @@ impl Run<'_> {
         let runs = parts.get(1).unwrap_or(&Value::Nil);
         Ok(match status.as_str() {
             "OK" => match redis::from_redis_value_ref::<HashMap<Vec<u8>, Vec<u8>>>(runs) {
-                Ok(runs) => Claim::Claimed(
-                    runs_text(runs)
-                        .get("generation")
-                        .and_then(|generation| generation.parse().ok())
-                        .unwrap_or(self.message().generation),
-                ),
+                Ok(runs) => match runs_text(runs) {
+                    Ok(runs) => Claim::Claimed(
+                        runs.get("generation")
+                            .and_then(|generation| generation.parse().ok())
+                            .unwrap_or(self.message().generation),
+                    ),
+                    Err(error) => Claim::Unreadable(format!("the runs hash of a claim: {error}")),
+                },
                 Err(error) => Claim::Unreadable(format!("the runs hash of a claim: {error}")),
             },
             "CANCELLED" => Claim::Cancelled,

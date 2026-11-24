@@ -198,6 +198,67 @@ async fn a_superseded_run_with_a_field_name_that_is_not_text_publishes_nothing()
     assert_no_disruption(&docket, &logs);
 }
 
+/// A run whose state is not UTF-8 text cannot be read, and every public read
+/// says so at once rather than waiting for a state it cannot see.
+#[tokio::test]
+async fn a_run_whose_state_is_not_text_reads_as_an_error() {
+    let docket = docket().await;
+    let execution = docket
+        .add(Echo::new("garbled"))
+        .key("garbled")
+        .await
+        .unwrap();
+    let mut redis = docket.redis().await.unwrap();
+    let () = redis
+        .hset(docket_key(&docket, "runs:garbled"), "state", PICKLED)
+        .await
+        .unwrap();
+
+    let unreadable =
+        "a run's record in Redis cannot be read: its \"state\" field is not UTF-8 text";
+    let error = execution.status().await.unwrap_err();
+    assert_eq!(error.to_string(), unreadable);
+    assert!(!error.is_redis_unavailable());
+    let error = within(5, execution.result()).await.unwrap_err();
+    assert_eq!(error.to_string(), unreadable);
+    let error = docket.execution("garbled").await.unwrap_err();
+    assert_eq!(error.to_string(), unreadable);
+}
+
+/// A runs hash whose `error` field, left by an earlier run, is not UTF-8 text
+/// cannot be read on its claim, so the run fails without running.
+#[tokio::test]
+async fn a_claim_whose_runs_hash_has_a_field_that_is_not_text_fails_the_run() {
+    let (logs, _guard) = Logs::capture();
+    let docket = docket().await;
+    let normal = echo_with_a_normal_task(&docket).await;
+    let garbled = docket
+        .add(Echo::new("garbled"))
+        .key("garbled")
+        .await
+        .unwrap();
+    let mut redis = docket.redis().await.unwrap();
+    let () = redis
+        .hset(docket_key(&docket, "runs:garbled"), "error", PICKLED)
+        .await
+        .unwrap();
+
+    within(10, worker(&docket).run_until_finished())
+        .await
+        .unwrap();
+
+    assert_eq!(within(10, normal.result()).await.unwrap(), "normal");
+    let status = garbled.status().await.unwrap().unwrap();
+    assert_eq!(status.state, State::Failed);
+    let error = status.error.unwrap();
+    assert!(
+        error.contains("its \"error\" field is not UTF-8 text"),
+        "{error}"
+    );
+    assert_eq!(value(&docket, "docket_tasks_failed", &[]), Some(1.0));
+    assert_no_disruption(&docket, &logs);
+}
+
 #[tokio::test]
 async fn an_automatic_task_is_scheduled_when_its_runs_hash_holds_bytes_that_are_not_text() {
     let (logs, _guard) = Logs::capture();

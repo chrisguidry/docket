@@ -107,7 +107,7 @@ pub(super) async fn subscribe(docket: &Docket, key: &str) -> Result<Events> {
         .hgetall(keys.progress(key))
         .query_async(&mut docket.handle())
         .await?;
-    if let Some(status) = Status::from_hash(&runs_text(runs)) {
+    if let Some(status) = Status::from_hash(&runs_text(runs)?) {
         initial.push(Ok(Event::State(StateEvent {
             state: status.state,
             when: status.when,
