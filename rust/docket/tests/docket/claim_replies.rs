@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use docket::{Docket, State, Worker};
+use docket::{Docket, Event, State, Worker};
+use futures::StreamExt;
 
 use crate::logs::Logs;
 use crate::support::proxy::Proxy;
@@ -30,8 +31,21 @@ async fn echo_once(proxy: &Proxy, arm: impl FnOnce(&Proxy)) -> (Docket, docket::
     let docket = docket_through(proxy).await;
     docket.register(|_ctx, args: Echo| async move { Ok::<_, std::io::Error>(args.text) });
     let execution = docket.add(Echo::new("again")).await.unwrap();
+    load_claim(&docket).await;
     arm(proxy);
     (docket, execution)
+}
+
+/// Loads the claim script into Redis, so that a forwarded `EVALSHA` of it
+/// runs instead of failing with `NOSCRIPT`.
+async fn load_claim(docket: &Docket) {
+    let mut redis = docket.redis().await.unwrap();
+    let _: String = redis::cmd("SCRIPT")
+        .arg("LOAD")
+        .arg(CLAIM)
+        .query_async(&mut redis)
+        .await
+        .unwrap();
 }
 
 /// A reply that is not a list, and longer than a log line shows.
@@ -82,7 +96,9 @@ async fn a_claim_that_ran_but_whose_reply_cannot_be_read_runs_the_task_once() {
         async move { Ok::<_, std::io::Error>(args.text) }
     });
     let execution = docket.add(Echo::new("once")).await.unwrap();
-    proxy.replace_script_reply(CLAIM, b"$1\r\n\xff\r\n");
+    load_claim(&docket).await;
+    let mut events = execution.subscribe().await.unwrap();
+    proxy.replace_script_reply(CLAIM, b"$1\r\n\xff\r\n", Duration::ZERO);
 
     within(20, hasty(&docket).run_until_finished())
         .await
@@ -91,6 +107,19 @@ async fn a_claim_that_ran_but_whose_reply_cannot_be_read_runs_the_task_once() {
     assert_eq!(within(10, execution.result()).await.unwrap(), "once");
     assert_eq!(runs.load(Ordering::SeqCst), 1);
     assert_eq!(value(&docket, "docket_tasks_redelivered", &[]), Some(1.0));
+    // Each claim that ran in Redis published a running state.
+    let mut running = 0;
+    within(10, async {
+        while let Some(event) = events.next().await {
+            match event.unwrap() {
+                Event::State(event) if event.state == State::Running => running += 1,
+                Event::State(event) if event.state == State::Completed => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+    assert_eq!(running, 2);
 }
 
 /// A producer's command whose reply is cut short fails, and the next command
@@ -140,20 +169,37 @@ async fn a_claim_whose_runs_hash_cannot_be_read_fails_the_run() {
     assert_no_disruption(&docket, &logs);
 }
 
-/// A cancel that reaches the worker after the claim, but before the run
-/// ends, leaves the task cancelled.
+/// A cancel that reaches the worker while it waits for its claim's reply
+/// leaves the task cancelled, whether or not the claim ran in Redis first.
+#[rstest::rstest]
+#[case::before_the_claim_runs(
+    |proxy: &Proxy| proxy.answer_script_after(CLAIM, UNREADABLE_CLAIM, Duration::from_secs(1)),
+    State::Queued
+)]
+#[case::after_the_claim_runs(
+    |proxy: &Proxy| proxy.replace_script_reply(CLAIM, UNREADABLE_CLAIM, Duration::from_secs(1)),
+    State::Running
+)]
 #[tokio::test]
-async fn a_cancel_during_a_claim_whose_runs_hash_cannot_be_read_wins() {
+async fn a_cancel_during_a_claim_whose_runs_hash_cannot_be_read_wins(
+    #[case] arm: fn(&Proxy),
+    #[case] claimed: State,
+) {
     let Some(proxy) = proxy().await else { return };
     let (docket, execution) = echo_once(&proxy, |_| {}).await;
-    let sent = proxy.count("EVALSHA");
-    proxy.answer_script_after(CLAIM, UNREADABLE_CLAIM, Duration::from_secs(1));
+    let sent = proxy.script_count(CLAIM);
+    arm(&proxy);
     // A second connection, because the delayed reply holds up the worker's.
     let canceller = Docket::connect(docket.name(), proxy.url()).await.unwrap();
+    let seen = canceller.execution(execution.key()).await.unwrap().unwrap();
 
-    let run = tokio::spawn(hasty(&docket).run_until_finished());
+    // The default redelivery timeout keeps the sweep away from the delivery
+    // while its claim's reply waits.
+    let run = tokio::spawn(worker(&docket).run_until_finished());
     within(10, async {
-        while proxy.count("EVALSHA") == sent {
+        while proxy.script_count(CLAIM) == sent
+            || seen.status().await.unwrap().unwrap().state != claimed
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })

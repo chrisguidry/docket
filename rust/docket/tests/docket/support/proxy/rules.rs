@@ -11,6 +11,10 @@ type Matcher = Box<dyn Fn(&[Vec<u8>]) -> bool + Send>;
 
 /// Answers the next `times` commands that `matches` picks with `reply`, a
 /// RESP reply, or with a generic error when `reply` is `None`.
+///
+/// `close` wins over the other two: the reply goes out at once, unsent to
+/// Redis.  Otherwise `forward` decides whether Redis runs the command, and
+/// in both cases the reply waits for `delay`.
 pub(super) struct Rule {
     pub(super) matches: Matcher,
     pub(super) times: usize,
@@ -19,7 +23,7 @@ pub(super) struct Rule {
     /// away partway through one.
     pub(super) close: bool,
     /// How long the reply waits, which holds up the connection's later
-    /// commands too.
+    /// replies too.
     pub(super) delay: Duration,
     /// Sends the command to Redis, and gives the client `reply` in place of
     /// Redis's reply.
@@ -57,14 +61,19 @@ impl Rule {
 /// The start of a reply whose last bulk string never finishes.
 const TRUNCATED: &[u8] = b"*2\r\n$4\r\nargs\r\n$10\r\nabc";
 
-/// A rule for the runs of the Lua script with this source.
-fn script_rule(source: &str, times: usize, reply: Option<Vec<u8>>) -> Rule {
-    let sha = Sha1::digest(source.as_bytes())
+/// The SHA-1 that `EVALSHA` names the Lua script with this source by.
+fn sha(source: &str) -> String {
+    Sha1::digest(source.as_bytes())
         .iter()
         .fold(String::new(), |mut hex, byte| {
             let _ = write!(hex, "{byte:02x}");
             hex
-        });
+        })
+}
+
+/// A rule for the runs of the Lua script with this source.
+fn script_rule(source: &str, times: usize, reply: Option<Vec<u8>>) -> Rule {
+    let sha = sha(source);
     Rule::new(times, reply, move |args| {
         args[0].eq_ignore_ascii_case(b"EVALSHA")
             && args
@@ -74,6 +83,12 @@ fn script_rule(source: &str, times: usize, reply: Option<Vec<u8>>) -> Rule {
 }
 
 impl Proxy {
+    /// How many runs of the Lua script with this source reached the proxy,
+    /// answered or not.
+    pub fn script_count(&self, source: &str) -> usize {
+        self.count(&format!("EVALSHA {}", sha(source)))
+    }
+
     /// Answers the next `times` commands named `command` with an error,
     /// without sending them to Redis.
     pub fn fail(&self, command: &str, times: usize) {
@@ -130,11 +145,13 @@ impl Proxy {
     }
 
     /// Sends the next run of the Lua script with this source to Redis, and
-    /// gives the client `reply` in place of Redis's reply.
-    pub fn replace_script_reply(&self, source: &str, reply: &[u8]) {
+    /// gives the client `reply` in place of Redis's reply once `delay` has
+    /// passed.
+    pub fn replace_script_reply(&self, source: &str, reply: &[u8], delay: Duration) {
         let rule = script_rule(source, 1, Some(reply.to_vec()));
         self.add(Rule {
             forward: true,
+            delay,
             ..rule
         });
     }

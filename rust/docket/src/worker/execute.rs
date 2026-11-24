@@ -125,13 +125,15 @@ async fn execute(worker: &Shared, delivery: &Delivery, active: &Active) -> Resul
             worker.limited.count_run(&message.key);
             (message.generation, Some(reason))
         }
-        // The claim script may have settled the delivery, so this run writes
-        // nothing, and the redelivery sweep takes any delivery it left.
+        // The claim script may have acknowledged the delivery, so this run
+        // writes nothing, and the redelivery sweep hands back any delivery
+        // it left pending.
         Claim::Unknown(reason) => {
             tracing::error!(
                 reason,
                 "Could not read the claim of task {:?}, so its state is unknown; \
-                 if the claim did not settle it, the redelivery sweep will",
+                 if the claim did not acknowledge the delivery, the redelivery \
+                 sweep hands it back",
                 message.key
             );
             return Ok(());

@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -195,8 +196,9 @@ enum Pending {
     Forwarded,
     /// An error the proxy made up.
     Injected(Vec<u8>),
-    /// The next reply from Redis, which the client gets as this one.
-    Replaced(Vec<u8>),
+    /// The next reply from Redis, which the client gets as this one after
+    /// this wait.
+    Replaced(Vec<u8>, Duration),
 }
 
 /// One proxied connection's shared state.
@@ -278,8 +280,17 @@ async fn replies(mut server: OwnedReadHalf, connection: Arc<Connection>) {
                 let _ = connection.to_client.send(out);
                 continue;
             }
+            // The entry stays at the front of the line while its reply waits,
+            // so that no injected reply overtakes it.
+            let delay = match connection.pending.lock().unwrap().front() {
+                Some(Pending::Replaced(_, delay)) => *delay,
+                _ => Duration::ZERO,
+            };
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
             let mut pending = connection.pending.lock().unwrap();
-            if let Some(Pending::Replaced(reply)) = pending.pop_front() {
+            if let Some(Pending::Replaced(reply, _)) = pending.pop_front() {
                 out = reply;
             }
             // Injected errors wait until the replies ahead of them arrive.
@@ -320,6 +331,12 @@ async fn commands(
             {
                 let mut state = state.lock().unwrap();
                 *state.counts.entry(command.clone()).or_default() += 1;
+                if name == b"EVALSHA"
+                    && let Some(sha) = args.get(1)
+                {
+                    let script = format!("EVALSHA {}", String::from_utf8_lossy(sha));
+                    *state.counts.entry(script.to_ascii_uppercase()).or_default() += 1;
+                }
                 if subscribed {
                     *state.subscriber_counts.entry(command.clone()).or_default() += 1;
                 }
@@ -341,12 +358,14 @@ async fn commands(
             if let Some(injection) = &failure
                 && injection.forward
             {
-                let replaced = Pending::Replaced(injection.reply.clone());
+                let replaced = Pending::Replaced(injection.reply.clone(), injection.delay);
                 connection.pending.lock().unwrap().push_back(replaced);
                 forward.extend(raw);
                 continue;
             }
-            if let Some(injection) = &failure {
+            if let Some(injection) = &failure
+                && !injection.delay.is_zero()
+            {
                 tokio::time::sleep(injection.delay).await;
             }
             let Some(Injection { reply: error, .. }) = failure else {
