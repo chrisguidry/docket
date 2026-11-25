@@ -89,7 +89,9 @@ jobs:
         run: cargo test --workspace --all-features --locked
 
   # GitHub's Windows runners cannot run Redis containers, so memory:// stands
-  # in for Redis, as it does in Python's Windows jobs.
+  # in for Redis, as it does in Python's Windows jobs.  The conformance agent
+  # stops on SIGTERM and runs only under the Linux conformance driver, so this
+  # job leaves it out.
   test-windows:
     name: Rust, Windows
     runs-on: windows-latest
@@ -109,7 +111,7 @@ jobs:
           workspaces: rust
 
       - name: Run the tests
-        run: cargo test --workspace --all-features --locked
+        run: cargo test --workspace --exclude docket-conformance-agent --all-features --locked
 
   coverage:
     name: Rust coverage
