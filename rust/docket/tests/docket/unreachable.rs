@@ -60,7 +60,10 @@ async fn a_worker_keeps_trying_to_reach_redis_until_it_is_shut_down() {
     )
     .await
     .unwrap();
-    assert!(logs.contains("Connection refused"));
+    // The operating system words the refusal its own way, so the expected
+    // text comes from refusing a plain connection to the same port.
+    let refused = std::net::TcpStream::connect("127.0.0.1:1").unwrap_err();
+    assert!(logs.contains(&refused.to_string()), "{refused}");
 }
 
 #[rstest]
