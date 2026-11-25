@@ -77,21 +77,9 @@ fn prints_and_parses_rfc_3339() {
 }
 
 #[test]
-fn converts_to_and_from_system_time() {
-    let when = at(1_800_000_000);
+fn converts_from_system_time() {
     let system = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
-    assert_eq!(Timestamp::from(system), when);
-    assert_eq!(SystemTime::from(when), system);
-}
-
-// Windows's SystemTime starts in 1601 and counts in 100 ns steps, so it
-// reaches neither extreme exactly.
-#[cfg(unix)]
-#[rstest::rstest]
-#[case::earliest(Timestamp::MIN)]
-#[case::latest(Timestamp::MAX)]
-fn converts_the_extremes_to_system_time(#[case] when: Timestamp) {
-    assert_eq!(Timestamp::from(SystemTime::from(when)), when);
+    assert_eq!(Timestamp::from(system), at(1_800_000_000));
 }
 
 #[test]

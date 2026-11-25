@@ -20,6 +20,11 @@ use crate::error::{Error, Result};
 ///
 /// It prints and parses as RFC 3339 in UTC, such as
 /// `2026-10-05T19:26:03.529728Z`.  Parsing accepts any offset.
+///
+/// A `SystemTime` converts into a `Timestamp`, but not back, because Windows's
+/// `SystemTime` cannot represent times before 1601.  To get a `SystemTime`,
+/// convert through jiff with `SystemTime::try_from(jiff::Timestamp::from(when))`,
+/// which fails where the platform cannot represent the time.
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timestamp(pub(crate) jiff::Timestamp);
 
@@ -154,17 +159,6 @@ impl From<SystemTime> for Timestamp {
             },
             Self,
         )
-    }
-}
-
-/// # Panics
-///
-/// When the platform's `SystemTime` cannot represent the time.  Linux and
-/// macOS represent every time from [`Timestamp::MIN`] to [`Timestamp::MAX`];
-/// Windows represents none before the year 1601.
-impl From<Timestamp> for SystemTime {
-    fn from(when: Timestamp) -> Self {
-        Self::try_from(when.0).expect("the platform's SystemTime cannot represent the time")
     }
 }
 
