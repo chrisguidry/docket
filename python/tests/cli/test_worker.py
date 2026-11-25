@@ -5,9 +5,12 @@ import logging
 import os
 import signal
 import sys
+from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
+import watchfiles
 
 from docket.docket import Docket
 from docket.tasks import sleep, trace
@@ -73,6 +76,115 @@ def test_message_batch_option_reaches_the_worker(monkeypatch: pytest.MonkeyPatch
     worker_cli_command(message_batch=17)
 
     assert passed["message_batch"] == 17
+
+
+def test_reload_runs_worker_with_cli_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from docket.cli import worker
+    from docket.cli._support import LogFormat, LogLevel
+
+    passed: dict[str, object] = {}
+    formats: list[LogFormat] = []
+    levels: list[LogLevel] = []
+
+    async def record_worker(**kwargs: object) -> None:
+        passed.update(kwargs)
+
+    def simulate_reload(
+        path: str,
+        *,
+        target: Callable[..., None],
+        args: tuple[object, ...],
+        watch_filter: watchfiles.PythonFilter,
+    ) -> None:
+        assert path == "."
+        assert watch_filter(watchfiles.Change.modified, "tasks.py")
+        assert not watch_filter(watchfiles.Change.modified, "notes.txt")
+        target(*args)
+
+    monkeypatch.setattr(Worker, "run", record_worker)
+    monkeypatch.setattr("docket.cli._reload.run_process", simulate_reload)
+    monkeypatch.setattr("docket.cli._reload.set_logging_format", formats.append)
+    monkeypatch.setattr("docket.cli._reload.set_logging_level", levels.append)
+    worker(
+        reload=True,
+        tasks=["app.tasks:registry"],
+        logging_level=LogLevel.WARNING,
+        logging_format=LogFormat.PLAIN,
+        concurrency=3,
+    )
+
+    assert passed["tasks"] == ["app.tasks:registry"]
+    assert passed["concurrency"] == 3
+    assert passed["until_finished"] is False
+    assert formats == [LogFormat.PLAIN]
+    assert levels == [LogLevel.WARNING]
+
+
+async def test_reload_rejects_until_finished() -> None:
+    result = await run_cli(
+        "worker", "--reload", "--until-finished", env={"TERM": "dumb"}
+    )
+
+    assert result.exit_code == 2
+    assert "--reload cannot be used with --until-finished" in result.output
+
+
+async def test_reload_imports_updated_tasks(tmp_path: Path) -> None:
+    module = tmp_path / "dev_tasks.py"
+    module.write_text("async def before(): pass\ntasks = [before]\n")
+    proc = await asyncio.create_subprocess_exec(
+        str(Path(sys.executable).with_name("docket")),
+        "worker",
+        "--reload",
+        "--url",
+        "memory://",
+        "--tasks",
+        "dev_tasks:tasks",
+        "--logging-format",
+        "json",
+        "--no-schedule-automatic-tasks",
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join([str(tmp_path), os.getenv("PYTHONPATH", "")]),
+            "WATCHFILES_FORCE_POLLING": "true",
+        },
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    assert proc.stdout is not None
+    stdout = proc.stdout
+    output: list[str] = []
+
+    async def wait_for_log(message: str) -> None:
+        async with asyncio.timeout(8):
+            while True:
+                line = await stdout.readline()
+                assert line, "".join(output)
+                output.append(line.decode())
+                if message in output[-1]:
+                    record: dict[str, str] = json.loads(line)
+                    assert record["message"] == message
+                    return
+
+    try:
+        await wait_for_log("* before()")
+        # Ensure polling sees a new modification time, even during a fast restart.
+        timestamp = module.stat().st_mtime + 2
+        replacement = tmp_path / "dev_tasks.tmp"
+        replacement.write_text("async def edited(): pass\ntasks = [edited]\n")
+        os.utime(replacement, (timestamp, timestamp))
+        replacement.replace(module)
+        await wait_for_log("* edited()")
+    finally:
+        proc.send_signal(signal.SIGINT)
+        remainder, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
+
+    logs = "".join(output) + remainder.decode()
+    assert proc.returncode == 0, logs
+    assert logs.count("initiating graceful shutdown") == 2, logs
 
 
 @pytest.mark.skipif(

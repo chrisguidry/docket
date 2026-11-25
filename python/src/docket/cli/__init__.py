@@ -20,6 +20,7 @@ from rich.progress import (
 from rich.table import Table
 
 from docket import __version__, tasks
+from docket.cli._reload import run_with_reload
 from docket.cli._support import (
     LogLevel,
     LogFormat,
@@ -248,29 +249,40 @@ def worker(
             envvar="DOCKET_WORKER_DEPENDENCIES",
         ),
     ] = None,
+    reload: Annotated[
+        bool,
+        typer.Option("--reload", help="Restart on Python file changes"),
+    ] = False,
 ) -> None:
-    asyncio.run(
-        Worker.run(
-            docket_name=docket_,
-            url=url,
-            name=name,
-            concurrency=concurrency,
-            message_batch=message_batch,
-            redelivery_timeout=redelivery_timeout,
-            reconnection_delay=reconnection_delay,
-            minimum_check_interval=minimum_check_interval,
-            scheduling_resolution=scheduling_resolution,
-            schedule_automatic_tasks=schedule_automatic_tasks,
-            enable_internal_instrumentation=enable_internal_instrumentation,
-            parent_task_spans=parent_task_spans,
-            until_finished=until_finished,
-            healthcheck_port=healthcheck_port,
-            metrics_port=metrics_port,
-            tasks=tasks,
-            fallback_task=fallback_task,
-            dependencies=dependencies,
-        )
+    if reload and until_finished:
+        raise typer.BadParameter("--reload cannot be used with --until-finished")
+
+    run_worker = partial(
+        Worker.run,
+        docket_name=docket_,
+        url=url,
+        name=name,
+        concurrency=concurrency,
+        message_batch=message_batch,
+        redelivery_timeout=redelivery_timeout,
+        reconnection_delay=reconnection_delay,
+        minimum_check_interval=minimum_check_interval,
+        scheduling_resolution=scheduling_resolution,
+        schedule_automatic_tasks=schedule_automatic_tasks,
+        enable_internal_instrumentation=enable_internal_instrumentation,
+        parent_task_spans=parent_task_spans,
+        until_finished=until_finished,
+        healthcheck_port=healthcheck_port,
+        metrics_port=metrics_port,
+        tasks=tasks,
+        fallback_task=fallback_task,
+        dependencies=dependencies,
     )
+
+    if reload:
+        run_with_reload(run_worker, logging_level, logging_format)
+    else:
+        asyncio.run(run_worker())
 
 
 @app.command(help="Strikes a task or parameters from the docket")
