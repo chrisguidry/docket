@@ -1,0 +1,4 @@
+# docket-rs compiles the Lua scripts in with include_str! and checks each
+# script's first lines byte for byte, so a Windows checkout must not turn
+# their line endings into CRLF.
+*.lua text eol=lf
