@@ -2,6 +2,8 @@ local slots_key = KEYS[1]
 local waiters_stream = KEYS[2]
 local stream_key = KEYS[3]
 local runs_key = KEYS[4]
+local waiter_index = KEYS[5]
+local parked_total = KEYS[6]
 local max_concurrent = tonumber(ARGV[1])
 local task_key = ARGV[2]
 local current_time = tonumber(ARGV[3])
@@ -13,6 +15,28 @@ local worker_group_name = ARGV[8]
 local state_channel = ARGV[9]
 local state_payload = ARGV[10]
 local message_start = 11
+
+-- Records how many tasks are parked on this stream, and moves the docket's
+-- total by the difference from the count recorded before.  A count that is
+-- wrong for a stream is right again after any script runs on that stream.
+local function record_parked()
+    local now = redis.call('XLEN', waiters_stream)
+    local before = tonumber(redis.call('ZSCORE', waiter_index, waiters_stream) or 0)
+    if now == 0 then
+        redis.call('DEL', waiters_stream)
+        redis.call('ZREM', waiter_index, waiters_stream)
+    else
+        redis.call('ZADD', waiter_index, tostring(now), waiters_stream)
+    end
+    if now ~= before then
+        local total = tonumber(redis.call('GET', parked_total) or 0) + now - before
+        if total > 0 then
+            redis.call('SET', parked_total, tostring(total))
+        else
+            redis.call('DEL', parked_total)
+        end
+    end
+end
 
 -- Acquire a concurrency slot, or park the task on the waiter stream
 -- atomically.  Returns 1 if acquired (task should run), 0 if parked
@@ -77,6 +101,8 @@ for i = message_start, #ARGV, 2 do
 end
 
 local waiter_entry_id = redis.call('XADD', waiters_stream, '*', unpack(message))
+
+record_parked()
 
 -- Record the waiter's location so the dependency's cancel subscriber can
 -- find and XDEL the waiter entry when the task transitions to 'cancelled'.

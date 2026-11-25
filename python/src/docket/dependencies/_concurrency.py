@@ -57,6 +57,8 @@ async def _acquire_or_park(
     waiters_stream: Key[str],
     stream_key: Key[str],
     runs_key: Key[str],
+    waiter_index: Key[str],
+    parked_total: Key[str],
     max_concurrent: Arg[int],
     task_key: Arg[str],
     current_time: Arg[float],
@@ -79,6 +81,8 @@ async def _release_and_wake(
     waiters_stream: Key[str],
     stream_key: Key[str],
     queue_key: Key[str],
+    waiter_index: Key[str],
+    parked_total: Key[str],
     task_key: Arg[str],
     max_concurrent: Arg[int],
     stale_threshold: Arg[float],
@@ -96,6 +100,8 @@ async def _scavenge_and_wake(
     waiters_stream: Key[str],
     stream_key: Key[str],
     queue_key: Key[str],
+    waiter_index: Key[str],
+    parked_total: Key[str],
     max_concurrent: Arg[int],
     stale_threshold: Arg[float],
     runs_prefix: Arg[str],
@@ -111,8 +117,44 @@ async def _cancel_cleanup(
     waiters_stream: Key[str],
     progress_key: Key[str],
     runs_key: Key[str],
+    waiter_index: Key[str],
+    parked_total: Key[str],
     waiter_entry_id: Arg[str],
 ) -> None: ...
+
+
+@redis_script
+async def _parked_depth(
+    redis: RedisClient,
+    *,
+    waiter_index: Key[str],
+    parked_total: Key[str],
+    cursor: Arg[int],
+    batch: Arg[int],
+) -> int: ...
+
+
+# How many waiter streams one heartbeat compares with their counts.
+PARKED_DEPTH_BATCH = 16
+
+
+async def parked_depth(docket: Docket, redis: RedisClient, cursor: int) -> int:
+    """Read how many tasks wait on the docket's concurrency waiter streams.
+
+    The concurrency scripts keep this total as tasks park and leave, so it
+    includes a cancelled task until its entry leaves its stream.  Each read
+    also compares ``PARKED_DEPTH_BATCH`` of the indexed streams with their
+    counts, starting at ``cursor``, and corrects the total.  A caller that
+    adds ``PARKED_DEPTH_BATCH`` to ``cursor`` on each read reaches every
+    stream in turn.
+    """
+    return await _parked_depth(
+        redis,
+        waiter_index=docket.waiter_index_key,
+        parked_total=docket.parked_total_key,
+        cursor=cursor,
+        batch=PARKED_DEPTH_BATCH,
+    )
 
 
 class ConcurrencyBlocked(AdmissionBlocked):
@@ -287,6 +329,8 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                 waiters_stream=waiters_stream,
                 stream_key=docket.stream_key,
                 runs_key=execution._redis_key,
+                waiter_index=docket.waiter_index_key,
+                parked_total=docket.parked_total_key,
                 max_concurrent=self.max_concurrent,
                 task_key=execution.key,
                 current_time=current_time,
@@ -452,6 +496,8 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                 waiters_stream=waiter_stream,
                 progress_key=f"{docket.prefix}:progress:{task_key}",
                 runs_key=runs_key,
+                waiter_index=docket.waiter_index_key,
+                parked_total=docket.parked_total_key,
                 waiter_entry_id=waiter_entry_id,
             )
         # Drop the safeguard task this waiter scheduled at park time.
@@ -476,6 +522,8 @@ class ConcurrencyLimit(Dependency["ConcurrencyLimit"]):
                 waiters_stream=waiters_stream,
                 stream_key=docket.stream_key,
                 queue_key=docket.queue_key,
+                waiter_index=docket.waiter_index_key,
+                parked_total=docket.parked_total_key,
                 task_key=self._task_key,
                 max_concurrent=self.max_concurrent,
                 stale_threshold=stale_threshold,
@@ -565,6 +613,8 @@ async def _safeguard_wake(waiter_stream: str, max_concurrent: int) -> None:
             waiters_stream=waiter_stream,
             stream_key=docket.stream_key,
             queue_key=docket.queue_key,
+            waiter_index=docket.waiter_index_key,
+            parked_total=docket.parked_total_key,
             max_concurrent=max_concurrent,
             stale_threshold=stale_threshold,
             runs_prefix=f"{docket.prefix}:runs:",

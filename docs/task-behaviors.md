@@ -485,7 +485,9 @@ async def process_tenant_data(
 
 ### Monitoring Concurrency
 
-Concurrency limits are enforced using Redis sorted sets, so you can monitor them:
+Each worker reports how many tasks wait for a slot, across every limit on the docket, as the `docket_parked_depth` metric. Tasks that wait for a slot are not part of `docket_queue_depth`.
+
+Concurrency limits are enforced using Redis sorted sets, so you can also inspect them directly:
 
 ```python
 async def monitor_concurrency_usage() -> None:

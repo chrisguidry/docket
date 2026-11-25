@@ -136,10 +136,10 @@ Rich dependency injection supporting:
 ### Redis Data Model
 
 - **Streams**: `{docket}:stream` (ready tasks), `{docket}:strikes` (commands)
-- **Sorted Sets**: `{docket}:queue` (scheduled tasks), `{docket}:workers` (heartbeats)
+- **Sorted Sets**: `{docket}:queue` (scheduled tasks), `{docket}:workers` (heartbeats), `{docket}:indexes:concurrency-waiters` (concurrency waiter streams, scored by tasks parked)
 - **Hashes**: `{docket}:{key}` (parked task data)
 - **Sets**: `{docket}:worker-tasks:{worker}` (worker capabilities)
-- **Strings**: `{docket}:leases:redelivery-sweep` (fleet-wide sweep lease, expiring)
+- **Strings**: `{docket}:leases:redelivery-sweep` (fleet-wide sweep lease, expiring), `{docket}:indexes:concurrency-waiters:total` (tasks parked on all waiter streams)
 
 ### Task Lifecycle
 

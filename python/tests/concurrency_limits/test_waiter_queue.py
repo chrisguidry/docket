@@ -328,6 +328,8 @@ async def test_cancel_cleanup_script_drains_waiter_entry(docket: Docket):
         await redis.hset(runs_key, "waiter_stream", waiter_stream)
         await redis.hset(runs_key, "waiter_entry_id", entry_id.decode())
         await redis.hset(progress_key, "current", "0")
+        await redis.zadd(docket.waiter_index_key, {waiter_stream: 1})
+        await redis.set(docket.parked_total_key, "1")
 
         assert await redis.xlen(waiter_stream) == 1
         assert await redis.exists(progress_key) == 1
@@ -337,10 +339,14 @@ async def test_cancel_cleanup_script_drains_waiter_entry(docket: Docket):
             waiters_stream=waiter_stream,
             progress_key=progress_key,
             runs_key=runs_key,
+            waiter_index=docket.waiter_index_key,
+            parked_total=docket.parked_total_key,
             waiter_entry_id=entry_id.decode(),
         )
 
         assert await redis.xlen(waiter_stream) == 0
+        assert await redis.zcard(docket.waiter_index_key) == 0
+        assert await redis.get(docket.parked_total_key) is None
         assert await redis.exists(progress_key) == 0
         assert await redis.hget(runs_key, "waiter_stream") is None
         assert await redis.hget(runs_key, "waiter_entry_id") is None

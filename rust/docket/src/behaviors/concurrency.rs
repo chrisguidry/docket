@@ -94,6 +94,8 @@ impl Admission for ConcurrencyLimit {
             waiters_stream: waiters.clone(),
             stream_key: keys.stream(),
             runs_key: keys.runs(&key),
+            waiter_index: keys.waiter_index(),
+            parked_total: keys.parked_total(),
             max_concurrent: i64::from(self.max),
             task_key: key.clone(),
             current_time: now,
@@ -174,6 +176,8 @@ fn hold(
             waiters_stream: waiters,
             stream_key: keys.stream(),
             queue_key: keys.queue(),
+            waiter_index: keys.waiter_index(),
+            parked_total: keys.parked_total(),
             task_key: key,
             max_concurrent: i64::from(max),
             stale_threshold: seconds(docket.now()) - timeout.as_secs_f64(),
@@ -276,6 +280,8 @@ pub(crate) async fn safeguard_wake(ctx: Context, args: SafeguardWake) -> crate::
         waiters_stream: args.waiters_stream,
         stream_key: keys.stream(),
         queue_key: keys.queue(),
+        waiter_index: keys.waiter_index(),
+        parked_total: keys.parked_total(),
         max_concurrent: i64::from(args.max_concurrent),
         stale_threshold: seconds(docket.now()) - ctx.delivery().redelivery_timeout.as_secs_f64(),
         runs_prefix: keys.runs_prefix(),
@@ -286,6 +292,32 @@ pub(crate) async fn safeguard_wake(ctx: Context, args: SafeguardWake) -> crate::
     super::run_script::<redis::Value>(docket, &call)
         .await
         .map(drop)
+}
+
+/// How many waiter streams one heartbeat compares with their counts.
+pub(crate) const PARKED_DEPTH_BATCH: i64 = 16;
+
+/// Reads how many tasks wait on the docket's concurrency waiter streams.
+/// The concurrency scripts keep this total as tasks park and leave, so it
+/// includes a cancelled task until its entry leaves its stream.  Each read
+/// also compares `PARKED_DEPTH_BATCH` of the indexed streams with their
+/// counts, starting at `cursor`, and corrects the total.  A caller that adds
+/// `PARKED_DEPTH_BATCH` to `cursor` on each read reaches every stream in
+/// turn.
+pub(crate) async fn parked_depth(
+    docket: &Docket,
+    connection: &mut Handle,
+    cursor: i64,
+) -> crate::Result<u64> {
+    let keys = docket.keys();
+    let call = scripts::ParkedDepth {
+        waiter_index: keys.waiter_index(),
+        parked_total: keys.parked_total(),
+        cursor,
+        batch: PARKED_DEPTH_BATCH,
+    }
+    .call();
+    Ok(call.run(connection).await?)
 }
 
 #[cfg(all(test, feature = "memory"))]

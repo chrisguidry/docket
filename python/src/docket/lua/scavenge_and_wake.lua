@@ -2,11 +2,35 @@ local slots_key = KEYS[1]
 local waiters_stream = KEYS[2]
 local stream_key = KEYS[3]
 local queue_key = KEYS[4]
+local waiter_index = KEYS[5]
+local parked_total = KEYS[6]
 local max_concurrent = tonumber(ARGV[1])
 local stale_threshold = tonumber(ARGV[2])
 local runs_prefix = ARGV[3]
 local state_prefix = ARGV[4]
 local parked_prefix = ARGV[5]
+
+-- Records how many tasks are parked on this stream, and moves the docket's
+-- total by the difference from the count recorded before.  A count that is
+-- wrong for a stream is right again after any script runs on that stream.
+local function record_parked()
+    local now = redis.call('XLEN', waiters_stream)
+    local before = tonumber(redis.call('ZSCORE', waiter_index, waiters_stream) or 0)
+    if now == 0 then
+        redis.call('DEL', waiters_stream)
+        redis.call('ZREM', waiter_index, waiters_stream)
+    else
+        redis.call('ZADD', waiter_index, tostring(now), waiters_stream)
+    end
+    if now ~= before then
+        local total = tonumber(redis.call('GET', parked_total) or 0) + now - before
+        if total > 0 then
+            redis.call('SET', parked_total, tostring(total))
+        else
+            redis.call('DEL', parked_total)
+        end
+    end
+end
 
 -- Scavenge any stale slot holders and hand freed capacity to parked
 -- waiters.  Called by the worker's concurrency-sweep loop to recover
@@ -30,7 +54,7 @@ end
 
 local waiters_count = redis.call('XLEN', waiters_stream)
 if waiters_count == 0 then
-    redis.call('DEL', waiters_stream)
+    record_parked()
     return 0
 end
 
@@ -44,6 +68,7 @@ end
 
 local capacity = max_concurrent - redis.call('ZCARD', slots_key)
 if capacity == 0 then
+    record_parked()
     return 0
 end
 
@@ -98,8 +123,6 @@ end
 if redis.call('ZCARD', slots_key) == 0 then
     redis.call('DEL', slots_key)
 end
-if redis.call('XLEN', waiters_stream) == 0 then
-    redis.call('DEL', waiters_stream)
-end
+record_parked()
 
 return woken
