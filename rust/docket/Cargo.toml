@@ -23,10 +23,6 @@ chrono-tz = ["dep:chrono-tz"]
 # A copy of the IANA time zone database built into the binary, which
 # TimeZone::get reads when the system's database has no zone by that name.
 tzdb-bundle = ["jiff/tzdb-bundle-always"]
-# From conversions between docket's Timestamp and TimeZone and jiff 0.2's.
-# The version is in the name so that a feature for a later jiff can sit
-# beside it.
-jiff-02 = []
 # docket::cli: a worker's command-line options for an application's own CLI.
 cli = ["dep:clap", "tokio/signal", "prometheus"]
 # memory:// runs the in-process engine in src/memory, for users' test suites.

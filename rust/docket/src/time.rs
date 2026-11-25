@@ -1,7 +1,11 @@
-//! The time types in docket's API.  docket-rs computes times with jiff 0.2,
-//! and keeps jiff out of its signatures, so that moving to a later jiff does
-//! not change them.  The `chrono`, `chrono-tz`, and `jiff-02` features
-//! convert these types to and from those crates' types.
+//! The time types in docket's API.  docket-rs computes times with jiff 1, and
+//! its signatures use its own [`Timestamp`] and [`TimeZone`].  Both convert to
+//! and from jiff 1's `Timestamp` and `tz::TimeZone` with `From`, so a
+//! parameter that takes `impl Into<Timestamp>` or `impl Into<TimeZone>`, such
+//! as [`Cron::timezone`](crate::Cron::timezone)'s, takes jiff's types as they
+//! are.  A later major version of jiff would change these conversions, and so
+//! would be a breaking change to docket-rs.  The `chrono` and `chrono-tz`
+//! features convert them to and from those crates' types.
 
 use std::fmt;
 use std::ops::{Add, Sub};
@@ -153,9 +157,14 @@ impl From<SystemTime> for Timestamp {
     }
 }
 
+/// # Panics
+///
+/// When the platform's `SystemTime` cannot represent the time.  Linux and
+/// macOS represent every time from [`Timestamp::MIN`] to [`Timestamp::MAX`];
+/// Windows represents none before the year 1601.
 impl From<Timestamp> for SystemTime {
     fn from(when: Timestamp) -> Self {
-        Self::from(when.0)
+        Self::try_from(when.0).expect("the platform's SystemTime cannot represent the time")
     }
 }
 
@@ -185,14 +194,12 @@ impl From<Timestamp> for chrono::DateTime<chrono::Utc> {
     }
 }
 
-#[cfg(feature = "jiff-02")]
 impl From<jiff::Timestamp> for Timestamp {
     fn from(when: jiff::Timestamp) -> Self {
         Self(when)
     }
 }
 
-#[cfg(feature = "jiff-02")]
 impl From<Timestamp> for jiff::Timestamp {
     fn from(when: Timestamp) -> Self {
         when.0
@@ -248,14 +255,12 @@ impl TryFrom<chrono_tz::Tz> for TimeZone {
     }
 }
 
-#[cfg(feature = "jiff-02")]
 impl From<jiff::tz::TimeZone> for TimeZone {
     fn from(zone: jiff::tz::TimeZone) -> Self {
         Self(zone)
     }
 }
 
-#[cfg(feature = "jiff-02")]
 impl From<TimeZone> for jiff::tz::TimeZone {
     fn from(zone: TimeZone) -> Self {
         zone.0

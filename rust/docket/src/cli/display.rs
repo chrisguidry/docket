@@ -142,7 +142,7 @@ fn wrap(text: &str, limit: usize) -> Vec<String> {
 /// A time as pydocket's `local_time` prints it, in the local time zone.
 pub(super) fn local_time(when: Timestamp) -> String {
     when.0
-        .to_zoned(TimeZone::system())
+        .to_zoned_datetime(TimeZone::system())
         .strftime("%Y-%m-%d %H:%M:%S %z")
         .to_string()
 }

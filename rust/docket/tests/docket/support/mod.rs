@@ -9,10 +9,8 @@ use serde::{Deserialize, Serialize};
 /// Where the tests' Redis is.  Each `memory://` URL is its own server, so
 /// tests on the in-process engine never share data.
 /// `when` in UTC, to read its calendar fields.
-pub fn utc(when: Timestamp) -> jiff::Zoned {
-    jiff::Timestamp::try_from(std::time::SystemTime::from(when))
-        .unwrap()
-        .to_zoned(jiff::tz::TimeZone::UTC)
+pub fn utc(when: Timestamp) -> jiff::ZonedDateTime {
+    jiff::Timestamp::from(when).to_zoned_datetime(jiff::tz::TimeZone::UTC)
 }
 
 /// Midnight, UTC, at the start of `year`.

@@ -84,6 +84,13 @@ fn converts_to_and_from_system_time() {
     assert_eq!(SystemTime::from(when), system);
 }
 
+#[rstest::rstest]
+#[case::earliest(Timestamp::MIN)]
+#[case::latest(Timestamp::MAX)]
+fn converts_the_extremes_to_system_time(#[case] when: Timestamp) {
+    assert_eq!(Timestamp::from(SystemTime::from(when)), when);
+}
+
 #[test]
 fn system_times_outside_the_range_saturate() {
     let far = SystemTime::UNIX_EPOCH + TEN_THOUSAND_YEARS;
@@ -207,13 +214,17 @@ fn converts_chrono_tz_zones() {
     assert_eq!(zone, TimeZone::get("Asia/Kolkata").unwrap());
 }
 
-#[cfg(feature = "jiff-02")]
 #[test]
-fn converts_to_and_from_jiff() {
+fn converts_to_and_from_jiff_timestamps() {
     let jiff = jiff::Timestamp::from_second(1_800_000_000).unwrap();
     assert_eq!(Timestamp::from(jiff), at(1_800_000_000));
     assert_eq!(jiff::Timestamp::from(at(1_800_000_000)), jiff);
-    let zone = jiff::tz::TimeZone::get("Asia/Kolkata").unwrap();
-    let docket = TimeZone::from(zone.clone());
-    assert_eq!(jiff::tz::TimeZone::from(docket), zone);
+}
+
+#[test]
+fn converts_to_and_from_jiff_time_zones() {
+    let jiff = jiff::tz::TimeZone::get("Asia/Kolkata").unwrap();
+    let docket = TimeZone::from(jiff.clone());
+    assert_eq!(docket, TimeZone::get("Asia/Kolkata").unwrap());
+    assert_eq!(jiff::tz::TimeZone::from(docket), jiff);
 }
