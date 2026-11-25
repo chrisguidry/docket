@@ -21,7 +21,7 @@ docket-rs-macros = { version = "=0.6.0", path = "docket-macros" }
 futures = "0.3.34"
 futures-util = "0.3.34"
 gethostname = "1.1.0"
-jiff = "1.0.1"
+jiff = "0.2.46"
 opentelemetry = { version = "0.33", default-features = false }
 opentelemetry-otlp = { version = "0.33", default-features = false }
 opentelemetry_sdk = { version = "0.33", default-features = false }
