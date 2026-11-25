@@ -84,6 +84,9 @@ fn converts_to_and_from_system_time() {
     assert_eq!(SystemTime::from(when), system);
 }
 
+// Windows's SystemTime starts in 1601 and counts in 100 ns steps, so it
+// reaches neither extreme exactly.
+#[cfg(unix)]
 #[rstest::rstest]
 #[case::earliest(Timestamp::MIN)]
 #[case::latest(Timestamp::MAX)]
