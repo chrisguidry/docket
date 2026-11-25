@@ -32,8 +32,8 @@ async fn settles(docket: &Docket, expected: f64) {
     .await;
 }
 
-/// Holds each run, one at a time, until the test lets it go.
-fn register_held(docket: &Docket) -> Arc<Notify> {
+/// Holds each run, within `limit`, until the test lets it go.
+fn register_held(docket: &Docket, limit: ConcurrencyLimit) -> Arc<Notify> {
     let release = Arc::new(Notify::new());
     let released = Arc::clone(&release);
     docket
@@ -44,14 +44,14 @@ fn register_held(docket: &Docket) -> Arc<Notify> {
                 Ok::<_, std::io::Error>(args.text)
             }
         })
-        .with(ConcurrencyLimit::new(1));
+        .with(limit);
     release
 }
 
 #[tokio::test]
 async fn the_parked_depth_follows_the_backlog_until_it_drains() {
     let docket = docket().await;
-    let release = register_held(&docket);
+    let release = register_held(&docket, ConcurrencyLimit::new(1));
     for text in ["first", "second", "third"] {
         docket.add(Echo::new(text)).await.unwrap();
     }
@@ -68,9 +68,24 @@ async fn the_parked_depth_follows_the_backlog_until_it_drains() {
 }
 
 #[tokio::test]
+async fn the_parked_depth_sums_every_waiter_stream() {
+    let docket = docket().await;
+    let _release = register_held(&docket, ConcurrencyLimit::per_field("text", 1));
+    for text in ["one", "one", "one", "two", "two"] {
+        docket.add(Echo::new(text)).await.unwrap();
+    }
+
+    let run = tokio::spawn(worker(&docket).concurrency(5).run_forever());
+    // Each key has its own waiter stream: two tasks wait on one and one
+    // waits on the other.
+    settles(&docket, 3.0).await;
+    run.abort();
+}
+
+#[tokio::test]
 async fn the_parked_depth_falls_when_a_parked_task_is_cancelled() {
     let docket = docket().await;
-    let release = register_held(&docket);
+    let release = register_held(&docket, ConcurrencyLimit::new(1));
     docket.add(Echo::new("first")).await.unwrap();
     let run = tokio::spawn(worker(&docket).concurrency(2).run_forever());
     // The holder has its slot once the docket has no task left to start.

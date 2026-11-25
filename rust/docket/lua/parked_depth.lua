@@ -8,13 +8,17 @@ local batch = tonumber(ARGV[2])
 -- a release that keeps no count can change a stream and leave its count
 -- wrong, so each call also compares `batch` of the indexed counts with their
 -- streams, starting at `cursor`, and corrects the total.  A caller that adds
--- `batch` to `cursor` on each call reaches every count in turn.
+-- `batch` to `cursor` on each call reaches every count in turn.  The total
+-- is the sum of the index's counts, so an empty index means a total of zero,
+-- whatever the total key holds.
 
 local total = tonumber(redis.call('GET', parked_total) or 0)
 local corrected = total
 
 local indexed = redis.call('ZCARD', waiter_index)
-if indexed > 0 then
+if indexed == 0 then
+    corrected = 0
+else
     -- The batch wraps past the end of the index to its start, so an index
     -- no longer than a batch is compared whole.
     local first = cursor % indexed

@@ -131,6 +131,21 @@ async fn a_script_corrects_the_count_that_another_release_left() {
     assert_eq!(depth(&docket).await, 0);
 }
 
+/// The total is the sum of the index's counts, so a total left behind
+/// without any index entries is cleared instead of reported.
+#[tokio::test]
+async fn an_empty_index_means_no_parked_tasks() {
+    let docket = memory().await;
+    let keys = docket.keys();
+    let mut connection = docket.connection().await.unwrap();
+    let () = connection.set(keys.parked_total(), 5).await.unwrap();
+
+    assert_eq!(depth(&docket).await, 0);
+
+    let total: Option<u64> = connection.get(keys.parked_total()).await.unwrap();
+    assert_eq!(total, None);
+}
+
 /// When no script runs on a stream again, the heartbeat's reads correct its
 /// count.  Each read checks one batch of streams, and reads with an
 /// advancing cursor reach all of them.

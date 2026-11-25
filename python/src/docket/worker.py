@@ -1408,7 +1408,6 @@ class Worker:
                     # them reported.
                     with self._maybe_suppress_instrumentation():
                         parked = await parked_depth(self.docket, r, parked_cursor)
-                    parked_cursor += PARKED_DEPTH_BATCH
                     PARKED_DEPTH.set(parked, self.docket.labels())
 
             except asyncio.CancelledError:  # pragma: no cover
@@ -1426,6 +1425,10 @@ class Worker:
                     exc_info=True,
                     extra=self._log_context(),
                 )
+
+            # Advances on every beat, so a batch whose read fails is skipped
+            # on the next beat instead of being retried forever.
+            parked_cursor += PARKED_DEPTH_BATCH
 
             if await _wait_for_event(
                 session.stopping, self.docket.heartbeat_interval.total_seconds()

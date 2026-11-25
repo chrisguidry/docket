@@ -8,8 +8,10 @@ from unittest.mock import Mock
 
 import pytest
 from opentelemetry.metrics import _Gauge as Gauge
+from redis.exceptions import RedisError
 
 from docket import ConcurrencyLimit, Docket, Worker
+from docket._redis import RedisClient
 from docket.dependencies._concurrency import (
     PARKED_DEPTH_BATCH,
     _scavenge_and_wake,  # pyright: ignore[reportPrivateUsage]
@@ -235,6 +237,18 @@ async def test_script_corrects_the_count_that_another_release_left(docket: Docke
     assert await depth(docket) == 0
 
 
+async def test_an_empty_index_means_no_parked_tasks(docket: Docket):
+    """The total is the sum of the index's counts, so a total left behind
+    without any index entries is cleared instead of reported."""
+    async with docket.redis() as redis:
+        await redis.set(docket.parked_total_key, "5")
+
+    assert await depth(docket) == 0
+
+    async with docket.redis() as redis:
+        assert await redis.exists(docket.parked_total_key) == 0
+
+
 async def test_reads_correct_the_counts_that_another_release_left(docket: Docket):
     """When no script runs on a stream again, the heartbeat's reads correct
     its count.  Each read checks one batch of streams, and reads with an
@@ -323,3 +337,82 @@ async def test_heartbeat_reports_the_parked_depth(docket: Docket, PARKED_DEPTH: 
 
         release.set()
         await asyncio.wait_for(worker_task, timeout=5)
+
+
+@pytest.fixture
+def QUEUE_DEPTH(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    mock_obj = Mock(spec=Gauge.set)
+    monkeypatch.setattr("docket.instrumentation.QUEUE_DEPTH.set", mock_obj)
+    return mock_obj
+
+
+@pytest.fixture
+def SCHEDULE_DEPTH(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    mock_obj = Mock(spec=Gauge.set)
+    monkeypatch.setattr("docket.instrumentation.SCHEDULE_DEPTH.set", mock_obj)
+    return mock_obj
+
+
+@pytest.fixture
+def unreadable_parked_depth(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def read(docket: Docket, redis: RedisClient, cursor: int) -> int:
+        raise RedisError("the parked depth cannot be read")
+
+    monkeypatch.setattr("docket.worker.parked_depth", read)
+
+
+async def test_a_failed_parked_depth_read_leaves_the_other_depths_reported(
+    docket: Docket,
+    unreadable_parked_depth: None,
+    QUEUE_DEPTH: Mock,
+    SCHEDULE_DEPTH: Mock,
+):
+    """The queue and schedule depths are set before the parked depth is
+    read, so a heartbeat whose read always fails still reports them."""
+    labels = {"docket.name": docket.name}
+    docket.heartbeat_interval = timedelta(milliseconds=50)
+    async with Worker(docket) as worker:
+        runner = asyncio.create_task(worker.run_forever())
+        await wait_until(
+            lambda: QUEUE_DEPTH.call_count >= 1 and SCHEDULE_DEPTH.call_count >= 1,
+            description="a heartbeat to report the queue and schedule depths",
+        )
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+
+    QUEUE_DEPTH.assert_any_call(0, labels)
+    SCHEDULE_DEPTH.assert_any_call(0, labels)
+
+
+@pytest.fixture
+def failing_first_read(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The cursor of each heartbeat's parked-depth read.  The first read
+    fails and the later ones succeed."""
+    cursors: list[int] = []
+
+    async def read(docket: Docket, redis: RedisClient, cursor: int) -> int:
+        cursors.append(cursor)
+        if len(cursors) == 1:
+            raise RedisError("the parked depth cannot be read")
+        return await parked_depth(docket, redis, cursor)
+
+    monkeypatch.setattr("docket.worker.parked_depth", read)
+    return cursors
+
+
+async def test_the_heartbeat_moves_on_from_a_batch_that_fails_to_read(
+    docket: Docket, failing_first_read: list[int]
+):
+    """A batch whose read fails is not retried on the next beat, which would
+    leave every later batch unread while the failure lasted."""
+    docket.heartbeat_interval = timedelta(milliseconds=50)
+    async with Worker(docket) as worker:
+        runner = asyncio.create_task(worker.run_forever())
+        await wait_until(
+            lambda: len(failing_first_read) >= 2,
+            description="a second heartbeat to read the parked depth",
+        )
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+
+    assert failing_first_read[:2] == [0, PARKED_DEPTH_BATCH]
