@@ -85,9 +85,16 @@ fn converts_to_and_from_system_time() {
 }
 
 #[test]
-fn system_times_outside_the_range_saturate() {
+fn system_times_after_the_range_saturate() {
     let far = SystemTime::UNIX_EPOCH + TEN_THOUSAND_YEARS;
     assert_eq!(Timestamp::from(far), Timestamp::MAX);
+}
+
+// Windows's SystemTime starts in 1601, so no SystemTime there is earlier than
+// Timestamp::MIN.
+#[cfg(unix)]
+#[test]
+fn system_times_before_the_range_saturate() {
     let before = SystemTime::UNIX_EPOCH - TEN_THOUSAND_YEARS * 2;
     assert_eq!(Timestamp::from(before), Timestamp::MIN);
 }
