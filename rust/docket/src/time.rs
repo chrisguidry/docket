@@ -1,7 +1,11 @@
-//! The time types in docket's API.  docket-rs computes times with jiff 0.2,
-//! and keeps jiff out of its signatures, so that moving to a later jiff does
-//! not change them.  The `chrono`, `chrono-tz`, and `jiff-02` features
-//! convert these types to and from those crates' types.
+//! The time types in docket's API.  docket-rs computes times with jiff 1, and
+//! its signatures use its own [`Timestamp`] and [`TimeZone`].  Both convert to
+//! and from jiff 1's `Timestamp` and `tz::TimeZone` with `From`, so a
+//! parameter that takes `impl Into<Timestamp>` or `impl Into<TimeZone>`, such
+//! as [`Cron::timezone`](crate::Cron::timezone)'s, takes jiff's types as they
+//! are.  A later major version of jiff would change these conversions, and so
+//! would be a breaking change to docket-rs.  The `chrono` and `chrono-tz`
+//! features convert them to and from those crates' types.
 
 use std::fmt;
 use std::ops::{Add, Sub};
@@ -16,6 +20,11 @@ use crate::error::{Error, Result};
 ///
 /// It prints and parses as RFC 3339 in UTC, such as
 /// `2026-10-05T19:26:03.529728Z`.  Parsing accepts any offset.
+///
+/// A `SystemTime` converts into a `Timestamp`, but not back, because Windows's
+/// `SystemTime` cannot represent times before 1601.  To get a `SystemTime`,
+/// convert through jiff with `SystemTime::try_from(jiff::Timestamp::from(when))`,
+/// which fails where the platform cannot represent the time.
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timestamp(pub(crate) jiff::Timestamp);
 
@@ -153,12 +162,6 @@ impl From<SystemTime> for Timestamp {
     }
 }
 
-impl From<Timestamp> for SystemTime {
-    fn from(when: Timestamp) -> Self {
-        Self::from(when.0)
-    }
-}
-
 /// Saturates at [`Timestamp::MIN`] or [`Timestamp::MAX`] when the time is
 /// outside their range.  A leap second reads as the last nanosecond before
 /// it.
@@ -185,14 +188,12 @@ impl From<Timestamp> for chrono::DateTime<chrono::Utc> {
     }
 }
 
-#[cfg(feature = "jiff-02")]
 impl From<jiff::Timestamp> for Timestamp {
     fn from(when: jiff::Timestamp) -> Self {
         Self(when)
     }
 }
 
-#[cfg(feature = "jiff-02")]
 impl From<Timestamp> for jiff::Timestamp {
     fn from(when: Timestamp) -> Self {
         when.0
@@ -248,14 +249,12 @@ impl TryFrom<chrono_tz::Tz> for TimeZone {
     }
 }
 
-#[cfg(feature = "jiff-02")]
 impl From<jiff::tz::TimeZone> for TimeZone {
     fn from(zone: jiff::tz::TimeZone) -> Self {
         Self(zone)
     }
 }
 
-#[cfg(feature = "jiff-02")]
 impl From<TimeZone> for jiff::tz::TimeZone {
     fn from(zone: TimeZone) -> Self {
         zone.0

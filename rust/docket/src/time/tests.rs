@@ -77,11 +77,9 @@ fn prints_and_parses_rfc_3339() {
 }
 
 #[test]
-fn converts_to_and_from_system_time() {
-    let when = at(1_800_000_000);
+fn converts_from_system_time() {
     let system = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
-    assert_eq!(Timestamp::from(system), when);
-    assert_eq!(SystemTime::from(when), system);
+    assert_eq!(Timestamp::from(system), at(1_800_000_000));
 }
 
 #[test]
@@ -214,13 +212,17 @@ fn converts_chrono_tz_zones() {
     assert_eq!(zone, TimeZone::get("Asia/Kolkata").unwrap());
 }
 
-#[cfg(feature = "jiff-02")]
 #[test]
-fn converts_to_and_from_jiff() {
+fn converts_to_and_from_jiff_timestamps() {
     let jiff = jiff::Timestamp::from_second(1_800_000_000).unwrap();
     assert_eq!(Timestamp::from(jiff), at(1_800_000_000));
     assert_eq!(jiff::Timestamp::from(at(1_800_000_000)), jiff);
-    let zone = jiff::tz::TimeZone::get("Asia/Kolkata").unwrap();
-    let docket = TimeZone::from(zone.clone());
-    assert_eq!(jiff::tz::TimeZone::from(docket), zone);
+}
+
+#[test]
+fn converts_to_and_from_jiff_time_zones() {
+    let jiff = jiff::tz::TimeZone::get("Asia/Kolkata").unwrap();
+    let docket = TimeZone::from(jiff.clone());
+    assert_eq!(docket, TimeZone::get("Asia/Kolkata").unwrap());
+    assert_eq!(jiff::tz::TimeZone::from(docket), jiff);
 }

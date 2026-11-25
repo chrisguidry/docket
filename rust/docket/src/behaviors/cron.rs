@@ -96,7 +96,7 @@ fn refused_by_pydocket(expression: &str, schedule: &croner::Cron) -> Option<&'st
         Some("its day of the month uses W, other than LW")
     } else if schedule
         .find_next_occurrence(
-            &jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC),
+            &jiff::Timestamp::now().to_zoned_datetime(jiff::tz::TimeZone::UTC),
             false,
         )
         .is_err()
@@ -119,7 +119,7 @@ impl<Mode> Cron<Mode> {
     /// The first time after `after` that the schedule matches.
     fn next_after(&self, after: Timestamp) -> Option<Timestamp> {
         self.schedule
-            .find_next_occurrence(&after.0.to_zoned(self.timezone.0.clone()), false)
+            .find_next_occurrence(&after.0.to_zoned_datetime(self.timezone.0.clone()), false)
             .ok()
             .map(|next| Timestamp(next.timestamp()))
     }

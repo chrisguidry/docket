@@ -79,14 +79,16 @@ failure, and completion.  See `docket::behaviors`.
 docket-rs's API gives times as `docket::Timestamp`, an instant to the
 nanosecond.  A `Cron` schedule is read in a `docket::TimeZone`.  `.at()`,
 `replace()`, and `ForcedRetry::at` take anything that converts into a
-`Timestamp`, such as a `SystemTime`.  These features add conversions for
-other crates' types:
+`Timestamp`, such as a `SystemTime`.
+
+jiff 1's `Timestamp` and `tz::TimeZone` convert to and from docket's with
+`From`, without a feature, so `.at()` and `Cron::timezone` take jiff's types
+as they are.  These features add conversions for other crates' types:
 
 | Feature | Converts |
 |---|---|
 | `chrono` | `chrono::DateTime` to `Timestamp`, and `Timestamp` to `DateTime<Utc>` |
 | `chrono-tz` | `chrono_tz::Tz` to `TimeZone`, by its IANA name |
-| `jiff-02` | jiff 0.2's `Timestamp` and `TimeZone` to docket's, and back |
 
 `TimeZone::get` and the `chrono-tz` conversion look zones up by name in the
 system's time zone database, such as `/usr/share/zoneinfo`.  When the system

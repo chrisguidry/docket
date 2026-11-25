@@ -202,6 +202,26 @@
       "next": null
     },
     {
+      "expression": "0 0 * * 1,L",
+      "next": null
+    },
+    {
+      "expression": "0 0 * * jan",
+      "next": null
+    },
+    {
+      "expression": "mon * * * *",
+      "next": null
+    },
+    {
+      "expression": "0 0 * mon *",
+      "next": null
+    },
+    {
+      "expression": "0 0 1 * L",
+      "next": null
+    },
+    {
       "expression": "0 0 0 1 1 * 2027",
       "next": null
     },
