@@ -190,8 +190,12 @@ python -m docket worker --tasks tasks:tasks --reload
 ```
 
 The reloader keeps watching if the worker fails to start, so saving a fix
-starts it again. Use Ctrl+C to stop the reloader and worker. The `--reload`
-and `--until-finished` options are mutually exclusive.
+starts it again. On a file change or shutdown, the reloader gives the worker
+five seconds to finish active tasks before forcibly stopping it. This applies
+when you press Ctrl+C or send SIGTERM. Interrupted tasks can remain pending in
+Redis until they become eligible for redelivery.
+
+The `--reload` and `--until-finished` options are mutually exclusive.
 
 ## Basic Error Handling
 
