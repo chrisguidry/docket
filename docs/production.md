@@ -117,17 +117,10 @@ blocking reads — worker polling, the strike-stream monitor, and execution
 state/progress streams — aren't cut short by redis-py 8's 5-second default. If
 you set `socket_timeout` in the URL it takes precedence, so keep it comfortably
 above your longest blocking read (the strike monitor blocks for 60 seconds) or
-leave it unset. A server that stops answering is then noticed by TCP keepalive,
-which redis-py turns on by default from 8.0, probing after 30 seconds of
-silence. Older redis-py leaves keepalive off unless the URL sets
-`socket_keepalive=true`, and then it uses the operating system's timers (two
-hours of silence on Linux). Sentinel URLs default to the 30-second timers.
-When keepalive ends a pub/sub connection, redis-py before 8.2 returns its
-timed reads as empty reads rather than an error, and redis-py 8.0 and 8.1 do
-the same for blocking reads; redis-py 6.2 and 7.x raise `TimeoutError` from
-blocking reads. Docket notices the empty reads, checks the connection with a
-`PING`, and raises `ConnectionError` if that fails, so the worker's pub/sub
-listeners reconnect.
+leave it unset. Docket then relies on TCP keepalive to notice a server that
+stops answering. redis-py turns keepalive on by default from 8.0, and Sentinel
+URLs always turn it on; with an older redis-py and a plain URL, add
+`socket_keepalive=true`.
 
 ### Redis Cluster Support
 
