@@ -43,7 +43,7 @@ SENTINEL_SCHEMES = ("redis+sentinel", "rediss+sentinel")
 # answers them, so they don't disturb a legitimately long blocking read — which
 # is exactly why disabling the read timeout is safe.  These match redis-py 8.0's
 # own defaults; pinning them keeps the behaviour identical on the older redis-py
-# releases docket supports (redis>=6), where connections default to no keepalive.
+# releases docket supports (redis>=6.2), where connections default to no keepalive.
 _SENTINEL_KEEPALIVE_TIMERS: tuple[tuple[str, int], ...] = (
     ("TCP_KEEPIDLE", 30),
     ("TCP_KEEPINTVL", 5),
