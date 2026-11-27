@@ -61,8 +61,8 @@ logger: logging.Logger = logging.getLogger(__name__)
 # xread and the indefinite execution state/progress pubsub.listen.  redis-py
 # 8.0.0 changed the client socket_timeout default to 5s, which aborts those
 # reads mid-flight with a TimeoutError.  We disable the client read timeout so
-# blocking reads wait for the server as intended; redis-py's default-on TCP
-# keepalive still detects genuinely dead peers.
+# blocking reads wait for the server, and rely on TCP keepalive (on by default
+# from redis-py 8.0) and Subscription's empty-read check to notice dead peers.
 BLOCKING_READ_SOCKET_TIMEOUT: float | None = None
 
 # TCP connects are different: a connect that stalls (dropped SYNs on an
@@ -1015,9 +1015,10 @@ class RedisConnection:
     ) -> Subscription:
         """A Subscription to these channels and patterns, on a pub/sub
         connection of its own that it opens when entered."""
-        from ._subscription import Subscription
+        from ._subscription import Subscription, no_probe, ping
 
-        return Subscription(self.pubsub(), channels=channels, patterns=patterns)
+        probe = no_probe if self._memory_client is not None else ping
+        return Subscription(self.pubsub(), probe, channels=channels, patterns=patterns)
 
     async def publish(self, channel: str, message: str) -> int:
         """Publish a message to a pub/sub channel."""
