@@ -5,10 +5,15 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, Self
 
 from docket import ConcurrencyLimit, Docket, Perpetual, Worker
-from docket.dependencies import RateLimit
+from docket.dependencies import (
+    AdmissionBlocked,
+    Dependency,
+    RateLimit,
+    current_execution,
+)
 
 
 async def test_task_level_rate_limit_drops_excess(docket: Docket, worker: Worker):
@@ -281,3 +286,38 @@ async def test_rate_limit_slot_freed_when_another_dep_blocks(
     await worker.run_until_finished()
 
     assert len(results) == 2
+
+
+async def test_concurrent_rate_limit_refund_does_not_clobber_sibling(
+    docket: Docket, worker: Worker
+):
+    """Concurrent executions sharing a default RateLimit refund their own slots."""
+    both_entered = asyncio.Event()
+    entered = 0
+
+    class BlockingGate(Dependency["BlockingGate"]):
+        async def __aenter__(self) -> Self:
+            nonlocal entered
+            entered += 1
+            if entered == 2:
+                both_entered.set()
+            await both_entered.wait()
+            raise AdmissionBlocked(
+                current_execution.get(), reason="blocked", reschedule=False
+            )
+
+    async def gated_task(
+        rate: RateLimit = RateLimit(2, per=timedelta(seconds=5), drop=True),
+        gate: BlockingGate = BlockingGate(),
+    ):
+        pass  # pragma: no cover
+
+    await docket.add(gated_task)()
+    await docket.add(gated_task)()
+
+    worker.concurrency = 2
+    await worker.run_until_finished()
+
+    async with docket.redis() as redis:
+        members = await redis.zrange(f"{docket.name}:ratelimit:gated_task", 0, -1)
+        assert members == []
