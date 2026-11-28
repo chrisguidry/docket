@@ -81,7 +81,7 @@ class RateLimit(Dependency["RateLimit"]):
         bound._argument_value = value
         return bound
 
-    async def __aenter__(self) -> RateLimit:
+    async def __aenter__(self) -> Self:
         execution = current_execution.get()
         docket = current_docket.get()
 
@@ -113,9 +113,13 @@ class RateLimit(Dependency["RateLimit"]):
         retry_after_ms = result[1]
 
         if action == _ACTION_PROCEED:
-            self._ratelimit_key = ratelimit_key
-            self._member = member
-            return self
+            from ._functional import _Depends
+
+            bound = copy.copy(self)
+            bound._ratelimit_key = ratelimit_key
+            bound._member = member
+            _Depends.stack.get().push_async_exit(bound._release_on_blocked)
+            return bound
 
         reason = f"rate limit ({self.limit}/{self.per}) on {ratelimit_key}"
 
@@ -128,15 +132,22 @@ class RateLimit(Dependency["RateLimit"]):
             retry_delay=timedelta(milliseconds=retry_after_ms),
         )
 
+    async def _release_on_blocked(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if exc_type is not None and issubclass(exc_type, AdmissionBlocked):
+            assert self._ratelimit_key is not None and self._member is not None
+            docket = current_docket.get()
+            async with docket.redis() as redis:
+                await redis.zrem(self._ratelimit_key, self._member)
+
     async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if exc_type is not None and self._member is not None:
-            if issubclass(exc_type, AdmissionBlocked):
-                assert self._ratelimit_key is not None
-                docket = current_docket.get()
-                async with docket.redis() as redis:
-                    await redis.zrem(self._ratelimit_key, self._member)
+        pass
